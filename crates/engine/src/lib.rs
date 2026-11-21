@@ -80,11 +80,16 @@ pub struct State {
     pub stop_after_current: bool,
     pub carts: Vec<CartAssign>,
     pub decks: [Option<ItemId>; DECKS as usize],
+    /// True for each deck whose item is on air (started), as playout reports it.
+    pub live: [bool; DECKS as usize],
     pub folders: BTreeSet<String>,
     /// Settings of each part of the UI, by part and key (`settings_by_part`).
     pub(crate) settings: BTreeMap<String, BTreeMap<String, Value>>,
     /// The mixer strips, by name.
     pub strips: BTreeMap<String, StripState>,
+    /// Items that play right after the item on air, in order. Playout takes each one off
+    /// when it starts.
+    pub queue: Vec<ItemId>,
     /// Cart settings that differ from the defaults.
     pub cart_settings: Vec<CartSettings>,
 }
@@ -141,10 +146,12 @@ impl State {
             stop_after_current: false,
             carts: vec![],
             decks: [None; DECKS as usize],
+            live: [false; DECKS as usize],
             folders: BTreeSet::new(),
             settings: BTreeMap::new(),
             strips: BTreeMap::new(),
             cart_settings: Vec::new(),
+            queue: Vec::new(),
         }
     }
 
@@ -200,6 +207,7 @@ impl State {
             .collect();
         self.item_meta.retain(|i, _| live.contains(i));
         self.carts.retain(|c| live.contains(&c.item));
+        self.queue.retain(|i| live.contains(i));
         for d in &mut self.decks {
             if d.is_some_and(|i| !live.contains(&i)) {
                 *d = None;
@@ -366,7 +374,11 @@ fn undoable(cmd: &Command) -> bool {
 /// True for a command that a batch may hold: a station edit without audio.
 fn batchable(cmd: &Command) -> bool {
     !matches!(cmd, Command::StationBatch { .. })
-        && (undoable(cmd) || matches!(cmd, Command::SettingsSet { .. }))
+        && (undoable(cmd)
+            || matches!(
+                cmd,
+                Command::SettingsSet { .. } | Command::PlayoutPlayNext { .. }
+            ))
 }
 
 impl Engine {
@@ -464,10 +476,12 @@ impl Engine {
         self.last_step = None;
     }
 
-    /// Refuses a restore that takes away an item that a deck holds.
+    /// Refuses a restore that takes away an item that is on air on a deck.
     fn check_decks(&self, saved: &Saved) -> Result<(), EngineError> {
         for (d, item) in self.state.decks.iter().enumerate() {
-            let Some(item) = item else { continue };
+            let Some(item) = item.as_ref().filter(|_| self.state.live[d]) else {
+                continue;
+            };
             let kept = saved
                 .station
                 .playlists
@@ -476,7 +490,7 @@ impl Engine {
             if !kept {
                 let deck = ['A', 'B', 'C', 'D'].get(d).copied().unwrap_or('?');
                 return Err(EngineError::BadArgument(format!(
-                    "this step would remove an item that deck {deck} holds; skip or unload it first"
+                    "this step would remove the item on air on deck {deck}; skip it first"
                 )));
             }
         }
@@ -826,6 +840,14 @@ impl Engine {
                 Ok(Outcome::default())
             }
             C::PlayoutNext => Ok(self.audio(AudioIntent::Next)),
+            C::PlayoutPlayNext { item } => {
+                if !self.state.has_item(item) {
+                    return Err(EngineError::UnknownItem(item));
+                }
+                self.state.queue.retain(|i| *i != item);
+                self.state.queue.insert(0, item);
+                Ok(Outcome::default())
+            }
             C::StationStopAfterCurrent => {
                 self.state.stop_after_current = true;
                 self.emit(EngineEvent::AudioIntent(AudioIntent::StopAfterCurrent));
@@ -1148,6 +1170,22 @@ impl Engine {
             && self.state.decks[d] != item
         {
             self.state.decks[d] = item;
+            self.store.snapshot(self.state.clone());
+            self.emit(EngineEvent::StateChanged);
+        }
+    }
+
+    /// Records if the item of a deck is on air. Undo never takes an item on air away.
+    pub fn set_live(&mut self, deck: u8, live: bool) {
+        if let Ok(d) = self.deck(deck) {
+            self.state.live[d] = live;
+        }
+    }
+
+    /// Takes an item off the play-next queue. Playout calls this when the item starts.
+    pub fn dequeue(&mut self, item: ItemId) {
+        if self.state.queue.contains(&item) {
+            self.state.queue.retain(|i| *i != item);
             self.store.snapshot(self.state.clone());
             self.emit(EngineEvent::StateChanged);
         }

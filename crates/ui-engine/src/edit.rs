@@ -90,6 +90,16 @@ impl EngineSource {
             .ok_or_else(|| format!("The playlist {name} is gone"))
     }
 
+    fn playlist_name_of(&self, id: PlaylistId) -> String {
+        self.state
+            .station
+            .playlists
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn main_id(&self) -> Option<PlaylistId> {
         self.state
             .station
@@ -144,6 +154,19 @@ impl EngineSource {
         })
     }
 
+    /// True when row index `i` is the place right after the row on air (or the first row,
+    /// when nothing is on air).
+    fn is_next_row(&self, i: usize) -> bool {
+        let on_air = self
+            .row_order
+            .iter()
+            .position(|id| self.on_air_rows.contains(id));
+        match on_air {
+            Some(k) => i <= k + 1,
+            None => i == 0,
+        }
+    }
+
     fn row_index(&self, row: u64) -> Result<usize, String> {
         self.row_order
             .iter()
@@ -192,7 +215,29 @@ impl EngineSource {
         at: Option<usize>,
     ) -> Result<usize, String> {
         let id = self.playlist_id(playlist)?;
-        let at = if Some(id) == self.main_id() {
+        let main = Some(id) == self.main_id();
+        // A row right after the item on air means "play next": the items join the end of the
+        // main playlist, and the play-next queue puts them on air next.
+        if main && at.is_some_and(|i| self.is_next_row(i)) {
+            let n = items.len();
+            let items = self.copies(items);
+            let mut cmds: Vec<Command> = items
+                .iter()
+                .rev()
+                .map(|i| Command::PlayoutPlayNext { item: i.id })
+                .collect();
+            cmds.insert(
+                0,
+                Command::PlaylistAddItems {
+                    playlist: id,
+                    items,
+                    at: None,
+                },
+            );
+            self.run_batch(cmds)?;
+            return Ok(n);
+        }
+        let at = if main {
             at.and_then(|i| self.main_index_at_row(i))
         } else {
             let len = self
@@ -394,6 +439,10 @@ impl EngineSource {
         let main = self.main_id().ok_or("The station has no main playlist")?;
         if r.playlist != main {
             return Err("Only rows of the main playlist move; rules place the other rows".into());
+        }
+        if to == MoveTo::Next {
+            self.run_edit(Command::PlayoutPlayNext { item: r.item })?;
+            return Ok(1);
         }
         let i = self.row_index(id)?;
         let fixed = |k: usize| {
@@ -665,6 +714,15 @@ impl EngineSource {
                     .library_item(item)
                     .ok_or_else(|| "That library item is gone".to_owned())?;
                 let main = self.main_id().ok_or("The station has no main playlist")?;
+                let row = match at {
+                    Place::Before(r) => Some(self.row_index(r)?),
+                    Place::After(r) => Some(self.row_index(r)? + 1),
+                    Place::End => None,
+                };
+                if let Some(row) = row.filter(|r| self.is_next_row(*r)) {
+                    let name = self.playlist_name_of(main);
+                    return self.add_to(&name, vec![lib], Some(row));
+                }
                 let at = self.main_index(at)?;
                 let items = self.copies(vec![lib]);
                 self.run_edit(Command::PlaylistAddItems {

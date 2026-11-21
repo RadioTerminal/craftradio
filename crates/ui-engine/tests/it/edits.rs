@@ -82,3 +82,43 @@ fn a_deck_command_on_a_changed_deck_fails() {
     });
     assert!(stale.is_err(), "a stale skip is refused: {stale:?}");
 }
+
+/// A file added at the row after the one on air plays next: it is the next row, and the main
+/// playlist goes on after it with no repeat of it.
+#[test]
+fn a_file_added_after_the_row_on_air_plays_next() {
+    use radio_playout::Clock;
+    let d = dir();
+    let songs = (1..=3)
+        .map(|i| {
+            track(
+                i,
+                &format!("Song {i}"),
+                &wav(&d, &format!("s{i}"), 5.0),
+                5.0,
+            )
+        })
+        .collect();
+    let (mut source, clock) = source(songs);
+    let view = wait_for(&mut source, &clock, |v| {
+        v.rows.len() > 3 && v.decks.iter().any(|d| d.state == DeckState::Playing)
+    });
+    let main = view.main_playlist.clone();
+    let added = source.edit(Edit::AddFiles {
+        playlist: main,
+        paths: vec![wav(&d, "inserted", 2.0)],
+        at: Some(1),
+    });
+    assert_eq!(added, Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        v.rows.get(1).is_some_and(|r| r.title == "inserted")
+    });
+    let rows: Vec<&str> = view.rows.iter().take(4).map(|r| r.title.as_str()).collect();
+    assert_eq!(rows.get(1), Some(&"inserted"), "{rows:?}");
+    assert_ne!(
+        rows.get(2),
+        Some(&"inserted"),
+        "it plays once here: {rows:?}"
+    );
+    let _ = clock.now();
+}

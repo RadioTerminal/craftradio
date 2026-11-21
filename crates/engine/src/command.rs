@@ -137,6 +137,9 @@ pub enum Command {
     ModeSet { mode: Mode },
     #[serde(rename = "station.stop_after_current")]
     StationStopAfterCurrent,
+    /// Plays the item right after the item on air, before the plan goes on.
+    #[serde(rename = "playout.play_next")]
+    PlayoutPlayNext { item: ItemId },
     /// Starts the next item now. In `Assist` mode the next item waits for this command.
     #[serde(rename = "playout.next")]
     PlayoutNext,
@@ -248,6 +251,7 @@ impl Command {
             Self::ModeSet { .. } => "mode.set",
             Self::StationStopAfterCurrent => "station.stop_after_current",
             Self::PlayoutNext => "playout.next",
+            Self::PlayoutPlayNext { .. } => "playout.play_next",
             Self::CartAssign { .. } => "cart.assign",
             Self::CartFire { .. } => "cart.fire",
             Self::CartStopAll => "cart.stop_all",
@@ -302,6 +306,7 @@ impl Command {
             | Self::ModeSet { .. }
             | Self::StationStopAfterCurrent
             | Self::PlayoutNext
+            | Self::PlayoutPlayNext { .. }
             | Self::CartAssign { .. }
             | Self::CartFire { .. }
             | Self::CartStopAll
@@ -484,6 +489,12 @@ pub fn registry() -> Vec<CommandSpec> {
             &[],
         ),
         spec("playout.next", "Start the next item now", A, &[]),
+        spec(
+            "playout.play_next",
+            "Play an item right after the item on air",
+            A,
+            &[("item", "integer")],
+        ),
         spec(
             "cart.assign",
             "Put an item on a cartwall slot",

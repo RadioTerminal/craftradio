@@ -548,3 +548,46 @@ fn deleting_a_hard_rule_near_its_target_keeps_the_other_hard_event() {
     let news = rows.iter().filter(|r| r.entry.title == "News").count();
     assert_eq!(news, 2, "both hard events air");
 }
+
+/// An item that an operator sends to play next airs right after the item on air, not a round
+/// of the playlist later.
+#[test]
+fn a_play_next_item_airs_right_after_the_item_on_air() {
+    let main: Vec<_> = (1..=3)
+        .map(|i| {
+            let path = wav(&format!("pn{i}"), 4.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 4.0, 4.0, 0.0)
+        })
+        .collect();
+    let engine = engine_with(main);
+    let (p, clock) = offline(engine, |_| {});
+    let before = run(&p, &clock, 1.0);
+    let next = file_item(20, "Next", &wav("pn-next", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    p.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![next],
+        at: None,
+    })
+    .unwrap();
+    p.dispatch(Command::PlayoutPlayNext {
+        item: radio_model::ItemId(20),
+    })
+    .unwrap();
+    let after = run(&p, &clock, 5.5);
+    let program = [before, after].concat();
+    let start = first_audible(&program, 1, 0).expect("the play-next item airs");
+    assert!(
+        start.abs_diff(4 * SR) <= SR / 10,
+        "it starts when song 1 ends: at {start}, song 1 ends at {}",
+        4 * SR
+    );
+    assert!(
+        peak(&program, 0, 4 * SR + SR / 10, 5 * SR - SR / 10) < 0.01,
+        "song 2 waits until the play-next item ends"
+    );
+    let view = p.snapshot();
+    assert!(
+        view.state.queue.is_empty(),
+        "the item left the queue when it started"
+    );
+}

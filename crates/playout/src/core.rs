@@ -660,12 +660,15 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
+        let id = s.item.id;
         // A hard event keeps its target as its start, so later plans still know it.
         if !s.is_hard() {
             s.entry.start = sub(wall, s.offset);
         }
         self.dirty = true;
         self.save_due = true;
+        // A play-next item leaves the queue when it starts.
+        self.engine.dequeue(id);
         if self.slots[deck.index()]
             .as_ref()
             .is_some_and(|s| s.row.is_none())
@@ -804,13 +807,21 @@ impl Core {
         // still produce it, or it goes. Near its target, playout pins it so it stays.
         let lock = add(now, HARD_LOCK);
         let free_hard = |s: &Slot| s.is_hard() && s.not_started() && s.entry.start > lock;
-        let pinned: Vec<Entry> = self
+        // Items to play next go right after the item on air. The queued plan items that
+        // wait on decks give way to them, unless they are hard events.
+        let queued = self.play_next_entries(now, &station);
+        // Until the play-next items are on decks, nothing of the plan waits ahead of them.
+        if !queued.is_empty() {
+            self.unload_waiting_plan_items();
+        }
+        let mut pinned: Vec<Entry> = self
             .slots
             .iter()
             .flatten()
             .filter(|s| s.pinned() && !free_hard(s))
             .map(|s| s.entry.clone())
             .collect();
+        pinned.extend(queued);
         let input = PlanInput {
             station: &station,
             history: &self.history,
@@ -852,6 +863,75 @@ impl Core {
         self.planned = true;
         self.dirty = false;
         self.last_plan = Some(now);
+    }
+
+    /// Pinned entries for the play-next queue of the engine, one after the other from the end
+    /// of the item on air. Items on a deck already are left out.
+    fn play_next_entries(&self, now: Timestamp, station: &radio_model::Station) -> Vec<Entry> {
+        let queue = &self.engine.state().queue;
+        if queue.is_empty() {
+            return Vec::new();
+        }
+        // The item on air ends at its deck's planned end, or else at its end in the plan.
+        let on_deck = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|s| !s.not_started())
+            .map(Slot::planned_end)
+            .max();
+        let in_plan = self
+            .timeline
+            .entries
+            .iter()
+            .filter(|e| e.start <= now && now < add(e.start, e.len))
+            .map(|e| add(e.start, e.len.saturating_sub(e.trim)))
+            .max();
+        let mut at = on_deck.max(in_plan).unwrap_or(now).max(now);
+        let mut out = Vec::new();
+        for id in queue {
+            if self.slots.iter().flatten().any(|s| s.item.id == *id) {
+                continue;
+            }
+            let found = station
+                .playlists
+                .iter()
+                .find_map(|p| p.items.iter().find(|i| i.id == *id).map(|i| (p.id, i)));
+            let Some((playlist, item)) = found else {
+                continue;
+            };
+            let len = radio_timing::item_len(item);
+            out.push(Entry {
+                playlist,
+                item: *id,
+                start: at,
+                len,
+                origin: Origin::Manual,
+                locked: true,
+                fixed: None,
+                trim: Duration::ZERO,
+            });
+            at = add(at, len);
+        }
+        out
+    }
+
+    /// Takes the plan items that wait on decks off them, so a new plan can move them after
+    /// the play-next items. Hard events and operator items stay.
+    fn unload_waiting_plan_items(&mut self) {
+        let queue = self.engine.state().queue.clone();
+        for i in 0..4 {
+            let waiting = self.slots[i].as_ref().is_some_and(|s| {
+                s.role == DeckRole::Plan
+                    && s.not_started()
+                    && !s.is_hard()
+                    && !queue.contains(&s.item.id)
+            });
+            if waiting && let Some(s) = self.slots[i].take() {
+                let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
+                let _ = self.mixer.send(cmd.for_item(s.tag));
+            }
+        }
     }
 
     /// Keeps the play history to the last 48 h, checked once an hour, so plans stay cheap.
@@ -1312,6 +1392,8 @@ impl Core {
             if self.engine.state().decks[i] != item {
                 self.engine.set_deck(i as u8, item);
             }
+            let live = self.slots[i].as_ref().is_some_and(|s| !s.not_started());
+            self.engine.set_live(i as u8, live);
         }
     }
 

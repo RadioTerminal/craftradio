@@ -408,7 +408,7 @@ fn start_up_edits_leave_no_undo_steps() {
 }
 
 #[test]
-fn undo_never_takes_an_item_off_a_deck() {
+fn undo_never_takes_the_item_on_air_off_its_deck() {
     let mut e = Engine::open_in_memory().unwrap();
     e.dispatch(Command::PlaylistAddItems {
         playlist: radio_model::PlaylistId(1),
@@ -417,6 +417,7 @@ fn undo_never_takes_an_item_off_a_deck() {
     })
     .unwrap();
     e.set_deck(0, Some(radio_model::ItemId(1)));
+    e.set_live(0, true);
     let refused = e.dispatch(Command::HistoryUndo);
     assert!(refused.is_err(), "the undo would take the deck's item away");
     assert_eq!(ids(&e), [1], "nothing changed");
