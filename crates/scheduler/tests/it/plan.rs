@@ -238,3 +238,45 @@ fn frozen_window_never_pulls_entries_across() {
         );
     }
 }
+
+#[test]
+fn normal_event_before_frozen_window_leaves_it_untouched() {
+    let mut st = make_station(tracks(30), 5);
+    let mut second = st.playlists[1].rules[0].clone();
+    second.trigger = Trigger::At {
+        at: date(2026, 11, 21).at(13, 9, 0, 0),
+        repeat: Repeat::Once,
+    };
+    let mut other = playlist(3, "event-2", vec![jingle(102, 30)]);
+    other.rules = vec![second];
+    st.playlists.push(other);
+    let prev = run(&st, &[], None);
+    let fixed: Vec<usize> = (0..prev.entries.len())
+        .filter(|&i| prev.entries[i].fixed.is_some())
+        .collect();
+    let first_window = ids_of(&prev.entries[..fixed[0]]);
+    let second_window = ids_of(&prev.entries[fixed[0] + 1..fixed[1]]);
+    // Only the second window changes, so only it is frozen.
+    let mut st2 = st.clone();
+    st2.playlists[0].items.retain(|i| i.id != second_window[0]);
+    let tl = run(&st2, &[], Some(&prev));
+    let fixed: Vec<usize> = (0..tl.entries.len())
+        .filter(|&i| tl.entries[i].fixed.is_some())
+        .collect();
+    assert_eq!(ids_of(&tl.entries[..fixed[0]]), first_window);
+    for e in &tl.entries[fixed[0] + 1..fixed[1]] {
+        assert!(
+            e.origin == Origin::Fill || second_window.contains(&e.item),
+            "{e:?} was pulled into the frozen window"
+        );
+    }
+    assert!(
+        tl.entries
+            .iter()
+            .all(|e| e.fixed.as_ref().is_none_or(|f| !f.frozen))
+    );
+}
+
+fn ids_of(entries: &[Entry]) -> Vec<ItemId> {
+    entries.iter().map(|e| e.item).collect()
+}

@@ -171,5 +171,9 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         return tl;
     }
     fit_all(&mut raw, input.station, input.history);
+    // `frozen` is a planning-time flag; it does not outlive the plan.
+    for f in raw.entries.iter_mut().filter_map(|e| e.fixed.as_mut()) {
+        f.frozen = false;
+    }
     raw
 }
