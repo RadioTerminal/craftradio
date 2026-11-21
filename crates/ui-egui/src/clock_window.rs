@@ -8,6 +8,7 @@ use jiff::SignedDuration;
 
 use crate::app::Action;
 use crate::context_menu::check_item;
+use crate::icons::{self, Icon};
 use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
@@ -58,7 +59,7 @@ impl Prefs {
     }
 }
 
-/// A countdown line. In its last seconds it grows, turns to the warning colour and gets ⚠.
+/// A countdown line. In its last seconds it grows, turns to the warning colour and gets a warning icon.
 fn countdown_line(
     ui: &mut egui::Ui,
     text: String,
@@ -70,7 +71,7 @@ fn countdown_line(
     let near = left.is_some_and(|d| d.as_secs() < size::CLOCK_URGENT_S);
     let (text, ink, font) = if near {
         (
-            format!("⚠ {text}"),
+            icons::lead(Icon::TriangleAlert, &text),
             t.warn,
             size_pt * size::CLOCK_URGENT_GROW,
         )
@@ -208,7 +209,10 @@ fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Pr
                         _ => "hard",
                     };
                     let at = r.start.strftime("%H:%M:%S");
-                    let text = format!("⏱ {at} {} ({kind}) in {}", r.title, countdown(d));
+                    let text = icons::lead(
+                        Icon::Timer,
+                        &format!("{at} {} ({kind}) in {}", r.title, countdown(d)),
+                    );
                     (text, Some(d))
                 }
                 None => ("No fixed item in the next hours".to_owned(), None),

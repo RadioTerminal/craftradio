@@ -4,6 +4,7 @@ mod bg;
 mod edit;
 
 pub use edit::{AUDIO_PART, file_item};
+use lucide_icons::Icon;
 mod fader;
 pub mod folder_sync;
 mod folders;
@@ -252,7 +253,11 @@ impl EngineSource {
                 out.push(LibraryItem {
                     id: item.id.0,
                     title: if missing {
-                        format!("⚠ missing · {}", item.title)
+                        format!(
+                            "{} missing · {}",
+                            char::from(Icon::TriangleAlert),
+                            item.title
+                        )
                     } else {
                         item.title.clone()
                     },

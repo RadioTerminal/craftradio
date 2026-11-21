@@ -6,6 +6,7 @@ use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::Action;
 use crate::context_menu::{check_item, menu_item};
+use crate::icons::{self, Icon};
 use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
@@ -132,7 +133,7 @@ fn strip_ui(
         .show(ui, |ui| {
             ui.set_width(size::STRIP_W);
             ui.vertical_centered(|ui| {
-                // Every name row has the height of a ⚙ button, so all strips line up.
+                // Every name row has the height of a settings button, so all strips line up.
                 let row = egui::vec2(ui.available_width(), size::BADGE);
                 ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
                     let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
@@ -243,7 +244,7 @@ fn strip_menu(
         }
     });
     ui.separator();
-    menu_item(ui, "⚙ Settings", None)
+    menu_item(ui, &icons::lead(Icon::Settings, "Settings"), None)
 }
 
 /// Two meter bars (left and right) with green, amber and red zones and a peak line.
@@ -416,7 +417,7 @@ fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Actio
 }
 
 /// The warning for a password that goes to another computer without TLS.
-pub(crate) const PASSWORD_IN_CLEAR: &str = "⚠ password sent unencrypted · turn on TLS";
+pub(crate) const PASSWORD_IN_CLEAR: &str = "password sent unencrypted · turn on TLS";
 
 fn icecast_settings(
     ui: &mut egui::Ui,
@@ -427,15 +428,26 @@ fn icecast_settings(
     t: &Tokens,
 ) {
     let (word, ink) = match &view.output.icecast {
-        _ if view.preview => ("Icecast ○ not connected — preview".to_owned(), t.text_muted),
-        Status::Connected => ("Icecast ● connected".to_owned(), t.ok),
-        Status::Reconnecting { attempt } => {
-            (format!("Icecast ↻ connecting, try {attempt}"), t.warn)
-        }
-        Status::Failed(e) => (format!("Icecast ○ down: {e}"), t.danger),
-        Status::NotConnected | Status::Preview => {
-            ("Icecast ○ not connected".to_owned(), t.text_muted)
-        }
+        _ if view.preview => (
+            icons::lead(Icon::Circle, "Icecast not connected — preview"),
+            t.text_muted,
+        ),
+        Status::Connected => (icons::lead(Icon::CircleDot, "Icecast connected"), t.ok),
+        Status::Reconnecting { attempt } => (
+            icons::lead(
+                Icon::RefreshCw,
+                &format!("Icecast connecting, try {attempt}"),
+            ),
+            t.warn,
+        ),
+        Status::Failed(e) => (
+            icons::lead(Icon::Circle, &format!("Icecast down: {e}")),
+            t.danger,
+        ),
+        Status::NotConnected | Status::Preview => (
+            icons::lead(Icon::Circle, "Icecast not connected"),
+            t.text_muted,
+        ),
     };
     let status = RichText::new(word).font(theme::text(theme::LABEL));
     ui.label(status.color(ink));
@@ -514,7 +526,7 @@ fn icecast_settings(
     };
     if typed.password_in_clear() {
         ui.label(
-            RichText::new(PASSWORD_IN_CLEAR)
+            RichText::new(icons::lead(Icon::TriangleAlert, PASSWORD_IN_CLEAR))
                 .font(theme::text(theme::CAPTION))
                 .color(t.warn),
         );

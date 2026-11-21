@@ -1,4 +1,4 @@
-//! The "+ Add" menu of a playlist: files, a folder, a stream, the live input, or the library.
+//! The "Add" menu of a playlist: files, a folder, a stream, the live input, or the library.
 //! The view source reads the files. The menu only picks paths and sends edits.
 
 use std::time::Duration;
@@ -7,6 +7,7 @@ use egui::{DragValue, RichText};
 
 use crate::app::Action;
 use crate::context_menu::menu_item;
+use crate::icons::{self, Icon};
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{AUDIO_EXTENSIONS, Edit, StationView, check_stream_url};
 use crate::windows::ToolWindow;
@@ -53,8 +54,8 @@ pub(crate) fn button(
     at: Option<usize>,
     actions: &mut Vec<Action>,
 ) {
-    let name = format!("+ Add to {playlist}");
-    let text = RichText::new("+ Add").font(theme::text(theme::LABEL));
+    let name = format!("Add to {playlist}");
+    let text = RichText::new(icons::lead(Icon::Plus, "Add")).font(theme::text(theme::LABEL));
     let resp = ui.button(text).on_hover_text(format!(
         "Add files, a folder, a stream or a live input to {playlist}"
     ));

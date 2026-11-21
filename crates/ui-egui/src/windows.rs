@@ -3,7 +3,7 @@
 //!
 //! A tool window takes the size that its content needs, and follows the content as it grows
 //! or shrinks. After a person resizes a window by hand, it keeps that size until "Fit to
-//! content" in its ⚙. The size never passes the work area; the content scrolls inside.
+//! content" in its settings button. The size never passes the work area; the content scrolls inside.
 
 use egui::{Id, RichText, ViewportBuilder, ViewportClass, ViewportCommand, ViewportId};
 

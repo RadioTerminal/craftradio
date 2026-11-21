@@ -56,6 +56,21 @@ fn system_fallbacks() -> &'static [(String, Arc<egui::FontData>)] {
 /// Adds the system fallback fonts after the fonts of egui, in both families.
 pub(crate) fn install(ctx: &egui::Context) {
     let mut defs = egui::FontDefinitions::default();
+    // The Lucide icons: a family of their own, and a fallback of the text families, so an
+    // icon inside a text string draws in the same galley.
+    let lucide = crate::icons::FONT_NAME.to_owned();
+    defs.font_data.insert(
+        lucide.clone(),
+        Arc::new(egui::FontData::from_static(lucide_icons::LUCIDE_FONT_BYTES)),
+    );
+    defs.families
+        .insert(crate::icons::family(), vec![lucide.clone()]);
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        defs.families
+            .entry(family)
+            .or_default()
+            .push(lucide.clone());
+    }
     for (name, data) in system_fallbacks() {
         defs.font_data.insert(name.clone(), Arc::clone(data));
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {

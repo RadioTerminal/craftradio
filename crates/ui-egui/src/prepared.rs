@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use crate::app::{hms, is_on_air, mmss};
+use crate::icons::{self, Icon};
 use crate::view::{Row, StationView};
 
 /// Text and lookups for the rows of one snapshot.
@@ -16,9 +17,9 @@ pub(crate) struct Prepared {
     pub index: HashMap<u64, usize>,
     /// The row ids, in order, for range selection.
     pub ids: Vec<u64>,
-    /// The start time of each row, as HH:MM:SS, with ⏱ in front for a fixed row.
+    /// The start time of each row, as HH:MM:SS, with a timer icon in front for a fixed row.
     pub start: Vec<String>,
-    /// The start time of each row, as HH:MM:SS alone. The main pane draws ⏱ in its own slot.
+    /// The start time of each row, as HH:MM:SS alone. The main pane draws the timer in its own slot.
     pub time: Vec<String>,
     /// The length of each row, as m:ss.
     pub len: Vec<String>,
@@ -42,9 +43,13 @@ fn divider_text(r: &Row) -> String {
     }
 }
 
-/// The start time, with ⏱ and a thin space in front for a fixed row.
+/// The start time, with a timer icon and a thin space in front for a fixed row.
 fn start_text(r: &Row) -> String {
-    let mark = if r.fixed.is_some() { "⏱\u{2009}" } else { "" };
+    let mark = if r.fixed.is_some() {
+        icons::lead(Icon::Timer, "")
+    } else {
+        String::new()
+    };
     format!("{mark}{}", hms(&r.start))
 }
 

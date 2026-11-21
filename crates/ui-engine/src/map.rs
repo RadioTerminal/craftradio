@@ -1,5 +1,6 @@
 //! Conversions from the engine and model types to the view-model of the UI.
 
+use lucide_icons::Icon;
 use std::time::Duration;
 
 use radio_engine::State;
@@ -190,7 +191,11 @@ pub(crate) fn tab(p: &Playlist, state: &State) -> PlaylistTab {
             .map(|i| {
                 // A missing file shows as such; playout skips it until it is found again.
                 let title = if state.missing.contains(&i.id) {
-                    format!("⚠ missing · {}", display_title(i))
+                    format!(
+                        "{} missing · {}",
+                        char::from(Icon::TriangleAlert),
+                        display_title(i)
+                    )
                 } else {
                     display_title(i)
                 };

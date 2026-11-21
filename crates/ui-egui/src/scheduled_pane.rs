@@ -6,6 +6,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::add_menu;
 use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, mmss};
 use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_if};
+use crate::icons::{self, Icon};
 use crate::library::LibraryDrag;
 use crate::prepared::Prepared;
 use crate::rules_editor;
@@ -81,7 +82,11 @@ fn tab_bar(
         for (i, p) in view.tabs.iter().enumerate() {
             let selected = *tab == Tab::Playlist(i);
             // The playlist colour always comes with its name.
-            let folder = if p.source.is_some() { " 📁" } else { "" };
+            let folder = if p.source.is_some() {
+                format!(" {}", icons::glyph(Icon::Folder))
+            } else {
+                String::new()
+            };
             let off = if !p.enabled { " (off)" } else { "" };
             // A long name truncates; the tooltip has all of it.
             let full = format!("    {}{folder}{off}", p.name);
@@ -110,7 +115,7 @@ fn tab_bar(
             r.context_menu(|ui| tab_menu(ui, p, actions, t));
         }
         if ui
-            .button("+ Playlist")
+            .button(icons::lead(Icon::Plus, "Playlist"))
             .on_hover_text("Make a new, empty playlist")
             .clicked()
         {
@@ -123,7 +128,7 @@ fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
     if menu_item(ui, "Rename…", None) {
         actions.push(Action::Rename(p.name.clone()));
     }
-    if menu_item(ui, "⚙ Rules…", None) {
+    if menu_item(ui, &icons::lead(Icon::Settings, "Rules…"), None) {
         actions.push(Action::OpenRules(p.name.clone()));
     }
     if menu_item(ui, "Remove duplicates…", None) {
@@ -147,7 +152,8 @@ fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
     ui.menu_button("Colour", |ui| {
         // Only palette colours: red, amber and the accent mean something else.
         for (k, (name, rgb)) in crate::theme::PALETTE.iter().enumerate() {
-            let label = RichText::new(format!("● {name}")).color(t.readable(*rgb, t.card));
+            let label =
+                RichText::new(icons::lead(Icon::CircleDot, name)).color(t.readable(*rgb, t.card));
             if ui.selectable_label(p.color == *rgb, label).clicked() {
                 actions.push(Action::Edit(Edit::SetPlaylistColour {
                     playlist: p.name.clone(),
@@ -289,7 +295,7 @@ fn upcoming(
         });
 }
 
-/// How a fixed item meets its time, in words: "on time", "0.4 s early", "2.0 s late ⚠".
+/// How a fixed item meets its time, in words: "on time", "0.4 s early", "2.0 s late" with a warning icon.
 pub(crate) fn fit_words(fit: FitView) -> String {
     let off = fit.error_s.abs();
     let words = if off < FIT_ON_TIME_S {
@@ -302,7 +308,7 @@ pub(crate) fn fit_words(fit: FitView) -> String {
     if fit.ok {
         words
     } else {
-        format!("{words} ⚠")
+        format!("{words} {}", icons::glyph(Icon::TriangleAlert))
     }
 }
 
@@ -372,7 +378,11 @@ fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Ve
         });
     }
     ui.separator();
-    if menu_item(ui, "⚙ Open playlist rules", None) {
+    if menu_item(
+        ui,
+        &icons::lead(Icon::Settings, "Open playlist rules"),
+        None,
+    ) {
         actions.push(Action::OpenRules(r.playlist.clone()));
     }
     if menu_item(ui, "Properties", None) {
@@ -425,7 +435,11 @@ fn playlist(
                         size::DOT_R,
                         Tokens::playlist(p.color),
                     );
-                    let folder = if p.source.is_some() { " 📁" } else { "" };
+                    let folder = if p.source.is_some() {
+                        format!(" {}", icons::glyph(Icon::Folder))
+                    } else {
+                        String::new()
+                    };
                     let name = RichText::new(format!("{}{folder}", p.name));
                     ui.label(name.font(theme::text(theme::SECTION)).strong());
                     if rules_editor::cog(ui, &p.name) {
@@ -613,7 +627,7 @@ fn item_menu(
     };
     // Remove acts on the selection when it holds this item.
     let remove = || remove_items(p, decks, link.playlist_sel.targets(id));
-    ui.menu_button("+ Add below", |ui| {
+    ui.menu_button(icons::lead(Icon::Plus, "Add below"), |ui| {
         add_menu::items(ui, &p.name, Some(i + 1), actions)
     });
     // A cut removes the item only after a successful paste.

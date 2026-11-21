@@ -1,25 +1,32 @@
 //! Settings live with the part that they configure. There is no general settings window.
 //!
-//! Each window and pane has a ⚙ in its header row. The ⚙ opens a settings section inside that
+//! Each window and pane has a settings button in its header row. It opens a settings section inside that
 //! same window. In the preview, settings are local UI state, and the section says so.
 
 use egui::{Align, Layout, RichText, Stroke};
 
+use crate::icons::Icon;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::widgets;
 
 pub(crate) const NOT_SAVED: &str = "preview — not saved";
 
-/// The ⚙ toggle for the settings of `part`. Its accessible name starts with its visible label.
+/// The settings toggle of `part`. Its accessible name is the tooltip text.
 pub(crate) fn settings_button(ui: &mut egui::Ui, part: &str, open: &mut bool) {
-    let name = format!("⚙ {part} settings");
-    let resp = widgets::icon_button(ui, "⚙", *open, &name, &format!("{part} settings"));
+    let name = format!("Toggle {part} settings");
+    let resp = widgets::icon_button(
+        ui,
+        Icon::Settings,
+        *open,
+        &name,
+        &format!("Show or hide the {part} settings"),
+    );
     if resp.clicked() {
         *open = !*open;
     }
 }
 
-/// A header row: the title on the left, then `extra` and the ⚙ on the right.
+/// A header row: the title on the left, then `extra` and the settings button on the right.
 pub(crate) fn header(
     ui: &mut egui::Ui,
     title: &str,
@@ -27,7 +34,7 @@ pub(crate) fn header(
     extra: impl FnOnce(&mut egui::Ui),
 ) {
     // The window title bar names the part, so the header row does not repeat it:
-    // ⚙ far right, then the part's own controls and notes.
+    // The settings button far right, then the part's own controls and notes.
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             settings_button(ui, title, open);

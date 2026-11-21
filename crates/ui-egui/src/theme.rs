@@ -18,6 +18,11 @@ pub const TINY: f32 = 11.0;
 /// Code, times and lengths (monospace).
 pub const CODE: f32 = 12.5;
 
+/// Icon sizes (points). They sit on the same scale as the text sizes.
+pub const ICON_SM: f32 = 14.0;
+pub const ICON_MD: f32 = 16.0;
+pub const ICON_LG: f32 = 20.0;
+
 /// Gaps between things.
 pub mod space {
     pub const XXS: f32 = 2.0;
@@ -37,7 +42,11 @@ pub mod pad {
     pub const CHIP: Margin = Margin::symmetric(8, 2);
     pub const ROW: Margin = Margin::symmetric(8, 4);
     pub const CARD: Margin = Margin::same(12);
+    /// A deck card: one step more room than a plain card.
+    pub const DECK: Margin = Margin::same(16);
     pub const PANEL: Margin = Margin::same(12);
+    /// A group of controls inside a card.
+    pub const GROUP: Margin = Margin::same(8);
     pub const BAR: Margin = Margin::symmetric(12, 8);
     pub const GUTTER: Margin = Margin::symmetric(16, 12);
 }
@@ -48,6 +57,8 @@ pub mod size {
     pub const CONTROL_SM: f32 = 24.0;
     pub const CONTROL_MD: f32 = 32.0;
     pub const CONTROL_LG: f32 = 40.0;
+    /// The global transport: the largest control of the console.
+    pub const CONTROL_HERO: f32 = 48.0;
     /// The square of an icon button. It is the same in every state.
     pub const ICON_BUTTON: f32 = 28.0;
     /// An armed on-air button waits this long for the second press, in seconds.
@@ -106,24 +117,23 @@ pub mod size {
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
     pub const PLAYLIST_TABLE_H: f32 = 360.0;
-    /// The clock cluster has room for Play next and Fade out beside the mode control.
-    pub const CLOCK_W: f32 = 404.0;
-    /// The clock cluster in a narrow window: no date, and the LIVE chip shows its glyph only.
-    /// Play next and Fade out move down to the row of Stop after current.
-    pub const CLOCK_NARROW_W: f32 = 216.0;
-    /// The width of the clock cluster from which the LIVE chip shows its word.
-    pub const CLOCK_MID_W: f32 = 364.0;
-    /// A deck strip at least this wide gives the clock cluster its full width.
+    /// The status cluster beside the decks, by width. Full: every label and the date. Mid: only
+    /// Play next keeps its word. Narrow: one column, icons only, no date.
+    pub const CLOCK_W: f32 = 672.0;
+    pub const CLOCK_MID_W: f32 = 456.0;
+    pub const CLOCK_NARROW_W: f32 = 200.0;
+    /// A deck strip at least this wide gives the cluster its mid width, and at the full
+    /// width it gives the full one.
     pub const STRIP_WIDE: f32 = 1200.0;
-    /// The height of one row of the header cluster beside the decks.
-    pub const HEADER_ROW: f32 = 24.0;
-    /// The Out meter in the header: its width and the height of one channel bar.
-    pub const VU_W: f32 = 72.0;
-    pub const VU_BAR_H: f32 = 5.0;
-    /// Below this many seconds, the countdown to a fixed item turns to a warning.
-    pub const SOON_S: u64 = 60;
-    /// Below this many seconds, the countdown says the item starts now.
-    pub const NOW_S: u64 = 10;
+    pub const STRIP_FULL: f32 = 1700.0;
+    /// The right column of the cluster: the clock, the date and the Out meter.
+    pub const CLOCK_COL_W: f32 = 140.0;
+    /// The Out meter in the header: the height of the meter in a narrow cluster.
+    pub const VU_NARROW_H: f32 = 20.0;
+    /// The two channel bars of the Out meter in the cluster, together.
+    pub const VU_BARS_H: f32 = 36.0;
+    /// The gap between the two channel bars of a meter.
+    pub const VU_GAP: f32 = 3.0;
     /// The range of a deck fade time, in seconds.
     pub const FADE_MIN_S: f32 = 0.5;
     pub const FADE_MAX_S: f32 = 10.0;
@@ -178,7 +188,7 @@ pub mod size {
     pub const UPCOMING_TIME: f32 = 112.0;
     pub const UPCOMING_PLAYLIST: f32 = 64.0;
     pub const UPCOMING_LEN: f32 = 52.0;
-    pub const DECK_STRIP_H: f32 = 142.0;
+    pub const DECK_STRIP_H: f32 = 200.0;
     pub const COL_TITLE: f32 = 240.0;
     pub const COL_ARTIST: f32 = 150.0;
     pub const COL_CATEGORY: f32 = 90.0;
@@ -256,6 +266,8 @@ pub struct Tokens {
     /// The app colour for selection, focus and the playing deck.
     pub accent: Color32,
     pub accent_ink: Color32,
+    /// Text and icons on a solid accent fill.
+    pub on_accent: Color32,
     pub selection: Color32,
     /// The colour of the row and the deck that are on air.
     pub on_air: Color32,
@@ -291,6 +303,7 @@ impl Tokens {
         text_muted: Color32::from_rgb(0x9C, 0xA5, 0xB4),
         accent: Color32::from_rgb(0x3D, 0xB8, 0xF5),
         accent_ink: Color32::from_rgb(0x8F, 0xD6, 0xFA),
+        on_accent: Color32::from_rgb(0x05, 0x16, 0x22),
         selection: Color32::from_rgb(0x17, 0x3A, 0x52),
         on_air: Color32::from_rgb(0xFF, 0x5A, 0x5F),
         on_air_bg: Color32::from_rgb(0x3A, 0x18, 0x1C),

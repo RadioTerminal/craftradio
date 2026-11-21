@@ -2572,6 +2572,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lucide-icons"
+version = "1.77.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9306277cb545b55e87866b0c5f44a692b81431cfbceff3bf1b6fa41b5c46bc3"
+
+[[package]]
 name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3968,6 +3974,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "jiff",
+ "lucide-icons",
  "radio-model",
  "rfd",
  "serde_json",
@@ -3980,6 +3987,7 @@ dependencies = [
  "hound",
  "jiff",
  "keyring",
+ "lucide-icons",
  "radio-audio",
  "radio-audio-device",
  "radio-engine",
