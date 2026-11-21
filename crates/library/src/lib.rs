@@ -53,12 +53,39 @@ fn audio_path(path: &Path) -> bool {
     })
 }
 fn paths(src: &FolderSource) -> Result<Vec<PathBuf>, LibraryError> {
-    let mut dirs = vec![PathBuf::from(&src.path)];
+    collect_paths(src, &mut Vec::new())
+}
+fn collect_paths(
+    src: &FolderSource,
+    errors: &mut Vec<(String, LibraryError)>,
+) -> Result<Vec<PathBuf>, LibraryError> {
+    let root = PathBuf::from(&src.path);
+    let mut dirs = vec![root.clone()];
     let mut files = Vec::new();
     while let Some(dir) = dirs.pop() {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if dir == root => return Err(error.into()),
+            Err(error) => {
+                errors.push((dir.to_string_lossy().into_owned(), error.into()));
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    errors.push((dir.to_string_lossy().into_owned(), error.into()));
+                    continue;
+                }
+            };
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(error) => {
+                    errors.push((entry.path().to_string_lossy().into_owned(), error.into()));
+                    continue;
+                }
+            };
             if kind.is_dir() && src.recursive {
                 dirs.push(entry.path());
             }
@@ -73,19 +100,35 @@ fn paths(src: &FolderSource) -> Result<Vec<PathBuf>, LibraryError> {
     files.sort();
     Ok(files)
 }
+/// Files imported by a scan and per-file failures, both in path order.
+#[derive(Debug)]
+pub struct ScanResult {
+    pub items: Vec<Item>,
+    pub errors: Vec<(String, LibraryError)>,
+}
 /// Scans in path order. Progress is the number of fully analysed files.
 /// IDs are local to this scan; the station must assign its own IDs on import.
 pub fn scan(
     src: &FolderSource,
     progress: &mut dyn FnMut(usize),
-) -> Result<Vec<Item>, LibraryError> {
+) -> Result<ScanResult, LibraryError> {
     let mut items = Vec::new();
-    for path in paths(src)? {
-        let a = analyse(&path)?;
-        let path = path
-            .into_os_string()
-            .into_string()
-            .map_err(|_| media("path is not UTF-8"))?;
+    let mut errors = Vec::new();
+    for path in collect_paths(src, &mut errors)? {
+        let a = match analyse(&path) {
+            Ok(a) => a,
+            Err(error) => {
+                errors.push((path.to_string_lossy().into_owned(), error));
+                continue;
+            }
+        };
+        let Some(path) = path.to_str().map(str::to_owned) else {
+            errors.push((
+                path.to_string_lossy().into_owned(),
+                media("path is not UTF-8"),
+            ));
+            continue;
+        };
         items.push(Item {
             id: ItemId(items.len() as u64 + 1),
             title: a.meta.title.clone(),
@@ -103,7 +146,8 @@ pub fn scan(
         });
         progress(items.len());
     }
-    Ok(items)
+    errors.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(ScanResult { items, errors })
 }
 fn hash(path: &Path) -> Result<[u8; 32], LibraryError> {
     let file = File::open(path)?;
@@ -190,6 +234,9 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
         if meter.is_none() {
             rate = spec.rate;
             channels = spec.channels.count();
+            if channels == 0 {
+                return Err(media("audio has no channels"));
+            }
             meter = Some(
                 ebur128::EbuR128::new(channels as u32, rate, ebur128::Mode::I).map_err(media)?,
             );
@@ -284,8 +331,12 @@ pub fn write_tags(path: impl AsRef<Path>, meta: &ItemMeta) -> Result<(), Library
         .map_err(media)
 }
 /// Finds the first sorted matching path per ID. Unreadable roots and files are skipped.
+/// Missing entries contain the ID, hash and file size in bytes.
 /// Hashing does not require a supported audio decoder.
-pub fn relink(missing: &[(ItemId, [u8; 32])], roots: &[FolderSource]) -> Vec<(ItemId, String)> {
+pub fn relink(
+    missing: &[(ItemId, [u8; 32], u64)],
+    roots: &[FolderSource],
+) -> Vec<(ItemId, String)> {
     let mut candidates: Vec<_> = roots
         .iter()
         .filter_map(|r| paths(r).ok())
@@ -294,7 +345,11 @@ pub fn relink(missing: &[(ItemId, [u8; 32])], roots: &[FolderSource]) -> Vec<(It
     candidates.sort();
     candidates.dedup();
     let mut found = std::collections::BTreeMap::new();
+    let sizes: std::collections::BTreeSet<_> = missing.iter().map(|(_, _, size)| *size).collect();
     for path in candidates {
+        if !fs::metadata(&path).is_ok_and(|m| sizes.contains(&m.len())) {
+            continue;
+        }
         if let Ok(h) = hash(&path)
             && let Some(path) = path.to_str()
         {
@@ -303,6 +358,6 @@ pub fn relink(missing: &[(ItemId, [u8; 32])], roots: &[FolderSource]) -> Vec<(It
     }
     missing
         .iter()
-        .filter_map(|(id, h)| found.get(h).map(|p| (*id, p.clone())))
+        .filter_map(|(id, h, _)| found.get(h).map(|p| (*id, p.clone())))
         .collect()
 }

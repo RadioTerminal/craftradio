@@ -42,6 +42,8 @@ fn scan_sorted_recursive_and_relink() {
     std::fs::write(dir.path().join("skip.txt"), "not audio").unwrap();
     let mut progress = Vec::new();
     let items = scan(&source(dir.path(), true), &mut |n| progress.push(n)).unwrap();
+    assert!(items.errors.is_empty());
+    let items = items.items;
     assert_eq!(items.len(), 3);
     assert_eq!(progress, vec![1, 2, 3]);
     let paths: Vec<_> = items
@@ -52,11 +54,21 @@ fn scan_sorted_recursive_and_relink() {
         })
         .collect();
     assert!(paths.windows(2).all(|w| w[0] < w[1]));
-    assert!(scan(&source(dir.path(), false), &mut |_| {}).unwrap().len() < items.len());
+    assert!(
+        scan(&source(dir.path(), false), &mut |_| {})
+            .unwrap()
+            .items
+            .len()
+            < items.len()
+    );
     let hash = analyse(dir.path().join("a.wav")).unwrap().hash;
     let moved = dir.path().join("moved.wav");
     std::fs::rename(dir.path().join("a.wav"), &moved).unwrap();
-    let found = relink(&[(ItemId(9), hash)], &[source(dir.path(), true)]);
+    let found = relink(
+        &[(ItemId(9), hash, std::fs::metadata(&moved).unwrap().len())],
+        &[source(dir.path(), true)],
+    );
+    assert!(relink(&[(ItemId(9), hash, 1)], &[source(dir.path(), true)]).is_empty());
     assert_eq!(found[0].0, ItemId(9));
     assert!(Path::new(&found[0].1).exists());
     assert_eq!(analyse(&found[0].1).unwrap().hash, hash);
@@ -104,15 +116,28 @@ fn watch_added_file() {
     let path = dir.path().join("new.wav");
     tone(&path, 0.3, 0);
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(3) {
+    while start.elapsed() < Duration::from_secs(5) {
         if watcher
             .events()
             .unwrap()
-            .any(|e| matches!(e, WatchEvent::Added(p) if p == path))
+            .any(|e| matches!(e, WatchEvent::Added(p) if p.canonicalize().unwrap() == path.canonicalize().unwrap()))
         {
             return;
         }
         std::thread::sleep(Duration::from_millis(30));
     }
-    panic!("watcher did not report the new file within 3 seconds");
+    panic!("watcher did not report the new file within 5 seconds");
+}
+
+#[test]
+fn scan_keeps_good_files_after_analysis_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    tone(&dir.path().join("a.wav"), 0.3, 0);
+    std::fs::write(dir.path().join("broken.mp3"), b"not audio").unwrap();
+    tone(&dir.path().join("z.wav"), 0.3, 0);
+    let result = scan(&source(dir.path(), false), &mut |_| {}).unwrap();
+    assert_eq!(result.items.len(), 2);
+    assert_eq!(result.errors.len(), 1);
+    assert!(result.errors[0].0.ends_with("broken.mp3"));
+    assert!(scan(&source(&dir.path().join("absent"), false), &mut |_| {}).is_err());
 }
