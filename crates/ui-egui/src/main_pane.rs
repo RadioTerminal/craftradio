@@ -29,23 +29,7 @@ pub(crate) fn show(
 ) {
     let folder = view.main.source.is_some();
     ui.horizontal(|ui| {
-        let badge = if folder { " 📁" } else { "" };
-        let title = RichText::new(format!("Main: {}{badge}", view.main.name));
-        let header = ui.add(
-            egui::Label::new(title.font(theme::text(theme::SECTION)).strong())
-                .sense(Sense::click()),
-        );
-        header.context_menu(|ui| empty_menu(ui, view, link, actions));
-        if rules_editor::cog(ui, &view.main.name) {
-            actions.push(Action::OpenRules(view.main.name.clone()));
-        }
-        // New items go after the last selected row, or at the end.
-        let after = link
-            .selected
-            .last()
-            .and_then(|id| prep.index.get(id).copied())
-            .map(|i| i + 1);
-        add_menu::button(ui, &view.main.name, after, actions);
+        // The controls come first, from the right. The title truncates in the room left.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let mut follow = link.follow;
             ui.checkbox(&mut follow, "Follow on air")
@@ -66,6 +50,26 @@ pub(crate) fn show(
                     .font(theme::text(theme::CAPTION))
                     .color(t.text_muted),
             );
+            // New items go after the last selected row, or at the end.
+            let after = link
+                .selected
+                .last()
+                .and_then(|id| prep.index.get(id).copied())
+                .map(|i| i + 1);
+            add_menu::button(ui, &view.main.name, after, actions);
+            if rules_editor::cog(ui, &view.main.name) {
+                actions.push(Action::OpenRules(view.main.name.clone()));
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                let badge = if folder { " 📁" } else { "" };
+                let title = RichText::new(format!("Main: {}{badge}", view.main.name));
+                let header = ui.add(
+                    egui::Label::new(title.font(theme::text(theme::SECTION)).strong())
+                        .truncate()
+                        .sense(Sense::click()),
+                );
+                header.context_menu(|ui| empty_menu(ui, view, link, actions));
+            });
         });
     });
     ui.add_space(space::S);
@@ -525,10 +529,14 @@ fn stream_badge(
     } else {
         format!("{text}{keep}")
     };
-    ui.label(
+    // The badge takes at most a third of the cell, so the title keeps its room.
+    let max = ui.available_width() / 3.0;
+    crate::widgets::truncated_label_max(
+        ui,
         RichText::new(text)
             .font(theme::text(theme::CAPTION))
             .color(colour),
+        max,
     );
 }
 

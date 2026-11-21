@@ -79,3 +79,58 @@ pub(crate) fn guard_button(
     }
     resp.on_hover_text(format!("{hint} — press again to confirm"))
 }
+
+/// A label on one line. A long text ends with "…", and the tooltip then shows all of it.
+pub(crate) fn truncated_label(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    ui.add(egui::Label::new(text).truncate())
+}
+
+/// A truncated label at most `max` wide, for a cell or a header part with a fixed limit.
+pub(crate) fn truncated_label_max(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    max: f32,
+) -> egui::Response {
+    let max = max.min(ui.available_width()).max(0.0);
+    ui.scope(|ui| {
+        ui.set_max_width(max);
+        truncated_label(ui, text)
+    })
+    .inner
+}
+
+/// One line of text for a painter, cut with "…" at `width`. It returns the galley and true
+/// when the text did not fit.
+pub(crate) fn elided(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    colour: egui::Color32,
+    width: f32,
+) -> (std::sync::Arc<egui::Galley>, bool) {
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(font, colour),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let cut = galley.elided;
+    (galley, cut)
+}
+
+/// Runs `add` in a part of the row at most `max` wide.
+pub(crate) fn with_max_width<R>(
+    ui: &mut egui::Ui,
+    max: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let max = max.min(ui.available_width()).max(0.0);
+    ui.scope(|ui| {
+        ui.set_max_width(max);
+        add(ui)
+    })
+    .inner
+}

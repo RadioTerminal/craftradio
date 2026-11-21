@@ -74,8 +74,14 @@ pub mod size {
     pub const COL_TIME: f32 = 104.0;
     /// The slot for the ⏱ of a fixed row, before its time.
     pub const GLYPH_SLOT: f32 = 14.0;
-    pub const COL_LEN: f32 = 56.0;
+    pub const COL_LEN: f32 = 72.0;
     pub const COL_PLAYLIST: f32 = 78.0;
+    /// Above this many cart pages, a picker replaces the row of page tabs.
+    pub const PAGE_TABS_MAX: usize = 6;
+    /// The widest cart page tab.
+    pub const PAGE_TAB_MAX_W: f32 = 140.0;
+    /// A playlist tab shows at most this many characters of its name.
+    pub const TAB_MAX_CHARS: usize = 22;
 
     /// The part of the central area that the scheduled pane takes.
     pub const SPLIT_FRACTION: f32 = 0.45;
@@ -83,9 +89,19 @@ pub mod size {
 
     /// Deck cards.
     pub const DECK_MIN_W: f32 = 180.0;
+    /// The narrowest deck card. Below the normal width its text truncates.
+    pub const DECK_TINY_W: f32 = 184.0;
+    /// The least room in which a deck card shows its state word.
+    pub const DECK_WORD_MIN_W: f32 = 40.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
     pub const CLOCK_W: f32 = 340.0;
+    /// The clock cluster in a narrow window: no date, and the LIVE chip shows its glyph only.
+    pub const CLOCK_NARROW_W: f32 = 216.0;
+    /// The width of the clock cluster from which the LIVE chip shows its word.
+    pub const CLOCK_MID_W: f32 = 300.0;
+    /// A deck strip at least this wide gives the clock cluster its full width.
+    pub const STRIP_WIDE: f32 = 1200.0;
     /// The height of one row of the header cluster beside the decks.
     pub const HEADER_ROW: f32 = 24.0;
     /// The Out meter in the header: its width and the height of one channel bar.
@@ -367,6 +383,7 @@ pub fn bar_frame(t: &Tokens, margin: Margin) -> egui::Frame {
 
 /// Set the egui style from the tokens.
 pub fn apply(ctx: &egui::Context) {
+    crate::fonts::install(ctx);
     let t = Tokens::get(ctx);
     ctx.set_theme(egui::Theme::Dark);
     ctx.style_mut_of(egui::Theme::Dark, |style| {
@@ -382,6 +399,8 @@ pub fn apply(ctx: &egui::Context) {
         s.item_spacing = egui::vec2(space::S, space::XS);
         s.button_padding = egui::vec2(space::M, space::XS);
         s.interact_size.y = size::CONTROL_SM;
+        // Scroll bars always show, so a person sees that more content waits.
+        s.scroll = egui::style::ScrollStyle::solid();
         // Rows react to clicks and right-clicks. Selectable text would take those clicks.
         style.interaction.selectable_labels = false;
 

@@ -49,7 +49,7 @@ impl ToolWindow {
     }
 
     /// The settings part of the window, where its size lives.
-    pub(crate) fn part(self) -> &'static str {
+    pub fn part(self) -> &'static str {
         match self {
             Self::Cartwall => crate::parts::CARTWALL,
             Self::Mixer => crate::parts::MIXER,
@@ -70,7 +70,7 @@ impl ToolWindow {
     }
 
     /// The smallest size at which the window content still fits.
-    fn min_size(self) -> [f32; 2] {
+    pub fn min_size(self) -> [f32; 2] {
         match self {
             Self::Cartwall => [size::CARTWALL_MIN_W, size::CARTWALL_MIN_H],
             Self::Mixer => [size::MIXER_MIN_W, size::MIXER_MIN_H],

@@ -558,24 +558,28 @@ fn status_line(
                     .color(t.text_muted),
             );
         }
-        if let Some((text, undo)) = toast {
-            ui.label(muted(text));
-            let label = format!("Undo ({})", shortcuts::label(ui.ctx(), &shortcuts::UNDO));
-            if undo && ui.small_button(label).clicked() {
-                actions.push(Action::Edit(Edit::Undo));
-            }
-        }
-        if let Some(p) = perf {
-            let text = format!("frame {:.1} ms · mean {:.1} ms", p.last_ms, p.mean_ms);
-            ui.label(
-                RichText::new(text)
-                    .font(theme::mono(theme::CAPTION))
-                    .color(t.text_muted),
-            );
-        }
+        // The right side comes first. The toast truncates in the room that is left.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let zone = view.now.time_zone().iana_name().unwrap_or("local time");
-            ui.label(muted(&format!("UI preview · mock data · {zone}")));
+            let source = view.say("UI preview · mock data", "Station");
+            ui.label(muted(&format!("{source} · {zone}")));
+            if let Some(p) = perf {
+                let text = format!("frame {:.1} ms · mean {:.1} ms", p.last_ms, p.mean_ms);
+                ui.label(
+                    RichText::new(text)
+                        .font(theme::mono(theme::CAPTION))
+                        .color(t.text_muted),
+                );
+            }
+            if let Some((text, undo)) = toast {
+                let label = format!("Undo ({})", shortcuts::label(ui.ctx(), &shortcuts::UNDO));
+                if undo && ui.small_button(label).clicked() {
+                    actions.push(Action::Edit(Edit::Undo));
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    crate::widgets::truncated_label(ui, muted(text));
+                });
+            }
         });
     });
 }
@@ -624,6 +628,10 @@ pub(crate) fn mmss(d: Duration) -> String {
         return "—".to_owned();
     }
     let s = d.as_secs();
+    if s >= 3600 {
+        // An hour or more reads h:mm:ss, never 720:00.
+        return format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60);
+    }
     format!("{}:{:02}", s / 60, s % 60)
 }
 

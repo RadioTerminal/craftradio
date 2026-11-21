@@ -81,8 +81,11 @@ fn tab_bar(
             // The playlist colour always comes with its name.
             let folder = if p.source.is_some() { " 📁" } else { "" };
             let off = if !p.enabled { " (off)" } else { "" };
-            let text = label(&format!("    {}{folder}{off}", p.name));
-            let r = ui.selectable_label(selected, text);
+            // A long name truncates; the tooltip has all of it.
+            let full = format!("    {}{folder}{off}", p.name);
+            let (shown, cut) = elide_chars(&full, size::TAB_MAX_CHARS);
+            let r = ui.selectable_label(selected, label(&shown));
+            let r = if cut { r.on_hover_text(full.trim()) } else { r };
             let dot = egui::pos2(r.rect.left() + space::S + size::DOT_R, r.rect.center().y);
             ui.painter()
                 .circle_filled(dot, size::DOT_R, Tokens::playlist(p.color));
@@ -340,13 +343,15 @@ fn upcoming_row(
     );
     let name_x = dot_x + size::DOT_R + space::S;
     let ink = t.readable(r.color, fill);
-    p.text(
-        egui::pos2(name_x, mid),
-        left,
+    // The playlist name stays in its column: a long name ends with "…".
+    let (name, _) = crate::widgets::elided(
+        ui,
         &r.playlist,
         theme::text(theme::LABEL),
         ink,
+        size::COL_PLAYLIST - space::S,
     );
+    p.galley(egui::pos2(name_x, mid - name.size().y / 2.0), name, ink);
     let right = egui::Align2::RIGHT_CENTER;
     let len = p.text(
         egui::pos2(inner.right(), mid),
@@ -370,13 +375,19 @@ fn upcoming_row(
     }
     // The title takes the space that is left, and its painter clips it there.
     let title_x = name_x + size::COL_PLAYLIST;
+    let mut cut = false;
     if end > title_x {
-        let clip = egui::Rect::from_x_y_ranges(title_x..=end, inner.y_range());
-        ui.painter_at(clip).text(
-            egui::pos2(title_x, mid),
-            left,
+        let (title, elided) = crate::widgets::elided(
+            ui,
             &r.title,
             theme::text(theme::SMALL),
+            t.text,
+            end - title_x,
+        );
+        cut = elided;
+        p.galley(
+            egui::pos2(title_x, mid - title.size().y / 2.0),
+            title,
             t.text,
         );
     }
@@ -385,7 +396,11 @@ fn upcoming_row(
         prep.start[i], r.playlist, r.title, prep.len[i]
     );
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
-    resp
+    if cut || r.playlist.chars().count() > 12 {
+        resp.on_hover_text(format!("{} · {}", r.playlist, r.title))
+    } else {
+        resp
+    }
 }
 
 /// Show one playlist tab.
@@ -551,4 +566,14 @@ fn caption(ui: &mut egui::Ui, text: &str, t: &Tokens) {
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted),
     );
+}
+
+/// The first `max` characters of `text`, with "…" when the text was longer.
+fn elide_chars(text: &str, max: usize) -> (String, bool) {
+    if text.chars().count() <= max {
+        return (text.to_owned(), false);
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    (out, true)
 }

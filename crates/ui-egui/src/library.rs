@@ -262,6 +262,8 @@ fn tree(
     egui::CollapsingHeader::new("Categories")
         .default_open(true)
         .show(ui, |ui| {
+            // Long names truncate in the tree; the tooltips have all of them.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             if ui
                 .selectable_label(state.pick == Pick::All, "All files")
                 .clicked()
@@ -280,7 +282,12 @@ fn tree(
             for c in cats {
                 let n = view.library.iter().filter(|i| i.category == c).count();
                 let on = state.pick == Pick::Category(c.clone());
-                if ui.selectable_label(on, format!("{c} ({n})")).clicked() {
+                let text = format!("{c} ({n})");
+                if ui
+                    .selectable_label(on, &text)
+                    .on_hover_text(&text)
+                    .clicked()
+                {
                     state.pick = Pick::Category(c);
                 }
             }
@@ -292,7 +299,9 @@ fn tree(
                     t.danger
                 };
                 let text = format!("📁 {} ({})", folder_name(&folder.path), count_text(folder));
-                let r = ui.selectable_label(on, RichText::new(text).color(colour));
+                let r = ui
+                    .selectable_label(on, RichText::new(&text).color(colour))
+                    .on_hover_text(format!("{}\n{text}", folder.path));
                 if r.clicked() {
                     state.pick = Pick::Folder(folder.path.clone());
                 }

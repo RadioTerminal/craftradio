@@ -10,7 +10,7 @@ use crate::settings;
 use crate::shortcuts;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckCommand, DeckState, DeckView, Edit, PlayMode, StationView, Status};
-use crate::widgets::{guard_button, icon_button};
+use crate::widgets::{self, guard_button, icon_button};
 
 /// The part setting that switches the second press on the deck on air.
 const CONFIRM_KEY: &str = "confirm_on_air";
@@ -131,8 +131,10 @@ pub(crate) fn show(
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::M;
         let gaps = space::M * view.decks.len() as f32;
-        let free = ui.available_width() - size::CLOCK_W - gaps;
-        let card_w = (free / view.decks.len() as f32).max(size::DECK_MIN_W);
+        let clock_w = clock_width(ui.available_width());
+        let free = ui.available_width() - clock_w - gaps;
+        // The cards share what the clock leaves. Their text truncates, so they never overlap it.
+        let card_w = (free / view.decks.len() as f32).max(size::DECK_TINY_W);
         state.next = next_ranks(&view.decks);
         for (i, deck) in view.decks.iter().enumerate() {
             let card = deck_card(ui, i, deck, card_w, state, actions, t);
@@ -279,16 +281,20 @@ fn deck_body(
             }
             None => (word, colour),
         };
-        let word = RichText::new(word).font(theme::text(theme::LABEL)).strong();
-        ui.label(word.color(colour));
+        let word = RichText::new(word)
+            .font(theme::text(theme::LABEL))
+            .strong()
+            .color(colour);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = space::XXS;
             let name = deck.label;
             let mut open = state.settings[i];
             settings::settings_button(ui, &format!("Deck {name}"), &mut open);
             state.settings[i] = open;
-            // A gap keeps the settings button away from the transport buttons.
-            ui.add_space(space::M);
+            // A gap keeps the settings button away from the transport buttons. A narrow card
+            // keeps a smaller gap.
+            let narrow = ui.available_width() < size::DECK_MIN_W;
+            ui.add_space(if narrow { space::XS } else { space::M });
             ui.add_enabled_ui(deck.state != DeckState::Empty, |ui| {
                 let keys = shortcuts::label(ui.ctx(), &shortcuts::SKIP);
                 let hint = format!("Skip: fade out and start the next item ({keys})");
@@ -325,6 +331,13 @@ fn deck_body(
                     actions.push(command(i, DeckCommand::PlayPause));
                 }
             });
+            // The word takes the room that the buttons leave, and truncates there.
+            // With no room for a readable word, the card edge and the badge carry the state.
+            if ui.available_width() >= size::DECK_WORD_MIN_W {
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    widgets::truncated_label(ui, word);
+                });
+            }
         });
         badge
     });
@@ -387,12 +400,12 @@ fn deck_body(
                     .strong();
                 ui.label(left).on_hover_text("Time left on this item");
                 let done = format!("{} / {}", mmss(deck.elapsed), mmss(deck.len));
-                ui.label(muted(done));
+                widgets::truncated_label(ui, muted(done));
             });
         }
         DeckState::Ready => {
             let at = deck.start.as_ref().map_or_else(|| "—".to_owned(), hms);
-            ui.label(muted(format!("starts {at} · {}", mmss(deck.len))));
+            widgets::truncated_label(ui, muted(format!("starts {at} · {}", mmss(deck.len))));
         }
         DeckState::Empty => {
             ui.label(muted("no item".to_owned()));
@@ -460,10 +473,10 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
             ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
                 ui.spacing_mut().button_padding = egui::vec2(space::XS, space::XXS);
                 out_vu(ui, view, actions, t);
-                live_chip(ui, view, actions, t);
-                mode_control(ui, view, actions, t);
+                live_chip(ui, view, w >= size::CLOCK_MID_W, actions, t);
+                mode_control(ui, view, w >= size::CLOCK_W, actions, t);
             });
-            // A narrow window drops the date first.
+            // A narrow window drops the date first, then the word of the LIVE chip.
             let room = w >= size::CLOCK_W;
             ui.allocate_ui_with_layout(row(theme::TITLE + space::S), rtl, |ui| {
                 ui.label(
@@ -480,6 +493,7 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
                     );
                 }
             });
+            let wide = w >= size::CLOCK_W;
             ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
                 stop_after(ui, view, actions, t);
                 if view.warnings > 0 {
@@ -490,14 +504,17 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
                     ui.label(chip)
                         .on_hover_text(format!("{} warnings; see the status line", view.warnings));
                 }
-                countdown(ui, view, t);
+            });
+            // The countdown has a row of its own, so the warnings never cut it.
+            ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
+                countdown(ui, view, wide, t);
             });
         });
     });
 }
 
 /// "Next: News in 4:12", to the next fixed item. Under a minute it warns, with ⚠ and the colour.
-fn countdown(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
+fn countdown(ui: &mut egui::Ui, view: &StationView, wide: bool, t: &Tokens) {
     let now = view.now.timestamp();
     let next = view
         .rows
@@ -510,7 +527,18 @@ fn countdown(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
     };
     let secs = r.start.timestamp().duration_since(now).as_secs().max(0) as u64;
     let left = mmss(std::time::Duration::from_secs(secs));
-    let (text, colour) = if secs < size::NOW_S {
+    // A narrow window puts the time first, so a cut keeps the time.
+    let (text, colour) = if !wide {
+        let colour = if secs < size::NOW_S {
+            t.on_air
+        } else if secs < size::SOON_S {
+            t.warn
+        } else {
+            t.text
+        };
+        let glyph = if secs < size::SOON_S { "⚠" } else { "⏱" };
+        (format!("{glyph} {left} {}", r.title), colour)
+    } else if secs < size::NOW_S {
         (format!("⚠ {} starts in {left}", r.title), t.on_air)
     } else if secs < size::SOON_S {
         (format!("⚠ Next: {} in {left}", r.title), t.warn)
@@ -521,7 +549,7 @@ fn countdown(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
         .font(theme::mono(theme::SECTION))
         .strong();
     let at = hms(&r.start);
-    ui.label(text.color(colour))
+    ui.add(egui::Label::new(text.color(colour)).truncate())
         .on_hover_text(format!("{} is fixed at {at}", r.title));
 }
 
@@ -548,7 +576,13 @@ fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
 
 /// What the listeners get: LIVE only while Icecast is connected and Out has sound.
 /// The preview never shows LIVE. A word and an icon carry the state, not the colour alone.
-fn live_chip(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+fn live_chip(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    wide: bool,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let out = view.meters.iter().find(|m| m.label == "Out");
     let sound =
         out.is_some_and(|m| !m.mute && m.level_db[0].max(m.level_db[1]) > size::METER_MIN_DB);
@@ -580,6 +614,7 @@ fn live_chip(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t
             "Icecast is not connected".to_owned(),
         ),
     };
+    let full_word = word;
     let ice = &view.icecast;
     let listeners = view
         .output
@@ -591,6 +626,17 @@ fn live_chip(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t
         ice.format.label(),
         ice.kbps
     );
+    // A narrow window keeps only the glyph of the chip. The tooltip still has the words.
+    let word = if wide {
+        word.to_owned()
+    } else {
+        word.chars().take(1).collect()
+    };
+    let hint = if wide {
+        hint
+    } else {
+        format!("{word_all}\n{hint}", word_all = full_word)
+    };
     let text = RichText::new(word).font(theme::mono(theme::LABEL)).strong();
     let chip = egui::Button::new(text.color(ink))
         .fill(fill)
@@ -657,13 +703,25 @@ fn out_vu(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &
 }
 
 /// Auto, Assist and Manual as a segmented control.
-fn mode_control(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+fn mode_control(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    wide: bool,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XXS;
         // The parent lays out right to left, so the reversed list reads AUTO · ASSIST · MANUAL.
         for mode in PlayMode::ALL.iter().rev() {
             let on = view.play_mode == *mode;
-            let text = RichText::new(mode.label().to_uppercase()).font(theme::mono(theme::LABEL));
+            // A narrow window shows two letters; the tooltip names the mode.
+            let word = if wide {
+                mode.label().to_uppercase()
+            } else {
+                short_mode(*mode).to_owned()
+            };
+            let text = RichText::new(word).font(theme::mono(theme::LABEL));
             let text = if on {
                 text.strong().color(t.accent_ink)
             } else {
@@ -700,4 +758,22 @@ fn mode_control(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>
             }
         }
     });
+}
+
+/// The width of the clock cluster at a strip width of `strip`.
+fn clock_width(strip: f32) -> f32 {
+    if strip >= size::STRIP_WIDE {
+        size::CLOCK_W
+    } else {
+        size::CLOCK_NARROW_W
+    }
+}
+
+/// Two letters for a mode, for a narrow window.
+fn short_mode(mode: PlayMode) -> &'static str {
+    match mode {
+        PlayMode::Auto => "AU",
+        PlayMode::Assist => "AS",
+        PlayMode::Manual => "MN",
+    }
 }

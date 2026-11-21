@@ -24,6 +24,7 @@ mod cartwall;
 mod clock_window;
 mod context_menu;
 mod decks;
+mod fonts;
 mod history;
 mod library;
 mod main_pane;

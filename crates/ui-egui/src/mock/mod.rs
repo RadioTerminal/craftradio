@@ -8,6 +8,7 @@ mod edit;
 mod folders;
 mod source;
 mod stream;
+mod stress;
 mod tabs;
 mod timeline;
 
@@ -27,6 +28,8 @@ use crate::view::{
     OutputStatus, Pick, Place, Placement, PlaylistTab, PublishMode, Route, Row, RuleView, Settings,
     StationView, Status, StreamFormat, StripChange, Timing, Trigger, ViewSource,
 };
+
+pub use stress::{STRESS_TITLES, StressSource, stress, stress_url};
 
 use data::*;
 use decks::*;
