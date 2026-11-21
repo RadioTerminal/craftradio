@@ -187,7 +187,15 @@ pub(crate) fn tab(p: &Playlist, state: &State) -> PlaylistTab {
         items: p
             .items
             .iter()
-            .map(|i| (display_title(i), item_len(i)))
+            .map(|i| {
+                // A missing file shows as such; playout skips it until it is found again.
+                let title = if state.missing.contains(&i.id) {
+                    format!("⚠ missing · {}", display_title(i))
+                } else {
+                    display_title(i)
+                };
+                (title, item_len(i))
+            })
             .collect(),
         order: pick_of(&p.pick),
         visual: visual.clone().unwrap_or_default(),

@@ -219,9 +219,14 @@ impl EngineSource {
                     continue;
                 }
                 let meta = effective_meta(item, self.state.item_meta(item.id));
+                let missing = self.state.missing.contains(&item.id);
                 out.push(LibraryItem {
                     id: item.id.0,
-                    title: item.title.clone(),
+                    title: if missing {
+                        format!("⚠ missing · {}", item.title)
+                    } else {
+                        item.title.clone()
+                    },
                     artist: item.artist.clone(),
                     len: item_len(item),
                     category: p.name.clone(),

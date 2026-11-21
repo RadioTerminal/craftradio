@@ -157,8 +157,13 @@ fn seed_example(engine: &mut Engine, dir: &Path) -> Result<Seeded, String> {
     Ok(Seeded::Example { music, kept })
 }
 
-/// Brings each watched folder playlist up to date with its folder: new audio files join it,
-/// and items whose file is gone leave it. It returns one line per changed playlist.
+/// Brings each watched folder playlist up to date with its folder, before playout starts.
+///
+/// New audio files join the playlist. A file that moved inside the folder relinks by its
+/// content hash. A gone file leaves the playlist only when the folder reads cleanly. When the
+/// folder root is missing or its listing has errors, gone files are marked missing instead:
+/// playout skips them, and they come back when the files return. It returns one line per
+/// changed playlist.
 pub fn reconcile(engine: &mut Engine) -> Vec<String> {
     let mut lines = Vec::new();
     let playlists: Vec<(radio_model::PlaylistId, String, FolderSource)> = engine
@@ -182,22 +187,97 @@ pub fn reconcile(engine: &mut Engine) -> Vec<String> {
             src.recursive,
             radio_library::Limits::DEFAULT,
         );
-        let station = &engine.state().station;
-        let Some(p) = station.playlists.iter().find(|p| p.id == playlist) else {
+        let healthy = Path::new(&src.path).is_dir() && list.errors.is_empty();
+        let state = engine.state();
+        let Some(p) = state.station.playlists.iter().find(|p| p.id == playlist) else {
             continue;
         };
-        let has = |f: &str| {
-            p.items
-                .iter()
-                .any(|i| matches!(&i.source, Source::File { path } if path == f))
-        };
-        let gone: Vec<radio_model::ItemId> = p
+        let files: Vec<(radio_model::ItemId, String)> = p
             .items
             .iter()
-            .filter(|i| matches!(&i.source, Source::File { path } if !Path::new(path).is_file()))
-            .map(|i| i.id)
+            .filter_map(|i| match &i.source {
+                Source::File { path } => Some((i.id, path.clone())),
+                _ => None,
+            })
             .collect();
-        let mut next = station
+        let (present, gone): (Vec<_>, Vec<_>) = files
+            .iter()
+            .cloned()
+            .partition(|(_, f)| Path::new(f).is_file());
+        let mut cmds = Vec::new();
+        // Files that came back.
+        let back: Vec<_> = present
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| state.missing.contains(id))
+            .collect();
+        if !back.is_empty() {
+            cmds.push(Command::ItemMarkMissing {
+                items: back.clone(),
+                missing: false,
+            });
+        }
+        // A hash for each file that has none yet, for a later relink.
+        for (id, f) in &present {
+            if !state.hashes.contains_key(id)
+                && let Ok((hash, size)) = radio_library::content_hash(f)
+            {
+                cmds.push(Command::ItemSetHash {
+                    item: *id,
+                    hash: hex(&hash),
+                    size,
+                });
+            }
+        }
+        // Gone files that moved inside the folder.
+        let wanted: Vec<(radio_model::ItemId, [u8; 32], u64)> = gone
+            .iter()
+            .filter_map(|(id, _)| {
+                let (h, size) = state.hashes.get(id)?;
+                Some((*id, unhex(h)?, *size))
+            })
+            .collect();
+        let relinked = if healthy && !wanted.is_empty() {
+            radio_library::relink(&wanted, std::slice::from_ref(&src))
+        } else {
+            Vec::new()
+        };
+        for (item, path) in &relinked {
+            cmds.push(Command::ItemRelink {
+                item: *item,
+                path: path.clone(),
+            });
+        }
+        let still_gone: Vec<radio_model::ItemId> = gone
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| !relinked.iter().any(|(r, _)| r == id))
+            .collect();
+        let newly_missing: Vec<_> = still_gone
+            .iter()
+            .copied()
+            .filter(|id| !state.missing.contains(id))
+            .collect();
+        if !healthy && !newly_missing.is_empty() {
+            cmds.push(Command::ItemMarkMissing {
+                items: newly_missing.clone(),
+                missing: true,
+            });
+        }
+        if healthy && !still_gone.is_empty() {
+            cmds.push(Command::PlaylistRemoveItems {
+                playlist,
+                items: still_gone.clone(),
+            });
+        }
+        // New files in the folder.
+        let known: Vec<&str> = files
+            .iter()
+            .map(|(_, f)| f.as_str())
+            .chain(relinked.iter().map(|(_, f)| f.as_str()))
+            .collect();
+        let mut next = state
+            .station
             .playlists
             .iter()
             .flat_map(|p| p.items.iter().map(|i| i.id.0))
@@ -205,30 +285,65 @@ pub fn reconcile(engine: &mut Engine) -> Vec<String> {
             .unwrap_or(0)
             + 1;
         let mut items = Vec::new();
-        for f in list.files.iter().filter(|f| !has(f)) {
+        for f in list.files.iter().filter(|f| !known.contains(&f.as_str())) {
             if let Some(mut item) = radio_ui_engine::file_item(f) {
                 item.id = radio_model::ItemId(next);
                 next += 1;
                 items.push(item);
             }
         }
-        let (added, removed) = (items.len(), gone.len());
+        let added = items.len();
         if added > 0 {
-            let _ = engine.dispatch(Command::PlaylistAddItems {
+            cmds.push(Command::PlaylistAddItems {
                 playlist,
                 items,
                 at: None,
             });
         }
-        if removed > 0 {
-            let _ = engine.dispatch(Command::PlaylistRemoveItems {
-                playlist,
-                items: gone,
-            });
+        if cmds.is_empty() {
+            continue;
         }
-        if added + removed > 0 {
-            lines.push(format!("{name}: {added} new files, {removed} gone"));
+        if let Err(e) = engine.dispatch(Command::StationSystem { commands: cmds }) {
+            lines.push(format!("{name}: cannot catch up with the folder: {e}"));
+            continue;
+        }
+        let mut parts = Vec::new();
+        if added > 0 {
+            parts.push(format!("{added} new files"));
+        }
+        if !relinked.is_empty() {
+            parts.push(format!("{} relinked", relinked.len()));
+        }
+        if !back.is_empty() {
+            parts.push(format!("{} found again", back.len()));
+        }
+        if healthy && !still_gone.is_empty() {
+            parts.push(format!("{} gone", still_gone.len()));
+        }
+        if !healthy && !still_gone.is_empty() {
+            parts.push(format!(
+                "{} missing (the folder does not read)",
+                still_gone.len()
+            ));
+        }
+        if !parts.is_empty() {
+            lines.push(format!("{name}: {}", parts.join(", ")));
         }
     }
     lines
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(text: &str) -> Option<[u8; 32]> {
+    let mut out = [0u8; 32];
+    if text.len() != 64 {
+        return None;
+    }
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
 }

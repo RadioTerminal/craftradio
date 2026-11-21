@@ -90,6 +90,10 @@ pub struct State {
     /// Items that play right after the item on air, in order. Playout takes each one off
     /// when it starts.
     pub queue: Vec<ItemId>,
+    /// File items whose file is missing. Playout skips them until they are found again.
+    pub missing: BTreeSet<ItemId>,
+    /// The content hash (hex) and size of the file of each item, for a relink.
+    pub hashes: BTreeMap<ItemId, (String, u64)>,
     /// Cart settings that differ from the defaults.
     pub cart_settings: Vec<CartSettings>,
 }
@@ -152,6 +156,8 @@ impl State {
             strips: BTreeMap::new(),
             cart_settings: Vec::new(),
             queue: Vec::new(),
+            missing: BTreeSet::new(),
+            hashes: BTreeMap::new(),
         }
     }
 
@@ -208,6 +214,8 @@ impl State {
         self.item_meta.retain(|i, _| live.contains(i));
         self.carts.retain(|c| live.contains(&c.item));
         self.queue.retain(|i| live.contains(i));
+        self.missing.retain(|i| live.contains(i));
+        self.hashes.retain(|i, _| live.contains(i));
         for d in &mut self.decks {
             if d.is_some_and(|i| !live.contains(&i)) {
                 *d = None;
@@ -377,7 +385,11 @@ fn batchable(cmd: &Command) -> bool {
         && (undoable(cmd)
             || matches!(
                 cmd,
-                Command::SettingsSet { .. } | Command::PlayoutPlayNext { .. }
+                Command::SettingsSet { .. }
+                    | Command::PlayoutPlayNext { .. }
+                    | Command::ItemMarkMissing { .. }
+                    | Command::ItemRelink { .. }
+                    | Command::ItemSetHash { .. }
             ))
 }
 
@@ -789,6 +801,42 @@ impl Engine {
                     })?;
                 }
                 self.state.item_meta.insert(item, meta);
+                Ok(Outcome::default())
+            }
+            C::ItemMarkMissing { items, missing } => {
+                for item in &items {
+                    if !self.state.has_item(*item) {
+                        return Err(EngineError::UnknownItem(*item));
+                    }
+                }
+                for item in items {
+                    if missing {
+                        self.state.missing.insert(item);
+                    } else {
+                        self.state.missing.remove(&item);
+                    }
+                }
+                Ok(Outcome::default())
+            }
+            C::ItemRelink { item, path } => {
+                self.edit_station(|s| {
+                    let i = item_mut(s, item).ok_or(EngineError::UnknownItem(item))?;
+                    match &mut i.source {
+                        radio_model::Source::File { path: p } => {
+                            *p = path;
+                            Ok(())
+                        }
+                        _ => Err(EngineError::BadArgument("only a file item relinks".into())),
+                    }
+                })?;
+                self.state.missing.remove(&item);
+                Ok(Outcome::default())
+            }
+            C::ItemSetHash { item, hash, size } => {
+                if !self.state.has_item(item) {
+                    return Err(EngineError::UnknownItem(item));
+                }
+                self.state.hashes.insert(item, (hash, size));
                 Ok(Outcome::default())
             }
             C::ItemSetKeepAlive { item, keep_alive } => {

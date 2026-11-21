@@ -100,6 +100,19 @@ pub enum Command {
     ItemUnlock { item: ItemId },
     #[serde(rename = "item.set_meta")]
     ItemSetMeta { item: ItemId, meta: Value },
+    /// Marks file items as missing (playout skips them) or found again.
+    #[serde(rename = "item.mark_missing")]
+    ItemMarkMissing { items: Vec<ItemId>, missing: bool },
+    /// Points a file item at a new path, for example a file that moved, and clears missing.
+    #[serde(rename = "item.relink")]
+    ItemRelink { item: ItemId, path: String },
+    /// Stores the content hash (hex) and the size of the file of an item, for a relink.
+    #[serde(rename = "item.set_hash")]
+    ItemSetHash {
+        item: ItemId,
+        hash: String,
+        size: u64,
+    },
     /// Keep-alive of a stream item: it reconnects until its planned end.
     #[serde(rename = "item.set_keep_alive")]
     ItemSetKeepAlive { item: ItemId, keep_alive: bool },
@@ -243,6 +256,9 @@ impl Command {
             Self::ItemUnlock { .. } => "item.unlock",
             Self::ItemSetMeta { .. } => "item.set_meta",
             Self::ItemSetKeepAlive { .. } => "item.set_keep_alive",
+            Self::ItemMarkMissing { .. } => "item.mark_missing",
+            Self::ItemRelink { .. } => "item.relink",
+            Self::ItemSetHash { .. } => "item.set_hash",
             Self::DeckLoad { .. } => "deck.load",
             Self::DeckPlay { .. } => "deck.play",
             Self::DeckPause { .. } => "deck.pause",
@@ -298,6 +314,9 @@ impl Command {
             | Self::ItemUnlock { .. }
             | Self::ItemSetMeta { .. }
             | Self::ItemSetKeepAlive { .. }
+            | Self::ItemMarkMissing { .. }
+            | Self::ItemRelink { .. }
+            | Self::ItemSetHash { .. }
             | Self::DeckLoad { .. }
             | Self::DeckPlay { .. }
             | Self::DeckPause { .. }
@@ -456,6 +475,24 @@ pub fn registry() -> Vec<CommandSpec> {
             "Edit an item's metadata",
             A,
             &[("item", "integer"), ("meta", "object")],
+        ),
+        spec(
+            "item.mark_missing",
+            "Mark file items as missing (skipped) or found",
+            A,
+            &[("items", "array"), ("missing", "boolean")],
+        ),
+        spec(
+            "item.relink",
+            "Point a file item at a new path",
+            A,
+            &[("item", "integer"), ("path", "string")],
+        ),
+        spec(
+            "item.set_hash",
+            "Store the content hash and size of an item's file",
+            A,
+            &[("item", "integer"), ("hash", "string"), ("size", "integer")],
         ),
         spec(
             "item.set_keep_alive",

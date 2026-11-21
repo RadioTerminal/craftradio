@@ -804,8 +804,10 @@ impl Core {
         let mut station = self.engine.state().station.clone();
         self.apply_analysis(&mut station);
         self.broken.retain(|_, at| since(*at, now) < RETRY_BROKEN);
+        let missing = self.engine.state().missing.clone();
         for p in &mut station.playlists {
-            p.items.retain(|i| !self.broken.contains_key(&i.id));
+            p.items
+                .retain(|i| !self.broken.contains_key(&i.id) && !missing.contains(&i.id));
         }
         self.items = station
             .playlists

@@ -143,3 +143,77 @@ planned_len = { secs = 5, nanos = 0 }
     );
     assert!(text.contains("first run: imported"), "{text}");
 }
+
+/// A watched folder that does not read at start keeps its items, marked missing. When the
+/// folder is back with the file under another name, the item relinks by its content.
+#[test]
+fn a_missing_folder_keeps_its_items_and_a_moved_file_relinks() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let music = dir.path().join("Music");
+    std::fs::create_dir_all(&music).unwrap();
+    tone(&music.join("song.wav"));
+    let file = dir.path().join("station.toml");
+    std::fs::write(
+        &file,
+        format!(
+            r#"tz = "UTC"
+
+[[playlists]]
+id = 1
+name = "Music"
+color = [60, 120, 200]
+is_main = true
+is_fill_pool = false
+priority = 0
+pick = "InOrder"
+rules = []
+constraints = []
+source = {{ path = "{}", recursive = false, watch = true }}
+
+[[playlists.items]]
+id = 1
+title = "Song"
+source = {{ File = {{ path = "Music/song.wav" }} }}
+locked = false
+planned_len = {{ secs = 5, nanos = 0 }}
+"#,
+            music.display()
+        ),
+    )
+    .unwrap();
+    let run = || {
+        let out = radio()
+            .args([
+                "--headless",
+                "--null-output",
+                "--run-for",
+                "100ms",
+                "--station",
+            ])
+            .arg(&file)
+            .arg("--data-dir")
+            .arg(&data)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    run();
+    let away = dir.path().join("Music-away");
+    std::fs::rename(&music, &away).unwrap();
+    let text = run();
+    assert!(text.contains("Music: 1 missing"), "{text}");
+    assert!(
+        !text.contains("gone"),
+        "a folder that does not read removes nothing: {text}"
+    );
+    std::fs::rename(&away, &music).unwrap();
+    std::fs::rename(music.join("song.wav"), music.join("moved.wav")).unwrap();
+    let text = run();
+    assert!(text.contains("1 relinked"), "{text}");
+}
