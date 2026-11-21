@@ -290,3 +290,21 @@ fn replaygain_tags_give_a_loudness() {
     let peak = l.peak_db.expect("a tagged peak");
     assert!(peak < 0.0 && peak > -2.0, "{peak}");
 }
+
+/// An R128 track gain tag (Q7.8 dB against −23 LUFS) gives a loudness without a peak.
+/// The key case varies between taggers, so a lowercase key counts too.
+#[test]
+fn an_r128_tag_gives_a_loudness_without_a_peak() {
+    use lofty::{id3::v2::Id3v2Tag, tag::TagExt};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("r128.wav");
+    tone_for(&path, 0.2, 1);
+    let mut tag = Id3v2Tag::new();
+    // −5 dB to −23 LUFS: the file measures −18 LUFS.
+    tag.insert_user_text("r128_track_gain".into(), "-1280".into());
+    tag.save_to_path(&path, lofty::config::WriteOptions::default())
+        .unwrap();
+    let l = radio_library::read_loudness_tags(&path).expect("an R128 loudness");
+    assert!((l.lufs - -18.0).abs() < 0.01, "{}", l.lufs);
+    assert_eq!(l.peak_db, None);
+}

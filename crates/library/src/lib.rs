@@ -371,8 +371,13 @@ pub fn read_loudness_tags(path: impl AsRef<Path>) -> Option<Loudness> {
                 peak_db,
             });
         }
+        // Tag formats keep an unknown key as written, so the match ignores case.
         let r128 = tag
-            .get_string(&ItemKey::Unknown("R128_TRACK_GAIN".into()))
+            .items()
+            .find(|i| {
+                matches!(i.key(), ItemKey::Unknown(k) if k.eq_ignore_ascii_case("R128_TRACK_GAIN"))
+            })
+            .and_then(|i| i.value().text())
             .and_then(|v| v.trim().parse::<i32>().ok());
         if let Some(q78) = r128 {
             return Some(Loudness {
