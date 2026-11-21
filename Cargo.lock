@@ -127,6 +127,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "radio-scheduler"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+]
+
+[[package]]
 name = "radio-testkit"
 version = "0.1.0"
 dependencies = [

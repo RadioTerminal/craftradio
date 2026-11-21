@@ -1,0 +1,16 @@
+[package]
+name = "radio-scheduler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+jiff.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
