@@ -15,6 +15,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 jiff = { version = "0.2", features = ["serde"] }
 thiserror = "2"
+cpal = "0.18"
+rtrb = "0.4"
+rubato = "5"
 rand_chacha = "0.9"
 clap = { version = "4", features = ["derive"] }
 proptest = "1"
