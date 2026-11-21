@@ -85,3 +85,61 @@ fn a_first_run_seeds_the_example_station_once() {
         "the file is in the plan: {text}"
     );
 }
+
+/// A first run whose station file is broken fails, and the next start tries the import again.
+#[test]
+fn a_failed_first_import_is_tried_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let file = dir.path().join("station.toml");
+    std::fs::write(&file, "this is not a station").unwrap();
+    let run = || {
+        radio()
+            .args([
+                "--headless",
+                "--null-output",
+                "--run-for",
+                "100ms",
+                "--station",
+            ])
+            .arg(&file)
+            .arg("--data-dir")
+            .arg(&data)
+            .output()
+            .unwrap()
+    };
+    assert!(!run().status.success(), "a broken station file fails");
+    tone(&dir.path().join("song.wav"));
+    std::fs::write(
+        &file,
+        r#"tz = "UTC"
+
+[[playlists]]
+id = 1
+name = "Music"
+color = [60, 120, 200]
+is_main = true
+is_fill_pool = false
+priority = 0
+pick = "InOrder"
+rules = []
+constraints = []
+
+[[playlists.items]]
+id = 1
+title = "Song"
+source = { File = { path = "song.wav" } }
+locked = false
+planned_len = { secs = 5, nanos = 0 }
+"#,
+    )
+    .unwrap();
+    let second = run();
+    let text = String::from_utf8_lossy(&second.stdout).into_owned();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(text.contains("first run: imported"), "{text}");
+}

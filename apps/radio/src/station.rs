@@ -22,9 +22,16 @@ pub enum Seeded {
 pub fn open(dir: &Path, station: Option<&Path>) -> Result<(Engine, Seeded), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     let db = dir.join("station.db");
-    let first = !db.exists();
     let mut engine = Engine::open(&db).map_err(|e| format!("cannot open {}: {e}", db.display()))?;
-    if !first {
+    // A first run is a station without the seeded mark and without data of its own. The mark
+    // comes only after a seed that worked, so a failed import tries again at the next start.
+    let marked = engine.runtime(SEEDED).map_err(|e| e.to_string())?.is_some();
+    let st = &engine.state().station;
+    let empty = st.playlists.len() == 1 && st.playlists.iter().all(|p| p.items.is_empty());
+    if marked || !empty {
+        if !marked {
+            mark_seeded(&engine)?;
+        }
         return Ok((engine, Seeded::No));
     }
     let seeded = match station {
@@ -40,7 +47,17 @@ pub fn open(dir: &Path, station: Option<&Path>) -> Result<(Engine, Seeded), Stri
         None => seed_example(&mut engine, dir)?,
     };
     engine.flush().map_err(|e| e.to_string())?;
+    mark_seeded(&engine)?;
     Ok((engine, seeded))
+}
+
+/// The runtime key that marks a station as seeded.
+const SEEDED: &str = "seeded";
+
+fn mark_seeded(engine: &Engine) -> Result<(), String> {
+    engine
+        .save_runtime(SEEDED, &serde_json::json!(true))
+        .map_err(|e| format!("cannot mark the station as seeded: {e}"))
 }
 
 fn import(engine: &mut Engine, station: Station) -> Result<(), String> {
