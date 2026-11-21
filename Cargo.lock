@@ -172,7 +172,9 @@ dependencies = [
  "jiff",
  "radio-model",
  "radio-testkit",
+ "radio-timing",
  "rand_chacha",
+ "serde",
 ]
 
 [[package]]

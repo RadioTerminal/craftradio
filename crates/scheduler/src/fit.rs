@@ -1,4 +1,6 @@
-use jiff::SignedDuration;
+use jiff::{SignedDuration, Timestamp};
+use radio_model::{ItemId, PlaylistId};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// The time step used by the subset search.
@@ -99,4 +101,25 @@ pub fn select_before(
         SignedDuration::MAX.as_nanos(),
     );
     (kept, SignedDuration::from_nanos_i128(leftover))
+}
+
+/// One adjustment the fitter made to bring a fixed event onto its target time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum FitStep {
+    Reordered { moved: usize },
+    Filled { items: Vec<ItemId> },
+    Trimmed { by: Duration },
+    EarlyStart { by: Duration },
+    LateStart { by: Duration },
+}
+
+/// The outcome of fitting one fixed event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FitResult {
+    pub playlist: PlaylistId,
+    pub target: Timestamp,
+    pub planned: Timestamp,
+    pub error: SignedDuration,
+    pub within_tolerance: bool,
+    pub steps: Vec<FitStep>,
 }

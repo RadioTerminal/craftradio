@@ -9,6 +9,8 @@ license.workspace = true
 radio-model.workspace = true
 jiff.workspace = true
 rand_chacha.workspace = true
+serde.workspace = true
+radio-timing = { path = "../timing" }
 
 [dev-dependencies]
 radio-testkit.workspace = true
