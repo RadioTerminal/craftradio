@@ -44,7 +44,7 @@ enum Command {
     /// The command is JSON: {"id": "schedule.add", "args": {...}}. `commands` lists the
     /// ids. Close the app first: a running app keeps its own copy of the station.
     Cmd {
-        /// The folder that holds station.db, as the app's --data-dir.
+        /// The folder that holds station.db: the --data-dir of the app.
         #[arg(long)]
         data_dir: PathBuf,
         /// The command as JSON.

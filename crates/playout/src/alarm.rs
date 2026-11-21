@@ -54,7 +54,7 @@ pub enum Alarm {
     /// air.
     HardEventCancelled { item: ItemId, target: Timestamp },
     /// A one-off with no repeat passed its time and its tolerance, and it did not air.
-    /// For example, the app was closed. Playout removes it from the schedule.
+    /// For example, the app did not run then. Playout removes it from the schedule.
     OneOffMissed {
         item: ItemId,
         title: String,

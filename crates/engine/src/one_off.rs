@@ -16,7 +16,7 @@ use crate::{Engine, EngineError, EngineEvent, Outcome, State};
 
 /// The name of the system playlist, when no other playlist has it.
 pub const ONE_OFF_PLAYLIST: &str = "One-off";
-/// The colour of the system playlist: the palette's teal.
+/// The colour of the system playlist: teal of the palette.
 const ONE_OFF_COLOR: [u8; 3] = [0x14, 0xb8, 0xa6];
 /// The priority of one-offs over other fixed events at the same time.
 const ONE_OFF_PRIORITY: i32 = 100;
