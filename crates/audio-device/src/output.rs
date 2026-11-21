@@ -25,6 +25,9 @@ impl Drop for SourceHolder {
     }
 }
 
+/// Default time `reopen` waits for the old stream to give the source back.
+const DEFAULT_RECLAIM_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// A cpal output stream playing an [`AudioSource`].
 pub struct Output {
     stream: Option<cpal::Stream>,
@@ -36,6 +39,7 @@ pub struct Output {
     clock: SampleClock,
     requested: Option<String>,
     prefer_rate: u32,
+    reclaim_timeout: Duration,
     name: String,
     sample_rate: u32,
     channels: u16,
@@ -63,6 +67,7 @@ impl Output {
             clock: SampleClock::new(),
             requested: name.map(str::to_string),
             prefer_rate,
+            reclaim_timeout: DEFAULT_RECLAIM_TIMEOUT,
             name: String::new(),
             sample_rate: 0,
             channels: 0,
@@ -71,12 +76,24 @@ impl Output {
         Ok(output)
     }
 
+    /// How long `reopen` waits for the old stream to release the source (default 2 s).
+    /// Some backends drop the callback closure late.
+    pub fn with_reclaim_timeout(mut self, timeout: Duration) -> Self {
+        self.reclaim_timeout = timeout;
+        self
+    }
+
     /// Drop the current stream and open a new one on the same device request, keeping the
     /// source and the clock. Use after a [`DeviceEvent::Lost`].
+    ///
+    /// If the old stream has not released the source within the reclaim timeout, this
+    /// returns [`DeviceError::SourceLost`] and the `Output` has no stream. Calling `reopen`
+    /// again succeeds if the source arrived in the meantime; otherwise re-create the
+    /// `Output` with a new source.
     pub fn reopen(&mut self) -> Result<(), DeviceError> {
         if let Some(stream) = self.stream.take() {
             drop(stream);
-            self.reclaim_source(Duration::from_secs(2));
+            self.reclaim_source(self.reclaim_timeout);
         }
         self.start()
     }
@@ -113,6 +130,10 @@ impl Output {
     }
 
     fn start(&mut self) -> Result<(), DeviceError> {
+        // A late-dropped closure may have returned the source since the last attempt.
+        if self.parked.is_none() {
+            self.parked = self.give_back_rx.try_recv().ok();
+        }
         let source = self.parked.take().ok_or(DeviceError::SourceLost)?;
         let chosen = match choose(
             self.requested.as_deref(),
@@ -194,6 +215,11 @@ where
             }
             for (out, sample) in chunk.iter_mut().zip(block.iter()) {
                 *out = T::from_sample(*sample);
+            }
+            // A host buffer that is not a whole number of frames: keep the tail silent.
+            let tail = frames * channels;
+            if tail < chunk.len() {
+                chunk[tail..].fill(T::from_sample(0.0f32));
             }
             clock.advance(frames);
         }

@@ -1,9 +1,11 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::{AudioSource, DeviceError, SampleClock};
+use crate::{AudioSource, DeviceError, DeviceEvent, SampleClock};
 
 const BLOCK: Duration = Duration::from_millis(10);
 
@@ -15,6 +17,7 @@ pub struct NullOutput {
     sample_rate: u32,
     channels: u16,
     stop: Arc<AtomicBool>,
+    events_rx: Receiver<DeviceEvent>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -30,6 +33,7 @@ impl NullOutput {
         let clock = SampleClock::new();
         let stop = Arc::new(AtomicBool::new(false));
         let (thread_clock, thread_stop) = (clock.clone(), stop.clone());
+        let (events_tx, events_rx): (Sender<DeviceEvent>, _) = channel();
         let thread = std::thread::Builder::new()
             .name("null-output".into())
             .spawn(move || {
@@ -41,12 +45,26 @@ impl NullOutput {
                     // Frames due by now, from the wall clock: no cumulative rounding drift.
                     let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
                     let due = nanos.saturating_mul(rate) / 1_000_000_000;
+                    // After a stall, skip what is older than 200 ms instead of bursting; the
+                    // skipped frames still count on the clock so it stays pinned to real time.
+                    let max_behind = (rate / 5).max(block_frames);
+                    if due > rendered + max_behind {
+                        let skipped = due - rendered - max_behind;
+                        rendered += skipped;
+                        thread_clock.advance(skipped as usize);
+                    }
                     if rendered + block_frames > due {
                         std::thread::sleep(BLOCK / 4);
                         continue;
                     }
                     buf.fill(0.0);
-                    source.render(&mut buf, ch);
+                    let ok = catch_unwind(AssertUnwindSafe(|| source.render(&mut buf, ch)));
+                    if ok.is_err() {
+                        let _ = events_tx.send(DeviceEvent::Lost {
+                            name: "null".to_string(),
+                        });
+                        break;
+                    }
                     rendered += block_frames;
                     thread_clock.advance(block_frames as usize);
                 }
@@ -57,6 +75,7 @@ impl NullOutput {
             sample_rate,
             channels,
             stop,
+            events_rx,
             thread: Some(thread),
         })
     }
@@ -69,6 +88,12 @@ impl NullOutput {
     /// Rate being simulated.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    /// Events from the output. `Lost { name: "null" }` means `render` panicked and the
+    /// thread stopped.
+    pub fn events(&self) -> &Receiver<DeviceEvent> {
+        &self.events_rx
     }
 
     /// Channel count.

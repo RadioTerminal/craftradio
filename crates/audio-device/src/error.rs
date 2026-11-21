@@ -14,7 +14,10 @@ pub enum DeviceError {
     #[error("audio stream failed: {0}")]
     Stream(String),
     /// The audio source could not be recovered from the old stream for `reopen`.
-    #[error("audio source was lost with the previous stream")]
+    #[error(
+        "audio source was lost with the previous stream; \
+         re-create the Output with a new source"
+    )]
     SourceLost,
     /// A resampler could not be built or run.
     #[error("resampler error: {0}")]

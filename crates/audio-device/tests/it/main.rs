@@ -61,3 +61,21 @@ fn rate_negotiation_prefers_48k_else_default() {
     assert_eq!(negotiate_rate(&[(8_000, 96_000)], 48_000, 44_100), 48_000);
     assert_eq!(negotiate_rate(&[(44_100, 44_100)], 48_000, 44_100), 44_100);
 }
+
+#[test]
+fn null_output_reports_a_panicking_source() {
+    struct Boom;
+    impl AudioSource for Boom {
+        fn render(&mut self, _: &mut [f32], _: usize) {
+            panic!("boom");
+        }
+    }
+    let out = NullOutput::start(48_000, 2, Box::new(Boom)).expect("start");
+    let event = out.events().recv_timeout(Duration::from_secs(2));
+    assert_eq!(
+        event,
+        Ok(radio_audio_device::DeviceEvent::Lost {
+            name: "null".into()
+        })
+    );
+}

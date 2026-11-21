@@ -146,8 +146,12 @@ pub(crate) fn choose(
     dir: Direction,
     prefer_rate: Option<u32>,
 ) -> Result<Chosen, DeviceError> {
-    catch_unwind(AssertUnwindSafe(|| choose_inner(name, dir, prefer_rate)))
-        .unwrap_or(Err(DeviceError::NoDevice))
+    catch_unwind(AssertUnwindSafe(|| choose_inner(name, dir, prefer_rate))).unwrap_or_else(|_| {
+        Err(match name {
+            Some(n) => DeviceError::NotFound(n.to_string()),
+            None => DeviceError::NoDevice,
+        })
+    })
 }
 
 fn choose_inner(
