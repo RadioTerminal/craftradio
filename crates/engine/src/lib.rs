@@ -73,6 +73,7 @@ impl State {
             items: vec![],
             rules: vec![],
             constraints: vec![],
+            source: None,
         };
         Self::with(
             Station {
@@ -325,6 +326,7 @@ impl Engine {
                         items: vec![],
                         rules: vec![],
                         constraints: vec![],
+                        source: None,
                     });
                     Ok(())
                 })?;
