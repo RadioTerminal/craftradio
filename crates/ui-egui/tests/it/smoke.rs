@@ -491,3 +491,22 @@ fn the_header_names_what_is_on_air() {
     assert!(line, "the item on air shows in the header cluster");
     assert!(!shows(&harness, "Nothing playing"), "something is on air");
 }
+
+/// The arrow keys move between the tabs of the settings page while a tab has the focus.
+#[test]
+fn the_arrow_keys_move_between_settings_tabs() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Toggle Mixer settings");
+    harness.get_by_label("Devices").focus();
+    harness.run_steps(FRAMES);
+    for _ in 0..2 {
+        harness.key_press(egui::Key::ArrowDown);
+        harness.run_steps(FRAMES);
+    }
+    assert!(shows(&harness, "Peak hold"), "two steps down is Meters");
+    assert!(!shows(&harness, "Output device (Out)"), "Devices is gone");
+    harness.key_press(egui::Key::ArrowUp);
+    harness.run_steps(FRAMES);
+    assert!(!shows(&harness, "Peak hold"), "one step up leaves Meters");
+}

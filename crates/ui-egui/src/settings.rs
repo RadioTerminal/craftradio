@@ -222,9 +222,10 @@ pub(crate) fn page(
             |ui| {
                 ui.set_width(size::SETTINGS_RAIL);
                 ui.spacing_mut().item_spacing.y = space::XXS;
+                let mut moved = false;
                 for (i, tab) in tabs.iter().enumerate() {
                     let tab_id = id.with(("tab", i));
-                    let Some(to) = tab_button(ui, tab_id, tab, i == *selected, t) else {
+                    let Some(to) = tab_button(ui, tab_id, tab, i == *selected, t, !moved) else {
                         continue;
                     };
                     let next = match to {
@@ -235,6 +236,9 @@ pub(crate) fn page(
                     *selected = next;
                     if next != i {
                         ctx.memory_mut(|m| m.request_focus(id.with(("tab", next))));
+                        // One step per key press: the tab that takes the focus must not
+                        // read the same press again.
+                        moved = true;
                     }
                 }
             },
@@ -294,6 +298,7 @@ fn tab_button(
     tab: &Tab,
     selected: bool,
     t: &Tokens,
+    keys: bool,
 ) -> Option<Step> {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), size::CONTROL_MD),
@@ -353,7 +358,7 @@ fn tab_button(
         Some(Dot::Good(w) | Dot::Bad(w)) => resp.on_hover_text(w.as_str()),
         None => resp,
     };
-    if resp.has_focus() {
+    if keys && resp.has_focus() {
         // The arrow keys move the selection; egui must not move the focus as well.
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(
