@@ -215,3 +215,34 @@ fn deck_cards_name_their_playlist_and_start_and_rows_show_their_deck() {
         "the row on deck C shows the C badge"
     );
 }
+
+#[test]
+fn a_library_column_changes_width_after_a_drag() {
+    let mut harness = harness();
+    harness.state_mut().set_window(ToolWindow::Library, true);
+    harness.run_steps(FRAMES);
+    let artist = harness.get_by_label("ARTIST").rect();
+    let title = harness
+        .query_all_by_label("TITLE")
+        .map(|node| node.rect())
+        .find(|rect| {
+            (rect.center().y - artist.center().y).abs() < 1.0 && rect.left() < artist.left()
+        })
+        .expect("Library title header beside the artist header");
+    let before = artist.left() - title.left();
+    let start = egui::pos2(artist.left() - 4.0, title.center().y);
+    let end = start + egui::vec2(48.0, 0.0);
+    harness.hover_at(start);
+    harness.run_steps(1);
+    harness.drag_at(start);
+    harness.run_steps(1);
+    harness.hover_at(end);
+    harness.run_steps(2);
+    harness.drop_at(end);
+    harness.run_steps(FRAMES);
+    let after = harness.get_by_label("ARTIST").rect().left() - title.left();
+    assert!(
+        after > before,
+        "the title column must grow after dragging: {before} -> {after}"
+    );
+}

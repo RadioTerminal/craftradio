@@ -364,89 +364,120 @@ fn table(
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted)
     };
-    let mut builder = TableBuilder::new(ui);
-    if let Some(i) = scroll {
-        builder = builder.scroll_to_row(i, Some(Align::Center));
-    }
-    builder
-        .id_salt("library_table")
-        .striped(true)
-        .sense(Sense::click_and_drag())
+    egui::ScrollArea::horizontal()
+        .id_salt("library_columns")
         .auto_shrink(false)
-        .cell_layout(Layout::left_to_right(Align::Center))
-        .column(Column::exact(size::COL_TITLE).clip(true))
-        .column(Column::exact(size::COL_ARTIST).clip(true))
-        .column(Column::exact(size::COL_LEN))
-        .column(Column::exact(size::COL_CATEGORY))
-        .column(Column::remainder().clip(true))
-        .header(size::DIVIDER_ROW, |mut h| {
-            for name in ["TITLE", "ARTIST", "LENGTH", "CATEGORY", "PATH"] {
-                h.col(|ui| {
-                    ui.label(head(name));
-                });
+        .show(ui, |ui| {
+            let mut builder = TableBuilder::new(ui);
+            if let Some(i) = scroll {
+                builder = builder.scroll_to_row(i, Some(Align::Center));
             }
-        })
-        .body(|body| {
-            body.rows(size::ROW, items.len(), |mut row| {
-                let Some(item) = items.get(row.index()) else {
-                    return;
-                };
-                row.set_selected(selected.contains(item.id));
-                let grip = if hovered == Some(item.id) { "☰ " } else { "" };
-                row.col(|ui| {
-                    let text = RichText::new(format!("{grip}{}", item.title));
-                    let label = egui::Label::new(text.font(theme::text(theme::SMALL)));
-                    ui.add(label.truncate());
-                });
-                row.col(|ui| {
-                    let artist = item.artist.as_deref().unwrap_or("—");
-                    let text = RichText::new(artist).font(theme::text(theme::SMALL));
-                    ui.add(egui::Label::new(text).truncate());
-                });
-                row.col(|ui| {
-                    let text = RichText::new(mmss(item.len)).font(theme::mono(theme::CODE));
-                    ui.label(text.color(t.text_muted));
-                });
-                row.col(|ui| {
-                    ui.label(RichText::new(&item.category).font(theme::text(theme::CAPTION)));
-                });
-                row.col(|ui| {
-                    let path = RichText::new(&item.path).font(theme::mono(theme::CAPTION));
-                    ui.add(egui::Label::new(path.color(t.text_muted)).truncate())
-                        .on_hover_text(&item.path);
-                });
-                let resp = row.response();
-                if resp.hovered() {
-                    hover_now = Some(item.id);
-                }
-                if resp.clicked() {
-                    clicked = Some((item.id, resp.ctx.input(|i| i.modifiers)));
-                }
-                if resp.secondary_clicked() && !selected.contains(item.id) {
-                    clicked = Some((item.id, egui::Modifiers::NONE));
-                }
-                // The whole row is the drag handle. A label follows the pointer while it moves.
-                resp.dnd_set_drag_payload(LibraryDrag(item.id));
-                if resp.dragged()
-                    && let Some(pos) = resp.ctx.pointer_interact_pos()
-                {
-                    egui::Area::new(egui::Id::new(("library_drag", item.id)))
-                        .order(egui::Order::Tooltip)
-                        .fixed_pos(pos + egui::vec2(space::M, space::M))
-                        .show(&resp.ctx, |ui| {
-                            theme::card_frame(t).inner_margin(pad::ROW).show(ui, |ui| {
-                                ui.label(format!("☰ {}", item.title));
-                            });
+            builder
+                .id_salt("library_table")
+                .striped(true)
+                .sense(Sense::click_and_drag())
+                .auto_shrink(false)
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(
+                    Column::initial(size::COL_TITLE)
+                        .at_least(size::TEXT_COL_MIN)
+                        .at_most(size::TEXT_COL_MAX)
+                        .resizable(true)
+                        .clip(true),
+                )
+                .column(
+                    Column::initial(size::COL_ARTIST)
+                        .at_least(size::TEXT_COL_MIN)
+                        .at_most(size::TEXT_COL_MAX)
+                        .resizable(true)
+                        .clip(true),
+                )
+                .column(Column::exact(size::COL_LEN))
+                .column(
+                    Column::initial(size::COL_CATEGORY)
+                        .at_least(size::TEXT_COL_MIN)
+                        .at_most(size::TEXT_COL_MAX)
+                        .resizable(true)
+                        .clip(true),
+                )
+                .column(
+                    Column::initial(size::COL_PATH)
+                        .at_least(size::TEXT_COL_MIN)
+                        .at_most(size::TEXT_COL_MAX)
+                        .resizable(true)
+                        .clip(true),
+                )
+                .header(size::DIVIDER_ROW, |mut h| {
+                    for name in ["TITLE", "ARTIST", "LENGTH", "CATEGORY", "PATH"] {
+                        h.col(|ui| {
+                            ui.label(head(name));
                         });
-                }
-                resp.context_menu(|ui| {
-                    item_menu(ui, view, item, actions);
-                    ui.separator();
-                    if context_menu::danger_item(ui, "Remove from Library…", t) {
-                        menu_remove = Some(selected.targets(item.id));
                     }
+                })
+                .body(|body| {
+                    body.rows(size::ROW, items.len(), |mut row| {
+                        let Some(item) = items.get(row.index()) else {
+                            return;
+                        };
+                        row.set_selected(selected.contains(item.id));
+                        let grip = if hovered == Some(item.id) { "☰ " } else { "" };
+                        row.col(|ui| {
+                            let text = RichText::new(format!("{grip}{}", item.title));
+                            let label = egui::Label::new(text.font(theme::text(theme::SMALL)));
+                            ui.add(label.truncate());
+                        });
+                        row.col(|ui| {
+                            let artist = item.artist.as_deref().unwrap_or("—");
+                            let text = RichText::new(artist).font(theme::text(theme::SMALL));
+                            ui.add(egui::Label::new(text).truncate());
+                        });
+                        row.col(|ui| {
+                            let text = RichText::new(mmss(item.len)).font(theme::mono(theme::CODE));
+                            ui.label(text.color(t.text_muted));
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(&item.category).font(theme::text(theme::CAPTION)),
+                            );
+                        });
+                        row.col(|ui| {
+                            let path = RichText::new(&item.path).font(theme::mono(theme::CAPTION));
+                            ui.add(egui::Label::new(path.color(t.text_muted)).truncate())
+                                .on_hover_text(&item.path);
+                        });
+                        let resp = row.response();
+                        if resp.hovered() {
+                            hover_now = Some(item.id);
+                        }
+                        if resp.clicked() {
+                            clicked = Some((item.id, resp.ctx.input(|i| i.modifiers)));
+                        }
+                        if resp.secondary_clicked() && !selected.contains(item.id) {
+                            clicked = Some((item.id, egui::Modifiers::NONE));
+                        }
+                        // The whole row is the drag handle. A label follows the pointer while it moves.
+                        resp.dnd_set_drag_payload(LibraryDrag(item.id));
+                        if resp.dragged()
+                            && let Some(pos) = resp.ctx.pointer_interact_pos()
+                        {
+                            egui::Area::new(egui::Id::new(("library_drag", item.id)))
+                                .order(egui::Order::Tooltip)
+                                .fixed_pos(pos + egui::vec2(space::M, space::M))
+                                .show(&resp.ctx, |ui| {
+                                    theme::card_frame(t).inner_margin(pad::ROW).show(ui, |ui| {
+                                        ui.label(format!("☰ {}", item.title));
+                                    });
+                                });
+                        }
+                        resp.context_menu(|ui| {
+                            item_menu(ui, view, item, actions);
+                            ui.separator();
+                            if context_menu::danger_item(ui, "Remove from Library…", t) {
+                                menu_remove = Some(selected.targets(item.id));
+                            }
+                        });
+                    });
                 });
-            });
         });
     if let Some((id, m)) = clicked {
         state.selected.click(id, m, &order);

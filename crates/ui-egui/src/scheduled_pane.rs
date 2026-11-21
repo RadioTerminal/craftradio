@@ -1,6 +1,7 @@
 //! The right pane: Upcoming, the items that rules weave into Main, and one tab per playlist.
 
 use egui::{Align, Layout, RichText, Sense, Stroke};
+use egui_extras::{Column, TableBuilder};
 
 use crate::add_menu;
 use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, mmss};
@@ -46,7 +47,7 @@ pub(crate) fn show(
     match *tab {
         Tab::Upcoming => upcoming(ui, view, prep, link, actions, t),
         Tab::Playlist(i) => match view.tabs.get(i) {
-            Some(p) => playlist(ui, p, &view.decks, link, actions, t),
+            Some(p) => playlist(ui, p, view, link, actions, t),
             None => *tab = Tab::Upcoming,
         },
     }
@@ -178,35 +179,93 @@ fn upcoming(
     let order: Vec<u64> = prep.upcoming.iter().map(|i| prep.ids[*i]).collect();
     link.step_rows(Pane::Scheduled, &order);
     let target = link.scroll_scheduled.take();
-    let step = size::UPCOMING_ROW + space::XXS;
-    let mut area = egui::ScrollArea::vertical()
+    let mut table = TableBuilder::new(ui)
         .id_salt("upcoming")
-        .auto_shrink(false);
-    // Scroll to a row that the main pane picked, by its place in the list.
+        .sense(Sense::click())
+        .auto_shrink(false)
+        .cell_layout(Layout::left_to_right(Align::Center))
+        .column(Column::exact(size::UPCOMING_TIME).clip(true))
+        .column(
+            Column::initial(size::UPCOMING_PLAYLIST)
+                .at_least(size::TEXT_COL_MIN)
+                .clip(true),
+        )
+        .column(Column::remainder().clip(true))
+        .column(Column::exact(size::COL_FIT).clip(true))
+        .column(Column::exact(size::UPCOMING_LEN));
     if let Some(k) = target.and_then(|id| order.iter().position(|o| *o == id)) {
-        area = area.vertical_scroll_offset((k as f32 * step - step).max(0.0));
+        table = table.scroll_to_row(k, Some(Align::Center));
     }
-    // A fixed row height lets the area lay out only the visible rows.
-    area.show_rows(ui, size::UPCOMING_ROW, order.len(), |ui, range| {
-        ui.spacing_mut().item_spacing.y = space::XXS;
-        for k in range {
-            let i = prep.upcoming[k];
-            let Some(r) = view.rows.get(i) else {
-                continue;
-            };
-            let on_air = r.start.timestamp() <= now;
-            let resp = upcoming_row(ui, r, i, prep, link.is_selected(r.id), on_air, t);
-            let resp = match r.fixed {
-                Some(fit) => resp.on_hover_text(fit_detail(r, fit)),
-                None => resp,
-            };
-            if resp.clicked() {
-                let m = resp.ctx.input(|i| i.modifiers);
-                link.click(Pane::Scheduled, r.id, m, &order);
+    table
+        .header(size::DIVIDER_ROW, |mut header| {
+            for name in ["START", "PLAYLIST", "TITLE", "FIT", "LENGTH"] {
+                header.col(|ui| {
+                    caption(ui, name, t);
+                });
             }
-            resp.context_menu(|ui| upcoming_menu(ui, r, link, actions));
-        }
-    });
+        })
+        .body(|body| {
+            body.rows(size::UPCOMING_ROW, order.len(), |mut row| {
+                let i = prep.upcoming[row.index()];
+                let Some(r) = view.rows.get(i) else {
+                    return;
+                };
+                let on_air = r.start.timestamp() <= now;
+                row.set_selected(link.is_selected(r.id));
+                row.col(|ui| {
+                    crate::widgets::deck_mark(ui, r.deck, &r.title);
+                    let ink = if on_air { t.on_air } else { t.text };
+                    ui.label(
+                        RichText::new(&prep.start[i])
+                            .font(theme::mono(theme::CODE))
+                            .color(ink),
+                    );
+                });
+                row.col(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&r.playlist).color(t.readable(r.color, t.card)),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(&r.playlist);
+                });
+                row.col(|ui| {
+                    ui.add(egui::Label::new(&r.title).truncate())
+                        .on_hover_text(&r.title);
+                });
+                row.col(|ui| {
+                    if let Some(fit) = r.fixed {
+                        ui.label(
+                            RichText::new(fit_words(fit))
+                                .font(theme::mono(theme::CAPTION))
+                                .color(if fit.ok { t.ok } else { t.danger }),
+                        );
+                    }
+                });
+                row.col(|ui| {
+                    ui.label(
+                        RichText::new(&prep.len[i])
+                            .font(theme::mono(theme::CODE))
+                            .color(t.text_muted),
+                    );
+                });
+                let resp = row.response();
+                let resp = match r.fixed {
+                    Some(fit) => resp.on_hover_text(fit_detail(r, fit)),
+                    None => resp,
+                };
+                if resp.clicked() || (resp.secondary_clicked() && !link.is_selected(r.id)) {
+                    let m = if resp.clicked() {
+                        resp.ctx.input(|i| i.modifiers)
+                    } else {
+                        egui::Modifiers::NONE
+                    };
+                    link.click(Pane::Scheduled, r.id, m, &order);
+                }
+                resp.context_menu(|ui| upcoming_menu(ui, r, link, actions));
+            });
+        });
 }
 
 /// How a fixed item meets its time, in words: "on time", "0.4 s early", "2.0 s late ⚠".
@@ -300,133 +359,16 @@ fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Ve
     }
 }
 
-/// One row of Upcoming: a fixed-height card that paints its own text.
-fn upcoming_row(
-    ui: &mut egui::Ui,
-    r: &Row,
-    i: usize,
-    prep: &Prepared,
-    selected: bool,
-    on_air: bool,
-    t: &Tokens,
-) -> egui::Response {
-    let width = ui.available_width();
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(width, size::UPCOMING_ROW), Sense::click());
-    if !ui.is_rect_visible(rect) {
-        return resp;
-    }
-    let fill = match (selected, on_air, resp.hovered()) {
-        (true, _, _) => t.selection,
-        (_, true, _) => t.on_air_bg,
-        (_, _, true) => t.hover,
-        _ => t.card,
-    };
-    let edge = if selected { t.accent } else { t.card_border };
-    let p = ui.painter();
-    p.rect(
-        rect,
-        t.radius_sm,
-        fill,
-        Stroke::new(size::HAIRLINE, edge),
-        egui::StrokeKind::Inside,
-    );
-    let inner = rect.shrink2(egui::vec2(f32::from(pad::ROW.left), 0.0));
-    let mid = inner.center().y;
-    let time_ink = if on_air { t.on_air } else { t.text };
-    let left = egui::Align2::LEFT_CENTER;
-    // The deck mark first: the letter and the bar in the colour of the deck that holds the row.
-    let mark = egui::Rect::from_min_size(
-        egui::pos2(inner.left(), mid - size::DECK_MARK / 2.0),
-        egui::Vec2::splat(size::DECK_MARK),
-    );
-    if let Some(d) = r.deck {
-        crate::widgets::paint_deck_mark(p, mark, rect.left(), d, t);
-    }
-    p.text(
-        egui::pos2(mark.right() + space::S, mid),
-        left,
-        &prep.start[i],
-        theme::mono(theme::CODE),
-        time_ink,
-    );
-    let dot_x = inner.left() + size::COL_TIME + size::DOT_R;
-    p.circle_filled(
-        egui::pos2(dot_x, mid),
-        size::DOT_R,
-        Tokens::playlist(r.color),
-    );
-    let name_x = dot_x + size::DOT_R + space::S;
-    let ink = t.readable(r.color, fill);
-    // The playlist name stays in its column: a long name ends with "…".
-    let (name, _) = crate::widgets::elided(
-        ui,
-        &r.playlist,
-        theme::text(theme::LABEL),
-        ink,
-        size::COL_PLAYLIST - space::S,
-    );
-    p.galley(egui::pos2(name_x, mid - name.size().y / 2.0), name, ink);
-    let right = egui::Align2::RIGHT_CENTER;
-    let len = p.text(
-        egui::pos2(inner.right(), mid),
-        right,
-        &prep.len[i],
-        theme::mono(theme::CODE),
-        t.text_muted,
-    );
-    let mut end = len.left() - space::S;
-    if let Some(fit) = r.fixed {
-        let colour = if fit.ok { t.ok } else { t.danger };
-        let text = fit_words(fit);
-        let fit_rect = p.text(
-            egui::pos2(end, mid),
-            right,
-            text,
-            theme::mono(theme::CAPTION),
-            colour,
-        );
-        end = fit_rect.left() - space::S;
-    }
-    // The title takes the space that is left, and its painter clips it there.
-    let title_x = name_x + size::COL_PLAYLIST;
-    let mut cut = false;
-    if end > title_x {
-        let (title, elided) = crate::widgets::elided(
-            ui,
-            &r.title,
-            theme::text(theme::SMALL),
-            t.text,
-            end - title_x,
-        );
-        cut = elided;
-        p.galley(
-            egui::pos2(title_x, mid - title.size().y / 2.0),
-            title,
-            t.text,
-        );
-    }
-    let name = format!(
-        "{} {} {} {}",
-        prep.start[i], r.playlist, r.title, prep.len[i]
-    );
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
-    if cut || r.playlist.chars().count() > 12 {
-        resp.on_hover_text(format!("{} · {}", r.playlist, r.title))
-    } else {
-        resp
-    }
-}
-
 /// Show one playlist tab.
 fn playlist(
     ui: &mut egui::Ui,
     p: &PlaylistTab,
-    decks: &[crate::view::DeckView],
+    view: &StationView,
     link: &mut Linked,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    let decks = &view.decks;
     // The selection belongs to one playlist. Another tab starts with none.
     if link.playlist_sel_of != p.name {
         link.playlist_sel = Selection::default();
@@ -445,118 +387,145 @@ fn playlist(
             actions.push(remove_items(p, decks, sel));
         }
     }
-    egui::ScrollArea::vertical()
-        .id_salt(("playlist_tab", &p.name))
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (dot, _) =
-                    ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
-                ui.painter()
-                    .circle_filled(dot.center(), size::DOT_R, Tokens::playlist(p.color));
-                let folder = if p.source.is_some() { " 📁" } else { "" };
-                let name = RichText::new(format!("{}{folder}", p.name));
-                ui.label(name.font(theme::text(theme::SECTION)).strong());
-                if rules_editor::cog(ui, &p.name) {
-                    actions.push(Action::OpenRules(p.name.clone()));
-                }
-                add_menu::button(ui, &p.name, None, actions);
-            });
-            if let Some(src) = &p.source {
-                caption(ui, &format!("From folder {}", src.path), t);
+    ui.push_id(("playlist_tab", &p.name), |ui| {
+        ui.horizontal(|ui| {
+            let (dot, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+            ui.painter()
+                .circle_filled(dot.center(), size::DOT_R, Tokens::playlist(p.color));
+            let folder = if p.source.is_some() { " 📁" } else { "" };
+            let name = RichText::new(format!("{}{folder}", p.name));
+            ui.label(name.font(theme::text(theme::SECTION)).strong());
+            if rules_editor::cog(ui, &p.name) {
+                actions.push(Action::OpenRules(p.name.clone()));
             }
-            ui.add_space(space::S);
-            caption(ui, "PICK", t);
-            ui.label(RichText::new(&p.pick).font(theme::text(theme::BODY)));
-            ui.add_space(space::M);
-            caption(ui, "RULES", t);
-            for rule in &p.rules {
-                ui.label(RichText::new(format!("•  {rule}")).font(theme::text(theme::BODY)));
-            }
-            ui.add_space(space::M);
-            caption(ui, &format!("ITEMS ({})", p.items.len()), t);
-            let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
-            let mut rows = Vec::new();
-            let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
-                ui.set_width(ui.available_width());
-                for (i, (name, len)) in p.items.iter().enumerate() {
-                    let id = p.ids.get(i).copied();
-                    let picked = id.is_some_and(|id| link.playlist_sel.contains(id));
-                    let fill = if picked {
-                        t.selection
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-                    let row = egui::Frame::new().fill(fill).corner_radius(t.radius_sm);
-                    let row = row.inner_margin(pad::ROW).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            // The deck that holds the item, if one does.
-                            let id = p.ids.get(i).copied();
+            add_menu::button(ui, &p.name, None, actions);
+        });
+        if let Some(src) = &p.source {
+            caption(ui, &format!("From folder {}", src.path), t);
+        }
+        ui.add_space(space::S);
+        caption(ui, "PICK", t);
+        ui.label(RichText::new(&p.pick).font(theme::text(theme::BODY)));
+        ui.add_space(space::M);
+        caption(ui, "RULES", t);
+        for rule in &p.rules {
+            ui.label(RichText::new(format!("•  {rule}")).font(theme::text(theme::BODY)));
+        }
+        ui.add_space(space::M);
+        caption(ui, &format!("ITEMS ({})", p.items.len()), t);
+        let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
+        let mut rows = Vec::new();
+        let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
+            ui.set_width(ui.available_width());
+            let hint = RichText::new("Drop a library title or files here to add them");
+            ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
+            TableBuilder::new(ui)
+                .id_salt("items")
+                .sense(Sense::click())
+                .auto_shrink(false)
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(Column::remainder().clip(true))
+                .column(
+                    Column::initial(size::COL_ARTIST)
+                        .at_least(size::TEXT_COL_MIN)
+                        .clip(true),
+                )
+                .column(Column::exact(size::COL_LEN))
+                .header(size::DIVIDER_ROW, |mut header| {
+                    for name in ["TITLE", "ARTIST", "LENGTH"] {
+                        header.col(|ui| {
+                            caption(ui, name, t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(size::ROW, p.items.len(), |mut row| {
+                        let i = row.index();
+                        let (name, len) = &p.items[i];
+                        let id = p.ids.get(i).copied();
+                        row.set_selected(id.is_some_and(|id| link.playlist_sel.contains(id)));
+                        row.col(|ui| {
                             let on = decks.iter().position(|d| id.is_some() && d.item == id);
                             let hint = on
                                 .and_then(|d| decks[d].start.as_ref().map(|s| (d, s)))
                                 .map_or_else(String::new, |(d, s)| crate::widgets::deck_hint(d, s));
                             crate::widgets::deck_mark(ui, on, &hint);
                             let weight = p.weights.get(i).copied().unwrap_or(1);
-                            let w = if weight == 1 {
-                                String::new()
+                            let title = if weight == 1 {
+                                name.clone()
                             } else {
-                                format!("  ×{weight}")
+                                format!("{name}  ×{weight}")
                             };
-                            ui.label(
-                                RichText::new(format!("{name}{w}")).font(theme::text(theme::SMALL)),
-                            );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let len = RichText::new(mmss(*len)).font(theme::mono(theme::CODE));
-                                ui.label(len.color(t.text_muted));
-                            });
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(title).font(theme::text(theme::SMALL)),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(name);
                         });
-                    });
-                    let resp = row.response.interact(Sense::click());
-                    rows.push(resp.rect);
-                    if let Some(id) = id {
-                        let plain = !link.playlist_sel.contains(id);
-                        if resp.clicked() || (resp.secondary_clicked() && plain) {
-                            let m = if resp.clicked() {
-                                resp.ctx.input(|i| i.modifiers)
-                            } else {
-                                egui::Modifiers::NONE
-                            };
-                            link.focus = Pane::Playlist;
-                            link.playlist_sel.click(id, m, order);
+                        row.col(|ui| {
+                            let artist = view
+                                .library
+                                .iter()
+                                .find(|item| Some(item.id) == id)
+                                .and_then(|item| item.artist.as_deref())
+                                .unwrap_or("—");
+                            ui.add(egui::Label::new(artist).truncate())
+                                .on_hover_text(artist);
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(mmss(*len))
+                                    .font(theme::mono(theme::CODE))
+                                    .color(t.text_muted),
+                            );
+                        });
+                        let resp = row.response();
+                        rows.push(resp.rect);
+                        if let Some(id) = id {
+                            let plain = !link.playlist_sel.contains(id);
+                            if resp.clicked() || (resp.secondary_clicked() && plain) {
+                                let m = if resp.clicked() {
+                                    resp.ctx.input(|i| i.modifiers)
+                                } else {
+                                    egui::Modifiers::NONE
+                                };
+                                link.focus = Pane::Playlist;
+                                link.playlist_sel.click(id, m, order);
+                            }
                         }
-                    }
-                    resp.context_menu(|ui| item_menu(ui, p, decks, i, link, actions));
-                }
-                let hint = RichText::new("Drop a library title or files here to add them");
-                ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
-            });
-            // The zone takes clicks only outside the rows. A click on the zone on top of the
-            // rows would take the clicks of the rows.
-            let pointer = ui.input(|i| i.pointer.interact_pos());
-            let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
-            if !on_row {
-                zone.response
-                    .interact(Sense::click())
-                    .context_menu(|ui| add_menu::items(ui, &p.name, None, actions));
-            }
-            if let Some(drag) = dropped {
-                actions.push(Action::Drop {
-                    item: drag.0,
-                    target: DropTarget::Playlist(p.name.clone()),
+                        resp.context_menu(|ui| item_menu(ui, p, decks, i, link, actions));
+                    });
                 });
-            }
-            if files_over(ui, zone.response.rect) {
-                link.hover_files(FileTarget::Playlist(p.name.clone()));
-                let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
-                ui.painter().rect_stroke(
-                    zone.response.rect,
-                    t.radius_lg,
-                    edge,
-                    egui::StrokeKind::Outside,
-                );
-            }
         });
+        // The zone takes clicks only outside the rows. A click on the zone on top of the
+        // rows would take the clicks of the rows.
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
+        if !on_row {
+            zone.response
+                .interact(Sense::click())
+                .context_menu(|ui| add_menu::items(ui, &p.name, None, actions));
+        }
+        if let Some(drag) = dropped {
+            actions.push(Action::Drop {
+                item: drag.0,
+                target: DropTarget::Playlist(p.name.clone()),
+            });
+        }
+        if files_over(ui, zone.response.rect) {
+            link.hover_files(FileTarget::Playlist(p.name.clone()));
+            let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
+            ui.painter().rect_stroke(
+                zone.response.rect,
+                t.radius_lg,
+                edge,
+                egui::StrokeKind::Outside,
+            );
+        }
+    });
 }
 
 /// The action that removes items of playlist `p`. Items on a deck stay, with the reason.

@@ -351,8 +351,22 @@ fn constraint(ui: &mut egui::Ui, id: (usize, usize), c: &mut Constraint) -> bool
     changed
 }
 
+fn highlighted_script(ui: &egui::Ui, code: &str, t: &Tokens) -> egui::text::LayoutJob {
+    let code_theme = egui_extras::syntax_highlighting::CodeTheme::dark(theme::CODE);
+    let mut job =
+        egui_extras::syntax_highlighting::highlight(ui.ctx(), ui.style(), &code_theme, code, "js");
+    theme::script_palette(&mut job, t);
+    job
+}
+
 fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, preview: bool, t: &Tokens) {
+    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
+        let mut job = highlighted_script(ui, text.as_str(), t);
+        job.wrap.max_width = width;
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    };
     let edit = TextEdit::multiline(&mut tab.script)
+        .layouter(&mut layouter)
         .font(theme::mono(theme::CODE))
         .code_editor()
         .desired_rows(size::SCRIPT_ROWS)
@@ -441,5 +455,27 @@ fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, preview: b
         let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
         ui.painter()
             .rect_stroke(rect, t.radius, edge, egui::StrokeKind::Outside);
+    }
+}
+
+#[cfg(test)]
+mod highlighting_tests {
+    #[test]
+    fn javascript_has_multiple_colours() {
+        let ctx = egui::Context::default();
+        let mut colours = std::collections::HashSet::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let job = super::highlighted_script(
+                ui,
+                "// a rule\nconst take = 3; rule({name: \"Day\"});",
+                &crate::theme::Tokens::DARK,
+            );
+            colours.extend(job.sections.iter().map(|section| section.format.color));
+        });
+        output.textures_delta.clear();
+        assert!(
+            colours.len() > 1,
+            "JavaScript tokens must have different colours"
+        );
     }
 }

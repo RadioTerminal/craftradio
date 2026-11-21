@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 eframe.workspace = true
 egui.workspace = true
-egui_extras.workspace = true
+egui_extras = { workspace = true, features = ["syntect"] }
 jiff.workspace = true
 rfd.workspace = true
 serde_json.workspace = true

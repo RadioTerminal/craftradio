@@ -105,6 +105,7 @@ pub mod size {
     pub const DECK_WORD_MIN_W: f32 = 40.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
+    pub const CLOCK_SHARE: f32 = 0.23;
     pub const CLOCK_W: f32 = 340.0;
     /// The clock cluster in a narrow window: no date, and the LIVE chip shows its glyph only.
     pub const CLOCK_NARROW_W: f32 = 216.0;
@@ -166,6 +167,14 @@ pub mod size {
     pub const LIBRARY_H: f32 = 520.0;
     pub const TREE_W: f32 = 180.0;
     pub const DOCK_H: f32 = 260.0;
+    pub const TEXT_COL_MIN: f32 = 64.0;
+    pub const TEXT_COL_MAX: f32 = 640.0;
+    pub const COL_PATH: f32 = 280.0;
+    pub const COL_FIT: f32 = 96.0;
+    pub const UPCOMING_TIME: f32 = 112.0;
+    pub const UPCOMING_PLAYLIST: f32 = 64.0;
+    pub const UPCOMING_LEN: f32 = 52.0;
+    pub const DECK_STRIP_H: f32 = 142.0;
     pub const COL_TITLE: f32 = 240.0;
     pub const COL_ARTIST: f32 = 150.0;
     pub const COL_CATEGORY: f32 = 90.0;
@@ -475,6 +484,30 @@ pub fn apply(ctx: &egui::Context) {
             wv.expansion = 0.0;
         }
     });
+}
+
+/// Map Base16 Mocha Dark syntax classes to the station palette.
+pub(crate) fn script_palette(job: &mut egui::text::LayoutJob, t: &Tokens) {
+    for section in &mut job.sections {
+        let c = section.format.color;
+        let spread = c.r().max(c.g()).max(c.b()) - c.r().min(c.g()).min(c.b());
+        let ink = if spread < 30 {
+            t.text_muted
+        } else if c.g() > c.r() && c.g() > c.b() {
+            t.ok
+        } else if c.r() > c.g() && c.r() > c.b() {
+            t.warn
+        } else {
+            t.accent_ink
+        };
+        section.format.color = if contrast(ink, t.field) >= 4.5 {
+            ink
+        } else {
+            t.text
+        };
+        section.format.font_id = mono(CODE);
+        section.format.underline.color = section.format.color;
+    }
 }
 
 #[cfg(test)]

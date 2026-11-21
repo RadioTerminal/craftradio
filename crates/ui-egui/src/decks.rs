@@ -132,21 +132,43 @@ pub(crate) fn show(
         // The ring counts down, so the deck strip draws again soon.
         ui.ctx().request_repaint_after_secs(ARM_REPAINT_S);
     }
-    ui.horizontal_top(|ui| {
+    state.next = next_ranks(&view.decks);
+    ui.scope(|ui| {
         ui.spacing_mut().item_spacing.x = space::M;
-        let gaps = space::M * view.decks.len() as f32;
-        let clock_w = clock_width(ui.available_width());
-        let free = ui.available_width() - clock_w - gaps;
-        // The cards share what the clock leaves. Their text truncates, so they never overlap it.
-        let card_w = (free / view.decks.len() as f32).max(size::DECK_TINY_W);
-        state.next = next_ranks(&view.decks);
-        for (i, deck) in view.decks.iter().enumerate() {
-            let card = deck_card(ui, i, deck, card_w, state, actions, t);
-            card.context_menu(|ui| deck_menu(ui, i, deck, view, state, now, actions));
-        }
-        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-            clock(ui, view, actions, t)
-        });
+        egui_extras::StripBuilder::new(ui)
+            .size(egui_extras::Size::exact(size::DECK_STRIP_H))
+            .vertical(|mut strip| {
+                strip.strip(|builder| {
+                    builder
+                        .sizes(egui_extras::Size::remainder(), view.decks.len())
+                        .size(
+                            egui_extras::Size::relative(size::CLOCK_SHARE)
+                                .at_least(size::CLOCK_NARROW_W)
+                                .at_most(size::CLOCK_W),
+                        )
+                        .horizontal(|mut strip| {
+                            for (i, deck) in view.decks.iter().enumerate() {
+                                strip.cell(|ui| {
+                                    let card = deck_card(
+                                        ui,
+                                        i,
+                                        deck,
+                                        ui.available_width(),
+                                        state,
+                                        actions,
+                                        t,
+                                    );
+                                    card.context_menu(|ui| {
+                                        deck_menu(ui, i, deck, view, state, now, actions)
+                                    });
+                                });
+                            }
+                            strip.cell(|ui| {
+                                clock(ui, view, actions, t);
+                            });
+                        });
+                });
+            });
     });
     if state.confirm != old_confirm {
         actions.push(parts::set(parts::DECKS, CONFIRM_KEY, state.confirm));
@@ -774,15 +796,6 @@ fn mode_control(
             }
         }
     });
-}
-
-/// The width of the clock cluster at a strip width of `strip`.
-fn clock_width(strip: f32) -> f32 {
-    if strip >= size::STRIP_WIDE {
-        size::CLOCK_W
-    } else {
-        size::CLOCK_NARROW_W
-    }
 }
 
 /// Two letters for a mode, for a narrow window.
