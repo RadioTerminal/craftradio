@@ -189,17 +189,29 @@ pub enum AudioIntent {
         deck: u8,
         item: ItemId,
     },
+    /// `expect_item` is the item the command meant, or else the item the engine believes
+    /// is on the deck. Playout refuses the intent if its deck holds another item.
     Play {
         deck: u8,
+        expect_item: Option<ItemId>,
     },
+    /// `expect_item` is the item the command meant, or else the item the engine believes
+    /// is on the deck. Playout refuses the intent if its deck holds another item.
     Pause {
         deck: u8,
+        expect_item: Option<ItemId>,
     },
+    /// `expect_item` is the item the command meant, or else the item the engine believes
+    /// is on the deck. Playout refuses the intent if its deck holds another item.
     Fade {
         deck: u8,
+        expect_item: Option<ItemId>,
     },
+    /// `expect_item` is the item the command meant, or else the item the engine believes
+    /// is on the deck. Playout refuses the intent if its deck holds another item.
     Skip {
         deck: u8,
+        expect_item: Option<ItemId>,
     },
     SetMode(Mode),
     StopAfterCurrent,
@@ -535,19 +547,23 @@ impl Engine {
             }
             C::DeckPlay { deck, expect_item } => {
                 self.loaded_with(deck, expect_item)?;
-                Ok(self.audio(AudioIntent::Play { deck }))
+                let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
+                Ok(self.audio(AudioIntent::Play { deck, expect_item }))
             }
             C::DeckPause { deck, expect_item } => {
                 self.loaded_with(deck, expect_item)?;
-                Ok(self.audio(AudioIntent::Pause { deck }))
+                let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
+                Ok(self.audio(AudioIntent::Pause { deck, expect_item }))
             }
             C::DeckFade { deck, expect_item } => {
                 self.loaded_with(deck, expect_item)?;
-                Ok(self.audio(AudioIntent::Fade { deck }))
+                let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
+                Ok(self.audio(AudioIntent::Fade { deck, expect_item }))
             }
             C::DeckSkip { deck, expect_item } => {
                 self.loaded_with(deck, expect_item)?;
-                Ok(self.audio(AudioIntent::Skip { deck }))
+                let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
+                Ok(self.audio(AudioIntent::Skip { deck, expect_item }))
             }
             C::ModeSet { mode } => {
                 self.state.mode = mode;

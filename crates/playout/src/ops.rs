@@ -115,13 +115,29 @@ impl Core {
         let deck = |d: u8| usize::from(d).min(3);
         match intent {
             AudioIntent::Load { deck: d, item } => self.op_load(deck(d), item, now),
-            AudioIntent::Play { deck: d } => {
+            AudioIntent::Play {
+                deck: d,
+                expect_item,
+            } if !self.holds(deck(d), expect_item) => Check::Now(false),
+            AudioIntent::Pause {
+                deck: d,
+                expect_item,
+            }
+            | AudioIntent::Fade {
+                deck: d,
+                expect_item,
+            }
+            | AudioIntent::Skip {
+                deck: d,
+                expect_item,
+            } if !self.holds(deck(d), expect_item) => Check::Now(false),
+            AudioIntent::Play { deck: d, .. } => {
                 self.leave_emergency(now);
                 self.op_play(deck(d))
             }
-            AudioIntent::Pause { deck: d } => self.op_pause(deck(d)),
-            AudioIntent::Fade { deck: d } => self.op_fade(deck(d)),
-            AudioIntent::Skip { deck: d } => self.op_skip(deck(d), now),
+            AudioIntent::Pause { deck: d, .. } => self.op_pause(deck(d)),
+            AudioIntent::Fade { deck: d, .. } => self.op_fade(deck(d)),
+            AudioIntent::Skip { deck: d, .. } => self.op_skip(deck(d), now),
             AudioIntent::SetMode(_) => {
                 self.leave_emergency(now);
                 self.dirty = true;
@@ -145,6 +161,12 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// Tells if deck `i` holds `expect`, the item that a command meant. With no
+    /// expectation, any item matches. A stale command does nothing.
+    fn holds(&self, i: usize, expect: Option<ItemId>) -> bool {
+        expect.is_none_or(|id| self.slots[i].as_ref().is_some_and(|s| s.item.id == id))
     }
 
     /// Tells if this queued slot can start by itself now. Hard events always can.
@@ -288,6 +310,11 @@ impl Core {
         let tag = s.tag;
         let at = self.mixer.now();
         if s.not_started() {
+            // An operator skip is the one way to cancel a queued hard event.
+            if s.is_hard() {
+                let entry = s.entry.clone();
+                self.cancel_hard(&entry);
+            }
             self.unload(i);
         } else {
             self.fade_at(i, at, Duration::ZERO, true);

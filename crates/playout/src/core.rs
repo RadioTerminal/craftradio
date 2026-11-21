@@ -38,6 +38,9 @@ fn same_event(a: &Entry, b: &Entry) -> bool {
     a.playlist == b.playlist && a.item == b.item && target(a) == target(b)
 }
 
+/// In the last 10 s before its target, and after it, planning never cancels a hard event.
+pub(crate) const HARD_LOCK: Duration = Duration::from_secs(10);
+
 /// Playout plans again at least this often.
 const PLAN_EVERY: Duration = Duration::from_secs(1);
 /// The most planned entries that wait on decks. The other decks stay free for operators.
@@ -276,6 +279,10 @@ pub(crate) struct Core {
     hard_seen: Vec<Entry>,
     /// Items taken off a deck for a hard event. They wait until that event starts.
     blocked: Vec<Blocked>,
+    /// The station of the last plan, to tell a real edit from other state changes.
+    last_station: Option<radio_model::Station>,
+    /// Hard events that an operator cancelled. Playout keeps them for a day.
+    cancelled: Vec<Entry>,
     out_clock: Option<SampleClock>,
 }
 
@@ -366,6 +373,8 @@ impl Core {
             ended: BTreeMap::new(),
             hard_seen: Vec::new(),
             blocked: Vec::new(),
+            last_station: None,
+            cancelled: Vec::new(),
             out_clock: opened.clock,
         })
     }
@@ -534,7 +543,10 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
-        s.entry.start = sub(wall, s.offset);
+        // A hard event keeps its target as its start, so later plans still know it.
+        if !s.is_hard() {
+            s.entry.start = sub(wall, s.offset);
+        }
         self.dirty = true;
         self.save_due = true;
         if self.slots[deck.index()]
@@ -642,7 +654,8 @@ impl Core {
                     let gap = radio_timing::advance(item, Some(&s.item)).saturating_sub(*trim);
                     s.entry.start = add(*start, gap);
                 }
-                if s.offset.is_zero() {
+                // A hard event keeps its target, even when it starts late.
+                if s.offset.is_zero() && !s.is_hard() {
                     s.entry.start = s.entry.start.max(now);
                 }
             }
@@ -664,12 +677,15 @@ impl Core {
             .iter()
             .flat_map(|p| p.items.iter().map(|i| (i.id, i.clone())))
             .collect();
-        // A queued hard event is not pinned: the plan must still produce it, or it goes.
+        // Playout does not pin a queued hard event far from its target. The plan must
+        // still produce it, or it goes. Near its target, playout pins it so it stays.
+        let lock = add(now, HARD_LOCK);
+        let free_hard = |s: &Slot| s.is_hard() && s.not_started() && s.entry.start > lock;
         let pinned: Vec<Entry> = self
             .slots
             .iter()
             .flatten()
-            .filter(|s| s.pinned() && !(s.is_hard() && s.not_started()))
+            .filter(|s| s.pinned() && !free_hard(s))
             .map(|s| s.entry.clone())
             .collect();
         let input = PlanInput {
@@ -681,13 +697,21 @@ impl Core {
         };
         let mut opts = self.cfg.plan;
         opts.resume_rotation = true;
-        let prev = self.planned.then_some(&self.timeline);
+        // A station edit applies at once: the previous plan would keep stale fixed events.
+        let edited = self.last_station.as_ref() != Some(&self.engine.state().station);
+        let prev = (self.planned && !edited).then_some(&self.timeline);
         let tl = plan(&input, &opts, prev);
         if tl != self.timeline {
             self.timeline_changed = true;
             self.save_due = true;
         }
         self.timeline = tl;
+        if edited {
+            if self.planned {
+                self.warn_locked_hard(&station, &pinned, now);
+            }
+            self.last_station = Some(self.engine.state().station.clone());
+        }
         self.prune_hard(now);
         self.planned = true;
         self.dirty = false;
@@ -885,11 +909,13 @@ impl Core {
         }
     }
 
-    /// The first hard event in the timeline after `start` and before `end`.
-    fn hard_between(&self, start: Timestamp, end: Timestamp) -> Option<Timestamp> {
+    /// The first hard event in the timeline after `start` and before `end`, other than
+    /// the event `own` itself.
+    fn hard_between(&self, own: &Entry, start: Timestamp, end: Timestamp) -> Option<Timestamp> {
         self.timeline
             .entries
             .iter()
+            .filter(|e| !same_event(e, own))
             .filter_map(|e| e.fixed.as_ref())
             .filter(|f| f.mode == FixMode::Hard)
             .map(|f| f.target)
@@ -912,7 +938,7 @@ impl Core {
             } else {
                 Timestamp::MAX
             };
-            let hard = self.hard_between(start, end);
+            let hard = self.hard_between(&s.entry, start, end);
             if !planned && hard.is_none() {
                 continue;
             }
@@ -1148,10 +1174,12 @@ impl Core {
     /// one leaves its deck. A past event stays while its item is still in the station,
     /// because the planner never shows past targets.
     fn prune_hard(&mut self, now: Timestamp) {
+        let lock = add(now, HARD_LOCK);
         let timeline = &self.timeline.entries;
         let items = &self.items;
+        // Near or after its target, only the removal of its item cancels a hard event.
         self.hard_seen.retain(|h| {
-            if h.start <= now {
+            if h.start <= lock {
                 items.contains_key(&h.item)
             } else {
                 timeline.iter().any(|e| same_event(e, h))
@@ -1159,15 +1187,74 @@ impl Core {
         });
         for i in 0..4 {
             let gone = self.slots[i].as_ref().is_some_and(|s| {
-                s.role == DeckRole::Plan
-                    && s.is_hard()
-                    && s.not_started()
-                    && !timeline.iter().any(|e| same_event(e, &s.entry))
+                let queued_hard = s.role == DeckRole::Plan && s.is_hard() && s.not_started();
+                let removed = !items.contains_key(&s.item.id);
+                let moved =
+                    s.entry.start > lock && !timeline.iter().any(|e| same_event(e, &s.entry));
+                queued_hard && (removed || moved)
             });
             if gone && let Some(s) = self.slots[i].take() {
                 let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
                 let _ = self.mixer.send(cmd.for_item(s.tag));
                 self.dirty = true;
+            }
+        }
+    }
+
+    /// An operator cancelled this hard event: it does not load again.
+    pub(crate) fn cancel_hard(&mut self, entry: &Entry) {
+        self.hard_seen.retain(|h| !same_event(h, entry));
+        self.cancelled.push(entry.clone());
+    }
+
+    /// After a station change, warns about each hard event near its target that the
+    /// change moves or deletes. Such an event still airs, and the change applies after it.
+    fn warn_locked_hard(
+        &mut self,
+        station: &radio_model::Station,
+        pinned: &[Entry],
+        now: Timestamp,
+    ) {
+        let lock = add(now, HARD_LOCK);
+        let in_window = |e: &Entry| e.start > now && e.start <= lock;
+        let mut near: Vec<Entry> = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|s| s.is_hard() && s.not_started() && in_window(&s.entry))
+            .map(|s| s.entry.clone())
+            .collect();
+        for h in self.hard_seen.iter().filter(|h| in_window(h)) {
+            if !near.iter().any(|n| same_event(n, h)) {
+                near.push(h.clone());
+            }
+        }
+        if near.is_empty() {
+            return;
+        }
+        // Plan once more without these events, to see if the station still has them.
+        let others: Vec<Entry> = pinned
+            .iter()
+            .filter(|p| !near.iter().any(|n| same_event(n, p)))
+            .cloned()
+            .collect();
+        let input = PlanInput {
+            station,
+            history: &self.history,
+            now,
+            horizon: self.cfg.horizon,
+            pinned: &others,
+        };
+        let mut opts = self.cfg.plan;
+        opts.resume_rotation = true;
+        let check = plan(&input, &opts, None);
+        for n in near {
+            if !check.entries.iter().any(|e| same_event(e, &n)) {
+                let alarm = Alarm::HardEventLocked {
+                    item: n.item,
+                    target: n.start,
+                };
+                self.alarms.raise_once(now, alarm);
             }
         }
     }
@@ -1193,7 +1280,6 @@ impl Core {
     /// while it is within its tolerance. After that, playout raises `HardEventMissed`.
     fn ensure_hard(&mut self, now: Timestamp) {
         let horizon = add(now, self.cfg.preload);
-        let assigned = self.assigned();
         for e in self.timeline.entries.iter().filter(|e| {
             e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard)
                 && e.start > now
@@ -1203,9 +1289,18 @@ impl Core {
                 self.hard_seen.push(e.clone());
             }
         }
+        // An event on a deck needs no load: match by event, not by start time.
+        let on_deck: Vec<Entry> = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|s| s.entry.clone())
+            .collect();
         self.hard_seen
-            .retain(|h| !assigned.contains(&(h.item, h.start)));
+            .retain(|h| !on_deck.iter().any(|e| same_event(e, h)));
         self.blocked.retain(|b| now < b.until);
+        self.cancelled
+            .retain(|c| since(c.start, now) < Duration::from_secs(24 * 3600));
         let mut missed = Vec::new();
         let mut due = Vec::new();
         for h in &self.hard_seen {
@@ -1228,6 +1323,9 @@ impl Core {
             let Some(item) = self.items.get(&entry.item).cloned() else {
                 continue;
             };
+            if self.cancelled.iter().any(|c| same_event(c, &entry)) {
+                continue;
+            }
             let Some(i) = self.free_deck() else {
                 if !self.evict_for_hard(entry.start, now) {
                     self.alarms

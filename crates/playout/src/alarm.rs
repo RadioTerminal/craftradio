@@ -36,6 +36,9 @@ pub enum Alarm {
     HardEventMissed { item: ItemId, target: Timestamp },
     /// Playout took an operator's loaded item off its deck to make room for a hard event.
     OperatorItemEvicted { deck: u8, item: ItemId },
+    /// A hard event is about to air, and a station change moves or deletes it. The
+    /// event still airs, and the change applies after it.
+    HardEventLocked { item: ItemId, target: Timestamp },
     /// Playout could not use the local output as asked. It runs on the fallback.
     OutputFallback { reason: String },
     /// Writing the as-played log failed.

@@ -204,8 +204,8 @@ fn news_at(time: &str) -> String {
     )
 }
 
-/// A hard event moves after it is on a deck. It airs once at the new time, and it
-/// raises no missed-event alarm.
+/// A hard event moves while it is on a deck, more than 10 s before its target. It airs
+/// once at the new time, and it raises no missed-event alarm.
 #[test]
 fn moved_hard_event_airs_once_at_the_new_time() {
     let main: Vec<_> = (1..=3)
@@ -218,19 +218,19 @@ fn moved_hard_event_airs_once_at_the_new_time() {
     let mut news = file_item(10, "News", &wav("mv-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
     news.movable = false;
     news.trimmable = false;
-    let playlist = add_playlist(&mut engine, "News", vec![news], &news_at("13:00:05"));
+    let playlist = add_playlist(&mut engine, "News", vec![news], &news_at("13:00:12"));
     let (p, clock) = offline(engine, |_| {});
     let before = run(&p, &clock, 1.0);
     let _ = p
         .send(Command::PlaylistSetRulesScript {
             playlist,
-            script: news_at("13:00:07"),
+            script: news_at("13:00:14"),
         })
         .unwrap();
-    let after = run(&p, &clock, 7.5);
+    let after = run(&p, &clock, 14.5);
     let program = [before, after].concat();
 
-    let target = 7 * SR;
+    let target = 14 * SR;
     let start = first_audible(&program, 1, 0).expect("the event sounds");
     assert!(
         start.abs_diff(target) <= SR / 200,
@@ -240,6 +240,115 @@ fn moved_hard_event_airs_once_at_the_new_time() {
         first_audible(&program, 1, target + SR + SR / 10).is_none(),
         "it aired twice"
     );
+    let view = p.snapshot();
+    assert!(
+        view.alarms
+            .iter()
+            .all(|a| !matches!(a.alarm, radio_playout::Alarm::HardEventMissed { .. }))
+    );
+}
+
+/// The same event moves 4 s before its target, inside the last 10 s. It still airs on
+/// its target, and an alarm says that the change applies after it.
+#[test]
+fn last_second_move_does_not_cancel_hard_event() {
+    let main: Vec<_> = (1..=3)
+        .map(|i| {
+            let path = wav(&format!("ls{i}"), 4.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5)
+        })
+        .collect();
+    let mut engine = engine_with(main);
+    let mut news = file_item(10, "News", &wav("ls-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    news.movable = false;
+    news.trimmable = false;
+    let playlist = add_playlist(&mut engine, "News", vec![news], &news_at("13:00:05"));
+    let (p, clock) = offline(engine, |_| {});
+    let before = run(&p, &clock, 1.0);
+    let _ = p
+        .send(Command::PlaylistSetRulesScript {
+            playlist,
+            script: news_at("13:00:07"),
+        })
+        .unwrap();
+    let after = run(&p, &clock, 5.0);
+    let program = [before, after].concat();
+
+    let target = 5 * SR;
+    let start = first_audible(&program, 1, 0).expect("the event sounds");
+    assert!(
+        start.abs_diff(target) <= SR / 200,
+        "event at {start}, target {target}"
+    );
+    let view = p.snapshot();
+    assert!(
+        view.alarms
+            .iter()
+            .any(|a| matches!(a.alarm, radio_playout::Alarm::HardEventLocked { .. }))
+    );
+}
+
+/// Every deck is on air when a hard event is due, so it loads after its target. Within
+/// its tolerance it still airs, once and without a break.
+#[test]
+fn hard_event_loaded_late_still_airs() {
+    // No planned music: the operator fills all four decks.
+    let mut engine = engine_with(vec![]);
+    let carts: Vec<_> = (20..24)
+        .map(|i| {
+            file_item(
+                i,
+                &format!("Cart {i}"),
+                &wav(&format!("late{i}"), 6.0, Side::Left),
+                6.0,
+                6.0,
+                0.0,
+            )
+        })
+        .collect();
+    add_playlist(&mut engine, "Carts", carts, "");
+    let mut news = file_item(
+        10,
+        "News",
+        &wav("late-news", 1.0, Side::Right),
+        1.0,
+        1.0,
+        0.0,
+    );
+    news.movable = false;
+    news.trimmable = false;
+    add_playlist(&mut engine, "News", vec![news], &news_at("13:00:03"));
+    // A short preload: the event comes into view only when every deck is on air.
+    let (p, clock) = offline(engine, |cfg| cfg.preload = Duration::from_secs(2));
+    let first = Vec::new();
+    for (deck, item) in [(0u8, 20u64), (1, 21), (2, 22), (3, 23)] {
+        let item = radio_model::ItemId(item);
+        let _ = p.send(Command::DeckLoad { deck, item }).unwrap();
+        let _ = p
+            .send(Command::DeckPlay {
+                deck,
+                expect_item: Some(item),
+            })
+            .unwrap();
+    }
+    let program = [first, run(&p, &clock, 5.0)].concat();
+
+    let target = 3 * SR;
+    let start = first_audible(&program, 1, 0).expect("the late event sounds");
+    assert!(
+        start >= target && start < target + SR,
+        "event at {start}, target {target}"
+    );
+    for w in 0..16 {
+        let from = start + w * SR / 20;
+        assert!(
+            peak(&program, 1, from, from + SR / 20) > 0.01,
+            "a break at {from}"
+        );
+    }
+    let rows = p.history(t0(), 20).unwrap();
+    let news = rows.iter().filter(|r| r.entry.title == "News").count();
+    assert_eq!(news, 1, "the event loaded more than once");
     let view = p.snapshot();
     assert!(
         view.alarms
