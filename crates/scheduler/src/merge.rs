@@ -170,6 +170,10 @@ struct Walk<'a> {
     warnings: Vec<Warning>,
     /// Where the next entry starts.
     next_at: Timestamp,
+    /// Continue each playlist's order after its last played item (see [`merge_with`]).
+    resume: bool,
+    /// The playlists whose picker continued its order already.
+    resumed: Vec<bool>,
 }
 
 impl<'a> Walk<'a> {
@@ -228,6 +232,17 @@ impl<'a> Walk<'a> {
     fn pick(&mut self, pi: usize, extra: &[Constraint], at: Timestamp) -> Option<&'a Item> {
         let station: &'a Station = self.station;
         let pl = &station.playlists[pi];
+        if self.resume && !self.resumed[pi] {
+            self.resumed[pi] = true;
+            let last = self
+                .hist
+                .iter_since(Timestamp::MIN)
+                .filter(|p| p.playlist == pl.id)
+                .last();
+            if let Some(last) = last {
+                self.pickers[pi].resume_after(pl, last.item);
+            }
+        }
         let (hist, tz, prev) = (&self.hist, &self.tz, self.entries.last());
         self.pickers[pi].next(pl, hist, |item| {
             item_ok(item, at, hist, tz)
@@ -292,6 +307,13 @@ impl<'a> Walk<'a> {
 /// the horizon, so a rule due only after the last main item of the horizon does not fire.
 /// An unknown station time zone falls back to UTC; validate the station first.
 pub fn merge(input: &PlanInput) -> Timeline {
+    merge_with(input, false)
+}
+
+/// Does [`merge`]. With `resume`, each playlist continues its order after its most recent
+/// item in `input.history` or `input.pinned`. Without it, each playlist starts at its first
+/// item. A playout plans every second and sets `resume`, so an `InOrder` playlist advances.
+pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
     let station = input.station;
     let tz = TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC);
     let now = input.now;
@@ -310,6 +332,8 @@ pub fn merge(input: &PlanInput) -> Timeline {
         entries: Vec::new(),
         warnings: Vec::new(),
         next_at: now,
+        resume,
+        resumed: vec![false; station.playlists.len()],
     };
 
     let Some(main) = station.playlists.iter().position(|p| p.is_main) else {

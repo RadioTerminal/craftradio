@@ -1,7 +1,8 @@
 //! `plan`: merge and fit, keeping the previous plan steady where a change is not worth it.
 
 use crate::fit::drop_adjacent_clashes;
-use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all, merge};
+use crate::merge::merge_with;
+use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all};
 use jiff::SignedDuration;
 use radio_model::{Item, ItemId};
 use radio_timing::{item_len, start_times};
@@ -15,6 +16,9 @@ pub struct PlanOptions {
     pub lock_before: Duration,
     /// A new order must beat the previous one's error by more than this to replace it.
     pub replan_threshold: Duration,
+    /// Each playlist continues its order after its most recent item in the history or the
+    /// pinned entries. When false, each playlist starts at its first item. Off by default.
+    pub resume_rotation: bool,
 }
 
 impl Default for PlanOptions {
@@ -22,6 +26,7 @@ impl Default for PlanOptions {
         Self {
             lock_before: Duration::from_secs(10 * 60),
             replan_threshold: Duration::from_millis(500),
+            resume_rotation: false,
         }
     }
 }
@@ -70,7 +75,7 @@ fn ids(entries: &[Entry]) -> Vec<ItemId> {
 /// The improvement check compares against the error stored in `prev.fits`, not a re-fit of
 /// the old order.
 pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> Timeline {
-    let mut raw = merge(input);
+    let mut raw = merge_with(input, opts.resume_rotation);
     let mut tl = raw.clone();
     fit_all(&mut tl, input.station, input.history);
     let Some(prev) = prev else {

@@ -379,3 +379,45 @@ fn dedupe_never_touches_a_frozen_window_containing_a_locked_entry() {
         "the frozen window changed"
     );
 }
+
+#[test]
+fn resume_rotation_continues_after_pinned_entries() {
+    let mut main = playlist(1, "main", tracks(3));
+    main.is_main = true;
+    let st = station("UTC", vec![main]);
+    let first = plan(
+        &PlanInput {
+            station: &st,
+            history: &PlayHistory::new(),
+            now: now(),
+            horizon: Duration::from_secs(600),
+            pinned: &[],
+        },
+        &PlanOptions::default(),
+        None,
+    );
+    // Items 1 and 2 are on air and on a deck; the playout re-plans a minute later.
+    let pinned: Vec<Entry> = first.entries[..2].to_vec();
+    let later = now() + Duration::from_secs(60);
+    let input = PlanInput {
+        station: &st,
+        history: &PlayHistory::new(),
+        now: later,
+        horizon: Duration::from_secs(600),
+        pinned: &pinned,
+    };
+    let next_after_pinned = |tl: &Timeline| tl.entries.get(2).map(|e| e.item);
+    let opts = PlanOptions {
+        resume_rotation: true,
+        ..PlanOptions::default()
+    };
+    assert_eq!(
+        next_after_pinned(&plan(&input, &opts, None)),
+        Some(ItemId(3))
+    );
+    // Off by default: the order starts again from the first item.
+    assert_eq!(
+        next_after_pinned(&plan(&input, &PlanOptions::default(), None)),
+        Some(ItemId(1))
+    );
+}
