@@ -184,14 +184,30 @@ pub struct Outcome {
 /// What the audio glue should do. Nothing consumes these yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioIntent {
-    Load { deck: u8, item: ItemId },
-    Play { deck: u8 },
-    Pause { deck: u8 },
-    Fade { deck: u8 },
-    Skip { deck: u8 },
+    Load {
+        deck: u8,
+        item: ItemId,
+    },
+    Play {
+        deck: u8,
+    },
+    Pause {
+        deck: u8,
+    },
+    Fade {
+        deck: u8,
+    },
+    Skip {
+        deck: u8,
+    },
     SetMode(Mode),
     StopAfterCurrent,
-    FireCart { page: u32, slot: u32 },
+    /// Start the next item now (the operator pressed Next).
+    Next,
+    FireCart {
+        page: u32,
+        slot: u32,
+    },
     StopAllCarts,
 }
 
@@ -501,6 +517,7 @@ impl Engine {
                 self.state.mode = mode;
                 Ok(self.audio(AudioIntent::SetMode(mode)))
             }
+            C::PlayoutNext => Ok(self.audio(AudioIntent::Next)),
             C::StationStopAfterCurrent => {
                 self.state.stop_after_current = true;
                 Ok(self.audio(AudioIntent::StopAfterCurrent))
