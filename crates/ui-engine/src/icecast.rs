@@ -126,11 +126,9 @@ pub fn icecast_config(
     if ice.host.is_empty() || ice.mount.is_empty() {
         return Ok(None);
     }
-    let key = state
-        .settings(ICECAST_PART)
-        .and_then(|m| m.get("password_ref"))
-        .and_then(|v| v.as_str())
-        .map_or_else(|| secret_key(&ice), str::to_owned);
+    // The keychain account always comes from the mount itself. A stored reference could
+    // point a changed host at the password of another mount.
+    let key = secret_key(&ice);
     let password = secrets
         .get(&key)?
         .ok_or_else(|| format!("the keychain has no password for {}{}", ice.host, ice.mount))?;
@@ -212,7 +210,6 @@ impl EngineSource {
             set("user", clean.user.clone().into()),
             set("format", format.into()),
             set("kbps", clean.kbps.into()),
-            set("password_ref", key.into()),
         ])?;
         Ok(1)
     }
