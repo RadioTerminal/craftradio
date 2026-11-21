@@ -69,7 +69,9 @@ pub mod size {
     pub const UPCOMING_ROW: f32 = 34.0;
 
     /// Table columns.
-    pub const COL_TIME: f32 = 84.0;
+    pub const COL_TIME: f32 = 104.0;
+    /// The slot for the ⏱ of a fixed row, before its time.
+    pub const GLYPH_SLOT: f32 = 14.0;
     pub const COL_LEN: f32 = 56.0;
     pub const COL_PLAYLIST: f32 = 78.0;
 
@@ -170,7 +172,10 @@ pub mod size {
     pub const CLOCK_MAJOR_TICK: f32 = 1.5;
     /// The date text size as a part of the digit size.
     pub const CLOCK_DATE_PER_DIGITS: f32 = 0.3;
-    pub const CLOCK_LINE_PER_RING: f32 = 0.06;
+    pub const CLOCK_LINE_PER_RING: f32 = 0.08;
+    /// In its last seconds, a clock countdown grows by this factor and warns.
+    pub const CLOCK_URGENT_S: u64 = 30;
+    pub const CLOCK_URGENT_GROW: f32 = 1.25;
 
     /// The rules editor window.
     pub const EDITOR_W: f32 = 760.0;
@@ -278,14 +283,18 @@ impl Tokens {
     }
 }
 
-/// Colours that a person can give a cart, with their names. The name always shows too.
-pub const CART_COLOURS: [(&str, [u8; 3]); 6] = [
-    ("Red", [0xD0, 0x48, 0x48]),
-    ("Amber", [0xE0, 0xA0, 0x30]),
-    ("Green", [0x5B, 0xAA, 0x5B]),
-    ("Teal", [0x3F, 0xB5, 0xA8]),
-    ("Blue", [0x4A, 0x90, 0xD9]),
+/// Colours that a person can give a playlist or a cart, with their names. The name always
+/// shows too. Red, amber, green and the accent blue mean on air, danger, warning, ok and
+/// selection, so the palette keeps away from them.
+pub const PALETTE: [(&str, [u8; 3]); 8] = [
+    ("Lime", [0x9C, 0xC0, 0x3A]),
+    ("Copper", [0xB8, 0x7A, 0x52]),
+    ("Magenta", [0xC8, 0x5F, 0xC8]),
+    ("Indigo", [0x6A, 0x74, 0xE8]),
     ("Violet", [0x8E, 0x6A, 0xD8]),
+    ("Teal", [0x2E, 0x9C, 0xA0]),
+    ("Rose", [0xD0, 0x6A, 0xA8]),
+    ("Slate", [0x8A, 0x96, 0xA8]),
 ];
 
 /// The WCAG minimum contrast for text.
@@ -410,6 +419,58 @@ pub fn apply(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CIE L*a*b* of an sRGB colour, for the colour distance.
+    fn lab(c: Color32) -> [f32; 3] {
+        let lin = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let (r, g, b) = (lin(c.r()), lin(c.g()), lin(c.b()));
+        let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.950_47;
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.088_83;
+        let f = |t: f32| {
+            if t > 0.008_856 {
+                t.cbrt()
+            } else {
+                7.787 * t + 16.0 / 116.0
+            }
+        };
+        [
+            116.0 * f(y) - 16.0,
+            500.0 * (f(x) - f(y)),
+            200.0 * (f(y) - f(z)),
+        ]
+    }
+
+    /// The CIE76 colour difference.
+    fn delta_e(a: Color32, b: Color32) -> f32 {
+        let (a, b) = (lab(a), lab(b));
+        a.iter()
+            .zip(b)
+            .map(|(p, q)| (p - q).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    }
+
+    #[test]
+    fn palette_colours_stay_clear_of_the_colours_that_mean_something() {
+        // A ΔE of 25 reads as a different colour at a glance.
+        const MIN_DELTA_E: f32 = 25.0;
+        let t = Tokens::DARK;
+        let semantic = [t.on_air, t.danger, t.warn, t.ok, t.accent, t.selection];
+        for (name, rgb) in PALETTE {
+            for s in semantic {
+                let d = delta_e(Tokens::playlist(rgb), s);
+                assert!(d >= MIN_DELTA_E, "{name} is {d:.1} from {s:?}");
+            }
+        }
+    }
 
     #[test]
     fn text_and_playlist_names_read_at_4_5_to_1_on_every_surface() {

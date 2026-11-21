@@ -284,7 +284,7 @@ fn empty_menu(ui: &mut egui::Ui, view: &StationView, link: &Linked, actions: &mu
     if context_menu::menu_item_if(ui, link.has_clip, "Paste", Some(context_menu::PASTE)) {
         actions.push(Action::Paste(PasteTo::Main(Place::End)));
     }
-    if context_menu::menu_item(ui, "Insert from library…", None) {
+    if context_menu::menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
         actions.push(Action::Toast(
             "drag a title from the Library onto a row".to_owned(),
@@ -326,7 +326,7 @@ fn row_menu(
             }
         }
     });
-    if menu_item(ui, "Insert from library…", None) {
+    if menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
         actions.push(Action::Toast(
             "drag a title from the Library onto a row".to_owned(),
@@ -427,7 +427,18 @@ struct Look {
 }
 
 /// The time cell. A played row has a ✔ and the word in its tooltip.
-fn start_cell(ui: &mut egui::Ui, text: &str, font: f32, ink: egui::Color32, played: bool) {
+fn start_cell(ui: &mut egui::Ui, r: &Row, text: &str, font: f32, ink: egui::Color32, played: bool) {
+    // ⏱ sits in a slot of its own, so every time starts at the same x.
+    let (slot, _) = ui.allocate_exact_size(egui::vec2(size::GLYPH_SLOT, font), Sense::hover());
+    if r.fixed.is_some() {
+        ui.painter().text(
+            slot.center(),
+            egui::Align2::CENTER_CENTER,
+            "⏱",
+            theme::text(font),
+            ink,
+        );
+    }
     let r = ui.label(RichText::new(text).font(theme::mono(font)).color(ink));
     if played {
         ui.label(RichText::new("✔").font(theme::mono(font)).color(ink));
@@ -448,7 +459,7 @@ fn track_row(
     row.col(|ui| {
         on_air_bg(ui, on_air, true, t);
         ui.add_space(space::S);
-        start_cell(ui, &prep.start[i], theme::CODE, time_ink, played);
+        start_cell(ui, r, &prep.time[i], theme::CODE, time_ink, played);
     });
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);
@@ -526,11 +537,8 @@ fn divider_row(
     };
     row.col(|ui| {
         on_air_bg(ui, on_air, true, t);
-        let rect = ui.max_rect();
-        let lead = egui::Rangef::new(rect.left(), rect.left() + space::S - space::XXS);
-        ui.painter().hline(lead, rect.center().y, line);
         ui.add_space(space::S);
-        start_cell(ui, &prep.start[i], theme::TINY, ink, played);
+        start_cell(ui, r, &prep.time[i], theme::TINY, ink, played);
     });
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);
@@ -543,6 +551,12 @@ fn divider_row(
     });
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);
-        rule(ui);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                RichText::new(&prep.len[i])
+                    .font(theme::mono(theme::CAPTION))
+                    .color(t.text_muted),
+            );
+        });
     });
 }

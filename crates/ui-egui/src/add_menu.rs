@@ -111,7 +111,7 @@ pub(crate) fn items(
             seconds: 0,
         }));
     }
-    if menu_item(ui, "From Library…", None) {
+    if menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
     }
 }

@@ -86,7 +86,7 @@ impl PublishMode {
             Self::FromTags => "From tags",
             Self::Custom => "Custom text",
             Self::KeepPrevious => "Keep previous",
-            Self::Hide => "Hide",
+            Self::Hide => "Station name",
         }
     }
 }
@@ -171,9 +171,9 @@ pub enum Origin {
 impl Origin {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Main => "main",
-            Self::Rule => "rule",
-            Self::Manual => "manual",
+            Self::Main => "Main playlist",
+            Self::Rule => "Rule",
+            Self::Manual => "Manual",
         }
     }
 }
@@ -203,7 +203,7 @@ pub enum DropTarget {
     Cart(usize),
 }
 
-/// A named playlist's tab in the scheduled pane.
+/// A named playlist's tab beside Upcoming.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaylistTab {
     pub name: String,
@@ -776,6 +776,11 @@ pub enum Edit {
     SetPlaylistEnabled {
         playlist: String,
         enabled: bool,
+    },
+    /// Give a playlist a colour of the palette, by its index in `theme::PALETTE`.
+    SetPlaylistColour {
+        playlist: String,
+        colour: usize,
     },
     SetWeight {
         playlist: String,

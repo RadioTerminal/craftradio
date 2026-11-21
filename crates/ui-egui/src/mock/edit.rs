@@ -324,6 +324,16 @@ impl MockSource {
                 };
                 Ok(1)
             }
+            Edit::SetPlaylistColour { playlist, colour } => {
+                let Some((_, rgb)) = crate::theme::PALETTE.get(colour).copied() else {
+                    return Err(format!("no palette colour {colour}"));
+                };
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                tab.color = rgb;
+                Ok(1)
+            }
             Edit::SetPlaylistEnabled { playlist, enabled } => {
                 let Some(tab) = self.tab_mut(&playlist) else {
                     return Err(gone(&format!("the playlist {playlist}")));

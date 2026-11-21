@@ -1,4 +1,4 @@
-//! The scheduled pane: the Upcoming list of woven-in items, and one tab per playlist.
+//! The right pane: Upcoming, the items that rules weave into Main, and one tab per playlist.
 
 use egui::{Align, Layout, RichText, Sense, Stroke};
 
@@ -9,7 +9,9 @@ use crate::library::LibraryDrag;
 use crate::prepared::Prepared;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DropTarget, Edit, MetaTarget, Pick, PlaylistTab, Row, StationView, Timing};
+use crate::view::{
+    DropTarget, Edit, FitView, MetaTarget, Pick, PlaylistTab, Row, StationView, Timing,
+};
 
 /// The tolerances that the Edit timing menu offers, in seconds.
 const TOLERANCES: [f32; 3] = [0.5, 1.0, 2.0];
@@ -17,6 +19,8 @@ const TOLERANCES: [f32; 3] = [0.5, 1.0, 2.0];
 const WEIGHTS: [u32; 5] = [1, 2, 3, 4, 5];
 /// The tolerance of a fixed row that nobody set yet, in seconds.
 const DEFAULT_TOLERANCE_S: f32 = 1.0;
+/// A fixed item closer than this to its time reads as "on time", in seconds.
+const FIT_ON_TIME_S: f32 = 0.05;
 
 /// The tab that the pane shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +128,19 @@ fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
             enabled: !p.enabled,
         }));
     }
+    ui.menu_button("Colour", |ui| {
+        // Only palette colours: red, amber and the accent mean something else.
+        for (k, (name, rgb)) in crate::theme::PALETTE.iter().enumerate() {
+            let label = RichText::new(format!("● {name}")).color(t.readable(*rgb, t.card));
+            if ui.selectable_label(p.color == *rgb, label).clicked() {
+                actions.push(Action::Edit(Edit::SetPlaylistColour {
+                    playlist: p.name.clone(),
+                    colour: k,
+                }));
+                ui.close();
+            }
+        }
+    });
     ui.separator();
     if context_menu::danger_item(ui, "Delete playlist…", t) {
         actions.push(Action::Confirm {
@@ -164,6 +181,10 @@ fn upcoming(
             };
             let on_air = r.start.timestamp() <= now;
             let resp = upcoming_row(ui, r, i, prep, link.is_selected(r.id), on_air, t);
+            let resp = match r.fixed {
+                Some(fit) => resp.on_hover_text(fit_detail(r, fit)),
+                None => resp,
+            };
             if resp.clicked() {
                 let m = resp.ctx.input(|i| i.modifiers);
                 link.click(Pane::Scheduled, r.id, m, &order);
@@ -171,6 +192,41 @@ fn upcoming(
             resp.context_menu(|ui| upcoming_menu(ui, r, link, actions));
         }
     });
+}
+
+/// How a fixed item meets its time, in words: "on time", "0.4 s early", "2.0 s late ⚠".
+pub(crate) fn fit_words(fit: FitView) -> String {
+    let off = fit.error_s.abs();
+    let words = if off < FIT_ON_TIME_S {
+        "on time".to_owned()
+    } else if fit.error_s < 0.0 {
+        format!("{off:.1} s early")
+    } else {
+        format!("{off:.1} s late")
+    };
+    if fit.ok {
+        words
+    } else {
+        format!("{words} ⚠")
+    }
+}
+
+/// The raw numbers behind the words, for the tooltip.
+fn fit_detail(r: &Row, fit: FitView) -> String {
+    let sign = if fit.error_s < 0.0 { "−" } else { "+" };
+    let mut text = format!(
+        "Fixed at {} · starts {sign}{:.1} s from that time",
+        crate::app::hms(&r.start),
+        fit.error_s.abs()
+    );
+    if let Some(tm) = r.timing {
+        let kind = if tm.hard { "hard" } else { "soft" };
+        text.push_str(&format!(" · {kind}, tolerance ±{:.1} s", tm.tolerance_s));
+    }
+    if !fit.ok {
+        text.push_str(" · outside the tolerance");
+    }
+    text
 }
 
 fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Vec<Action>) {
@@ -296,17 +352,8 @@ fn upcoming_row(
     );
     let mut end = len.left() - space::S;
     if let Some(fit) = r.fixed {
-        let sign = if fit.error_s < 0.0 { "−" } else { "+" };
-        let (mark, colour) = if fit.ok {
-            ("✔", t.ok)
-        } else {
-            ("✖", t.danger)
-        };
-        let mut text = format!("fit {sign}{:.1} s {mark}", fit.error_s.abs());
-        if let Some(tm) = r.timing {
-            let kind = if tm.hard { "hard" } else { "soft" };
-            text.push_str(&format!(" · {kind} ±{:.1} s", tm.tolerance_s));
-        }
+        let colour = if fit.ok { t.ok } else { t.danger };
+        let text = fit_words(fit);
         let fit_rect = p.text(
             egui::pos2(end, mid),
             right,

@@ -105,6 +105,10 @@ fn describe(edit: &Edit, n: usize) -> String {
         } => format!("assigned cart {}", cart + 1),
         Edit::AssignCart { cart, item: None } => format!("cleared cart {}", cart + 1),
         Edit::SetTiming { .. } => "changed the timing; the scheduler is not connected".to_owned(),
+        Edit::SetPlaylistColour { playlist, colour } => {
+            let name = crate::theme::PALETTE.get(*colour).map_or("?", |c| c.0);
+            format!("{playlist} is {name} now (not saved)")
+        }
         Edit::SetPlaylistEnabled { playlist, enabled } => {
             let state = if *enabled { "on" } else { "off" };
             format!("{playlist} is {state}; the scheduler is not connected")

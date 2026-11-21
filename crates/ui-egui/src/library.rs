@@ -256,7 +256,7 @@ fn tree(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    egui::CollapsingHeader::new("Folders")
+    egui::CollapsingHeader::new("Categories")
         .default_open(true)
         .show(ui, |ui| {
             if ui

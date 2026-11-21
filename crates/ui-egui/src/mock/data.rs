@@ -2,19 +2,18 @@
 
 use super::*;
 
-pub(super) const MUSIC: [u8; 3] = [0x5B, 0xAA, 0x5B];
-pub(super) const JINGLES: [u8; 3] = [0xE0, 0xA0, 0x30];
-pub(super) const ADS: [u8; 3] = [0xD0, 0x48, 0x48];
-pub(super) const NEWS: [u8; 3] = [0x4A, 0x90, 0xD9];
-pub(super) const SHOWS: [u8; 3] = [0x8E, 0x6A, 0xD8];
-pub(super) const BEDS: [u8; 3] = [0x3F, 0xB5, 0xA8];
+/// Playlist colours come from the theme palette, away from the colours that mean something.
+const fn palette(i: usize) -> [u8; 3] {
+    crate::theme::PALETTE[i].1
+}
+pub(super) const MUSIC: [u8; 3] = palette(0);
+pub(super) const JINGLES: [u8; 3] = palette(1);
+pub(super) const ADS: [u8; 3] = palette(2);
+pub(super) const NEWS: [u8; 3] = palette(3);
+pub(super) const SHOWS: [u8; 3] = palette(4);
+pub(super) const BEDS: [u8; 3] = palette(5);
 /// Colours for playlists made from folders, in turn.
-pub(super) const FOLDER_COLOURS: [[u8; 3]; 4] = [
-    [0x3F, 0xB5, 0xA8],
-    [0xC8, 0x6F, 0xC9],
-    [0x6F, 0x9F, 0xE8],
-    [0xD9, 0x8C, 0x4A],
-];
+pub(super) const FOLDER_COLOURS: [[u8; 3]; 3] = [palette(6), palette(7), palette(5)];
 /// The station name. A hidden stream title shows it.
 pub(super) const STATION: &str = "Radio Preview";
 

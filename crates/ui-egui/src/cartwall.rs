@@ -199,7 +199,7 @@ fn cart(
         .stroke(Stroke::new(size::HAIRLINE, edge))
         .min_size(egui::vec2(size::CART_W, size::CART_H));
     let resp = ui.add(button);
-    let colour = slot.colour.and_then(|c| theme::CART_COLOURS.get(c));
+    let colour = slot.colour.and_then(|c| theme::PALETTE.get(c));
     if let Some(c) = colour {
         let mut bar = resp.rect;
         bar.set_width(size::CART_BAR);
@@ -283,7 +283,7 @@ fn cart_menu(
         if check_item(ui, slot.colour.is_none(), "None") {
             actions.push(set_cart(i, CartChange::Colour(None)));
         }
-        for (k, (name, _)) in theme::CART_COLOURS.iter().enumerate() {
+        for (k, (name, _)) in theme::PALETTE.iter().enumerate() {
             if check_item(ui, slot.colour == Some(k), name) {
                 actions.push(set_cart(i, CartChange::Colour(Some(k))));
             }

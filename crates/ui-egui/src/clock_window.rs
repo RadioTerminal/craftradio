@@ -58,13 +58,40 @@ impl Prefs {
     }
 }
 
+/// A countdown line. In its last seconds it grows, turns to the warning colour and gets ⚠.
+fn countdown_line(
+    ui: &mut egui::Ui,
+    text: String,
+    left: Option<Duration>,
+    size_pt: f32,
+    ink: egui::Color32,
+    t: &Tokens,
+) {
+    let near = left.is_some_and(|d| d.as_secs() < size::CLOCK_URGENT_S);
+    let (text, ink, font) = if near {
+        (
+            format!("⚠ {text}"),
+            t.warn,
+            size_pt * size::CLOCK_URGENT_GROW,
+        )
+    } else {
+        (text, ink, size_pt)
+    };
+    ui.label(
+        RichText::new(text)
+            .font(theme::mono(font))
+            .strong()
+            .color(ink),
+    );
+}
+
 /// A span as m:ss, or h:mm:ss from one hour.
 fn countdown(d: Duration) -> String {
     let s = d.as_secs();
     if s >= 3600 {
         format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
     } else {
-        format!("{:02}:{:02}", s / 60, s % 60)
+        format!("{}:{:02}", s / 60, s % 60)
     }
 }
 
@@ -132,7 +159,8 @@ fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Pr
             let a = std::f32::consts::TAU * f32::from(i) / 60.0 - std::f32::consts::FRAC_PI_2;
             let pos = c + egui::vec2(a.cos(), a.sin()) * r;
             let lit = i <= sec;
-            let colour = if lit { t.on_air } else { t.field };
+            // Unlit dots use the 3:1 control edge, so the ring reads from across the room.
+            let colour = if lit { t.on_air } else { t.field_border };
             let big = if i % size::CLOCK_MAJOR_EVERY == 0 {
                 size::CLOCK_MAJOR_TICK
             } else {
@@ -163,7 +191,7 @@ fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Pr
         return;
     }
     ui.add_space(space::S);
-    let line = (side * size::CLOCK_LINE_PER_RING).max(theme::BODY);
+    let line = (side * size::CLOCK_LINE_PER_RING).max(theme::SECTION);
     let nowt = now.timestamp();
     ui.vertical_centered(|ui| {
         if prefs.show_next_fixed {
@@ -171,22 +199,24 @@ fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Pr
                 .rows
                 .iter()
                 .find(|r| r.fixed.is_some() && r.start.timestamp() > nowt);
-            let text = match next {
+            let (text, d) = match next {
                 Some(r) => {
                     let d = Duration::try_from(r.start.timestamp().duration_since(nowt))
                         .unwrap_or_default();
-                    format!("{} in {}", r.title, countdown(d))
+                    let kind = match r.timing {
+                        Some(tm) if !tm.hard => "soft",
+                        _ => "hard",
+                    };
+                    let at = r.start.strftime("%H:%M:%S");
+                    let text = format!("⏱ {at} {} ({kind}) in {}", r.title, countdown(d));
+                    (text, Some(d))
                 }
-                None => "No fixed event in the next hours".to_owned(),
+                None => ("No fixed item in the next hours".to_owned(), None),
             };
-            ui.label(
-                RichText::new(text)
-                    .font(theme::mono(line))
-                    .color(t.accent_ink),
-            );
+            countdown_line(ui, text, d, line, t.accent_ink, t);
         }
         if prefs.show_item_end {
-            let text = match view.decks.iter().find(|d| d.state == DeckState::Playing) {
+            let (text, left) = match view.decks.iter().find(|d| d.state == DeckState::Playing) {
                 Some(d) => {
                     let left = d.len.saturating_sub(d.elapsed);
                     let kind = view
@@ -198,11 +228,11 @@ fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Pr
                             r.start.timestamp() <= nowt && nowt < end
                         })
                         .map_or("Item", |r| if r.is_main { "Song" } else { "Item" });
-                    format!("{kind} ends in {}", countdown(left))
+                    (format!("{kind} ends in {}", countdown(left)), Some(left))
                 }
-                None => "Nothing on air".to_owned(),
+                None => ("Nothing on air".to_owned(), None),
             };
-            ui.label(RichText::new(text).font(theme::mono(line)).color(t.text));
+            countdown_line(ui, text, left, line, t.text, t);
         }
     });
 }

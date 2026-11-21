@@ -194,21 +194,23 @@ pub(crate) fn show(
                 }
             }
             ui.add_space(space::S);
-            caption(
-                ui,
-                "Cue points: read-only until the library engine decodes files.",
-                t,
-            );
+            caption(ui, "Cue points can't be edited in this build.", t);
             ui.separator();
             ui.horizontal(|ui| {
-                let apply =
-                    egui::Button::new(RichText::new("Apply").color(t.canvas)).fill(t.accent);
+                let apply = egui::Button::new(
+                    RichText::new(match ed.targets.len() {
+                        1 => "Apply to this item".to_owned(),
+                        n => format!("Apply to {n} items"),
+                    })
+                    .color(t.canvas),
+                )
+                .fill(t.accent);
                 if ui.add(apply).clicked() {
                     let out = ed.targets.iter().map(|(k, m)| (*k, ed.merged(m))).collect();
                     applied = Some(out);
                     close = true;
                 }
-                if ui.button("Save to file").clicked() {
+                if ui.button("Write tags to file").clicked() {
                     ed.note = true;
                 }
                 if ui.button("Cancel").clicked() {

@@ -18,6 +18,8 @@ pub(crate) struct Prepared {
     pub ids: Vec<u64>,
     /// The start time of each row, as HH:MM:SS, with ⏱ in front for a fixed row.
     pub start: Vec<String>,
+    /// The start time of each row, as HH:MM:SS alone. The main pane draws ⏱ in its own slot.
+    pub time: Vec<String>,
     /// The length of each row, as m:ss.
     pub len: Vec<String>,
     /// The divider text of each row from another playlist.
@@ -31,16 +33,18 @@ pub(crate) struct Prepared {
 /// The number of decks. The row on air and the next rows sit on them.
 const DECKS: usize = 4;
 
+/// The divider text. The length goes in the LENGTH column, like a track's.
 fn divider_text(r: &Row) -> String {
     if r.title == r.playlist {
-        format!("{} ({})", r.playlist, mmss(r.len))
+        r.playlist.clone()
     } else {
-        format!("{} · {} ({})", r.playlist, r.title, mmss(r.len))
+        format!("{} · {}", r.playlist, r.title)
     }
 }
 
+/// The start time, with ⏱ and a thin space in front for a fixed row.
 fn start_text(r: &Row) -> String {
-    let mark = if r.fixed.is_some() { "⏱" } else { "" };
+    let mark = if r.fixed.is_some() { "⏱\u{2009}" } else { "" };
     format!("{mark}{}", hms(&r.start))
 }
 
@@ -65,6 +69,7 @@ impl Prepared {
             index: rows.iter().enumerate().map(|(i, r)| (r.id, i)).collect(),
             ids: rows.iter().map(|r| r.id).collect(),
             start: rows.iter().map(start_text).collect(),
+            time: rows.iter().map(|r| hms(&r.start)).collect(),
             len: rows.iter().map(|r| mmss(r.len)).collect(),
             divider: rows
                 .iter()

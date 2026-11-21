@@ -187,7 +187,15 @@ impl MockSource {
                 } else {
                     item.playlist.to_owned()
                 },
-                color: if main { self.main.color } else { item.color },
+                // A playlist's colour comes from its tab, so a new colour shows on its rows.
+                color: if main {
+                    self.main.color
+                } else {
+                    self.tabs
+                        .iter()
+                        .find(|t| t.name == item.playlist)
+                        .map_or(item.color, |t| t.color)
+                },
                 len: item.len,
                 is_main: main,
                 fixed: item.fixed,
