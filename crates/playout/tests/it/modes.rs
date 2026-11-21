@@ -944,7 +944,7 @@ fn operator_fade_uses_requested_length() {
         .send(Command::DeckFade {
             deck: deck as u8,
             expect_item: Some(radio_model::ItemId(1)),
-            over: Duration::from_secs(2),
+            over: Some(Duration::from_secs(2)),
         })
         .unwrap();
     let sound = run(&p, &clock, 2.5);
@@ -956,6 +956,45 @@ fn operator_fade_uses_requested_length() {
         peak(&sound, 0, SR * 22 / 10, SR * 24 / 10) < 0.01,
         "fade did not end"
     );
+}
+
+#[test]
+fn operator_fade_default_and_explicit_cut() {
+    for over in [None, Some(Duration::ZERO)] {
+        let item = file_item(
+            1,
+            "Long tone",
+            &wav("fade-default", 8.0, Side::Left),
+            8.0,
+            8.0,
+            2.0,
+        );
+        let (p, clock) = offline(engine_with(vec![item]), |_| {});
+        run(&p, &clock, 1.0);
+        let deck = p
+            .snapshot()
+            .decks
+            .iter()
+            .position(|d| d.phase == DeckPhase::Playing)
+            .unwrap();
+        let _answer = p
+            .send(Command::DeckFade {
+                deck: deck as u8,
+                expect_item: Some(radio_model::ItemId(1)),
+                over,
+            })
+            .unwrap();
+        let sound = run(&p, &clock, 2.5);
+        if over.is_none() {
+            assert!(peak(&sound, 0, SR / 2, SR) > 0.02, "default fade cut early");
+        } else {
+            assert!(
+                peak(&sound, 0, SR / 2, SR) < 0.01,
+                "explicit zero did not cut"
+            );
+        }
+        assert!(peak(&sound, 0, SR * 22 / 10, SR * 24 / 10) < 0.01);
+    }
 }
 
 #[test]

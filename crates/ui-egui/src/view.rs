@@ -496,6 +496,7 @@ pub struct StationView {
     /// Audio devices that the mixer can pick.
     pub devices: Vec<String>,
     pub input_devices: Vec<String>,
+    pub cue_open: bool,
     /// The device for each job.
     pub device_roles: DeviceRoles,
     pub carts: Vec<String>,

@@ -686,3 +686,25 @@ fn csv_quotes_formula_prefixes_in_untrusted_tags() {
         assert!(csv.contains(title), "{csv}");
     }
 }
+
+#[test]
+fn fade_command_distinguishes_default_from_explicit_cut() {
+    for (over, expected) in [
+        (None, None),
+        (
+            Some(serde_json::json!({"secs": 0, "nanos": 0})),
+            Some(std::time::Duration::ZERO),
+        ),
+    ] {
+        let mut args = serde_json::json!({"deck": 0});
+        if let Some(over) = over {
+            args["over"] = over;
+        }
+        let command: Command =
+            serde_json::from_value(serde_json::json!({"id": "deck.fade", "args": args})).unwrap();
+        let Command::DeckFade { over, .. } = command else {
+            panic!("expected deck.fade");
+        };
+        assert_eq!(over, expected);
+    }
+}

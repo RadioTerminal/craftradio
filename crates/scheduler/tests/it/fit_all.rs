@@ -625,3 +625,31 @@ fn trim_rechecks_rotation_after_the_event() {
         tl.entries
     );
 }
+
+#[test]
+fn trim_keeps_music_when_artist_separation_cannot_be_met() {
+    let main = vec![
+        track(1, "Opening", "Alpha", 60),
+        track(2, "Moved", "Beta", 60),
+        track(3, "Following", "Beta", 60),
+    ];
+    let mut event = jingle(100, 10);
+    event.artist = Some("Beta".into());
+    let mut st = make_station(main, vec![(event, 0)], vec![]);
+    st.playlists[0].constraints = vec![Constraint::ArtistSeparation(Duration::from_secs(3600))];
+    st.playlists[0].items[0].movable = false;
+    let target = t0() + Duration::from_millis(58_500);
+    let mut tl = timeline(&st, &[(target, FixMode::Hard)]);
+    fit(&st, &mut tl);
+    for id in [1, 2, 3] {
+        assert!(
+            tl.entries.iter().any(|e| e.item == ItemId(id)),
+            "music {id} was removed"
+        );
+    }
+    assert!(
+        tl.warnings
+            .iter()
+            .any(|w| matches!(w, radio_scheduler::Warning::NoEligibleItem { .. }))
+    );
+}

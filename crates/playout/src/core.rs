@@ -465,6 +465,7 @@ impl Core {
             alarms.raise(now, Alarm::OutputFallback { reason });
         }
         let view = PlayoutView {
+            cue_open: false,
             now,
             mode: engine.state().mode,
             stop_after_current: false,
@@ -716,7 +717,7 @@ impl Core {
             self.sync_strips();
         }
         for reason in self.cue.errors.try_iter() {
-            self.alarms.raise(now, Alarm::Unsupported { what: reason });
+            self.alarms.raise(now, Alarm::DeviceLost { name: reason });
         }
         self.ticks += 1;
         if self.ticks == 1 {
@@ -1495,6 +1496,7 @@ impl Core {
         let Ok(mut view) = self.view.lock() else {
             return;
         };
+        view.cue_open = self.cue.open.load(std::sync::atomic::Ordering::Acquire);
         view.now = now;
         view.mode = self.engine.state().mode;
         view.stop_after_current = self.hold;

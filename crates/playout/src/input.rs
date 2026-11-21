@@ -80,7 +80,7 @@ pub fn open_input(
                     *sample = raw_rx.pop().unwrap_or(0.0);
                 }
                 output.clear();
-                let ratio = drift.update((capacity - producer.slots()) as f32, 1024.0);
+                let ratio = drift.update((capacity - producer.slots()) as f32, 2048.0);
                 if let Err(e) = resampler
                     .set_relative_ratio(ratio)
                     .and_then(|()| resampler.process(&block, &mut output))

@@ -77,6 +77,7 @@ impl ViewSource for MockSource {
         self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
         StationView {
+            cue_open: false,
             now: local,
             mode: self.play_mode.label().to_uppercase(),
             play_mode: self.play_mode,

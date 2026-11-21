@@ -71,6 +71,7 @@ pub struct EngineSource {
     playout: Playout,
     tz: TimeZone,
     station: String,
+    device_updates: std::sync::mpsc::Receiver<(Vec<String>, Vec<String>)>,
     devices: Vec<String>,
     input_devices: Vec<String>,
     /// The state revision of the caches below.
@@ -136,14 +137,27 @@ pub(crate) struct RowRef {
 impl EngineSource {
     /// A source over a running playout.
     pub fn new(playout: Playout, opts: SourceOptions) -> Self {
-        let devices = radio_audio_device::list_outputs()
-            .into_iter()
-            .map(|d| d.name)
-            .collect();
-        let input_devices = radio_audio_device::list_inputs()
-            .into_iter()
-            .map(|d| d.name)
-            .collect();
+        let (device_tx, device_updates) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("audio-devices".into())
+            .spawn(move || {
+                loop {
+                    let outputs = radio_audio_device::list_outputs()
+                        .into_iter()
+                        .map(|d| d.name)
+                        .collect();
+                    let inputs = radio_audio_device::list_inputs()
+                        .into_iter()
+                        .map(|d| d.name)
+                        .collect();
+                    if device_tx.send((outputs, inputs)).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                }
+            });
+        let devices = Vec::new();
+        let input_devices = Vec::new();
         let state = playout.snapshot().state;
         let replies: fader::Replies = std::sync::Arc::default();
         let pending = std::sync::Arc::clone(&replies);
@@ -165,6 +179,7 @@ impl EngineSource {
             playout,
             tz: opts.tz,
             station: opts.station_name,
+            device_updates,
             devices,
             input_devices,
             revision: None,
@@ -752,6 +767,10 @@ fn play_mode(m: Mode) -> PlayMode {
 
 impl ViewSource for EngineSource {
     fn snapshot(&mut self, now: Timestamp) -> StationView {
+        for (outputs, inputs) in self.device_updates.try_iter() {
+            self.devices = outputs;
+            self.input_devices = inputs;
+        }
         let pv = self.playout.snapshot();
         if self.revision != Some(pv.revision) {
             self.rebuild(&pv.state);
@@ -796,6 +815,7 @@ impl ViewSource for EngineSource {
                 .cloned()
                 .chain(self.files.iter().map(|f| f.view.clone()))
                 .collect(),
+            cue_open: pv.cue_open,
             devices: self.devices.clone(),
             input_devices: self.input_devices.clone(),
             device_roles: DeviceRoles {

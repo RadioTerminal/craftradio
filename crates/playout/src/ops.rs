@@ -407,12 +407,13 @@ impl Core {
         if own.is_zero() { CUT_FADE } else { own }
     }
 
-    fn op_fade(&mut self, i: usize, over: Duration) -> Check {
+    fn op_fade(&mut self, i: usize, over: Option<Duration>) -> Check {
         let Some(s) = &self.slots[i] else {
             return Check::Now(false);
         };
         let tag = s.tag;
         let at = self.mixer.now();
+        let over = over.unwrap_or_else(|| Self::early_fade(s));
         self.fade_at(i, at, over, true);
         Check::Fading { deck: i, tag }
     }

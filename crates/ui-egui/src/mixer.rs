@@ -80,7 +80,7 @@ pub(crate) fn show(
                         ui,
                         meter,
                         is_out,
-                        !view.device_roles.pfl.is_empty(),
+                        view.cue_open && view.devices.contains(&view.device_roles.pfl),
                         &mut state.icecast_open,
                         actions,
                         t,
@@ -181,10 +181,14 @@ fn strip_ui(
                     if ui
                         .add_enabled(
                             cue && !is_out,
-                            egui::Button::new(if meter.pfl { "PFL ON" } else { "PFL" }),
+                            egui::Button::new(if cue && !is_out && meter.pfl {
+                                "PFL ON"
+                            } else {
+                                "PFL"
+                            }),
                         )
                         .on_disabled_hover_text(
-                            "Choose a cue output device in Mixer settings first",
+                            "PFL needs a present cue device and an open cue output",
                         )
                         .clicked()
                     {
@@ -259,7 +263,7 @@ fn strip_menu(
         }
     })
     .response
-    .on_disabled_hover_text("Choose a cue output device first");
+    .on_disabled_hover_text("PFL needs a present cue device and an open cue output");
     if menu_item(ui, "Reset gain to 0 dB", None) {
         actions.push(strip_edit(&meter.label, StripChange::Gain(0.0)));
     }

@@ -1269,7 +1269,12 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             // Trim can move more entries than the reorder step checked. Choose a valid
             // continuation with the history that now includes the event.
             let mut accepted = Vec::new();
-            let mut pending: Vec<Entry> = flow.drain(..).collect();
+            let next_slot = order.get(k + 1).map(|&j| slots[j]);
+            let end = flow
+                .iter()
+                .position(|e| next_slot.is_some_and(|next| e.start >= next))
+                .unwrap_or(flow.len());
+            let mut pending: Vec<Entry> = flow.drain(..end).collect();
             let mut history = sim.clone();
             let mut previous = out.last().cloned();
             while !pending.is_empty() {
@@ -1308,11 +1313,25 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                     }
                     None => {
                         let entry = pending.remove(0);
-                        dropped.push(drop_warning(&entry, DropReason::RotationAfterTrim));
+                        if droppable_insertion(&entry) {
+                            dropped.push(drop_warning(&entry, DropReason::RotationAfterTrim));
+                        } else {
+                            let mut entry = entry;
+                            entry.start = start(&entry);
+                            tl.warnings.push(Warning::NoEligibleItem {
+                                playlist: entry.playlist,
+                                at: entry.start,
+                            });
+                            f.record(&mut history, &entry, entry.start);
+                            previous = Some(entry.clone());
+                            accepted.push(entry);
+                        }
                     }
                 }
             }
-            flow.extend(accepted);
+            for entry in accepted.into_iter().rev() {
+                flow.push_front(entry);
+            }
         }
         // What was moved after the event now follows it.
         f.drop_clashing_front(out.last(), &mut flow, &mut dropped);

@@ -175,7 +175,7 @@ pub enum Command {
         #[serde(default)]
         expect_item: Option<ItemId>,
         #[serde(default)]
-        over: std::time::Duration,
+        over: Option<std::time::Duration>,
     },
     /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
     #[serde(rename = "deck.skip")]
@@ -602,7 +602,11 @@ pub fn registry() -> Vec<CommandSpec> {
             "expect_item",
         )),
         with_optional(spec("deck.pause", "Pause a deck", A, &[d]), "expect_item"),
-        with_optional(spec("deck.fade", "Fade a deck out", A, &[d]), "expect_item"),
+        with_optional_prop(
+            with_optional(spec("deck.fade", "Fade a deck out", A, &[d]), "expect_item"),
+            "over",
+            json!({"type": ["object", "null"], "properties": {"secs": {"type": "integer", "minimum": 0}, "nanos": {"type": "integer", "minimum": 0, "maximum": 999999999}}, "required": ["secs", "nanos"]}),
+        ),
         with_optional(
             spec("deck.skip", "Skip what a deck is playing", A, &[d]),
             "expect_item",

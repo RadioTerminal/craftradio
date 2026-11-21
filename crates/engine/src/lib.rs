@@ -296,7 +296,7 @@ pub enum AudioIntent {
     Fade {
         deck: u8,
         expect_item: Option<ItemId>,
-        over: std::time::Duration,
+        over: Option<std::time::Duration>,
     },
     /// `expect_item` is the item the command meant, or else the item the engine believes
     /// is on the deck. Playout refuses the intent if its deck holds another item.

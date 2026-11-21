@@ -596,7 +596,7 @@ impl EngineSource {
             DeckCommand::Fade(secs) => Command::DeckFade {
                 deck: d,
                 expect_item,
-                over: Duration::try_from_secs_f32(secs.max(0.0)).unwrap_or_default(),
+                over: Some(Duration::try_from_secs_f32(secs.max(0.0)).unwrap_or_default()),
             },
         };
         self.run_audio(cmd)

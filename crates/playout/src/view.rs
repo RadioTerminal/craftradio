@@ -14,6 +14,7 @@ use std::sync::Arc;
 /// come from [`crate::Playout::meters`] instead.
 #[derive(Debug, Clone)]
 pub struct PlayoutView {
+    pub cue_open: bool,
     pub now: Timestamp,
     pub mode: Mode,
     /// Stop-after-current is on: nothing new starts after the item on air.
