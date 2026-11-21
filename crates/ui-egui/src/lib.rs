@@ -15,6 +15,7 @@ mod scheduled_pane;
 mod settings;
 pub mod theme;
 pub mod view;
+mod widgets;
 pub mod windows;
 
 pub use app::RadioApp;

@@ -116,3 +116,23 @@ fn the_library_search_narrows_the_rows() {
         "the search hides rows that do not match ({after} of {before})"
     );
 }
+
+#[test]
+fn icon_buttons_keep_their_size_on_hover() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
+    let rects = |h: &Harness<'_, RadioApp>| {
+        [
+            h.get_by_label("⚙ Music rules").rect(),
+            h.get_by_label_contains(" tracks · next").rect(),
+            h.get_by_label("⚙ Mixer settings").rect(),
+            h.get_by_label("⚙ Icecast settings").rect(),
+        ]
+    };
+    let before = rects(&harness);
+    for cog in ["⚙ Music rules", "⚙ Mixer settings", "⚙ Icecast settings"] {
+        harness.get_by_label(cog).hover();
+        harness.run_steps(FRAMES);
+        assert_eq!(rects(&harness), before, "hovering {cog} moves nothing");
+    }
+}

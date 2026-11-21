@@ -3,19 +3,17 @@
 //! Each window and pane has a ⚙ in its header row. The ⚙ opens a settings section inside that
 //! same window. In the preview, settings are local UI state, and the section says so.
 
-use egui::{Align, Layout, RichText, Stroke, WidgetInfo, WidgetType};
+use egui::{Align, Layout, RichText, Stroke};
 
 use crate::theme::{self, Tokens, pad, size, space};
+use crate::widgets;
 
 pub(crate) const NOT_SAVED: &str = "preview — not saved";
 
 /// The ⚙ toggle for the settings of `part`. Its accessible name starts with its visible label.
 pub(crate) fn settings_button(ui: &mut egui::Ui, part: &str, open: &mut bool) {
-    let icon = RichText::new("⚙").font(theme::text(theme::CARD));
-    let resp = ui.selectable_label(*open, icon);
     let name = format!("⚙ {part} settings");
-    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, *open, &name));
-    let resp = resp.on_hover_text(format!("{part} settings"));
+    let resp = widgets::icon_button(ui, "⚙", *open, &name, &format!("{part} settings"));
     if resp.clicked() {
         *open = !*open;
     }

@@ -48,6 +48,8 @@ pub mod size {
     pub const CONTROL_SM: f32 = 24.0;
     pub const CONTROL_MD: f32 = 32.0;
     pub const CONTROL_LG: f32 = 40.0;
+    /// The square of an icon button. It is the same in every state.
+    pub const ICON_BUTTON: f32 = 28.0;
 
     /// A row of the main timeline.
     pub const ROW: f32 = 26.0;

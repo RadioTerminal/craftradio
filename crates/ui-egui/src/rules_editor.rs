@@ -97,11 +97,8 @@ pub(crate) fn show(
 
 /// The ⚙ button that opens the rules editor for `name`. It returns true on a click.
 pub(crate) fn cog(ui: &mut egui::Ui, name: &str) -> bool {
-    let icon = RichText::new("⚙").font(theme::text(theme::CARD));
-    let resp = ui.button(icon);
     let label = format!("⚙ {name} rules");
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-    resp.on_hover_text(format!("{name} — rules")).clicked()
+    crate::widgets::icon_button(ui, "⚙", false, &label, &format!("{name} — rules")).clicked()
 }
 
 fn mode_bar(ui: &mut egui::Ui, editor: &mut Editor) {
