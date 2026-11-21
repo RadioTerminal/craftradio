@@ -11,6 +11,7 @@ mod core;
 mod deadair;
 mod ops;
 mod output;
+mod resume;
 mod streams;
 mod view;
 

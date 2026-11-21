@@ -72,6 +72,8 @@ pub(crate) struct Slot {
     pub(crate) cut: bool,
     pub(crate) row: Option<RowId>,
     pub(crate) stream: Option<StreamSlot>,
+    /// The load starts this far after the cue-in (a resume).
+    pub(crate) offset: Duration,
 }
 
 impl Slot {
@@ -223,6 +225,8 @@ pub(crate) struct Core {
     pub(crate) icecast: Option<IcecastHandle>,
     /// The last stream title sent.
     pub(crate) title: String,
+    pub(crate) save_due: bool,
+    pub(crate) last_save: Option<Timestamp>,
     pub(crate) analysis: Analysis,
 }
 
@@ -302,6 +306,8 @@ impl Core {
             next_bed: 0,
             icecast,
             title: String::new(),
+            save_due: false,
+            last_save: None,
             analysis: Analysis::default(),
         })
     }
@@ -383,6 +389,9 @@ impl Core {
             self.alarms.raise(now, Alarm::ClockStep { by_ms });
         }
         self.ticks += 1;
+        if self.ticks == 1 {
+            self.resume(now);
+        }
         let _ = self.drain_engine();
         if std::mem::take(&mut self.carts_dirty) || self.ticks == 1 {
             self.sync_carts(now);
@@ -404,6 +413,7 @@ impl Core {
         self.check_dead_air(now);
         self.poll_states();
         self.publish(now);
+        self.save_state(now);
         self.expire_replies();
     }
 
@@ -450,8 +460,9 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
-        s.entry.start = wall;
+        s.entry.start = sub(wall, s.offset);
         self.dirty = true;
+        self.save_due = true;
         self.log_start(deck.index(), wall);
         let titled = self.slots[deck.index()]
             .as_ref()
@@ -536,6 +547,7 @@ impl Core {
             }
         }
         self.dirty = true;
+        self.save_due = true;
     }
 
     /// Moves the starts of the queued entries behind the item before them.
@@ -560,7 +572,9 @@ impl Core {
                     let gap = radio_timing::advance(item, Some(&s.item)).saturating_sub(*trim);
                     s.entry.start = add(*start, gap);
                 }
-                s.entry.start = s.entry.start.max(now);
+                if s.offset.is_zero() {
+                    s.entry.start = s.entry.start.max(now);
+                }
             }
             prev = Some((s.entry.start, s.item.clone(), s.entry.trim));
         }
@@ -599,6 +613,7 @@ impl Core {
         let tl = plan(&input, &opts, prev);
         if tl != self.timeline {
             self.timeline_changed = true;
+            self.save_due = true;
         }
         self.timeline = tl;
         self.planned = true;
@@ -716,6 +731,7 @@ impl Core {
             cut: false,
             row: None,
             stream,
+            offset,
         });
         self.next_deck = (i + 1) % 4;
         Ok(tag)
