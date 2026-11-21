@@ -3,8 +3,8 @@
 use crate::fit::drop_adjacent_clashes;
 use crate::merge::merge_with;
 use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all};
-use jiff::SignedDuration;
-use radio_model::{Item, ItemId};
+use jiff::{SignedDuration, Timestamp};
+use radio_model::{Item, ItemId, PlaylistId};
 use radio_timing::{advance, item_len, start_times};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -35,16 +35,69 @@ fn is_anchor(e: &Entry) -> bool {
     e.fixed.is_some() || e.locked
 }
 
-/// The entries between the previous anchor and the fixed entry that `fit` describes.
-fn window_of(entries: &[Entry], fit: &FitResult) -> Option<Range<usize>> {
-    let end = entries.iter().position(|e| {
-        e.playlist == fit.playlist && e.fixed.as_ref().is_some_and(|f| f.target == fit.target)
-    })?;
-    let start = entries[..end]
-        .iter()
-        .rposition(is_anchor)
-        .map_or(0, |i| i + 1);
-    Some(start..end)
+type EventKey = (PlaylistId, Timestamp);
+
+/// Anchor positions change only at a splice or a duplicate removal.
+struct Windows {
+    anchors: Vec<(usize, Option<EventKey>)>,
+    events: BTreeMap<EventKey, usize>,
+}
+
+impl Windows {
+    fn new(entries: &[Entry]) -> Self {
+        let mut windows = Self {
+            anchors: Vec::new(),
+            events: BTreeMap::new(),
+        };
+        windows.replace(0..0, entries);
+        windows
+    }
+
+    fn reindex(&mut self) {
+        self.events.clear();
+        for &(pos, key) in &self.anchors {
+            if let Some(key) = key {
+                self.events.entry(key).or_insert(pos);
+            }
+        }
+    }
+
+    fn get(&self, fit: &FitResult) -> Option<Range<usize>> {
+        let end = *self.events.get(&(fit.playlist, fit.target))?;
+        let index = self.anchors.partition_point(|(pos, _)| *pos < end);
+        let start = index.checked_sub(1).map_or(0, |i| self.anchors[i].0 + 1);
+        Some(start..end)
+    }
+
+    fn replace(&mut self, range: Range<usize>, entries: &[Entry]) {
+        self.anchors.retain(|(pos, _)| !range.contains(pos));
+        for (pos, _) in &mut self.anchors {
+            if *pos >= range.end {
+                *pos = *pos - range.len() + entries.len();
+            }
+        }
+        self.anchors.extend(
+            entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| is_anchor(e))
+                .map(|(i, e)| {
+                    (
+                        range.start + i,
+                        e.fixed.as_ref().map(|f| (e.playlist, f.target)),
+                    )
+                }),
+        );
+        self.anchors.sort_by_key(|(pos, _)| *pos);
+        self.reindex();
+    }
+
+    fn remove(&mut self, removed: &[usize]) {
+        for (pos, _) in &mut self.anchors {
+            *pos -= removed.partition_point(|removed| *removed < *pos);
+        }
+        self.reindex();
+    }
 }
 
 /// The last entry of `before` matching `is_dup` that is not in a kept (frozen) window.
@@ -61,10 +114,6 @@ fn earlier_dup(before: &[Entry], is_dup: impl Fn(&Entry) -> bool) -> Option<usiz
     })
 }
 
-fn ids(entries: &[Entry]) -> Vec<ItemId> {
-    entries.iter().map(|e| e.item).collect()
-}
-
 /// Merges and fits the station's playlists into one timeline from `input.now`.
 ///
 /// With `prev`, each fixed window keeps the previous plan's order unless the new fit's
@@ -76,7 +125,18 @@ fn ids(entries: &[Entry]) -> Vec<ItemId> {
 /// the old order.
 pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> Timeline {
     let mut raw = merge_with(input, opts.resume_rotation);
-    let mut tl = raw.clone();
+    let mut tl = if prev.is_some() {
+        raw.clone()
+    } else {
+        std::mem::replace(
+            &mut raw,
+            Timeline {
+                entries: Vec::new(),
+                fits: Vec::new(),
+                warnings: Vec::new(),
+            },
+        )
+    };
     fit_all(&mut tl, input.station, input.history);
     let Some(prev) = prev else {
         return tl;
@@ -89,13 +149,16 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         .collect();
     let lock = SignedDuration::try_from(opts.lock_before).unwrap_or(SignedDuration::MAX);
 
+    let old_windows = Windows::new(&prev.entries);
+    let new_windows = Windows::new(&tl.entries);
+    let mut raw_windows = Windows::new(&raw.entries);
+    let mut old_fits = BTreeMap::new();
+    for fit in &prev.fits {
+        old_fits.entry((fit.playlist, fit.target)).or_insert(fit);
+    }
     let mut kept_any = false;
     for fit in &tl.fits {
-        let Some(old) = prev
-            .fits
-            .iter()
-            .find(|f| f.playlist == fit.playlist && f.target == fit.target)
-        else {
+        let Some(old) = old_fits.get(&(fit.playlist, fit.target)) else {
             continue;
         };
         let near = fit.target.duration_since(input.now) <= lock;
@@ -107,16 +170,18 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         if better && !near {
             continue;
         }
-        let (Some(old_win), Some(new_win)) =
-            (window_of(&prev.entries, fit), window_of(&tl.entries, fit))
-        else {
+        let (Some(old_win), Some(new_win)) = (old_windows.get(fit), new_windows.get(fit)) else {
             continue;
         };
         let old_win = &prev.entries[old_win];
-        if ids(old_win) == ids(&tl.entries[new_win]) {
+        if old_win
+            .iter()
+            .map(|e| e.item)
+            .eq(tl.entries[new_win].iter().map(|e| e.item))
+        {
             continue;
         }
-        let Some(raw_win) = window_of(&raw.entries, fit) else {
+        let Some(raw_win) = raw_windows.get(fit) else {
             continue;
         };
         let Some(first_start) = raw.entries.get(raw_win.start).map(|e| e.start) else {
@@ -179,9 +244,11 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
             .cloned()
             .collect();
         let forced_len = forced.len();
+        raw_windows.replace(raw_win.clone(), &forced);
         raw.entries.splice(raw_win.clone(), forced);
-        let mut head = raw_win.start;
+        let head = raw_win.start;
         let mut ev = head + forced_len;
+        let mut removed = Vec::new();
         // An item brought into the window from later must not air there twice. Items the
         // raw window had already were spliced out with it; their later airings are rotation.
         for id in forced_set.difference(&raw_ids) {
@@ -193,12 +260,19 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
                 .map(|d| ev + 1 + d)
                 .or_else(|| earlier_dup(&raw.entries[..head], is_dup));
             if let Some(d) = dup {
-                raw.entries.remove(d);
-                if d < head {
-                    head -= 1;
-                    ev -= 1;
-                }
+                removed.push(d);
             }
+        }
+        removed.sort_unstable();
+        ev -= removed.partition_point(|d| *d < ev);
+        raw_windows.remove(&removed);
+        if !removed.is_empty() {
+            let mut index = 0;
+            raw.entries.retain(|_| {
+                let keep = removed.binary_search(&index).is_err();
+                index += 1;
+                keep
+            });
         }
         let Some(event) = raw.entries.get_mut(ev) else {
             continue;
@@ -207,13 +281,22 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
             f.frozen = true;
         }
         let after = event.start;
-        for (k, mut e) in leftover.drain(..).enumerate() {
+        for (k, e) in leftover.iter_mut().enumerate() {
             e.start = after
                 .checked_add(Duration::from_millis(k as u64 + 1))
                 .unwrap_or(after);
-            raw.entries.push(e);
         }
-        raw.entries.sort_by_key(|e| e.start);
+        // The old stable sort put existing entries before leftovers at equal times.
+        // Merge only the prefix the leftovers overlap; the rest is already ordered.
+        if let Some(last) = leftover.last() {
+            let start = raw.entries.partition_point(|e| e.start <= after);
+            let end = start + raw.entries[start..].partition_point(|e| e.start <= last.start);
+            let mut merged: Vec<Entry> = raw.entries[start..end].to_vec();
+            merged.extend(leftover);
+            merged.sort_by_key(|e| e.start);
+            raw_windows.replace(start..end, &merged);
+            raw.entries.splice(start..end, merged);
+        }
         kept_any = true;
     }
     if !kept_any {
@@ -221,6 +304,30 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
     }
     // Taking out the duplicates can leave two rule insertions side by side.
     drop_adjacent_clashes(&mut raw.entries, input.station, &mut raw.warnings);
+    // If the edits reproduce the fitted candidate exactly, reuse its fit results.
+    // The frozen flag controls fitting only and is not part of the returned plan.
+    let same_entries = raw.entries.len() == tl.entries.len()
+        && raw.entries.iter().zip(&tl.entries).all(|(a, b)| {
+            let mut a = a.clone();
+            if let Some(f) = &mut a.fixed {
+                f.frozen = false;
+            }
+            a == *b
+        });
+    if same_entries
+        && raw.warnings.is_empty()
+        && tl.warnings.is_empty()
+        && tl
+            .fits
+            .iter()
+            .all(|f| f.error.is_zero() && f.steps.is_empty())
+        && raw
+            .entries
+            .iter()
+            .all(|e| !e.locked && e.origin != Origin::Fill && e.trim.is_zero())
+    {
+        return tl;
+    }
     fit_all(&mut raw, input.station, input.history);
     // `frozen` is a planning-time flag; it does not outlive the plan.
     for f in raw.entries.iter_mut().filter_map(|e| e.fixed.as_mut()) {
