@@ -161,11 +161,13 @@ pub enum MetaTarget {
 /// A command for a deck.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeckCommand {
+    /// Pause the deck on air, or let a paused deck play on.
     PlayPause,
+    /// Play this deck now, with a fade-in over this many seconds. The item on air fades out
+    /// at the same time, and the plan goes on from this deck.
+    Play(f32),
     /// Fade out over this many seconds, then start the next item.
     Fade(f32),
-    /// Fade out at once and start the next item.
-    Skip,
 }
 
 /// What put a row in the timeline.
@@ -837,6 +839,11 @@ pub enum Edit {
     Deck {
         deck: usize,
         command: DeckCommand,
+    },
+    /// Play the NEXT 1 deck now, with a fade-in over `fade_in_s` seconds. It crossfades
+    /// like [`DeckCommand::Play`] on that deck. In Assist mode it is the Next that advances.
+    PlayNext {
+        fade_in_s: f32,
     },
     /// Set or clear the timing of a fixed row.
     SetTiming {

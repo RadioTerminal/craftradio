@@ -104,6 +104,14 @@ impl Command {
 pub enum CommandKind {
     /// Starts a loaded deck, or continues a paused deck.
     Play(DeckId),
+    /// Starts a loaded deck with a fade-in over `over`. It continues a paused deck at
+    /// once, without a fade.
+    PlayFadeIn {
+        /// The deck.
+        deck: DeckId,
+        /// The length of the fade-in.
+        over: Duration,
+    },
     /// Pauses a playing deck. `Play` continues it.
     Pause(DeckId),
     /// Stops the deck at once and unloads its item. The deck becomes empty.

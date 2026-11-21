@@ -255,6 +255,7 @@ fn restart_resumes_a_late_hard_event_from_its_real_start() {
             .send(Command::DeckPlay {
                 deck,
                 expect_item: Some(item),
+                fade_in: Duration::ZERO,
             })
             .unwrap();
     }

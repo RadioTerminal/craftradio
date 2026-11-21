@@ -1141,13 +1141,26 @@ impl Core {
 
     /// Sends `Play` for deck `i` at frame `at`.
     pub(crate) fn play_at(&mut self, i: usize, at: u64) {
+        self.play_fading_at(i, at, Duration::ZERO);
+    }
+
+    /// Sends `Play` for deck `i` at frame `at`, with a fade-in over `fade_in`.
+    pub(crate) fn play_fading_at(&mut self, i: usize, at: u64, fade_in: Duration) {
         let Some(s) = &mut self.slots[i] else { return };
         if s.phase == Phase::Opening {
             s.asap = true;
             return;
         }
-        let cmd = Cmd::new(at, CommandKind::Play(DeckId::ALL[i])).for_item(s.tag);
-        if self.mixer.send(cmd).is_ok() {
+        let deck = DeckId::ALL[i];
+        let kind = if fade_in.is_zero() {
+            CommandKind::Play(deck)
+        } else {
+            CommandKind::PlayFadeIn {
+                deck,
+                over: fade_in,
+            }
+        };
+        if self.mixer.send(Cmd::new(at, kind).for_item(s.tag)).is_ok() {
             s.phase = Phase::Cued(at);
         }
     }

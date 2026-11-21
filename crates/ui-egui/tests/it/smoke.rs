@@ -138,15 +138,42 @@ fn icon_buttons_keep_their_size_on_hover() {
 }
 
 #[test]
-fn skip_on_deck_a_starts_the_next_item() {
+fn play_next_starts_the_next_item() {
     let mut harness = harness();
     let on_air = "Halvard Pine – Harbours of Kelmora";
     let before = harness.query_all_by_label(on_air).count();
-    // Deck A is on air: the first press arms Skip, the second fires it.
-    click(&mut harness, "⏭ Skip deck A");
-    click(&mut harness, "⏭ Skip deck A — press again");
+    // Deck A is on air: the first press arms Play next, the second fires it.
+    click(&mut harness, "⏭ Play next");
+    click(&mut harness, "⏭ Play next — press again");
     let after = harness.query_all_by_label(on_air).count();
-    assert!(after < before, "deck A no longer shows the skipped item");
+    assert!(
+        after < before,
+        "deck A no longer shows the item that was on air"
+    );
+}
+
+/// The decks have one main action each and no per-deck next. The one next is in the header.
+#[test]
+fn deck_cards_have_no_skip_and_the_header_has_play_next() {
+    let harness = harness();
+    assert!(
+        harness.query_all_by_label_contains("Skip").next().is_none(),
+        "no control says Skip"
+    );
+    assert!(
+        harness.query_all_by_label_contains("⏭").count() == 1,
+        "only the header has ⏭"
+    );
+    assert!(shows(&harness, "⏭ Play next"), "the header has Play next");
+    assert!(shows(&harness, "⏸ Pause deck A"), "the deck on air pauses");
+    for deck in ['B', 'C', 'D'] {
+        let play = format!("▶ Play deck {deck}");
+        assert!(shows(&harness, &play), "deck {deck} has Play");
+    }
+    assert!(
+        shows(&harness, "⤵ Fade out"),
+        "the header fades the item on air"
+    );
 }
 
 #[test]

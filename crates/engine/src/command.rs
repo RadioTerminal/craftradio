@@ -136,11 +136,15 @@ pub enum Command {
     #[serde(rename = "deck.load")]
     DeckLoad { deck: u8, item: ItemId },
     /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
+    /// A deck that has not started fades in over `fade_in`. The item on air fades out at the
+    /// same time, and the decks that waited before this deck give up their items.
     #[serde(rename = "deck.play")]
     DeckPlay {
         deck: u8,
         #[serde(default)]
         expect_item: Option<ItemId>,
+        #[serde(default)]
+        fade_in: std::time::Duration,
     },
     /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
     #[serde(rename = "deck.pause")]
@@ -409,6 +413,22 @@ fn with_optional(mut spec: CommandSpec, name: &str) -> CommandSpec {
     spec
 }
 
+/// Adds the optional `fade_in` argument of `deck.play`: a duration as seconds and nanos.
+fn with_fade_in(mut spec: CommandSpec) -> CommandSpec {
+    let mut schema = spec.args_schema.as_value().clone();
+    if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        let fade = json!({
+            "type": "object",
+            "properties": {"secs": {"type": "integer"}, "nanos": {"type": "integer"}},
+        });
+        props.insert("fade_in".to_string(), fade);
+    }
+    if let Ok(s) = Schema::try_from(schema) {
+        spec.args_schema = s;
+    }
+    spec
+}
+
 /// Every command the engine accepts, one entry each.
 pub fn registry() -> Vec<CommandSpec> {
     use Tier::{OnAir as A, ReadOnly as R};
@@ -531,7 +551,15 @@ pub fn registry() -> Vec<CommandSpec> {
             A,
             &[d, ("item", "integer")],
         ),
-        with_optional(spec("deck.play", "Start a deck", A, &[d]), "expect_item"),
+        with_fade_in(with_optional(
+            spec(
+                "deck.play",
+                "Start a deck with a fade-in; the item on air fades out",
+                A,
+                &[d],
+            ),
+            "expect_item",
+        )),
         with_optional(spec("deck.pause", "Pause a deck", A, &[d]), "expect_item"),
         with_optional(spec("deck.fade", "Fade a deck out", A, &[d]), "expect_item"),
         with_optional(

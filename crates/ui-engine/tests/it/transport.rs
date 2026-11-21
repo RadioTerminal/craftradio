@@ -89,20 +89,25 @@ fn on_air(view: &StationView) -> Option<usize> {
         .position(|d| d.state == DeckState::Playing)
 }
 
-/// The user saw one track on decks A, B and D after Skip. Many skips must put no
-/// song on two decks. They must put no song twice in a row in Main.
+/// The NEXT `rank` deck: the deck that waits, by its start. NEXT 1 plays next.
+fn next(view: &StationView, rank: usize) -> Option<usize> {
+    let mut ready: Vec<usize> = (0..view.decks.len())
+        .filter(|&k| view.decks[k].state == DeckState::Ready)
+        .collect();
+    ready.sort_by_key(|&k| view.decks[k].start.as_ref().map(|s| s.timestamp()));
+    ready.get(rank - 1).copied()
+}
+
+/// The user saw one track on decks A, B and D after a press of next. Many presses of
+/// Play next must put no song on two decks. They must put no song twice in a row in Main.
 #[test]
-fn skipping_never_duplicates_a_track() {
+fn play_next_never_duplicates_a_track() {
     let (mut source, clock) = six_songs(20.0);
     for _ in 0..6 {
         let view = source.snapshot(clock.now());
-        let deck = on_air(&view).expect("a deck is on air");
-        let item = view.decks[deck].item;
-        let r = source.edit(Edit::Deck {
-            deck,
-            command: DeckCommand::Skip,
-        });
-        assert!(r.is_ok(), "skip: {r:?}");
+        let item = on_air(&view).and_then(|k| view.decks[k].item);
+        let r = source.edit(Edit::PlayNext { fade_in_s: 0.5 });
+        assert!(r.is_ok(), "play next: {r:?}");
         // A real output sounds a start some ms after the control clock. The clock steps
         // back a little, so the new item on air starts after `now` like that.
         clock.set(clock.now() - Duration::from_millis(80));
@@ -113,6 +118,52 @@ fn skipping_never_duplicates_a_track() {
                 && v.decks.iter().filter(|d| d.item.is_some()).count() == 4
         });
     }
+}
+
+/// The global Play next starts the NEXT 1 deck.
+#[test]
+fn play_next_plays_the_next_1_deck() {
+    let (mut source, clock) = six_songs(20.0);
+    let view = source.snapshot(clock.now());
+    let first = next(&view, 1).and_then(|k| view.decks[k].item);
+    assert!(first.is_some(), "a deck waits as NEXT 1");
+    assert_eq!(source.edit(Edit::PlayNext { fade_in_s: 0.5 }), Ok(1));
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        on_air(v).is_some_and(|k| v.decks[k].item == first)
+    });
+    assert_eq!(on_air(&view).and_then(|k| view.decks[k].item), first);
+}
+
+/// Play this deck on NEXT 2: it goes on air, the old item leaves the air, and the NEXT 1
+/// item waits for a later turn. No song is on two decks or twice in a row on the way.
+#[test]
+fn play_this_deck_on_next_2_goes_on_air_and_skips_next_1() {
+    let (mut source, clock) = six_songs(20.0);
+    let view = source.snapshot(clock.now());
+    let old = on_air(&view).expect("a deck is on air");
+    let one = next(&view, 1).and_then(|k| view.decks[k].item);
+    let two = next(&view, 2).expect("a deck waits as NEXT 2");
+    let item = view.decks[two].item;
+    let r = source.edit(Edit::Deck {
+        deck: two,
+        command: DeckCommand::Play(0.5),
+    });
+    assert_eq!(r, Ok(1));
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        on_air(v) == Some(two) && v.decks[old].state != DeckState::Playing
+    });
+    assert_eq!(on_air(&view), Some(two), "NEXT 2 is on air");
+    assert_eq!(view.decks[two].item, item);
+    assert_ne!(
+        view.decks[old].state,
+        DeckState::Playing,
+        "the old item faded"
+    );
+    let view = settle(&mut source, &clock, Duration::from_millis(2500), |_| false);
+    assert!(
+        view.decks.iter().all(|d| d.item != one),
+        "the NEXT 1 song left the decks for a later turn"
+    );
 }
 
 /// A folder or a system edit adds the songs, not a person, so no row shows a lock.

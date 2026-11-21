@@ -109,10 +109,11 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             let name = deck_name(*deck);
             match command {
                 DeckCommand::PlayPause => format!("Deck {name} plays or pauses"),
+                DeckCommand::Play(_) => format!("Deck {name} is on air"),
                 DeckCommand::Fade(_) => format!("Deck {name} fades out, then the next item starts"),
-                DeckCommand::Skip => format!("Deck {name} skipped to the next item"),
             }
         }
+        Edit::PlayNext { .. } => "The next deck is on air".to_owned(),
         Edit::AssignCart {
             cart,
             item: Some(_),
@@ -182,12 +183,13 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
                 DeckCommand::PlayPause => {
                     format!("deck {name} paused or plays again here only; the timeline keeps time")
                 }
+                DeckCommand::Play(_) => format!("deck {name} is on air"),
                 DeckCommand::Fade(s) => {
                     format!("deck {name} fades out over {s:.1} s, then the next item starts")
                 }
-                DeckCommand::Skip => format!("deck {name} skipped to the next item"),
             }
         }
+        Edit::PlayNext { .. } => "the next item is on air".to_owned(),
         Edit::AssignCart {
             cart,
             item: Some(_),

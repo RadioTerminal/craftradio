@@ -23,12 +23,23 @@ impl MockSource {
         command: DeckCommand,
     ) -> Result<usize, String> {
         let name = ['A', 'B', 'C', 'D'].get(deck).copied().unwrap_or('?');
+        let now = self.last_now;
+        // Deck A holds the row on air and B to D the next rows. Playing deck B to D skips
+        // the rows before it.
+        if let DeckCommand::Play(_) = command {
+            self.fade = None;
+            let played = (0..deck).all(|_| self.skip_on_air(now));
+            return if deck == 0 || played {
+                Ok(1)
+            } else {
+                Err(format!("preview — deck {name} has nothing to play"))
+            };
+        }
         if deck != 0 {
             return Err(format!(
                 "preview — deck {name} is not on air · {NEEDS_ENGINE}"
             ));
         }
-        let now = self.last_now;
         match command {
             DeckCommand::PlayPause => {
                 if self.paused_at.take().is_none() {
@@ -40,14 +51,7 @@ impl MockSource {
                 self.fade = Some((now, secs));
                 Ok(1)
             }
-            DeckCommand::Skip => {
-                self.fade = None;
-                if self.skip_on_air(now) {
-                    Ok(1)
-                } else {
-                    Err("preview — nothing to skip".to_owned())
-                }
-            }
+            DeckCommand::Play(_) => Ok(1),
         }
     }
 }

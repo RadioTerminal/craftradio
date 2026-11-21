@@ -54,7 +54,7 @@ impl Prepared {
         let on_air = self.on_air?;
         let i = *self.index.get(&id)?;
         if i == on_air {
-            return Some("this row is on air; use Skip instead".to_owned());
+            return Some("this row is on air; use Play next instead".to_owned());
         }
         let k = i.checked_sub(on_air).filter(|k| *k < DECKS)?;
         let deck = u8::try_from(k).map_or('?', |k| char::from(b'A' + k));

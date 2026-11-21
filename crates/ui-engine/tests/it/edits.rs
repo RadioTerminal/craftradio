@@ -95,9 +95,9 @@ fn a_deck_command_on_a_changed_deck_fails() {
     }
     let stale = source.edit(Edit::Deck {
         deck: 0,
-        command: DeckCommand::Skip,
+        command: DeckCommand::Fade(1.0),
     });
-    assert!(stale.is_err(), "a stale skip is refused: {stale:?}");
+    assert!(stale.is_err(), "a stale fade is refused: {stale:?}");
 }
 
 /// A file added at the row after the one on air plays next: it is the next row, and the main

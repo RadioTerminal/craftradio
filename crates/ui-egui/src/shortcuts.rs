@@ -24,9 +24,11 @@ pub(crate) const BACKSPACE: KeyboardShortcut =
 pub(crate) const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::A);
 pub(crate) const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 pub(crate) const REDO: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::Z);
-/// Skip and Fade act on the focused deck. On the deck on air they arm first.
-pub(crate) const SKIP: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::N);
+/// Play next starts the NEXT 1 deck. Fade out fades the item on air. Both arm first when
+/// they cut the item on air.
+pub(crate) const PLAY_NEXT: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::N);
 pub(crate) const FADE: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::F);
+/// Space plays the focused deck, or pauses it when it is on air.
 pub(crate) const PLAY_PAUSE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
 pub(crate) const STOP_CARTS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Escape);
 /// Focus deck A to D.
@@ -75,7 +77,7 @@ pub(crate) struct Pressed {
     pub select_all: bool,
     pub undo: bool,
     pub redo: bool,
-    pub skip: bool,
+    pub play_next: bool,
     pub fade: bool,
     pub play_pause: bool,
     pub stop_carts: bool,
@@ -108,7 +110,7 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         // Read the longer shortcuts first, so Command+Shift+Z is not also Command+Z.
         p.redo = i.consume_shortcut(&REDO);
         p.undo = i.consume_shortcut(&UNDO);
-        p.skip = i.consume_shortcut(&SKIP);
+        p.play_next = i.consume_shortcut(&PLAY_NEXT);
         p.fade = i.consume_shortcut(&FADE);
         p.duplicate = i.consume_shortcut(&DUPLICATE);
         p.delete = i.consume_shortcut(&DELETE) | i.consume_shortcut(&BACKSPACE);

@@ -347,6 +347,7 @@ fn hard_event_loaded_late_still_airs() {
             .send(Command::DeckPlay {
                 deck,
                 expect_item: Some(item),
+                fade_in: Duration::ZERO,
             })
             .unwrap();
     }
@@ -405,6 +406,7 @@ fn late_hard_event_plays_in_full_and_the_next_item_follows_it() {
             .send(Command::DeckPlay {
                 deck,
                 expect_item: Some(item),
+                fade_in: Duration::ZERO,
             })
             .unwrap();
     }
@@ -640,4 +642,69 @@ fn deleting_then_editing_a_hard_rule_keeps_the_other_hard_event() {
         at14.abs_diff(22 * SR) <= SR / 200,
         "the other event at {at14}"
     );
+}
+
+/// Play on the NEXT 2 deck: it fades in, and the item on air fades out at the same time.
+/// The NEXT 1 item never airs here, and no deck holds an item twice.
+#[test]
+fn playing_next_2_crossfades_and_skips_next_1() {
+    let sides = [Side::Left, Side::Both, Side::Right, Side::Silent];
+    let main: Vec<_> = sides
+        .iter()
+        .enumerate()
+        .map(|(k, side)| {
+            let i = k as u64 + 1;
+            let path = wav(&format!("x{i}"), 10.0, *side);
+            file_item(i, &format!("Song {i}"), &path, 10.0, 10.0, 0.0)
+        })
+        .collect();
+    let (p, clock) = offline(engine_with(main), |_| {});
+    let before = run(&p, &clock, 1.0);
+    let view = p.snapshot();
+    let deck_of = |id: u64| {
+        view.decks
+            .iter()
+            .position(|d| d.item == Some(radio_model::ItemId(id)))
+            .expect("the song waits on a deck")
+    };
+    let third = deck_of(3);
+    let _ = deck_of(2);
+    p.dispatch(Command::DeckPlay {
+        deck: third as u8,
+        expect_item: Some(radio_model::ItemId(3)),
+        fade_in: Duration::from_secs(1),
+    })
+    .unwrap();
+    let after = run(&p, &clock, 3.0);
+    let at = |s: f32| (s * SR as f32) as usize;
+    // Song 3 sounds on the right only: its level grows over the fade-in.
+    let early = peak(&after, 1, 0, at(0.1));
+    let full = peak(&after, 1, at(1.2), at(1.5));
+    assert!(full > 0.2, "song 3 plays: {full}");
+    assert!(early < full * 0.3, "song 3 fades in: {early} then {full}");
+    // Song 1 sounds on the left only: it fades out over the same second.
+    let on_air = peak(&before, 0, at(0.5), at(0.9));
+    let mid = peak(&after, 0, at(0.45), at(0.55));
+    assert!(
+        mid < on_air * 0.8 && mid > 0.0,
+        "song 1 fades: {on_air} then {mid}"
+    );
+    assert!(
+        peak(&after, 0, at(1.2), at(3.0)) < 0.001,
+        "song 1 has ended"
+    );
+    let rows = p.history(t0(), 10).unwrap();
+    let titles: Vec<&str> = rows.iter().map(|r| r.entry.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["Song 1", "Song 3"],
+        "song 2 waits for a later turn"
+    );
+    let held: Vec<_> = p.snapshot().decks.iter().filter_map(|d| d.item).collect();
+    for (k, a) in held.iter().enumerate() {
+        assert!(
+            !held[k + 1..].contains(a),
+            "{a:?} is on two decks: {held:?}"
+        );
+    }
 }

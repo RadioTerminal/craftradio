@@ -210,6 +210,7 @@ fn registry_ids_unique_and_onair_marked() {
         Command::DeckPlay {
             deck: 0,
             expect_item: None,
+            fade_in: Duration::ZERO,
         },
         Command::CartStopAll,
         Command::StationGet,
@@ -242,6 +243,7 @@ fn deck_commands_queue_intent_and_do_not_claim_audio() {
         .dispatch(Command::DeckPlay {
             deck: 0,
             expect_item: None,
+            fade_in: Duration::ZERO,
         })
         .unwrap();
     assert!(out.audio_required && !out.applied_to_audio);
@@ -254,6 +256,7 @@ fn deck_commands_queue_intent_and_do_not_claim_audio() {
         e.dispatch(Command::DeckPlay {
             deck: 9,
             expect_item: None,
+            fade_in: Duration::ZERO,
         })
         .is_err()
     ); // A command for an item the deck no longer holds fails and does nothing.

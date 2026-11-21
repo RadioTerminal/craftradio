@@ -87,6 +87,8 @@ pub struct EngineSource {
     decks: [Option<ItemId>; 4],
     /// The states of the decks in the last snapshot.
     deck_states: [DeckState; 4],
+    /// The NEXT 1 deck of the last snapshot: the deck that waits with the earliest start.
+    next_ready: Option<usize>,
     /// The rows on air in the last snapshot.
     on_air_rows: HashSet<u64>,
     /// The fixed rows of the last snapshot.
@@ -167,6 +169,7 @@ impl EngineSource {
             previous: HashMap::new(),
             decks: [None; 4],
             deck_states: [DeckState::Empty; 4],
+            next_ready: None,
             on_air_rows: HashSet::new(),
             fixed_rows: HashSet::new(),
             history: Vec::new(),
@@ -383,6 +386,23 @@ impl EngineSource {
 
     fn decks(&mut self, pv: &PlayoutView, now: Timestamp) -> [DeckView; 4] {
         self.decks = std::array::from_fn(|i| pv.decks[i].item);
+        // NEXT 1: the deck that waits with the earliest start.
+        self.next_ready = pv
+            .decks
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.item.is_some())
+            .filter(|(_, x)| matches!(x.phase, DeckPhase::Loading | DeckPhase::Ready))
+            .min_by_key(|(_, x)| x.start)
+            .map(|(k, _)| k);
+        // In Assist mode the first waiting deck waits for Next.
+        let first_ready = pv
+            .decks
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| matches!(x.phase, DeckPhase::Ready | DeckPhase::Cued))
+            .min_by_key(|(_, x)| x.start)
+            .map(|(k, _)| k);
         std::array::from_fn(|i| {
             let d = &pv.decks[i];
             let state = match d.phase {
@@ -416,14 +436,6 @@ impl EngineSource {
                             .is_some_and(|f| f.mode == radio_model::FixMode::Hard)
                 })
             });
-            // In Assist mode the first waiting deck waits for Next.
-            let first_ready = pv
-                .decks
-                .iter()
-                .enumerate()
-                .filter(|(_, x)| matches!(x.phase, DeckPhase::Ready | DeckPhase::Cued))
-                .min_by_key(|(_, x)| x.start)
-                .map(|(k, _)| k);
             let waiting = pv.waiting_for_next && first_ready == Some(i);
             DeckView {
                 playlist,
