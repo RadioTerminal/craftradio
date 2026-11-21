@@ -322,7 +322,8 @@ rule({ at: { minutes: [20, 50] }, place: "between", take: 3,
 
 - Local audio device(s) through cpal; more than one output allowed (for example main plus
   a backup sound card).
-- Icecast source client (HTTP PUT / SOURCE). The encoders are MP3 (LAME) and Ogg/Opus
+- Icecast source client (HTTP PUT / SOURCE). Formats: Ogg/Opus and MP3. MP3 uses LAME (LGPL),
+  allowed by the user as the one licence exception, behind the `mp3` feature. The encoders are MP3 (LAME) and Ogg/Opus
   (libopus); these two are C dependencies, an accepted exception to pure Rust.
 - **v1 scope (my call, after review):** one local output device plus PFL, and one Icecast
   mount. More devices and mounts are deferred; the design allows them.

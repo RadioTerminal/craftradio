@@ -33,7 +33,10 @@ and MAY are used as in RFC 2119.
 11. Keep secrets and personal details out of code, logs and fixtures. Fixture names, titles and
     artists are invented, never real songs.
 12. A new dependency MUST be MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, CC0-1.0 or MPL-2.0 licensed (fonts may also be OFL-1.1 or the Ubuntu Font Licence, as egui's default fonts and the template's own fonts are). No
-    GPL/LGPL/AGPL crates.
+    GPL/LGPL/AGPL crates. **One exception (operator, 2026-11-21):** LAME (LGPL-2.0) for MP3
+    encoding of the Icecast output only, kept in its own crate (`crates/stream`) behind a cargo
+    feature `mp3` (on by default). Release builds must meet the LGPL relinking terms: link LAME
+    dynamically where the platform allows it, or ship the object files needed to relink.
 13. Dates and times use `jiff`. This departs from the template's `chrono` rule, because
     DST-correct local time zones are core to scheduling. Never hand-roll calendar or UTC math.
 
