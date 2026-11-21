@@ -8,6 +8,7 @@
 mod alarm;
 mod clock;
 mod core;
+mod ops;
 mod output;
 mod view;
 

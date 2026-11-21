@@ -2,6 +2,7 @@
 
 use crate::alarm::{Alarm, Alarms, RaisedAlarm};
 use crate::clock::{Clock, ClockMap};
+use crate::ops::{Carts, Check, Pending};
 use crate::output::{ProgramSource, feed_tap};
 use crate::view::{DeckPhase, DeckRole, DeckView, LocalOutput, OutputStatus, PlayoutView};
 use crate::{OutputChoice, PlayoutConfig, PlayoutError, Reply};
@@ -12,7 +13,7 @@ use radio_audio::{
 };
 use radio_audio_device::{NullOutput, Output};
 use radio_engine::{
-    AsPlayed, AudioIntent, Command, Engine, EngineError, EngineEvent, LogEntry, LogStatus, RowId,
+    AsPlayed, Command, Engine, EngineError, EngineEvent, LogEntry, LogStatus, RowId,
 };
 use radio_model::{FixMode, Item, ItemId, Source};
 use radio_scheduler::{Entry, Origin, PlanInput, PlayHistory, Played, Timeline, plan};
@@ -26,7 +27,7 @@ const PLAN_EVERY: Duration = Duration::from_secs(1);
 /// Playout tries a broken item again after this time.
 const RETRY_BROKEN: Duration = Duration::from_secs(300);
 /// The fade of an early end when the item has no fade-out of its own.
-const CUT_FADE: Duration = Duration::from_secs(1);
+pub(crate) const CUT_FADE: Duration = Duration::from_secs(1);
 
 pub(crate) fn add(t: Timestamp, d: Duration) -> Timestamp {
     t.checked_add(d).unwrap_or(Timestamp::MAX)
@@ -48,6 +49,7 @@ pub(crate) enum Phase {
     /// `Play` waits in the mixer for this frame.
     Cued(u64),
     Playing,
+    Paused,
 }
 
 /// What playout put on a deck.
@@ -185,7 +187,7 @@ pub(crate) struct Core {
     driver: Driver,
     _live: LiveInput,
     local: LocalOutput,
-    clock: Arc<dyn Clock>,
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) map: ClockMap,
     pub(crate) cfg: PlayoutConfig,
     pub(crate) timeline: Timeline,
@@ -204,6 +206,12 @@ pub(crate) struct Core {
     pub(crate) alarms: Alarms,
     ticks: u64,
     view: Arc<Mutex<PlayoutView>>,
+    /// Commands that wait for the mixer to confirm them.
+    pub(crate) pending: Vec<Pending>,
+    /// Stop after current: nothing new starts by itself, except hard events.
+    pub(crate) hold: bool,
+    pub(crate) carts: Carts,
+    carts_dirty: bool,
 }
 
 fn empty_timeline() -> Timeline {
@@ -217,6 +225,7 @@ fn empty_timeline() -> Timeline {
 impl Core {
     pub(crate) fn new(mut engine: Engine, cfg: PlayoutConfig) -> Result<Core, PlayoutError> {
         let engine_rx = engine.events();
+        let carts = Carts::new(cfg.mixer.cart_slots);
         let opened = open_output(&cfg.output, cfg.mixer, None)?;
         let now = cfg.clock.now();
         let mut alarms = Alarms::new(cfg.webhook.clone());
@@ -264,6 +273,10 @@ impl Core {
             alarms,
             ticks: 0,
             view: Arc::new(Mutex::new(view)),
+            pending: Vec::new(),
+            hold: false,
+            carts,
+            carts_dirty: true,
         })
     }
 
@@ -305,23 +318,34 @@ impl Core {
     }
 
     pub(crate) fn dispatch(&mut self, cmd: Command, reply: Reply) {
-        let result = self.engine.dispatch(cmd);
-        self.drain_engine();
-        let _ = reply.send(result);
-    }
-
-    pub(crate) fn expire_replies(&mut self) {}
-
-    fn drain_engine(&mut self) {
-        while let Ok(ev) = self.engine_rx.try_recv() {
-            match ev {
-                EngineEvent::StateChanged => self.dirty = true,
-                EngineEvent::AudioIntent(intent) => self.intent(intent),
+        match self.engine.dispatch(cmd) {
+            Ok(outcome) => {
+                let checks = self.drain_engine();
+                self.answer(outcome, checks, reply);
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e));
             }
         }
     }
 
-    fn intent(&mut self, _intent: AudioIntent) {}
+    /// Takes the engine events. It turns intents into audio and returns their checks.
+    fn drain_engine(&mut self) -> Vec<Check> {
+        let mut checks = Vec::new();
+        while let Ok(ev) = self.engine_rx.try_recv() {
+            match ev {
+                EngineEvent::StateChanged => {
+                    self.dirty = true;
+                    self.carts_dirty = true;
+                }
+                EngineEvent::AudioIntent(intent) => {
+                    let now = self.clock.now();
+                    checks.push(self.intent(intent, now));
+                }
+            }
+        }
+        checks
+    }
 
     /// One pass of the control loop.
     pub(crate) fn tick(&mut self) {
@@ -333,7 +357,10 @@ impl Core {
             self.alarms.raise(now, Alarm::ClockStep { by_ms });
         }
         self.ticks += 1;
-        self.drain_engine();
+        let _ = self.drain_engine();
+        if std::mem::take(&mut self.carts_dirty) || self.ticks == 1 {
+            self.sync_carts(now);
+        }
         let events: Vec<AudioEvent> = self.mixer.events().collect();
         for ev in events {
             self.on_audio(ev, now);
@@ -347,7 +374,9 @@ impl Core {
         self.load_ahead(now);
         self.cue_starts(now);
         self.cue_ends(now);
+        self.poll_states();
         self.publish(now);
+        self.expire_replies();
     }
 
     fn on_audio(&mut self, ev: AudioEvent, now: Timestamp) {
@@ -392,9 +421,7 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
-        if s.role == DeckRole::Plan {
-            s.entry.start = wall;
-        }
+        s.entry.start = wall;
         self.dirty = true;
         self.log_start(deck.index(), wall);
     }
@@ -609,7 +636,7 @@ impl Core {
         item: Item,
         role: DeckRole,
         offset: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         let tag = self.next_tag;
         self.next_tag += 1;
         let deck = DeckId::ALL[i];
@@ -646,12 +673,7 @@ impl Core {
             row: None,
         });
         self.next_deck = (i + 1) % 4;
-        Ok(())
-    }
-
-    /// Tells if this queued slot can start by itself now.
-    fn may_start(&self, _s: &Slot) -> bool {
-        true
+        Ok(tag)
     }
 
     /// Sends `Play` for each queued entry that starts within the command lead.
@@ -695,7 +717,8 @@ impl Core {
         let soon = add(now, self.cfg.command_lead);
         for i in 0..4 {
             let Some(s) = &self.slots[i] else { continue };
-            if s.role != DeckRole::Plan || s.not_started() || s.end_sent {
+            let ends = matches!(s.role, DeckRole::Plan | DeckRole::Operator);
+            if !ends || s.not_started() || s.end_sent || s.phase == Phase::Paused {
                 continue;
             }
             let start = s.entry.start;
@@ -741,6 +764,12 @@ impl Core {
     }
 
     fn publish(&mut self, now: Timestamp) {
+        let waiting = self.slots.iter().flatten().any(|s| {
+            s.role == DeckRole::Plan
+                && s.not_started()
+                && s.entry.start <= now
+                && !self.may_start(s)
+        });
         let decks: [DeckView; 4] = std::array::from_fn(|i| match &self.slots[i] {
             None => DeckView::default(),
             Some(s) => DeckView {
@@ -751,6 +780,7 @@ impl Core {
                     Phase::Ready => DeckPhase::Ready,
                     Phase::Cued(_) => DeckPhase::Cued,
                     Phase::Playing => DeckPhase::Playing,
+                    Phase::Paused => DeckPhase::Paused,
                 },
                 role: Some(s.role),
                 start: Some(s.started.unwrap_or(s.entry.start)),
@@ -762,6 +792,8 @@ impl Core {
         };
         view.now = now;
         view.mode = self.engine.state().mode;
+        view.stop_after_current = self.hold;
+        view.waiting_for_next = waiting;
         view.decks = decks;
         view.outputs.local = self.local.clone();
         view.alarms = self.alarms.recent.iter().cloned().collect();

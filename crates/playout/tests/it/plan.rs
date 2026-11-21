@@ -1,8 +1,8 @@
 use crate::fixtures::*;
 use radio_engine::LogStatus;
 
-/// Track 2 starts within 5 ms of the segue of track 1, while track 1 still fades out.
-/// Then track 3 follows, not track 1 again, and the log has a row for each start.
+/// Track 2 starts within 5 ms of the segue of track 1, while track 1 still fades
+/// out. Then track 3 follows, not track 1 again, and the log has a row for each start.
 #[test]
 fn two_tracks_crossfade_at_segue() {
     let one = file_item(1, "One", &wav("one", 2.0, Side::Left), 2.0, 1.5, 0.5);
