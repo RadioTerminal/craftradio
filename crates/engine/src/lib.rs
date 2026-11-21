@@ -1223,7 +1223,7 @@ impl Engine {
             } => self.schedule(
                 None,
                 one_off::Wish {
-                    item: one_off,
+                    item: *one_off,
                     start,
                     fix,
                     tolerance,
@@ -1240,7 +1240,7 @@ impl Engine {
             } => self.schedule(
                 Some(id),
                 one_off::Wish {
-                    item: one_off,
+                    item: *one_off,
                     start,
                     fix,
                     tolerance,

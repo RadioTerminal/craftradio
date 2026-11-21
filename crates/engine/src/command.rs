@@ -377,7 +377,7 @@ pub enum Command {
     /// the first time, and the note says so.
     #[serde(rename = "schedule.add")]
     ScheduleAdd {
-        one_off: Item,
+        one_off: Box<Item>,
         start: civil::DateTime,
         #[serde(default = "hard")]
         fix: FixMode,
@@ -390,7 +390,7 @@ pub enum Command {
     #[serde(rename = "schedule.update")]
     ScheduleUpdate {
         id: ItemId,
-        one_off: Item,
+        one_off: Box<Item>,
         start: civil::DateTime,
         #[serde(default = "hard")]
         fix: FixMode,

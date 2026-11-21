@@ -29,7 +29,7 @@ fn file(title: &str) -> Item {
 
 fn add(e: &mut Engine, item: Item, start: DateTime) -> Result<u64, radio_engine::EngineError> {
     let out = e.dispatch(Command::ScheduleAdd {
-        one_off: item,
+        one_off: Box::new(item),
         start,
         fix: FixMode::Hard,
         tolerance: Duration::from_secs(1),
@@ -120,7 +120,7 @@ fn a_start_in_a_dst_fold_airs_at_the_first_pass_and_says_so() {
     ljubljana(&mut e);
     let out = e
         .dispatch(Command::ScheduleAdd {
-            one_off: file("Autumn"),
+            one_off: Box::new(file("Autumn")),
             start: date(2026, 10, 25).at(2, 30, 0, 0),
             fix: FixMode::Soft,
             tolerance: Duration::from_secs(2),
@@ -150,7 +150,7 @@ fn update_changes_the_time_and_keeps_the_id() {
     let id = add(&mut e, file("Promo"), date(2026, 11, 22).at(12, 0, 0, 0)).unwrap();
     e.dispatch(Command::ScheduleUpdate {
         id: ItemId(id),
-        one_off: file("Promo, new cut"),
+        one_off: Box::new(file("Promo, new cut")),
         start: date(2026, 11, 22).at(15, 30, 0, 0),
         fix: FixMode::Soft,
         tolerance: Duration::from_secs(3),
