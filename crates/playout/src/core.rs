@@ -582,6 +582,16 @@ impl Core {
         Ok(out)
     }
 
+    /// Offline only: renders the tail that the lookahead holds, and feeds the taps.
+    pub(crate) fn drain(&mut self) -> Result<Vec<f32>, PlayoutError> {
+        let Driver::Offline { mixer, tap, .. } = &mut self.driver else {
+            return Err(PlayoutError::NotOffline);
+        };
+        let out = radio_audio::drain_offline(mixer);
+        feed_tap(tap, &out);
+        Ok(out)
+    }
+
     pub(crate) fn dispatch(&mut self, cmd: Command, reply: Reply) {
         fn has_script(c: &Command) -> bool {
             match c {

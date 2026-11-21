@@ -65,3 +65,21 @@ fn a_stored_ceiling_holds_after_a_restart() {
         "Program reaches {limited} dBFS at the start"
     );
 }
+
+/// An offline run that ends drains the limiter lookahead: the tail still carries the item
+/// that played, so the run loses none of its last frames.
+#[test]
+fn an_offline_run_drains_the_lookahead_at_its_end() {
+    let path = wav("drain", 2.0, Side::Both);
+    let engine = engine_with(vec![file_item(1, "Song", &path, 2.0, 2.0, 0.0)]);
+    let (p, clock) = offline(engine, |_| {});
+    let program = run(&p, &clock, 0.5);
+    let tail = p.drain().unwrap();
+    let frames = tail.len() / 2;
+    assert!(frames > 0, "the default limiter has a lookahead");
+    assert!(
+        peak(&tail, 0, 0, frames) > 0.1,
+        "the tail is the end of the item, not silence"
+    );
+    assert!(program.len() / 2 > frames, "the tail comes after the run");
+}

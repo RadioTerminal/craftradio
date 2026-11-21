@@ -292,3 +292,63 @@ fn an_offline_render_keeps_its_last_frames() {
         "the last input frame {want} ends the render, not {last}"
     );
 }
+
+/// A swap from one chain to another frees nothing on the render thread: the old chain goes
+/// back to the handle.
+#[test]
+fn a_swap_between_two_chains_does_not_allocate_or_free_in_render() {
+    let tone = tone_samples(1.0, 1_000.0, -3.0);
+    let (mut mixer, mut handle, _live) = ring_mixer(&tone, limiter_only());
+    let _ = render_offline(&mut mixer, 480);
+    handle
+        .set_dynamics(Some(with_compressor()))
+        .expect("compressor");
+    let mut program = vec![0.0f32; 480 * 2];
+    assert_no_alloc::reset_violation_count();
+    assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut []));
+    assert_eq!(
+        assert_no_alloc::violation_count(),
+        0,
+        "the swap allocated or freed"
+    );
+}
+
+/// Every corner of the ranges that the engine accepts prepares in the processors.
+#[test]
+fn the_engine_ranges_sit_inside_the_processor_ranges() {
+    use radio_model::{DynamicsSettings, dynamics_range as r};
+    let ends = |(lo, hi): (f32, f32)| [lo, hi];
+    for threshold_db in ends(r::THRESHOLD_DB) {
+        for ratio in ends(r::RATIO) {
+            for attack_ms in ends(r::ATTACK_MS) {
+                for release_ms in ends(r::COMP_RELEASE_MS) {
+                    for makeup_db in ends(r::MAKEUP_DB) {
+                        for ceiling_db in ends(r::CEILING_DB) {
+                            for limit_release in ends(r::LIMIT_RELEASE_MS) {
+                                let d = DynamicsSettings {
+                                    compressor: radio_model::CompressorSettings {
+                                        enabled: true,
+                                        threshold_db,
+                                        ratio,
+                                        attack_ms,
+                                        release_ms,
+                                        makeup_db,
+                                    },
+                                    limiter: radio_model::LimiterSettings {
+                                        enabled: true,
+                                        ceiling_db,
+                                        release_ms: limit_release,
+                                    },
+                                };
+                                assert_eq!(d.validate(), Ok(()));
+                                let (mut mixer, _h, _l) = Mixer::new(MixerConfig::default());
+                                let result = mixer.set_dynamics(Some(ProgramDynamics::from(&d)));
+                                assert!(result.is_ok(), "{d:?}: {result:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
