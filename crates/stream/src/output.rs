@@ -4,9 +4,9 @@ use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use std::{
     io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Encodes exactly 20 ms of 48 kHz stereo audio per packet.
@@ -159,6 +159,76 @@ trait Transport: Read + Write {}
 impl<T: Read + Write> Transport for T {}
 type SourceStream = Box<dyn Transport>;
 
+static SYSTEM_ROOTS: OnceLock<rustls::RootCertStore> = OnceLock::new();
+static SYSTEM_TLS: OnceLock<Result<Arc<rustls::ClientConfig>, &'static str>> = OnceLock::new();
+
+fn tls_config(extra_roots: &[Vec<u8>]) -> Result<Arc<rustls::ClientConfig>, &'static str> {
+    if extra_roots.is_empty() {
+        return SYSTEM_TLS.get_or_init(|| build_tls_config(&[])).clone();
+    }
+    build_tls_config(extra_roots)
+}
+
+fn build_tls_config(extra_roots: &[Vec<u8>]) -> Result<Arc<rustls::ClientConfig>, &'static str> {
+    let mut roots = SYSTEM_ROOTS
+        .get_or_init(|| {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+            roots
+        })
+        .clone();
+    for der in extra_roots {
+        roots
+            .add(der.clone().into())
+            .map_err(|_| "invalid extra root")?;
+    }
+    if roots.is_empty() {
+        return Err("no usable trust roots");
+    }
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|_| "configuration failed")?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
+/// Apply the total limit inside complete_io, which can perform many reads.
+struct HandshakeIo<'a> {
+    socket: &'a mut TcpStream,
+    deadline: Instant,
+}
+impl HandshakeIo<'_> {
+    fn timeout(&self) -> std::io::Result<Duration> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "TLS handshake deadline",
+            ));
+        }
+        Ok(remaining.min(Duration::from_secs(2)))
+    }
+}
+impl Read for HandshakeIo<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.socket.set_read_timeout(Some(self.timeout()?))?;
+        self.socket.read(bytes)
+    }
+}
+impl Write for HandshakeIo<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.socket.set_write_timeout(Some(self.timeout()?))?;
+        self.socket.write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.timeout()?;
+        self.socket.flush()
+    }
+}
+
 /// Open and verify TLS before any HTTP request or credentials are written.
 fn open_transport(cfg: &SourceConfig) -> Result<SourceStream, StreamError> {
     let address = (cfg.host.as_str(), cfg.port)
@@ -175,30 +245,17 @@ fn open_transport(cfg: &SourceConfig) -> Result<SourceStream, StreamError> {
         // Do not include peer-supplied text or credentials in errors.
         StreamError::Invalid(format!("TLS: {message} for {}", cfg.host))
     };
-    let mut roots = rustls::RootCertStore::empty();
-    for cert in rustls_native_certs::load_native_certs().certs {
-        roots
-            .add(cert)
-            .map_err(|_| tls_error("invalid system root"))?;
-    }
-    for der in &cfg.extra_roots {
-        roots
-            .add(der.clone().into())
-            .map_err(|_| tls_error("invalid extra root"))?;
-    }
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|_| tls_error("configuration failed"))?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
+    let config = tls_config(&cfg.extra_roots).map_err(tls_error)?;
     let name = rustls::pki_types::ServerName::try_from(cfg.host.clone())
         .map_err(|_| tls_error("invalid server name"))?;
-    let mut connection = rustls::ClientConnection::new(Arc::new(config), name)
+    let mut connection = rustls::ClientConnection::new(config, name)
         .map_err(|_| tls_error("configuration failed"))?;
+    let mut io = HandshakeIo {
+        socket: &mut socket,
+        deadline: Instant::now() + Duration::from_secs(5),
+    };
     while connection.is_handshaking() {
-        connection.complete_io(&mut socket).map_err(|error| {
+        connection.complete_io(&mut io).map_err(|error| {
             if matches!(
                 error
                     .get_ref()
@@ -211,6 +268,8 @@ fn open_transport(cfg: &SourceConfig) -> Result<SourceStream, StreamError> {
             }
         })?;
     }
+    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(2)))?;
     Ok(Box::new(rustls::StreamOwned::new(connection, socket)))
 }
 

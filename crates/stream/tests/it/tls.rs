@@ -112,10 +112,21 @@ fn untrusted_tls_reports_error_without_sending_request() {
     let (tls, _) = server_config();
     let server = std::thread::spawn(move || {
         let mut stream = accept(&listener, tls);
-        let mut byte = [0];
-        assert!(stream.read(&mut byte).is_err());
-        // No HTTP application data was accepted before verification failed.
-        assert_eq!(stream.conn.reader().read(&mut byte).unwrap_or(0), 0);
+        let mut application_data = Vec::new();
+        let mut bytes = [0; 4096];
+        loop {
+            match stream.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => application_data.extend_from_slice(&bytes[..count]),
+            }
+        }
+        while let Ok(count) = stream.conn.reader().read(&mut bytes) {
+            if count == 0 {
+                break;
+            }
+            application_data.extend_from_slice(&bytes[..count]);
+        }
+        application_data
     });
     let (_producer, consumer) = rtrb::RingBuffer::new(4096);
     let handle = IcecastClient::start(cfg, consumer);
@@ -135,7 +146,7 @@ fn untrusted_tls_reports_error_without_sending_request() {
         std::thread::sleep(Duration::from_millis(5));
     }
     handle.stop();
-    server.join().unwrap();
+    assert!(server.join().unwrap().is_empty());
 }
 
 #[cfg(feature = "mp3")]
@@ -170,5 +181,35 @@ fn mp3_admin_request_uses_verified_tls() {
     handle.set_title("Cloud Relay".into());
     rx.recv_timeout(Duration::from_secs(5)).unwrap();
     handle.stop();
+    server.join().unwrap();
+}
+
+#[test]
+fn slow_tls_handshake_has_total_deadline_and_stop_finishes() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut cfg = config(listener.local_addr().unwrap().port());
+    cfg.tls = true;
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        // An incomplete TLS record, delivered faster than the read timeout.
+        for byte in [22, 3, 3, 0, 100].into_iter().chain(std::iter::repeat(0)) {
+            if socket.write_all(&[byte]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    });
+    let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+    let handle = IcecastClient::start(cfg, consumer);
+    std::thread::sleep(Duration::from_millis(500));
+    handle.stop();
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while handle.status() != StreamStatus::Stopped {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "handshake delayed stop"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     server.join().unwrap();
 }
