@@ -147,8 +147,13 @@ pub enum CommandKind {
 /// An event from the render thread.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AudioEvent {
-    /// The mixer took the new item for the deck.
-    Loaded(DeckId),
+    /// The mixer took the new item for the deck. `item_tag` is the tag of that load.
+    Loaded {
+        /// The deck.
+        deck: DeckId,
+        /// The tag from [`crate::LoadOptions`].
+        item_tag: Option<u64>,
+    },
     /// A `Play` started the item on the deck (not a continue after `Pause`). `at_sample` is
     /// the frame where its first sample sounds; `item_tag` is the tag of its load.
     Started {
@@ -159,8 +164,21 @@ pub enum AudioEvent {
         /// The tag from [`crate::LoadOptions`].
         item_tag: Option<u64>,
     },
-    /// The mixer refused the new item, because the deck was on air. The deck keeps its item.
-    LoadRejected(DeckId),
+    /// The mixer refused the new item, because the deck was on air. The deck keeps its
+    /// item. `item_tag` is the tag of the refused load.
+    LoadRejected {
+        /// The deck.
+        deck: DeckId,
+        /// The tag from [`crate::LoadOptions`].
+        item_tag: Option<u64>,
+    },
+    /// A `FadeOut` began on a playing deck. `DeckEnded` follows at its end.
+    Fading {
+        /// The deck.
+        deck: DeckId,
+        /// The tag of the item that fades.
+        item_tag: Option<u64>,
+    },
     /// The item on the deck came to its end, or its fade-out finished. The deck is empty.
     DeckEnded(DeckId),
     /// The ring of a playing deck became empty before the end of the file. The deck plays

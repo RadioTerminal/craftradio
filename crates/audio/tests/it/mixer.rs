@@ -227,7 +227,13 @@ fn a_load_onto_a_playing_deck_is_rejected() {
     let out = render_offline(&mut mixer, SR / 10);
     let events: Vec<_> = handle.events().collect();
     assert!(
-        events.contains(&AudioEvent::LoadRejected(DeckId::D)),
+        events.iter().any(|e| matches!(
+            e,
+            AudioEvent::LoadRejected {
+                deck: DeckId::D,
+                ..
+            }
+        )),
         "events: {events:?}"
     );
     assert_eq!(handle.deck_state(DeckId::D), DeckState::Playing);

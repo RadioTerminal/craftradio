@@ -74,6 +74,8 @@ pub(crate) struct Slot {
     pub(crate) stream: Option<StreamSlot>,
     /// The load starts this far after the cue-in (a resume).
     pub(crate) offset: Duration,
+    /// The mixer reported that a fade-out began.
+    pub(crate) fading: bool,
 }
 
 impl Slot {
@@ -421,16 +423,29 @@ impl Core {
 
     fn on_audio(&mut self, ev: AudioEvent, now: Timestamp) {
         match ev {
-            AudioEvent::Loaded(deck) => {
+            AudioEvent::Loaded { deck, item_tag } => {
                 if let Some(s) = &mut self.slots[deck.index()]
                     && s.phase == Phase::Loading
+                    && item_tag == Some(s.tag)
                 {
                     s.phase = Phase::Ready;
                 }
             }
-            AudioEvent::LoadRejected(deck) => {
-                self.slots[deck.index()] = None;
-                self.dirty = true;
+            AudioEvent::LoadRejected { deck, item_tag } => {
+                let ours = self.slots[deck.index()]
+                    .as_ref()
+                    .is_some_and(|s| item_tag == Some(s.tag));
+                if ours {
+                    self.slots[deck.index()] = None;
+                    self.dirty = true;
+                }
+            }
+            AudioEvent::Fading { deck, item_tag } => {
+                if let Some(s) = &mut self.slots[deck.index()]
+                    && item_tag == Some(s.tag)
+                {
+                    s.fading = true;
+                }
             }
             AudioEvent::Started {
                 deck,
@@ -750,6 +765,7 @@ impl Core {
             row: None,
             stream,
             offset,
+            fading: false,
         });
         self.next_deck = (i + 1) % 4;
         Ok(tag)

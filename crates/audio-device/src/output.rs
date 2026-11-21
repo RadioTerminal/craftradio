@@ -205,7 +205,9 @@ where
     let clock = clock.clone();
     // Allocated here, before the stream starts; the callback only reuses it.
     let mut scratch = vec![0.0f32; MAX_BLOCK_FRAMES * channels];
-    let data_cb = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+    let data_cb = move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+        let ts = info.timestamp();
+        clock.set_latency(ts.playback.duration_since(ts.callback));
         for chunk in data.chunks_mut(MAX_BLOCK_FRAMES * channels) {
             let frames = chunk.len() / channels;
             let block = &mut scratch[..frames * channels];

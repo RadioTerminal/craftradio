@@ -402,11 +402,13 @@ impl Mixer {
     fn take_load(&mut self, deck: DeckId, source: DeckSource) {
         let slot = &mut self.decks[deck.index()];
         if slot.playing {
+            let item_tag = source.item_tag;
             source.shared.set_verdict(Verdict::Rejected);
             self.retire(Retired::Deck(source));
-            self.emit(AudioEvent::LoadRejected(deck));
+            self.emit(AudioEvent::LoadRejected { deck, item_tag });
             return;
         }
+        let item_tag = source.item_tag;
         source.shared.set_verdict(Verdict::Accepted);
         let old = slot.source.replace(source);
         *slot = DeckSlot {
@@ -417,7 +419,7 @@ impl Mixer {
             old.shared.set_state(DeckState::Empty);
             self.retire(Retired::Deck(old));
         }
-        self.emit(AudioEvent::Loaded(deck));
+        self.emit(AudioEvent::Loaded { deck, item_tag });
     }
 
     fn take_commands(&mut self) {
@@ -504,6 +506,8 @@ impl Mixer {
                 let remaining = total.saturating_sub(late);
                 if slot.playing && !slot.paused && remaining > 0 {
                     slot.fade = Some((remaining, total));
+                    let item_tag = slot.source.as_ref().and_then(|s| s.item_tag);
+                    self.emit(AudioEvent::Fading { deck, item_tag });
                 } else {
                     self.end(deck);
                 }
@@ -780,8 +784,20 @@ impl MixerHandle {
         path: impl AsRef<Path>,
         options: LoadOptions,
     ) -> Result<(), AudioError> {
-        self.collect();
         let decoder = Decoder::open_at(path, options.cue_in)?;
+        self.load_decoder(deck, decoder, options)
+    }
+
+    /// Sends an open decoder to a deck, like [`MixerHandle::load`]. Open the decoder
+    /// with [`Decoder::open_at`] on another thread. Then the engine thread does no file
+    /// I/O. This call does not use `options.cue_in`: the decoder starts there already.
+    pub fn load_decoder(
+        &mut self,
+        deck: DeckId,
+        decoder: Decoder,
+        options: LoadOptions,
+    ) -> Result<(), AudioError> {
+        self.collect();
         let (producer, consumer) = RingBuffer::new(self.deck_buffer);
         let shared = Arc::new(DeckShared::new());
         let feeder = DeckFeeder::spawn(decoder, producer, Arc::clone(&shared))?;
