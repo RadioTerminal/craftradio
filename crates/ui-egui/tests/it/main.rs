@@ -4,5 +4,6 @@ mod editing;
 mod folders;
 mod guards;
 mod keyboard;
+mod meters;
 mod overflow;
 mod smoke;

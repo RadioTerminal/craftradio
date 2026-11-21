@@ -63,6 +63,8 @@ pub struct EngineSource {
     merger: Option<fader::Merger>,
     /// The answers to merged commands, checked for errors.
     replies: fader::Replies,
+    /// The meter reader of the mixer, for the meters of every frame. A read never blocks.
+    meter_reader: std::sync::Mutex<radio_audio::MeterReader>,
     playout: Playout,
     tz: TimeZone,
     station: String,
@@ -137,9 +139,11 @@ impl EngineSource {
                 }
             })
         });
+        let meter_reader = std::sync::Mutex::new(playout.meters());
         Self {
             merger,
             replies,
+            meter_reader,
             playout,
             tz: opts.tz,
             station: opts.station_name,
@@ -756,6 +760,21 @@ impl ViewSource for EngineSource {
     fn duplicates(&self, playlist: &str) -> usize {
         self.playlist_id(playlist)
             .map_or(0, |p| self.duplicate_items(p).len())
+    }
+
+    fn meters(&self) -> Option<radio_ui_egui::view::MeterFrame> {
+        let snap = self.meter_reader.lock().ok()?.read();
+        // Before the first render block, the board holds zeros, which read as full scale.
+        if snap.at_sample == 0 {
+            return Some(radio_ui_egui::view::MeterFrame::default());
+        }
+        Some(radio_ui_egui::view::MeterFrame {
+            level_db: Strip::ALL.iter().map(|s| snap.strip(*s).rms_db).collect(),
+            peak_db: Strip::ALL
+                .iter()
+                .map(|s| snap.strip(*s).peak_hold_db)
+                .collect(),
+        })
     }
 
     fn stream_title(&self, row: &Row) -> String {

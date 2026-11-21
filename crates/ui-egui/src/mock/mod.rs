@@ -70,6 +70,8 @@ pub struct MockSource {
     main_tracks: Option<Vec<(String, Duration)>>,
     last_top: Option<Zoned>,
     last_now: Timestamp,
+    /// The decks of the last snapshot and when it came, for the meters between snapshots.
+    last_decks: Option<([DeckView; 4], std::time::Instant)>,
     /// History and timeline of the last snapshot, in time order.
     last_all: Vec<Row>,
     /// Tags that a person changed, by row id.
@@ -181,6 +183,7 @@ impl MockSource {
             main_tracks: None,
             last_top: None,
             last_now: Timestamp::UNIX_EPOCH,
+            last_decks: None,
             last_all: Vec::new(),
             row_meta: HashMap::new(),
             row_timing: HashMap::new(),

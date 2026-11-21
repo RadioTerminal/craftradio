@@ -63,6 +63,10 @@ pub mod size {
     pub const ROW: f32 = 26.0;
     /// A tool window resizes to its content only when the content size moves more than this.
     pub const FIT_SLACK: f32 = 2.0;
+    /// While sound moves the meters, the window draws a frame this often (about 30 fps).
+    pub const METER_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+    /// A meter bar falls back over about this time; it rises at once.
+    pub const METER_RELEASE_S: f32 = 0.3;
     /// A thin divider row for an item from another playlist.
     pub const DIVIDER_ROW: f32 = 20.0;
     /// The fit line under a fixed row in Upcoming.

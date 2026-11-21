@@ -521,6 +521,25 @@ pub struct MeterView {
     pub route: Route,
 }
 
+/// The meter levels of one instant, in the order of `StationView::meters`, in dBFS.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MeterFrame {
+    pub level_db: Vec<[f32; 2]>,
+    pub peak_db: Vec<[f32; 2]>,
+}
+
+impl MeterFrame {
+    /// True when any meter shows sound.
+    pub fn moving(&self) -> bool {
+        self.level_db
+            .iter()
+            .any(|l| l[0].max(l[1]) > METER_SILENT_DB)
+    }
+}
+
+/// A meter below this level is silent, for the choice of the repaint rate.
+pub const METER_SILENT_DB: f32 = -58.0;
+
 /// Where a mixer strip sends its sound.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Route {
@@ -969,6 +988,11 @@ pub trait ViewSource {
     fn duplicates(&self, playlist: &str) -> usize {
         let _ = playlist;
         0
+    }
+
+    /// The meter levels now. It never blocks: the UI reads it on every frame.
+    fn meters(&self) -> Option<MeterFrame> {
+        None
     }
 
     /// The exact stream title that Icecast gets for `row`, at its place in the timeline.

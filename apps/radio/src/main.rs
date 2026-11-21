@@ -15,7 +15,7 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use radio_playout::{OutputChoice, Playout, PlayoutConfig, SystemClock};
 use radio_ui_egui::theme::size;
-use radio_ui_egui::{MockSource, RadioApp, ViewSource};
+use radio_ui_egui::{MockSource, RadioApp, ToolWindow, ViewSource};
 use radio_ui_engine::{EngineSource, KEYCHAIN_SERVICE, KeyringStore, SourceOptions};
 
 /// The stream title of items that hide their own title.
@@ -54,9 +54,12 @@ struct Args {
     /// Show tool windows inside the main window, so that drag and drop works between all of them.
     #[arg(long)]
     single_window: bool,
-    /// Show the time of each frame in the status line.
+    /// Show the time of each frame in the status line, and print it every 5 s.
     #[arg(long)]
     perf: bool,
+    /// Open this tool window at the start: cartwall, mixer, clock, history or library.
+    #[arg(long)]
+    open: Vec<String>,
 }
 
 /// A length such as `500ms`, `5s`, `2m` or `1h`. A bare number counts seconds.
@@ -231,6 +234,10 @@ fn window(
 ) -> Result<(), String> {
     let single_window = args.single_window;
     let perf = args.perf;
+    let open: Vec<ToolWindow> = ToolWindow::ALL
+        .into_iter()
+        .filter(|w| args.open.iter().any(|o| o.eq_ignore_ascii_case(w.title())))
+        .collect();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(title)
@@ -243,7 +250,11 @@ fn window(
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_embed_viewports(single_window);
-            Ok(Box::new(RadioApp::new(source, clock).with_perf(perf)))
+            let mut app = RadioApp::new(source, clock).with_perf(perf);
+            for w in open {
+                app.set_window(w, true);
+            }
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| format!("the window failed: {e}"))

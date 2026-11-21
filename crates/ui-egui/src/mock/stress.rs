@@ -166,4 +166,8 @@ impl ViewSource for StressSource {
     fn stream_title(&self, row: &Row) -> String {
         self.inner.stream_title(row)
     }
+
+    fn meters(&self) -> Option<crate::view::MeterFrame> {
+        self.inner.meters()
+    }
 }

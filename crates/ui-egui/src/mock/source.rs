@@ -68,6 +68,7 @@ impl ViewSource for MockSource {
             deck('D', at(3), DeckState::Ready, Duration::ZERO),
         ];
         let meters = meters(now, &decks, &self.strips);
+        self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
         StationView {
             now: local,
@@ -246,6 +247,18 @@ impl ViewSource for MockSource {
         };
         *slot = tab;
         Ok(())
+    }
+
+    fn meters(&self) -> Option<crate::view::MeterFrame> {
+        // The simulated levels move with the time since the last snapshot.
+        let (decks, at) = self.last_decks.as_ref()?;
+        let run = SignedDuration::try_from(at.elapsed()).unwrap_or_default();
+        let now = self.last_now.checked_add(run).unwrap_or(self.last_now);
+        let m = meters(now, decks, &self.strips);
+        Some(crate::view::MeterFrame {
+            level_db: m.iter().map(|m| m.level_db).collect(),
+            peak_db: m.iter().map(|m| m.peak_db).collect(),
+        })
     }
 
     fn stream_title(&self, row: &Row) -> String {

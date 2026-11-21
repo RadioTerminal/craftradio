@@ -175,6 +175,13 @@ pub struct RadioApp {
     /// The frame time readout, when the app runs with `--perf`.
     perf: Option<Perf>,
     decks: decks::State,
+    /// The levels that the meters show, after the ballistics, and when they last moved.
+    meter_shown: Vec<[f32; 2]>,
+    meter_at: Option<std::time::Instant>,
+    /// True while sound moves any meter, so the Mixer draws at about 30 fps.
+    meters_moving: bool,
+    /// True while sound moves the Out meter, the one meter of the main window.
+    out_moving: bool,
 }
 
 impl RadioApp {
@@ -216,7 +223,55 @@ impl RadioApp {
             prepared,
             perf: None,
             decks: decks::State::default(),
+            meter_shown: Vec::new(),
+            meter_at: None,
+            meters_moving: false,
+            out_moving: false,
         }
+    }
+
+    /// Reads the meters of this instant from the source, and gives them ballistics: a bar
+    /// rises at once and falls back over about 300 ms. The peaks hold as the source holds them.
+    fn read_meters(&mut self) {
+        let Some(frame) = self.source.meters() else {
+            self.meters_moving = false;
+            self.out_moving = false;
+            return;
+        };
+        let now = std::time::Instant::now();
+        let dt = self
+            .meter_at
+            .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        self.meter_at = Some(now);
+        let fall = 1.0 - (-dt / size::METER_RELEASE_S).exp();
+        self.meter_shown
+            .resize(frame.level_db.len(), [size::METER_MIN_DB; 2]);
+        for (i, target) in frame.level_db.iter().enumerate() {
+            let shown = &mut self.meter_shown[i];
+            for ch in 0..2 {
+                shown[ch] = if target[ch] >= shown[ch] {
+                    target[ch]
+                } else {
+                    shown[ch] + (target[ch] - shown[ch]) * fall
+                };
+            }
+            if let Some(m) = self.view.meters.get_mut(i) {
+                m.level_db = if m.mute {
+                    [size::METER_MIN_DB; 2]
+                } else {
+                    *shown
+                };
+                if let Some(p) = frame.peak_db.get(i) {
+                    m.peak_db = *p;
+                }
+            }
+        }
+        let loud = |l: &[f32; 2]| l[0].max(l[1]) > crate::view::METER_SILENT_DB;
+        self.meters_moving = frame.moving() || self.meter_shown.iter().any(loud);
+        let out = self.view.meters.iter().position(|m| m.label == "Out");
+        self.out_moving = out.is_some_and(|i| {
+            frame.level_db.get(i).is_some_and(loud) || self.meter_shown.get(i).is_some_and(loud)
+        });
     }
 
     /// Show the time of each frame in the status line.
@@ -317,9 +372,14 @@ impl RadioApp {
             }),
         );
         let w = ToolWindow::Mixer;
+        let moving = self.meters_moving;
         note(
             w,
             windows::show(ctx, w, open, saved(w), t, |ui| {
+                // The Mixer window draws its meters at about 30 fps while sound moves them.
+                if moving {
+                    ui.ctx().request_repaint_after(size::METER_FRAME);
+                }
                 mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
             }),
         );
@@ -372,7 +432,14 @@ impl eframe::App for RadioApp {
             self.styled = true;
         }
         self.refresh(false);
-        ctx.request_repaint_after(Duration::from_secs(1));
+        self.read_meters();
+        // While sound moves a meter on show, draw at about 30 fps. Else once a second is
+        // enough. The main window shows only the Out meter.
+        ctx.request_repaint_after(if self.out_moving {
+            size::METER_FRAME
+        } else {
+            Duration::from_secs(1)
+        });
         let t = Tokens::get(&ctx);
         let mut actions = Vec::new();
         self.link.has_clip = !self.clip.items.is_empty();
@@ -494,6 +561,25 @@ impl eframe::App for RadioApp {
             let ms = started.elapsed().as_secs_f64() * 1000.0;
             perf.last_ms = ms;
             perf.mean_ms += (ms - perf.mean_ms) * PERF_WEIGHT;
+            perf.frames += 1;
+            // The perf readout also goes to stderr every 5 s, for a measurement by a script.
+            let due = perf
+                .printed
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
+            if due {
+                eprintln!(
+                    "perf: frame {:.2} ms · mean {:.2} ms · {} frames · meters {}",
+                    perf.last_ms,
+                    perf.mean_ms,
+                    perf.frames,
+                    if self.meters_moving {
+                        "moving"
+                    } else {
+                        "still"
+                    }
+                );
+                perf.printed = Some(std::time::Instant::now());
+            }
         }
     }
 
@@ -598,6 +684,10 @@ pub(crate) struct Perf {
     pub last_ms: f64,
     /// A running mean, in milliseconds.
     pub mean_ms: f64,
+    /// Frames since the start.
+    pub frames: u64,
+    /// When the readout last went to stderr.
+    pub printed: Option<std::time::Instant>,
 }
 
 /// How much of the running mean a new frame takes.
