@@ -1,0 +1,521 @@
+# Example station used by `radio-cli plan` and its tests. Every name is invented and the
+# paths are made up: the planner never opens a file.
+tz = "Europe/Ljubljana"
+
+[[playlists]]
+id = 1
+name = "Music"
+color = [60, 120, 200]
+is_main = true
+is_fill_pool = false
+priority = 0
+pick = { Shuffle = { seed = 1 } }
+rules = []
+constraints = []
+
+[[playlists.items]]
+id = 100
+title = "Amber Harbor"
+artist = "The Marble Owls"
+source = { File = { path = "music/track-01.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 187, nanos = 0 }, cue_out = { secs = 191, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 101
+title = "Velvet Lantern"
+artist = "Lena Orrow"
+source = { File = { path = "music/track-02.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 165, nanos = 0 }, cue_out = { secs = 169, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 102
+title = "Paper Tide"
+artist = "Tin Kettle"
+source = { File = { path = "music/track-03.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 196, nanos = 0 }, cue_out = { secs = 200, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 103
+title = "Copper Valley"
+artist = "Quartz Avenue"
+source = { File = { path = "music/track-04.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 229, nanos = 0 }, cue_out = { secs = 233, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 104
+title = "Glass Orchard"
+artist = "Dorian Vale"
+source = { File = { path = "music/track-05.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 152, nanos = 0 }, cue_out = { secs = 156, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 105
+title = "Quiet Static"
+artist = "Mild Weather"
+source = { File = { path = "music/track-06.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 155, nanos = 0 }, cue_out = { secs = 159, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 106
+title = "Neon Ember"
+artist = "Sable & Finch"
+source = { File = { path = "music/track-07.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 214, nanos = 0 }, cue_out = { secs = 218, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 107
+title = "Salt Signal"
+artist = "North Pier"
+source = { File = { path = "music/track-08.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 158, nanos = 0 }, cue_out = { secs = 162, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 108
+title = "Cedar Meadow"
+artist = "The Marble Owls"
+source = { File = { path = "music/track-09.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 192, nanos = 0 }, cue_out = { secs = 196, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 109
+title = "Hollow Compass"
+artist = "Lena Orrow"
+source = { File = { path = "music/track-10.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 220, nanos = 0 }, cue_out = { secs = 224, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 110
+title = "Amber Signal"
+artist = "Tin Kettle"
+source = { File = { path = "music/track-11.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 153, nanos = 0 }, cue_out = { secs = 157, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 111
+title = "Velvet Meadow"
+artist = "Quartz Avenue"
+source = { File = { path = "music/track-12.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 210, nanos = 0 }, cue_out = { secs = 214, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 112
+title = "Paper Compass"
+artist = "Dorian Vale"
+source = { File = { path = "music/track-13.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 173, nanos = 0 }, cue_out = { secs = 177, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 113
+title = "Copper Harbor"
+artist = "Mild Weather"
+source = { File = { path = "music/track-14.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 150, nanos = 0 }, cue_out = { secs = 154, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 114
+title = "Glass Lantern"
+artist = "Sable & Finch"
+source = { File = { path = "music/track-15.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 157, nanos = 0 }, cue_out = { secs = 161, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 115
+title = "Quiet Tide"
+artist = "North Pier"
+source = { File = { path = "music/track-16.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 201, nanos = 0 }, cue_out = { secs = 205, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 116
+title = "Neon Valley"
+artist = "The Marble Owls"
+source = { File = { path = "music/track-17.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 199, nanos = 0 }, cue_out = { secs = 203, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 117
+title = "Salt Orchard"
+artist = "Lena Orrow"
+source = { File = { path = "music/track-18.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 154, nanos = 0 }, cue_out = { secs = 158, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 118
+title = "Cedar Static"
+artist = "Tin Kettle"
+source = { File = { path = "music/track-19.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 176, nanos = 0 }, cue_out = { secs = 180, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 119
+title = "Hollow Ember"
+artist = "Quartz Avenue"
+source = { File = { path = "music/track-20.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 157, nanos = 0 }, cue_out = { secs = 161, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 120
+title = "Amber Orchard"
+artist = "Dorian Vale"
+source = { File = { path = "music/track-21.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 216, nanos = 0 }, cue_out = { secs = 220, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 121
+title = "Velvet Static"
+artist = "Mild Weather"
+source = { File = { path = "music/track-22.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 200, nanos = 0 }, cue_out = { secs = 204, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 122
+title = "Paper Ember"
+artist = "Sable & Finch"
+source = { File = { path = "music/track-23.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 153, nanos = 0 }, cue_out = { secs = 157, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 123
+title = "Copper Signal"
+artist = "North Pier"
+source = { File = { path = "music/track-24.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 218, nanos = 0 }, cue_out = { secs = 222, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 124
+title = "Glass Meadow"
+artist = "The Marble Owls"
+source = { File = { path = "music/track-25.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 161, nanos = 0 }, cue_out = { secs = 165, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 125
+title = "Quiet Compass"
+artist = "Lena Orrow"
+source = { File = { path = "music/track-26.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 174, nanos = 0 }, cue_out = { secs = 178, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 126
+title = "Neon Harbor"
+artist = "Tin Kettle"
+source = { File = { path = "music/track-27.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 226, nanos = 0 }, cue_out = { secs = 230, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 127
+title = "Salt Lantern"
+artist = "Quartz Avenue"
+source = { File = { path = "music/track-28.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 226, nanos = 0 }, cue_out = { secs = 230, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 128
+title = "Cedar Tide"
+artist = "Dorian Vale"
+source = { File = { path = "music/track-29.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 220, nanos = 0 }, cue_out = { secs = 224, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 129
+title = "Hollow Valley"
+artist = "Mild Weather"
+source = { File = { path = "music/track-30.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 153, nanos = 0 }, cue_out = { secs = 157, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 130
+title = "Amber Lantern"
+artist = "Sable & Finch"
+source = { File = { path = "music/track-31.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 219, nanos = 0 }, cue_out = { secs = 223, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 131
+title = "Velvet Tide"
+artist = "North Pier"
+source = { File = { path = "music/track-32.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 220, nanos = 0 }, cue_out = { secs = 224, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 132
+title = "Paper Valley"
+artist = "The Marble Owls"
+source = { File = { path = "music/track-33.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 196, nanos = 0 }, cue_out = { secs = 200, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 133
+title = "Copper Orchard"
+artist = "Lena Orrow"
+source = { File = { path = "music/track-34.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 152, nanos = 0 }, cue_out = { secs = 156, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 134
+title = "Glass Static"
+artist = "Tin Kettle"
+source = { File = { path = "music/track-35.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 174, nanos = 0 }, cue_out = { secs = 178, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 135
+title = "Quiet Ember"
+artist = "Quartz Avenue"
+source = { File = { path = "music/track-36.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 151, nanos = 0 }, cue_out = { secs = 155, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 136
+title = "Neon Signal"
+artist = "Dorian Vale"
+source = { File = { path = "music/track-37.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 217, nanos = 0 }, cue_out = { secs = 221, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 137
+title = "Salt Meadow"
+artist = "Mild Weather"
+source = { File = { path = "music/track-38.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 163, nanos = 0 }, cue_out = { secs = 167, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 138
+title = "Cedar Compass"
+artist = "Sable & Finch"
+source = { File = { path = "music/track-39.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 183, nanos = 0 }, cue_out = { secs = 187, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists.items]]
+id = 139
+title = "Hollow Harbor"
+artist = "North Pier"
+source = { File = { path = "music/track-40.flac" } }
+locked = false
+timing = { cue_in = { secs = 0, nanos = 0 }, segue = { secs = 199, nanos = 0 }, cue_out = { secs = 203, nanos = 0 }, fade_in = { secs = 0, nanos = 0 }, fade_out = { secs = 0, nanos = 0 } }
+
+[[playlists]]
+id = 2
+name = "Jingles"
+color = [230, 160, 40]
+is_main = false
+is_fill_pool = false
+priority = 0
+pick = "InOrder"
+rules = [{ trigger = { EveryNTracks = 3 }, placement = "BetweenTracks", take = 1, constraints = ["NotAdjacentToSelf"] }]
+constraints = []
+
+[[playlists.items]]
+id = 200
+title = "Station ID 1"
+source = { File = { path = "jingles/id-1.wav" } }
+locked = false
+planned_len = { secs = 6, nanos = 0 }
+
+[[playlists.items]]
+id = 201
+title = "Station ID 2"
+source = { File = { path = "jingles/id-2.wav" } }
+locked = false
+planned_len = { secs = 7, nanos = 0 }
+
+[[playlists.items]]
+id = 202
+title = "Station ID 3"
+source = { File = { path = "jingles/id-3.wav" } }
+locked = false
+planned_len = { secs = 8, nanos = 0 }
+
+[[playlists.items]]
+id = 203
+title = "Station ID 4"
+source = { File = { path = "jingles/id-4.wav" } }
+locked = false
+planned_len = { secs = 9, nanos = 0 }
+
+[[playlists]]
+id = 3
+name = "Ads"
+color = [200, 70, 70]
+is_main = false
+is_fill_pool = false
+priority = 0
+pick = "InOrder"
+rules = [{ trigger = { AtMinutes = [20, 50] }, placement = "BetweenTracks", take = 3, constraints = [] }]
+constraints = [{ MaxPerDay = 24 }]
+
+[[playlists.items]]
+id = 300
+title = "Spot Bakery"
+source = { File = { path = "ads/bakery.mp3" } }
+locked = false
+planned_len = { secs = 20, nanos = 0 }
+trimmable = false
+
+[[playlists.items]]
+id = 301
+title = "Spot Garage"
+source = { File = { path = "ads/garage.mp3" } }
+locked = false
+planned_len = { secs = 25, nanos = 0 }
+trimmable = false
+
+[[playlists.items]]
+id = 302
+title = "Spot Florist"
+source = { File = { path = "ads/florist.mp3" } }
+locked = false
+planned_len = { secs = 30, nanos = 0 }
+trimmable = false
+
+[[playlists.items]]
+id = 303
+title = "Spot Cinema"
+source = { File = { path = "ads/cinema.mp3" } }
+locked = false
+planned_len = { secs = 35, nanos = 0 }
+trimmable = false
+
+[[playlists.items]]
+id = 304
+title = "Spot Bikes"
+source = { File = { path = "ads/bikes.mp3" } }
+locked = false
+planned_len = { secs = 40, nanos = 0 }
+trimmable = false
+
+[[playlists.items]]
+id = 305
+title = "Spot Pharmacy"
+source = { File = { path = "ads/pharmacy.mp3" } }
+locked = false
+planned_len = { secs = 45, nanos = 0 }
+trimmable = false
+
+[[playlists]]
+id = 4
+name = "News"
+color = [90, 170, 90]
+is_main = false
+is_fill_pool = false
+priority = 10
+pick = "InOrder"
+rules = [{ trigger = { At = { at = "2026-11-21T15:00:00", repeat = "Daily" } }, placement = { Fixed = { mode = "Hard", tolerance = { secs = 1, nanos = 0 } } }, take = 1, constraints = [] }]
+constraints = []
+
+[[playlists.items]]
+id = 400
+title = "Hourly News"
+source = { Stream = { url = "http://example.invalid/news" } }
+locked = false
+planned_len = { secs = 300, nanos = 0 }
+
+[[playlists]]
+id = 5
+name = "Shows"
+color = [150, 90, 190]
+is_main = false
+is_fill_pool = false
+priority = 0
+pick = "InOrder"
+rules = [{ trigger = { At = { at = "2026-11-21T16:00:00", repeat = "Daily" } }, placement = { Fixed = { mode = "Soft", tolerance = { secs = 30, nanos = 0 } } }, take = 1, constraints = [] }]
+constraints = []
+
+[[playlists.items]]
+id = 500
+title = "Jazz Hour"
+source = { File = { path = "shows/Jazz Hour.mp3" } }
+locked = false
+planned_len = { secs = 3520, nanos = 0 }
+
+[[playlists]]
+id = 6
+name = "Beds"
+color = [120, 120, 120]
+is_main = false
+is_fill_pool = true
+priority = 0
+pick = "InOrder"
+rules = []
+constraints = []
+
+[[playlists.items]]
+id = 600
+title = "Bed 1"
+source = { File = { path = "beds/bed-1.wav" } }
+locked = false
+planned_len = { secs = 15, nanos = 0 }
+
+[[playlists.items]]
+id = 601
+title = "Bed 2"
+source = { File = { path = "beds/bed-2.wav" } }
+locked = false
+planned_len = { secs = 22, nanos = 0 }
+
+[[playlists.items]]
+id = 602
+title = "Bed 3"
+source = { File = { path = "beds/bed-3.wav" } }
+locked = false
+planned_len = { secs = 29, nanos = 0 }
+
+[[playlists.items]]
+id = 603
+title = "Bed 4"
+source = { File = { path = "beds/bed-4.wav" } }
+locked = false
+planned_len = { secs = 36, nanos = 0 }
+
+[[playlists.items]]
+id = 604
+title = "Bed 5"
+source = { File = { path = "beds/bed-5.wav" } }
+locked = false
+planned_len = { secs = 43, nanos = 0 }
+
+[[playlists.items]]
+id = 605
+title = "Bed 6"
+source = { File = { path = "beds/bed-6.wav" } }
+locked = false
+planned_len = { secs = 50, nanos = 0 }
