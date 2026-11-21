@@ -132,6 +132,8 @@ pub(crate) struct DeckSource {
     pub(crate) shared: Arc<DeckShared>,
     pub(crate) fade_in: u64,
     pub(crate) item_tag: Option<u64>,
+    /// Fed from outside (a stream), not by a [`DeckFeeder`]: offline render never waits for it.
+    pub(crate) external: bool,
 }
 
 /// The decoder thread of one loaded item. It fills the ring of the deck from the file. It

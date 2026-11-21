@@ -164,3 +164,58 @@ fn fixed_entry_mid_track_keeps_main_walk_monotonic() {
     );
     assert!(tl.entries.windows(2).all(|w| w[0].start <= w[1].start));
 }
+
+/// The first ads of a fixed break are on decks already (pinned). The break still has
+/// its `take` ads: the pinned ones are not picked again, and the rest follow them.
+#[test]
+fn pinned_ads_of_a_fixed_break_keep_the_rest_of_the_break() {
+    use radio_model::{FixMode, Repeat};
+    let break_rule = Rule {
+        trigger: Trigger::At {
+            at: date(2026, 11, 21).at(15, 0, 0, 0),
+            repeat: Repeat::Once,
+        },
+        placement: Placement::Fixed {
+            mode: FixMode::Hard,
+            tolerance: Duration::from_secs(30),
+        },
+        take: 3,
+        constraints: Vec::new(),
+    };
+    let st = station_with(jingles(100, 3), vec![break_rule]);
+    let now = at_14(55);
+    let horizon = Duration::from_secs(3600);
+    let first = run(&st, now, horizon);
+    let planned: Vec<Entry> = first
+        .entries
+        .iter()
+        .filter(|e| e.playlist == ADS)
+        .cloned()
+        .collect();
+    assert_eq!(planned.len(), 3);
+    for on_decks in 1..=2 {
+        let pinned = &planned[..on_decks];
+        let history = PlayHistory::new();
+        let tl = merge(&PlanInput {
+            station: &st,
+            history: &history,
+            now,
+            horizon,
+            pinned,
+        });
+        let ads: Vec<_> = tl.entries.iter().filter(|e| e.playlist == ADS).collect();
+        assert_eq!(ads.len(), 3, "{on_decks} pinned, the break has: {ads:?}");
+        assert_eq!(ads.iter().filter(|e| e.fixed.is_some()).count(), 1);
+        assert!(
+            pinned.iter().all(|p| ads.contains(&p)),
+            "the pinned ads are kept as given"
+        );
+        let last_pinned = pinned.iter().map(|p| p.start).max().unwrap();
+        assert!(
+            ads.iter()
+                .filter(|e| !pinned.contains(e))
+                .all(|e| e.start > last_pinned),
+            "the rest of the break follows the pinned ads"
+        );
+    }
+}

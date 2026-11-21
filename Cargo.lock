@@ -1306,6 +1306,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "radio-playout"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "jiff",
+ "radio-audio",
+ "radio-audio-device",
+ "radio-engine",
+ "radio-library",
+ "radio-model",
+ "radio-scheduler",
+ "radio-stream",
+ "radio-testkit",
+ "radio-timing",
+ "rtrb",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "radio-scheduler"
 version = "0.1.0"
 dependencies = [

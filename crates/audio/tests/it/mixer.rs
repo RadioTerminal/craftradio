@@ -227,9 +227,45 @@ fn a_load_onto_a_playing_deck_is_rejected() {
     let out = render_offline(&mut mixer, SR / 10);
     let events: Vec<_> = handle.events().collect();
     assert!(
-        events.contains(&AudioEvent::LoadRejected(DeckId::D)),
+        events.iter().any(|e| matches!(
+            e,
+            AudioEvent::LoadRejected {
+                deck: DeckId::D,
+                ..
+            }
+        )),
         "events: {events:?}"
     );
     assert_eq!(handle.deck_state(DeckId::D), DeckState::Playing);
     assert!(peak_db(&out) > -7.0, "the item on air stopped");
+}
+
+/// A ring-fed deck plays what another thread pushes, and reports `Started` on the sample
+/// of `Play`. Offline render does not wait for its empty ring.
+#[test]
+fn ring_fed_deck_starts_on_its_sample_and_underruns_without_stalling() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    let (mut tx, rx) = rtrb::RingBuffer::new(SR);
+    for _ in 0..SR / 10 {
+        let _ = tx.push(0.5);
+        let _ = tx.push(0.5);
+    }
+    let options = LoadOptions {
+        item_tag: Some(7),
+        ..LoadOptions::default()
+    };
+    handle.load_ring(DeckId::D, rx, options).expect("load");
+    let n = 2_000u64;
+    handle.send(play(n, DeckId::D).for_item(7)).expect("send");
+    let begun = std::time::Instant::now();
+    let out = render_offline(&mut mixer, SR / 2);
+    assert!(begun.elapsed() < Duration::from_secs(1), "render waited");
+    assert!(out[(n as usize - 1) * 2] == 0.0 && out[n as usize * 2] > 0.1);
+    let events: Vec<AudioEvent> = handle.events().collect();
+    assert!(events.contains(&AudioEvent::Started {
+        deck: DeckId::D,
+        at_sample: n,
+        item_tag: Some(7)
+    }));
+    assert!(events.contains(&AudioEvent::Underrun(DeckId::D)));
 }

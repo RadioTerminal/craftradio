@@ -172,6 +172,7 @@ fn validate_requires_planned_len_for_live_and_stream() {
     let mut s = track(10, "S", "A", 60);
     s.source = Source::Stream {
         url: "http://x/y".into(),
+        keep_alive: true,
     };
     s.timing = None;
     s.planned_len = None;

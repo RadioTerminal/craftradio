@@ -13,6 +13,35 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Sends jobs to the writer thread. Jobs run in the order of the calls.
+#[derive(Clone)]
+pub(crate) struct Writer {
+    tx: Sender<Msg>,
+}
+
+impl Writer {
+    /// Run `f` on the writer thread and wait for its result.
+    pub(crate) fn call<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<R, rusqlite::Error> + Send + 'static,
+    ) -> Result<R, EngineError> {
+        let (rtx, rrx) = mpsc::channel();
+        let job: Job = Box::new(move |c| {
+            let _ = rtx.send(f(c));
+        });
+        self.tx.send(Msg::Run(job)).map_err(|_| gone())?;
+        rrx.recv().map_err(|_| gone())?.map_err(EngineError::from)
+    }
+
+    /// Run `f` on the writer thread, and do not wait for it.
+    pub(crate) fn spawn(
+        &self,
+        f: impl FnOnce(&mut Connection) + Send + 'static,
+    ) -> Result<(), EngineError> {
+        self.tx.send(Msg::Run(Box::new(f))).map_err(|_| gone())
+    }
+}
+
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(1);
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
@@ -21,6 +50,8 @@ enum Msg {
     Snapshot(Box<State>),
     Run(Job),
     Flush(Sender<()>),
+    /// The engine closes: write what is pending, then stop. Log handles may still exist.
+    Stop,
 }
 
 pub(crate) struct Store {
@@ -88,13 +119,12 @@ impl Store {
         &self,
         f: impl FnOnce(&mut Connection) -> Result<R, rusqlite::Error> + Send + 'static,
     ) -> Result<R, EngineError> {
-        let (rtx, rrx) = mpsc::channel();
-        let tx = self.tx.as_ref().ok_or_else(gone)?;
-        let job: Job = Box::new(move |c| {
-            let _ = rtx.send(f(c));
-        });
-        tx.send(Msg::Run(job)).map_err(|_| gone())?;
-        rrx.recv().map_err(|_| gone())?.map_err(EngineError::from)
+        self.writer().ok_or_else(gone)?.call(f)
+    }
+
+    /// A handle that sends jobs to the writer thread from any thread.
+    pub(crate) fn writer(&self) -> Option<Writer> {
+        self.tx.clone().map(|tx| Writer { tx })
     }
 
     /// Write any pending snapshot now and wait until it is on disk.
@@ -116,7 +146,10 @@ fn gone() -> EngineError {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        self.tx = None; // the writer writes what is pending, then exits
+        // The writer writes what is pending, then exits, even while log handles exist.
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Msg::Stop);
+        }
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -144,7 +177,7 @@ fn writer(mut conn: Connection, rx: mpsc::Receiver<Msg>, errors: Arc<Mutex<Optio
                 let _ = ack.send(());
             }
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
         }
         if pending.is_some() && last_write.elapsed() >= CHECKPOINT_EVERY {
             write(&mut conn, &mut pending);

@@ -362,7 +362,9 @@ impl Mixer {
         loop {
             let starving = self.decks.iter().any(|slot| {
                 slot.source.as_ref().is_some_and(|src| {
-                    !src.shared.eof.load(Ordering::Acquire) && src.consumer.slots() < samples
+                    !src.external
+                        && !src.shared.eof.load(Ordering::Acquire)
+                        && src.consumer.slots() < samples
                 })
             });
             if !starving || start.elapsed() > timeout {
@@ -400,11 +402,13 @@ impl Mixer {
     fn take_load(&mut self, deck: DeckId, source: DeckSource) {
         let slot = &mut self.decks[deck.index()];
         if slot.playing {
+            let item_tag = source.item_tag;
             source.shared.set_verdict(Verdict::Rejected);
             self.retire(Retired::Deck(source));
-            self.emit(AudioEvent::LoadRejected(deck));
+            self.emit(AudioEvent::LoadRejected { deck, item_tag });
             return;
         }
+        let item_tag = source.item_tag;
         source.shared.set_verdict(Verdict::Accepted);
         let old = slot.source.replace(source);
         *slot = DeckSlot {
@@ -415,7 +419,7 @@ impl Mixer {
             old.shared.set_state(DeckState::Empty);
             self.retire(Retired::Deck(old));
         }
-        self.emit(AudioEvent::Loaded(deck));
+        self.emit(AudioEvent::Loaded { deck, item_tag });
     }
 
     fn take_commands(&mut self) {
@@ -463,9 +467,19 @@ impl Mixer {
                 if let Some(src) = &slot.source
                     && (!slot.playing || slot.paused)
                 {
+                    let started = !slot.playing;
                     slot.playing = true;
                     slot.paused = false;
                     src.shared.set_state(DeckState::Playing);
+                    if started {
+                        let item_tag = src.item_tag;
+                        let at_sample = self.sample;
+                        self.emit(AudioEvent::Started {
+                            deck,
+                            at_sample,
+                            item_tag,
+                        });
+                    }
                 }
             }
             CommandKind::Pause(deck) if self.for_this_item(deck, cmd.item_tag) => {
@@ -492,6 +506,8 @@ impl Mixer {
                 let remaining = total.saturating_sub(late);
                 if slot.playing && !slot.paused && remaining > 0 {
                     slot.fade = Some((remaining, total));
+                    let item_tag = slot.source.as_ref().and_then(|s| s.item_tag);
+                    self.emit(AudioEvent::Fading { deck, item_tag });
                 } else {
                     self.end(deck);
                 }
@@ -721,7 +737,7 @@ pub fn render_offline(mixer: &mut Mixer, frames: usize) -> Vec<f32> {
 /// One load that the handle sent, with its decoder thread.
 struct Item {
     shared: Arc<DeckShared>,
-    _feeder: DeckFeeder,
+    _feeder: Option<DeckFeeder>,
 }
 
 /// The control side of a [`Mixer`], for the engine thread. Each method with `&mut self`
@@ -768,8 +784,20 @@ impl MixerHandle {
         path: impl AsRef<Path>,
         options: LoadOptions,
     ) -> Result<(), AudioError> {
-        self.collect();
         let decoder = Decoder::open_at(path, options.cue_in)?;
+        self.load_decoder(deck, decoder, options)
+    }
+
+    /// Sends an open decoder to a deck, like [`MixerHandle::load`]. Open the decoder
+    /// with [`Decoder::open_at`] on another thread. Then the engine thread does no file
+    /// I/O. This call does not use `options.cue_in`: the decoder starts there already.
+    pub fn load_decoder(
+        &mut self,
+        deck: DeckId,
+        decoder: Decoder,
+        options: LoadOptions,
+    ) -> Result<(), AudioError> {
+        self.collect();
         let (producer, consumer) = RingBuffer::new(self.deck_buffer);
         let shared = Arc::new(DeckShared::new());
         let feeder = DeckFeeder::spawn(decoder, producer, Arc::clone(&shared))?;
@@ -778,13 +806,45 @@ impl MixerHandle {
             shared: Arc::clone(&shared),
             fade_in: duration_frames(options.fade_in),
             item_tag: options.item_tag,
+            external: false,
         };
         self.control
             .push(Control::Load { deck, source })
             .map_err(|_| AudioError::QueueFull)?;
         self.items[deck.index()].push(Item {
             shared,
-            _feeder: feeder,
+            _feeder: Some(feeder),
+        });
+        Ok(())
+    }
+
+    /// Sends an item to a deck that another thread feeds, for example an internet
+    /// stream. `ring` carries stereo interleaved f32 at 48 kHz. This load does not use
+    /// `options.cue_in`. The deck is ready at once. While the ring is empty, a playing
+    /// deck sends silence and the mixer reports `Underrun`. The item never ends by
+    /// itself, so end it with `FadeOut` or `Stop`.
+    pub fn load_ring(
+        &mut self,
+        deck: DeckId,
+        ring: Consumer<f32>,
+        options: LoadOptions,
+    ) -> Result<(), AudioError> {
+        self.collect();
+        let shared = Arc::new(DeckShared::new());
+        shared.set_state(DeckState::Ready);
+        let source = DeckSource {
+            consumer: ring,
+            shared: Arc::clone(&shared),
+            fade_in: duration_frames(options.fade_in),
+            item_tag: options.item_tag,
+            external: true,
+        };
+        self.control
+            .push(Control::Load { deck, source })
+            .map_err(|_| AudioError::QueueFull)?;
+        self.items[deck.index()].push(Item {
+            shared,
+            _feeder: None,
         });
         Ok(())
     }

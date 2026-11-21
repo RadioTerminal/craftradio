@@ -1,10 +1,11 @@
 //! `plan`: merge and fit, keeping the previous plan steady where a change is not worth it.
 
 use crate::fit::drop_adjacent_clashes;
-use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all, merge};
+use crate::merge::merge_with;
+use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all};
 use jiff::SignedDuration;
 use radio_model::{Item, ItemId};
-use radio_timing::{item_len, start_times};
+use radio_timing::{advance, item_len, start_times};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
@@ -15,6 +16,9 @@ pub struct PlanOptions {
     pub lock_before: Duration,
     /// A new order must beat the previous one's error by more than this to replace it.
     pub replan_threshold: Duration,
+    /// Each playlist continues its order after its most recent item in the history or the
+    /// pinned entries. When false, each playlist starts at its first item. Off by default.
+    pub resume_rotation: bool,
 }
 
 impl Default for PlanOptions {
@@ -22,6 +26,7 @@ impl Default for PlanOptions {
         Self {
             lock_before: Duration::from_secs(10 * 60),
             replan_threshold: Duration::from_millis(500),
+            resume_rotation: false,
         }
     }
 }
@@ -70,7 +75,7 @@ fn ids(entries: &[Entry]) -> Vec<ItemId> {
 /// The improvement check compares against the error stored in `prev.fits`, not a re-fit of
 /// the old order.
 pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> Timeline {
-    let mut raw = merge(input);
+    let mut raw = merge_with(input, opts.resume_rotation);
     let mut tl = raw.clone();
     fit_all(&mut tl, input.station, input.history);
     let Some(prev) = prev else {
@@ -117,31 +122,51 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         let Some(first_start) = raw.entries.get(raw_win.start).map(|e| e.start) else {
             continue;
         };
+        // Pinned entries (on air or on a deck) stay as given, at the head of the window.
+        let held: Vec<Entry> = raw.entries[raw_win.clone()]
+            .iter()
+            .filter(|e| input.pinned.contains(e))
+            .cloned()
+            .collect();
+        let held_ids: BTreeSet<ItemId> = held.iter().map(|e| e.item).collect();
         let keep: Vec<&Entry> = old_win
             .iter()
             .filter(|e| e.start >= input.now && e.origin != Origin::Manual)
-            .filter(|e| items.contains_key(&e.item))
+            .filter(|e| items.contains_key(&e.item) && !held_ids.contains(&e.item))
             .collect();
         let seq: Vec<&Item> = keep
             .iter()
             .filter_map(|e| items.get(&e.item).copied())
             .collect();
+        let first_start = match held.last() {
+            Some(h) => {
+                let step = items
+                    .get(&h.item)
+                    .map_or(h.len, |item| advance(item, seq.first().copied()));
+                h.start
+                    .checked_add(step)
+                    .unwrap_or(h.start)
+                    .max(first_start)
+            }
+            None => first_start,
+        };
         let starts = start_times(first_start, &seq);
         // What would start at or after the event is no longer part of the window.
         let n = starts.iter().take_while(|s| **s < fit.target).count();
-        let forced: Vec<Entry> = keep
-            .iter()
-            .zip(&seq)
-            .zip(&starts)
-            .take(n)
-            .map(|((e, item), start)| {
-                let mut e = (*e).clone();
-                e.start = *start;
-                e.len = item_len(item);
-                e.trim = Duration::ZERO;
-                e
-            })
-            .collect();
+        let mut forced = held;
+        forced.extend(
+            keep.iter()
+                .zip(&seq)
+                .zip(&starts)
+                .take(n)
+                .map(|((e, item), start)| {
+                    let mut e = (*e).clone();
+                    e.start = *start;
+                    e.len = item_len(item);
+                    e.trim = Duration::ZERO;
+                    e
+                }),
+        );
         let forced_set: BTreeSet<ItemId> = forced.iter().map(|e| e.item).collect();
         let raw_ids: BTreeSet<ItemId> = raw.entries[raw_win.clone()]
             .iter()

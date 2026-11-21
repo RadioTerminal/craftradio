@@ -12,6 +12,7 @@ fn item(id: u64, title: &str) -> Item {
         artist: Some("Test Artist".into()),
         source: Source::Stream {
             url: "http://example.invalid/s".into(),
+            keep_alive: true,
         },
         timing: None,
         planned_len: Some(Duration::from_secs(180)),
@@ -175,7 +176,10 @@ fn registry_ids_unique_and_onair_marked() {
     let t = Timestamp::UNIX_EPOCH;
     let sample = [
         Command::PlaylistCreate { name: "x".into() },
-        Command::DeckPlay { deck: 0 },
+        Command::DeckPlay {
+            deck: 0,
+            expect_item: None,
+        },
         Command::CartStopAll,
         Command::StationGet,
         Command::HistoryList { since: t, limit: 1 },
@@ -202,12 +206,32 @@ fn deck_commands_queue_intent_and_do_not_claim_audio() {
         item: ItemId(1),
     })
     .unwrap();
-    let out = e.dispatch(Command::DeckPlay { deck: 0 }).unwrap();
+    let out = e
+        .dispatch(Command::DeckPlay {
+            deck: 0,
+            expect_item: None,
+        })
+        .unwrap();
     assert!(out.audio_required && !out.applied_to_audio);
     let intents = events
         .try_iter()
         .filter(|ev| matches!(ev, radio_engine::EngineEvent::AudioIntent(_)))
         .count();
     assert_eq!(intents, 2);
-    assert!(e.dispatch(Command::DeckPlay { deck: 9 }).is_err());
+    assert!(
+        e.dispatch(Command::DeckPlay {
+            deck: 9,
+            expect_item: None,
+        })
+        .is_err()
+    ); // A command for an item the deck no longer holds fails and does nothing.
+    let stale = e.dispatch(Command::DeckSkip {
+        deck: 0,
+        expect_item: Some(ItemId(2)),
+    });
+    assert!(matches!(
+        stale,
+        Err(radio_engine::EngineError::StaleTarget { .. })
+    ));
+    assert_eq!(events.try_iter().count(), 0);
 }

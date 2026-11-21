@@ -10,9 +10,20 @@ fn yes() -> bool {
 /// Where an item's audio comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
-    File { path: String },
-    LiveInput { device: String, channels: [u16; 2] },
-    Stream { url: String },
+    File {
+        path: String,
+    },
+    LiveInput {
+        device: String,
+        channels: [u16; 2],
+    },
+    /// An internet stream. With `keep_alive` (the default), a stream that drops on air
+    /// keeps its place until its planned end, and playout reconnects.
+    Stream {
+        url: String,
+        #[serde(default = "yes")]
+        keep_alive: bool,
+    },
 }
 
 /// Cue points within a file, as offsets from its start.
@@ -153,6 +164,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(item.meta.publish, PublishMode::FromTags);
+        let stream: Item = toml::from_str(
+            r#"
+            id = 2
+            title = "Relay"
+            locked = false
+            [source.Stream]
+            url = "http://relay.invalid/live"
+        "#,
+        )
+        .unwrap();
+        assert!(matches!(
+            stream.source,
+            Source::Stream {
+                keep_alive: true,
+                ..
+            }
+        ));
         assert!(item.meta.title.is_empty());
         let playlist: crate::Playlist = toml::from_str(
             r#"
@@ -170,5 +198,6 @@ mod tests {
         )
         .unwrap();
         assert!(playlist.source.is_none());
+        assert_eq!(playlist.on_interrupt, crate::OnInterrupt::Resume);
     }
 }
