@@ -185,7 +185,11 @@ or silence detection (my call).
   length; live and stream shows use a planned length.
 - **Internet stream:** HTTP / Icecast / Shoutcast (MP3, AAC, Ogg). It connects and buffers
   before its start time (pre-roll set per item). If it drops, it reconnects; if it stays
-  down past a timeout, the playlist moves on and raises an alarm. ICY metadata from the
+  down past a timeout, the playlist moves on and raises an alarm. **Keep-alive (user, 2026-11-21):** a URL item has `keep_alive` (default **on**): while it's on air, a dropped stream never makes the
+  playlist fall through to the next track. The engine keeps reconnecting (backoff 1–30 s, no give-up)
+  until the item's planned end or an operator/command ends it. While it's down, the fill pool's bed plays
+  under a "stream reconnecting" alarm (silence only if there's no bed), and the silence detector doesn't skip a
+  keep-alive item. With `keep_alive` off, the old timeout-then-move-on behaviour applies. ICY metadata from the
   stream is read and logged. The stream's clock differs from ours, so a drift-compensating
   resampler keeps its buffer level steady.
 
