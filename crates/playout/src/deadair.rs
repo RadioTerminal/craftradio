@@ -191,7 +191,14 @@ impl Core {
 
     fn keep_alive_on_air(&self) -> bool {
         self.slots.iter().flatten().any(|s| {
-            matches!(s.phase, Phase::Playing) && matches!(s.item.source, Source::Stream { .. })
+            matches!(s.phase, Phase::Playing)
+                && matches!(
+                    s.item.source,
+                    Source::Stream {
+                        keep_alive: true,
+                        ..
+                    }
+                )
         })
     }
 

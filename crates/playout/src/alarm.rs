@@ -67,6 +67,17 @@ impl Alarms {
         self.subscribers.push(tx);
     }
 
+    /// Raises `alarm` if the same condition is not raised and still uncleared.
+    pub(crate) fn raise_once(&mut self, at: Timestamp, alarm: Alarm) {
+        let active = self
+            .recent
+            .iter()
+            .any(|r| r.alarm == alarm && r.cleared.is_none());
+        if !active {
+            self.raise(at, alarm);
+        }
+    }
+
     /// Marks each alarm that matches `pred` and is not cleared yet as cleared.
     pub(crate) fn clear(&mut self, at: Timestamp, pred: impl Fn(&Alarm) -> bool) {
         for r in self.recent.iter_mut().filter(|r| r.cleared.is_none()) {

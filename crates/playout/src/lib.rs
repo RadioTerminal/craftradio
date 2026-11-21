@@ -11,6 +11,7 @@ mod core;
 mod deadair;
 mod ops;
 mod output;
+mod streams;
 mod view;
 
 pub use alarm::{Alarm, RaisedAlarm};

@@ -5,6 +5,7 @@ use crate::clock::{Clock, ClockMap};
 use crate::deadair::{Analysis, DeadAir};
 use crate::ops::{Carts, Check, Pending};
 use crate::output::{ProgramSource, feed_tap};
+use crate::streams::StreamSlot;
 use crate::view::{DeckPhase, DeckRole, DeckView, LocalOutput, OutputStatus, PlayoutView};
 use crate::{OutputChoice, PlayoutConfig, PlayoutError, Reply};
 use jiff::Timestamp;
@@ -18,6 +19,7 @@ use radio_engine::{
 };
 use radio_model::{FixMode, Item, ItemId, Source};
 use radio_scheduler::{Entry, Origin, PlanInput, PlayHistory, Played, Timeline, plan};
+use radio_stream::{IcecastClient, IcecastHandle};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -69,6 +71,7 @@ pub(crate) struct Slot {
     /// Something ended the item before its planned end.
     pub(crate) cut: bool,
     pub(crate) row: Option<RowId>,
+    pub(crate) stream: Option<StreamSlot>,
 }
 
 impl Slot {
@@ -216,6 +219,10 @@ pub(crate) struct Core {
     pub(crate) carts: Carts,
     carts_dirty: bool,
     pub(crate) dead_air: DeadAir,
+    pub(crate) next_bed: usize,
+    pub(crate) icecast: Option<IcecastHandle>,
+    /// The last stream title sent.
+    pub(crate) title: String,
     pub(crate) analysis: Analysis,
 }
 
@@ -231,7 +238,17 @@ impl Core {
     pub(crate) fn new(mut engine: Engine, cfg: PlayoutConfig) -> Result<Core, PlayoutError> {
         let engine_rx = engine.events();
         let carts = Carts::new(cfg.mixer.cart_slots);
-        let opened = open_output(&cfg.output, cfg.mixer, None)?;
+        // Four seconds of Program between the mixer and the encoder.
+        let tap = cfg
+            .icecast
+            .as_ref()
+            .map(|_| 4 * SAMPLE_RATE as usize * CHANNELS);
+        let mut opened = open_output(&cfg.output, cfg.mixer, tap)?;
+        let icecast = cfg
+            .icecast
+            .clone()
+            .zip(opened.tap.take())
+            .map(|(ice, rx)| IcecastClient::start(ice, rx));
         let now = cfg.clock.now();
         let mut alarms = Alarms::new(cfg.webhook.clone());
         if let Some(reason) = opened.fallback {
@@ -253,7 +270,6 @@ impl Core {
             stream_states: Vec::new(),
             alarms: Vec::new(),
         };
-        drop(opened.tap);
         Ok(Core {
             engine,
             engine_rx,
@@ -283,6 +299,9 @@ impl Core {
             carts,
             carts_dirty: true,
             dead_air: DeadAir::default(),
+            next_bed: 0,
+            icecast,
+            title: String::new(),
             analysis: Analysis::default(),
         })
     }
@@ -381,6 +400,7 @@ impl Core {
         self.load_ahead(now);
         self.cue_starts(now);
         self.cue_ends(now);
+        self.check_streams(now);
         self.check_dead_air(now);
         self.poll_states();
         self.publish(now);
@@ -433,6 +453,13 @@ impl Core {
         s.entry.start = wall;
         self.dirty = true;
         self.log_start(deck.index(), wall);
+        let titled = self.slots[deck.index()]
+            .as_ref()
+            .filter(|s| matches!(s.role, DeckRole::Plan | DeckRole::Operator))
+            .map(|s| s.item.clone());
+        if let Some(item) = titled {
+            self.send_title(&item);
+        }
     }
 
     fn log_start(&mut self, i: usize, wall: Timestamp) {
@@ -494,6 +521,9 @@ impl Core {
         let Some(s) = self.slots[i].take() else {
             return;
         };
+        if let Some((deck, tag)) = s.stream.as_ref().and_then(|st| st.bed) {
+            self.end_bed(deck, tag);
+        }
         if let Some(row) = s.row {
             let status = if s.cut {
                 LogStatus::Interrupted
@@ -664,12 +694,15 @@ impl Core {
             },
             item_tag: Some(tag),
         };
+        let mut stream = None;
         match &item.source {
             Source::File { path } => self
                 .mixer
                 .load(deck, path, options)
                 .map_err(|e| e.to_string())?,
-            Source::Stream { .. } => return Err("internet streams are not supported yet".into()),
+            Source::Stream { url, keep_alive } => {
+                stream = Some(self.load_stream(deck, url, *keep_alive, options)?);
+            }
             Source::LiveInput { .. } => return Err("live input is not supported yet".into()),
         }
         self.slots[i] = Some(Slot {
@@ -682,6 +715,7 @@ impl Core {
             end_sent: false,
             cut: false,
             row: None,
+            stream,
         });
         self.next_deck = (i + 1) % 4;
         Ok(tag)
@@ -811,6 +845,8 @@ impl Core {
         view.decks = decks;
         view.outputs.local = self.local.clone();
         view.alarms = self.alarms.recent.iter().cloned().collect();
+        view.stream_states = self.stream_states();
+        view.outputs.icecast = self.icecast.as_ref().map(IcecastHandle::status);
         if self.timeline_changed {
             view.timeline = self.timeline.clone();
             self.timeline_changed = false;
