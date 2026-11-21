@@ -421,3 +421,41 @@ fn resume_rotation_continues_after_pinned_entries() {
         Some(ItemId(1))
     );
 }
+
+/// A frozen window keeps its order after an edit, and the item on air (pinned, started
+/// before `now`) stays at its head as given: it is not dropped or moved after the event.
+#[test]
+fn frozen_window_keeps_the_pinned_item_on_air() {
+    let st = make_station(tracks(30), 9);
+    let mut prev = run(&st, &[], None);
+    // The first item started 10 s ago, in the previous plan too.
+    prev.entries[0].start = now() - Duration::from_secs(10);
+    let on_air = prev.entries[0].clone();
+    // An edit: the third track of the window leaves the library.
+    let gone = window(&prev)[2];
+    let mut st2 = st.clone();
+    st2.playlists[0].items.retain(|i| i.id != gone);
+    let tl = run(&st2, std::slice::from_ref(&on_air), Some(&prev));
+    let event = tl.entries.iter().position(|e| e.fixed.is_some()).unwrap();
+    assert_eq!(
+        tl.entries[0], on_air,
+        "the item on air leads the window as given"
+    );
+    assert!(
+        tl.entries[event..].iter().all(|e| e.item != on_air.item),
+        "the item on air was moved after the event"
+    );
+    let kept: Vec<ItemId> = window(&prev)
+        .into_iter()
+        .filter(|i| *i != gone && *i != on_air.item)
+        .collect();
+    let main: Vec<ItemId> = tl.entries[1..event]
+        .iter()
+        .filter(|e| e.origin == Origin::Main)
+        .map(|e| e.item)
+        .collect();
+    assert!(
+        main.iter().all(|i| kept.contains(i)),
+        "{main:?} not within {kept:?}"
+    );
+}

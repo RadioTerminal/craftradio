@@ -255,12 +255,15 @@ impl<'a> Walk<'a> {
     }
 
     /// Inserts the `take` items of one rule, warning if the playlist cannot supply them all.
-    fn fire(&mut self, pi: usize, ri: usize, at: Timestamp, fixed: Option<Fixed>) {
+    /// The first `done` items are pinned entries already: they are not picked again, and
+    /// the rest of the take follows them.
+    fn fire(&mut self, pi: usize, ri: usize, at: Timestamp, fixed: Option<Fixed>, done: u8) {
         let station: &'a Station = self.station;
         let pl = &station.playlists[pi];
         let rule = &pl.rules[ri];
-        let mut got = 0;
-        for k in 0..rule.take {
+        let done = done.min(rule.take);
+        let mut got = done;
+        for k in done..rule.take {
             let start = match (&fixed, k) {
                 (Some(f), 0) => f.target,
                 _ => self.next_at.max(at),
@@ -284,7 +287,7 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn fire_fixed(&mut self, f: &FixedRule) {
+    fn fire_fixed(&mut self, f: &FixedRule, done: u8) {
         let priority = self.station.playlists[f.playlist].priority;
         let fixed = Fixed {
             target: f.target,
@@ -293,7 +296,7 @@ impl<'a> Walk<'a> {
             priority,
             frozen: false,
         };
-        self.fire(f.playlist, f.rule, f.target, Some(fixed));
+        self.fire(f.playlist, f.rule, f.target, Some(fixed), done);
     }
 }
 
@@ -405,14 +408,34 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
     let mut pinned = input.pinned.to_vec();
     pinned.sort_by_key(|e| e.start);
 
-    // A pinned entry that is this fixed event (a hard event on a deck) stands for it.
-    // Then the rule does not fire a second copy.
-    let covered = |f: &FixedRule| {
-        let id = station.playlists[f.playlist].id;
-        input
+    // A pinned entry that is this fixed event's first item (a hard event on a deck) stands
+    // for it, and so do the pinned items of the same rule after it, up to the rule's next
+    // occurrence. The rule does not pick those again; the rest of its take still comes.
+    let covered = |f: &FixedRule| -> u8 {
+        let origin = Origin::Rule {
+            playlist: station.playlists[f.playlist].id,
+            rule: f.rule,
+        };
+        let first = input
             .pinned
             .iter()
-            .any(|e| e.playlist == id && e.fixed.as_ref().is_some_and(|x| x.target == f.target))
+            .any(|e| e.origin == origin && e.fixed.as_ref().is_some_and(|x| x.target == f.target));
+        if !first {
+            return 0;
+        }
+        let until = fixed
+            .iter()
+            .filter(|g| g.playlist == f.playlist && g.rule == f.rule && g.target > f.target)
+            .map(|g| g.target)
+            .min()
+            .unwrap_or(Timestamp::MAX);
+        let rest = input
+            .pinned
+            .iter()
+            .filter(|e| e.origin == origin && e.fixed.is_none())
+            .filter(|e| e.start >= f.target && e.start < until)
+            .count();
+        u8::try_from(rest.saturating_add(1)).unwrap_or(u8::MAX)
     };
     let (mut next_fixed, mut next_pinned) = (0, 0);
     loop {
@@ -427,9 +450,13 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             break;
         }
         while let Some(f) = fixed.get(next_fixed).filter(|f| f.target <= w.next_at) {
-            if !covered(f) {
-                w.fire_fixed(f);
+            // An earlier event can push the walk past this target: adopt its pinned entries
+            // first, so the rest of its take follows them.
+            while pinned.get(next_pinned).is_some_and(|e| e.start <= f.target) {
+                w.adopt(&pinned[next_pinned]);
+                next_pinned += 1;
             }
+            w.fire_fixed(f, covered(f));
             next_fixed += 1;
         }
         let at = w.next_at;
@@ -439,7 +466,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         firing.sort_by_key(|&i| Reverse(rules[i].priority));
         for i in firing {
             let (pi, ri) = (rules[i].playlist, rules[i].rule);
-            w.fire(pi, ri, at, None);
+            w.fire(pi, ri, at, None, 0);
         }
         if w.next_at >= end {
             break;
@@ -458,8 +485,13 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             }
         }
     }
-    for f in fixed[next_fixed..].iter().filter(|f| !covered(f)) {
-        w.fire_fixed(f);
+    for f in &fixed[next_fixed..] {
+        // Adopt the pinned entries up to this target first, so the rest of a take follows them.
+        while pinned.get(next_pinned).is_some_and(|e| e.start <= f.target) {
+            w.adopt(&pinned[next_pinned]);
+            next_pinned += 1;
+        }
+        w.fire_fixed(f, covered(f));
     }
     for e in pinned[next_pinned..].iter().filter(|e| e.start < end) {
         w.adopt(e);

@@ -5,7 +5,7 @@ use crate::merge::merge_with;
 use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all};
 use jiff::SignedDuration;
 use radio_model::{Item, ItemId};
-use radio_timing::{item_len, start_times};
+use radio_timing::{advance, item_len, start_times};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
@@ -122,31 +122,51 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         let Some(first_start) = raw.entries.get(raw_win.start).map(|e| e.start) else {
             continue;
         };
+        // Pinned entries (on air or on a deck) stay as given, at the head of the window.
+        let held: Vec<Entry> = raw.entries[raw_win.clone()]
+            .iter()
+            .filter(|e| input.pinned.contains(e))
+            .cloned()
+            .collect();
+        let held_ids: BTreeSet<ItemId> = held.iter().map(|e| e.item).collect();
         let keep: Vec<&Entry> = old_win
             .iter()
             .filter(|e| e.start >= input.now && e.origin != Origin::Manual)
-            .filter(|e| items.contains_key(&e.item))
+            .filter(|e| items.contains_key(&e.item) && !held_ids.contains(&e.item))
             .collect();
         let seq: Vec<&Item> = keep
             .iter()
             .filter_map(|e| items.get(&e.item).copied())
             .collect();
+        let first_start = match held.last() {
+            Some(h) => {
+                let step = items
+                    .get(&h.item)
+                    .map_or(h.len, |item| advance(item, seq.first().copied()));
+                h.start
+                    .checked_add(step)
+                    .unwrap_or(h.start)
+                    .max(first_start)
+            }
+            None => first_start,
+        };
         let starts = start_times(first_start, &seq);
         // What would start at or after the event is no longer part of the window.
         let n = starts.iter().take_while(|s| **s < fit.target).count();
-        let forced: Vec<Entry> = keep
-            .iter()
-            .zip(&seq)
-            .zip(&starts)
-            .take(n)
-            .map(|((e, item), start)| {
-                let mut e = (*e).clone();
-                e.start = *start;
-                e.len = item_len(item);
-                e.trim = Duration::ZERO;
-                e
-            })
-            .collect();
+        let mut forced = held;
+        forced.extend(
+            keep.iter()
+                .zip(&seq)
+                .zip(&starts)
+                .take(n)
+                .map(|((e, item), start)| {
+                    let mut e = (*e).clone();
+                    e.start = *start;
+                    e.len = item_len(item);
+                    e.trim = Duration::ZERO;
+                    e
+                }),
+        );
         let forced_set: BTreeSet<ItemId> = forced.iter().map(|e| e.item).collect();
         let raw_ids: BTreeSet<ItemId> = raw.entries[raw_win.clone()]
             .iter()
