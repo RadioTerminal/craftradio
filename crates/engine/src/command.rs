@@ -71,8 +71,8 @@ pub enum Command {
         playlist: PlaylistId,
         on_interrupt: radio_model::OnInterrupt,
     },
-    /// With `lock`, the engine locks the items: a person placed them by hand (spec 6.15).
-    /// A folder, a watch or an import adds items with `lock` false.
+    /// With `lock`, the engine locks the items, because a person placed them (spec 6.15). A
+    /// folder, a watch or an import adds items with `lock` false.
     #[serde(rename = "playlist.add_items")]
     PlaylistAddItems {
         playlist: PlaylistId,
@@ -136,8 +136,8 @@ pub enum Command {
     #[serde(rename = "deck.load")]
     DeckLoad { deck: u8, item: ItemId },
     /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
-    /// A deck that has not started fades in over `fade_in`. The item on air fades out at the
-    /// same time, and the decks that waited before this deck give up their items.
+    /// A deck that has not started fades in over `fade_in`. The item on air fades out then. The
+    /// decks that waited before this deck give up their items.
     #[serde(rename = "deck.play")]
     DeckPlay {
         deck: u8,
@@ -413,20 +413,26 @@ fn with_optional(mut spec: CommandSpec, name: &str) -> CommandSpec {
     spec
 }
 
-/// Adds the optional `fade_in` argument of `deck.play`: a duration as seconds and nanos.
-fn with_fade_in(mut spec: CommandSpec) -> CommandSpec {
+/// Adds an optional argument `name` with the JSON schema `prop` to a spec.
+fn with_optional_prop(mut spec: CommandSpec, name: &str, prop: Value) -> CommandSpec {
     let mut schema = spec.args_schema.as_value().clone();
     if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        let fade = json!({
-            "type": "object",
-            "properties": {"secs": {"type": "integer"}, "nanos": {"type": "integer"}},
-        });
-        props.insert("fade_in".to_string(), fade);
+        props.insert(name.to_string(), prop);
     }
     if let Ok(s) = Schema::try_from(schema) {
         spec.args_schema = s;
     }
     spec
+}
+
+/// Adds the optional `fade_in` argument of `deck.play`: a duration as seconds and nanos.
+fn with_fade_in(spec: CommandSpec) -> CommandSpec {
+    let fade = json!({
+        "type": "object",
+        "properties": {"secs": {"type": "integer"}, "nanos": {"type": "integer"}},
+        "required": ["secs", "nanos"],
+    });
+    with_optional_prop(spec, "fade_in", fade)
 }
 
 /// Every command the engine accepts, one entry each.
@@ -467,11 +473,15 @@ pub fn registry() -> Vec<CommandSpec> {
             A,
             &[p, ("on_interrupt", "string")],
         ),
-        spec(
-            "playlist.add_items",
-            "Add items (locked) at a position, or at the end",
-            A,
-            &[p, ("items", "array"), ("at", "integer")],
+        with_optional_prop(
+            spec(
+                "playlist.add_items",
+                "Add items at a position, or at the end; `lock` (default true) locks them",
+                A,
+                &[p, ("items", "array"), ("at", "integer")],
+            ),
+            "lock",
+            json!({ "type": "boolean" }),
         ),
         spec(
             "playlist.remove_items",

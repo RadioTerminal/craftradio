@@ -85,8 +85,8 @@ fn add_move_remove_survive_reopen() {
     assert!(e.state().station.main().items.iter().all(|i| i.locked));
 }
 
-/// A person who adds items locks them. A folder or a watch adds items without a lock, so
-/// the main list shows a pin only on what a person placed. Old JSON without `lock` locks.
+/// A person who adds items locks them. A folder or a watch adds items without a lock. The
+/// main list shows a pin only on what a person placed. Old JSON without `lock` locks.
 #[test]
 fn only_hand_added_items_are_locked() {
     let mut e = Engine::open_in_memory().unwrap();

@@ -259,8 +259,8 @@ impl Core {
         }
     }
 
-    /// Plays deck `i`. A deck that has not started fades in over `fade_in`, and the item
-    /// on air fades out at the same time: a crossfade. The plan goes on from this deck.
+    /// Plays deck `i`. A deck that has not started fades in over `fade_in`. The item on air
+    /// fades out at the same time: a crossfade. The plan goes on from this deck.
     fn op_play(&mut self, i: usize, fade_in: Duration, now: Timestamp) -> Check {
         self.hold = false;
         let Some(s) = &self.slots[i] else {
@@ -299,13 +299,15 @@ impl Core {
         }
     }
 
-    /// Fades out each item on air but deck `i`, from frame `at`. The fade lasts as long as
-    /// the fade-in of deck `i`, or as the early fade of the item when there is no fade-in.
+    /// Fades out each item on air but deck `i`, from frame `at`. The fade has the length of
+    /// the fade-in of deck `i`. With no fade-in, it is the early fade of the item. A paused
+    /// item ends at once. Thus it does not hold back the plan.
     fn crossfade_from_air(&mut self, i: usize, at: u64, fade_in: Duration) {
         for k in (0..4).filter(|&k| k != i) {
             let fade = self.slots[k]
                 .as_ref()
-                .filter(|s| !s.not_started() && !s.end_sent && s.role != DeckRole::Bed)
+                .filter(|s| !s.not_started() && s.role != DeckRole::Bed)
+                .filter(|s| !s.end_sent || s.phase == Phase::Paused)
                 .map(|s| {
                     if fade_in.is_zero() {
                         Self::early_fade(s)
@@ -319,9 +321,9 @@ impl Core {
         }
     }
 
-    /// Deck `i` plays before its turn. The plan items that waited to play before it leave
-    /// their decks: they return to the rotation and play at a later turn. Hard events and
-    /// play-next items stay.
+    /// Deck `i` plays before its turn. The plan items that waited before it leave their
+    /// decks. They return to the rotation and play at a later turn. Hard events and play-next
+    /// items stay.
     fn skip_over(&mut self, i: usize) {
         let Some(start) = self.slots[i].as_ref().map(|s| s.entry.start) else {
             return;

@@ -841,7 +841,7 @@ pub enum Edit {
         command: DeckCommand,
     },
     /// Play the NEXT 1 deck now, with a fade-in over `fade_in_s` seconds. It crossfades
-    /// like [`DeckCommand::Play`] on that deck. In Assist mode it is the Next that advances.
+    /// like [`DeckCommand::Play`] on that deck. In `Assist` mode it is the Next that advances.
     PlayNext {
         fade_in_s: f32,
     },

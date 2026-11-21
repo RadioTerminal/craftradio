@@ -1,5 +1,6 @@
 use crate::fixtures::*;
 use radio_engine::{Command, Mode};
+use radio_playout::DeckPhase;
 use std::time::Duration;
 
 /// A hard event starts within 5 ms of its target on the sample clock. The item on
@@ -644,8 +645,8 @@ fn deleting_then_editing_a_hard_rule_keeps_the_other_hard_event() {
     );
 }
 
-/// Play on the NEXT 2 deck: it fades in, and the item on air fades out at the same time.
-/// The NEXT 1 item never airs here, and no deck holds an item twice.
+/// Play on the NEXT 2 deck: it fades in, and the item on air fades out then. The NEXT 1
+/// item never airs here, and no deck holds an item twice.
 #[test]
 fn playing_next_2_crossfades_and_skips_next_1() {
     let sides = [Side::Left, Side::Both, Side::Right, Side::Silent];
@@ -707,4 +708,64 @@ fn playing_next_2_crossfades_and_skips_next_1() {
             "{a:?} is on two decks: {held:?}"
         );
     }
+}
+
+/// Play on a waiting deck while the operator holds the item on air. The held item leaves
+/// the air. The station plays on after the new item by itself.
+#[test]
+fn playing_a_deck_ends_a_paused_item_on_air() {
+    let main: Vec<_> = (1..=4)
+        .map(|i| {
+            let side = if i == 1 { Side::Left } else { Side::Right };
+            let path = wav(&format!("pz{i}"), 2.0, side);
+            file_item(i, &format!("Song {i}"), &path, 2.0, 2.0, 0.0)
+        })
+        .collect();
+    let (p, clock) = offline(engine_with(main), |_| {});
+    run(&p, &clock, 0.5);
+    let one = Some(radio_model::ItemId(1));
+    let air = p
+        .snapshot()
+        .decks
+        .iter()
+        .position(|d| d.item == one)
+        .unwrap();
+    p.dispatch(Command::DeckPause {
+        deck: air as u8,
+        expect_item: one,
+    })
+    .unwrap();
+    run(&p, &clock, 0.3);
+    let two = Some(radio_model::ItemId(2));
+    let next = p
+        .snapshot()
+        .decks
+        .iter()
+        .position(|d| d.item == two)
+        .unwrap();
+    p.dispatch(Command::DeckPlay {
+        deck: next as u8,
+        expect_item: two,
+        fade_in: Duration::ZERO,
+    })
+    .unwrap();
+    let after = run(&p, &clock, 0.5);
+    // Song 1 may wait on a deck again for its next turn, but it is not paused on air.
+    let paused = p
+        .snapshot()
+        .decks
+        .iter()
+        .any(|d| d.phase == DeckPhase::Paused);
+    assert!(!paused, "no item stays paused on air");
+    assert!(
+        peak(&after, 0, SR / 10, after.len() / 2) < 0.001,
+        "song 1 is off air"
+    );
+    run(&p, &clock, 4.0);
+    let rows = p.history(t0(), 10).unwrap();
+    let titles: Vec<&str> = rows.iter().map(|r| r.entry.title.as_str()).collect();
+    assert!(
+        titles.starts_with(&["Song 1", "Song 2", "Song 3"]),
+        "the station plays on after song 2: {titles:?}"
+    );
 }

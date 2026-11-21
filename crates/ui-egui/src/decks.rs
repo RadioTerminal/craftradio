@@ -62,8 +62,8 @@ impl Default for State {
 }
 
 impl State {
-    /// A press of a guarded action. It returns the action when the press fires.
-    /// With confirm on, a press that `cuts` the item on air arms, and a second press fires.
+    /// A press of a guarded action. It returns the action when the press fires. With confirm
+    /// on, a press that `cuts` the item on air arms, and a second press fires.
     pub(crate) fn press(
         &mut self,
         deck: usize,
@@ -130,8 +130,8 @@ pub(crate) fn is_live(deck: &DeckView) -> bool {
     )
 }
 
-/// True when a start of deck `deck` with a fade of `fade_s` seconds cuts an item on air
-/// before its end. An item that ends inside the fade, or fades out already, is not cut.
+/// True when a start of deck `deck` cuts an item on air before its end. The fade lasts
+/// `fade_s` seconds. An item that ends inside the fade, or fades out already, is not cut.
 pub(crate) fn cuts_on_air(decks: &[DeckView], deck: usize, fade_s: f32) -> bool {
     decks.iter().enumerate().any(|(k, d)| {
         let left = d.len.saturating_sub(d.elapsed).as_secs_f32();
@@ -304,8 +304,8 @@ fn deck_menu(
     }
 }
 
-/// The one main button of a deck: Pause on air, Resume when paused, else Play this deck.
-/// It gives the verb, the glyph and the words of the deck menu.
+/// The one main button of a deck: Pause on air, Resume after a pause, or Play this deck. It
+/// gives the verb, the glyph and the words of the deck menu.
 fn primary(deck: &DeckView) -> (&'static str, &'static str, &'static str) {
     match deck.state {
         DeckState::Playing => ("Pause", "⏸", "Pause"),
@@ -479,9 +479,10 @@ fn deck_body(
                         .range(size::FADE_MIN_S..=size::FADE_MAX_S)
                         .speed(0.1)
                         .suffix(" s");
-                    ui.add(fade)
-                        .labelled_by(label.id)
-                        .on_hover_text("Fade out in the header fades this deck out so long");
+                    ui.add(fade).labelled_by(label.id).on_hover_text(
+                        "Stored for this deck. Fade out in the header now uses the fade-out \
+                             of the item, or 1 s",
+                    );
                 });
                 let note = RichText::new(settings::NOT_SAVED).font(theme::text(theme::CAPTION));
                 ui.label(note.color(t.text_muted));

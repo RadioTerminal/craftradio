@@ -134,7 +134,7 @@ fn play_next_plays_the_next_1_deck() {
     assert_eq!(on_air(&view).and_then(|k| view.decks[k].item), first);
 }
 
-/// Play this deck on NEXT 2: it goes on air, the old item leaves the air, and the NEXT 1
+/// Play this deck on NEXT 2: it goes on air, and the old item leaves the air. The NEXT 1
 /// item waits for a later turn. No song is on two decks or twice in a row on the way.
 #[test]
 fn play_this_deck_on_next_2_goes_on_air_and_skips_next_1() {

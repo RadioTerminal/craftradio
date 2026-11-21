@@ -422,8 +422,8 @@ fn resume_rotation_continues_after_pinned_entries() {
     );
 }
 
-/// After a skip, the item on air starts a few ms after `now`, and the next item waits on
-/// a deck. The plan must start with them and repeat neither.
+/// After a skip, the item on air starts a few ms after `now`. The next item waits on a
+/// deck. The plan must start with them and repeat neither.
 #[test]
 fn a_pinned_item_just_after_now_is_not_picked_again() {
     let mut main = playlist(1, "main", tracks(6));

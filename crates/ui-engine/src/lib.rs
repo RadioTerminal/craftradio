@@ -396,7 +396,7 @@ impl EngineSource {
             .filter(|(_, x)| matches!(x.phase, DeckPhase::Loading | DeckPhase::Ready))
             .min_by_key(|(_, x)| x.start)
             .map(|(k, _)| k);
-        // In Assist mode the first waiting deck waits for Next.
+        // In `Assist` mode the first waiting deck waits for Next.
         let first_ready = pv
             .decks
             .iter()
