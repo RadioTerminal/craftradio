@@ -211,11 +211,17 @@ impl Engine {
         item.trimmable = false;
         item.locked = false;
         let mut next = self.state.station.clone();
+        let rule = |id: ItemId| Rule {
+            trigger: Trigger::At { at: start, repeat },
+            placement: Placement::Fixed {
+                mode: fix,
+                tolerance,
+            },
+            take: 1,
+            constraints: vec![Constraint::OnlyItem(id)],
+        };
         match replace {
-            Some(id) => {
-                take_out(&mut next, id)?;
-                item.id = id;
-            }
+            Some(id) => item.id = id,
             None if item.id.0 == 0 => {
                 let max = next
                     .playlists
@@ -228,17 +234,39 @@ impl Engine {
             None => {}
         }
         let id = item.id;
-        let p = playlist_of(&mut next);
-        p.items.push(item);
-        p.rules.push(Rule {
-            trigger: Trigger::At { at: start, repeat },
-            placement: Placement::Fixed {
-                mode: fix,
-                tolerance,
-            },
-            take: 1,
-            constraints: vec![Constraint::OnlyItem(id)],
-        });
+        match replace {
+            // An update keeps the places of the item and its rule, so no other rule moves.
+            Some(_) => {
+                let p = next
+                    .playlists
+                    .iter_mut()
+                    .find(|p| p.role == PlaylistRole::OneOff)
+                    .ok_or(EngineError::UnknownItem(id))?;
+                let i = p
+                    .items
+                    .iter()
+                    .position(|x| x.id == id)
+                    .ok_or(EngineError::UnknownItem(id))?;
+                p.items[i] = item;
+                match p.rules.iter().position(|r| binds(r, id)) {
+                    Some(r) => {
+                        p.rules[r] = rule(id);
+                        p.rules = std::mem::take(&mut p.rules)
+                            .into_iter()
+                            .enumerate()
+                            .filter(|(k, x)| *k == r || !binds(x, id))
+                            .map(|(_, x)| x)
+                            .collect();
+                    }
+                    None => p.rules.push(rule(id)),
+                }
+            }
+            None => {
+                let p = playlist_of(&mut next);
+                p.items.push(item);
+                p.rules.push(rule(id));
+            }
+        }
         next.validate()?;
         self.state.station = next;
         self.sync_one_off_script();

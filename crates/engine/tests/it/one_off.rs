@@ -231,3 +231,35 @@ fn a_second_one_off_reuses_the_playlist() {
     assert_eq!(count, 1);
     assert_eq!(e.state().one_offs().len(), 2);
 }
+
+#[test]
+fn update_keeps_the_place_of_the_rule_so_other_one_offs_keep_theirs() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let a = add(&mut e, file("A"), date(2026, 11, 22).at(8, 0, 0, 0)).unwrap();
+    let b = add(&mut e, file("B"), date(2026, 11, 22).at(9, 0, 0, 0)).unwrap();
+    let rules = |e: &Engine| {
+        e.state()
+            .station
+            .playlists
+            .iter()
+            .find(|p| p.role == PlaylistRole::OneOff)
+            .unwrap()
+            .rules
+            .clone()
+    };
+    let before = rules(&e);
+    e.dispatch(Command::ScheduleUpdate {
+        id: ItemId(a),
+        one_off: Box::new(file("A, new cut")),
+        start: date(2026, 11, 22).at(8, 30, 0, 0),
+        fix: FixMode::Hard,
+        tolerance: Duration::from_secs(1),
+        repeat: Repeat::Once,
+    })
+    .unwrap();
+    let after = rules(&e);
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after[1], before[1], "the rule of B keeps its index");
+    assert_ne!(after[0], before[0], "the rule of A changed where it was");
+    assert_eq!(e.state().one_offs()[1].item.id, ItemId(b));
+}
