@@ -30,14 +30,11 @@ pub fn allowed(
         // A play exactly `gap` ago is allowed, as for MinGapSameItem.
         Constraint::ArtistSeparation(gap) => cand.artist.as_ref().is_none_or(|artist| {
             let cutoff = before(at, *gap);
-            hist.count_since(
-                |p| p.at > cutoff && p.artist.as_ref() == Some(artist),
-                cutoff,
-            ) == 0
+            !hist.artist_after(artist, cutoff)
         }),
         Constraint::TitleSeparation(gap) => {
             let cutoff = before(at, *gap);
-            hist.count_since(|p| p.at > cutoff && p.title == cand.title, cutoff) == 0
+            !hist.title_after(&cand.title, cutoff)
         }
         Constraint::Daypart { from, to } => {
             let now = tz.to_datetime(at).time();
@@ -49,24 +46,26 @@ pub fn allowed(
         }
         Constraint::MaxPerHour(cap) => {
             let since = before(at, Duration::from_secs(3600));
-            hist.count_since(|p| p.playlist == pl, since) < *cap as usize
+            hist.playlist_since(pl, since).len() < *cap as usize
         }
         Constraint::MaxPerDay(cap) => {
-            plays_on_local_day(hist, tz, at, |p| p.playlist == pl) < *cap as usize
+            plays_on_local_day(tz, at, |start| hist.playlist_since(pl, start)) < *cap as usize
         }
     }
 }
 
-/// Plays matching `pred` on the local calendar day that contains `at`.
-fn plays_on_local_day(
-    hist: &PlayHistory,
+/// Indexed plays on the local calendar day that contains `at`.
+fn plays_on_local_day<'a>(
     tz: &TimeZone,
     at: Timestamp,
-    pred: impl Fn(&crate::Played) -> bool,
+    times: impl FnOnce(Timestamp) -> &'a [Timestamp],
 ) -> usize {
     let day = tz.to_datetime(at).date();
     let start = resolve_local(tz, day.at(0, 0, 0, 0));
-    hist.count_since(|p| pred(p) && tz.to_datetime(p.at).date() == day, start)
+    times(start)
+        .iter()
+        .filter(|&&at| tz.to_datetime(at).date() == day)
+        .count()
 }
 
 /// Item validity at `at`: inside its valid_from / valid_to local dates and under its
@@ -76,6 +75,7 @@ pub(crate) fn item_ok(item: &Item, at: Timestamp, hist: &PlayHistory, tz: &TimeZ
     if item.valid_from.is_some_and(|from| day < from) || item.valid_to.is_some_and(|to| day > to) {
         return false;
     }
-    item.max_per_day
-        .is_none_or(|cap| plays_on_local_day(hist, tz, at, |p| p.item == item.id) < cap as usize)
+    item.max_per_day.is_none_or(|cap| {
+        plays_on_local_day(tz, at, |start| hist.item_since(item.id, start)) < cap as usize
+    })
 }

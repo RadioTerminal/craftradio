@@ -76,7 +76,18 @@ fn ids(entries: &[Entry]) -> Vec<ItemId> {
 /// the old order.
 pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> Timeline {
     let mut raw = merge_with(input, opts.resume_rotation);
-    let mut tl = raw.clone();
+    let mut tl = if prev.is_some() {
+        raw.clone()
+    } else {
+        std::mem::replace(
+            &mut raw,
+            Timeline {
+                entries: Vec::new(),
+                fits: Vec::new(),
+                warnings: Vec::new(),
+            },
+        )
+    };
     fit_all(&mut tl, input.station, input.history);
     let Some(prev) = prev else {
         return tl;

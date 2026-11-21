@@ -66,6 +66,46 @@ pub fn select_before(
             (index, (length.as_nanos() + step / 2) / step, *orig_before)
         })
         .collect();
+    // The original selection is the unique zero-displacement solution. If it
+    // reaches the target exactly in search ticks, no other subset can beat it.
+    let original_ticks: u128 = active
+        .iter()
+        .filter(|(_, _, before)| *before)
+        .map(|(_, ticks, _)| *ticks)
+        .sum();
+    if mandatory_ns <= gap_ns && original_ticks * step == remaining_ns && original_ticks <= limit {
+        let mut kept = mandatory;
+        kept.extend(
+            active
+                .iter()
+                .filter(|(_, _, before)| *before)
+                .map(|(i, _, _)| *i),
+        );
+        kept.sort_unstable();
+        let played: u128 = kept.iter().map(|&i| cands[i].0.as_nanos()).sum();
+        return (
+            kept,
+            SignedDuration::from_nanos_i128(gap_ns as i128 - played as i128),
+        );
+    }
+    // Only multiples of the greatest common divisor are reachable. Compress
+    // those cells without changing rounded lengths, costs, or tie breaking.
+    let divisor = active
+        .iter()
+        .fold(0, |mut a, (_, ticks, _)| {
+            let mut b = *ticks;
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        })
+        .max(1);
+    let active: Vec<_> = active
+        .into_iter()
+        .map(|(i, ticks, before)| (i, ticks / divisor, before))
+        .collect();
+    let limit = limit / divisor;
+    let step = step * divisor;
     let reachable_limit = active
         .iter()
         .fold(0_u128, |sum, (_, ticks, _)| sum.saturating_add(*ticks));
@@ -581,6 +621,15 @@ impl Fit<'_, '_> {
             .chain((0..n).filter(|&j| !window[j].1).map(Tok::Win))
             .chain(next_tok)
             .collect();
+        let token_index = |t: Tok| match t {
+            Tok::Win(j) => j,
+            Tok::Event => n,
+            Tok::Next => n + 1,
+        };
+        let mut original_prev = vec![None; n + 2];
+        for (pos, &t) in original.iter().enumerate() {
+            original_prev[token_index(t)] = pos.checked_sub(1).map(|i| original[i]);
+        }
         let mut picks = vec![Pick::Free; n];
         for _ in 0..=RETRIES {
             let cands: Vec<_> = window
@@ -614,7 +663,7 @@ impl Fit<'_, '_> {
             let mut check = vec![false; full.len()];
             for (pos, &t) in order.iter().enumerate() {
                 let pulled = matches!(t, Tok::Win(j) if keep[j] && !window[j].1);
-                let rewired = prev_of(&order, t) != prev_of(&original, t);
+                let rewired = pos.checked_sub(1).map(|i| order[i]) != original_prev[token_index(t)];
                 check[seg.len() + pos] = t != Tok::Event && (pulled || rewired);
             }
             let h = self.head.min(full.len());
