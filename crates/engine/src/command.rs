@@ -84,14 +84,34 @@ pub enum Command {
     ItemSetMeta { item: ItemId, meta: Value },
     #[serde(rename = "deck.load")]
     DeckLoad { deck: u8, item: ItemId },
+    /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
     #[serde(rename = "deck.play")]
-    DeckPlay { deck: u8 },
+    DeckPlay {
+        deck: u8,
+        #[serde(default)]
+        expect_item: Option<ItemId>,
+    },
+    /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
     #[serde(rename = "deck.pause")]
-    DeckPause { deck: u8 },
+    DeckPause {
+        deck: u8,
+        #[serde(default)]
+        expect_item: Option<ItemId>,
+    },
+    /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
     #[serde(rename = "deck.fade")]
-    DeckFade { deck: u8 },
+    DeckFade {
+        deck: u8,
+        #[serde(default)]
+        expect_item: Option<ItemId>,
+    },
+    /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
     #[serde(rename = "deck.skip")]
-    DeckSkip { deck: u8 },
+    DeckSkip {
+        deck: u8,
+        #[serde(default)]
+        expect_item: Option<ItemId>,
+    },
     #[serde(rename = "mode.set")]
     ModeSet { mode: Mode },
     #[serde(rename = "station.stop_after_current")]
@@ -223,6 +243,18 @@ fn spec(
     }
 }
 
+/// Adds an optional integer argument `name` to a spec.
+fn with_optional(mut spec: CommandSpec, name: &str) -> CommandSpec {
+    let mut schema = spec.args_schema.as_value().clone();
+    if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        props.insert(name.to_string(), json!({ "type": ["integer", "null"] }));
+    }
+    if let Ok(s) = Schema::try_from(schema) {
+        spec.args_schema = s;
+    }
+    spec
+}
+
 /// Every command the engine accepts, one entry each.
 pub fn registry() -> Vec<CommandSpec> {
     use Tier::{OnAir as A, ReadOnly as R};
@@ -315,10 +347,13 @@ pub fn registry() -> Vec<CommandSpec> {
             A,
             &[d, ("item", "integer")],
         ),
-        spec("deck.play", "Start a deck", A, &[d]),
-        spec("deck.pause", "Pause a deck", A, &[d]),
-        spec("deck.fade", "Fade a deck out", A, &[d]),
-        spec("deck.skip", "Skip what a deck is playing", A, &[d]),
+        with_optional(spec("deck.play", "Start a deck", A, &[d]), "expect_item"),
+        with_optional(spec("deck.pause", "Pause a deck", A, &[d]), "expect_item"),
+        with_optional(spec("deck.fade", "Fade a deck out", A, &[d]), "expect_item"),
+        with_optional(
+            spec("deck.skip", "Skip what a deck is playing", A, &[d]),
+            "expect_item",
+        ),
         spec(
             "mode.set",
             "Set Auto, Assist or Manual mode",

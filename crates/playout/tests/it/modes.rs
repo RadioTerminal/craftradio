@@ -171,7 +171,12 @@ fn pause_in_auto_is_a_wait_not_dead_air() {
         first_audible(&before, 0, 0).is_some(),
         "item one did not start"
     );
-    let _ = p.send(Command::DeckPause { deck: 0 }).unwrap();
+    let _ = p
+        .send(Command::DeckPause {
+            deck: 0,
+            expect_item: Some(radio_model::ItemId(1)),
+        })
+        .unwrap();
     let after = run(&p, &clock, 3.0);
 
     assert!(
@@ -189,5 +194,56 @@ fn pause_in_auto_is_a_wait_not_dead_air() {
         view.alarms
             .iter()
             .all(|a| a.alarm != radio_playout::Alarm::DeadAir)
+    );
+}
+
+fn news_at(time: &str) -> String {
+    format!(
+        r#"rule({{at: {{date: "2026-11-21", time: "{time}", repeat: "once"}},
+                place: {{fixed: "hard", tolerance: 1}}, take: 1, constraints: []}});"#
+    )
+}
+
+/// A hard event moves after it is on a deck. It airs once at the new time, and it
+/// raises no missed-event alarm.
+#[test]
+fn moved_hard_event_airs_once_at_the_new_time() {
+    let main: Vec<_> = (1..=3)
+        .map(|i| {
+            let path = wav(&format!("mv{i}"), 4.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5)
+        })
+        .collect();
+    let mut engine = engine_with(main);
+    let mut news = file_item(10, "News", &wav("mv-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    news.movable = false;
+    news.trimmable = false;
+    let playlist = add_playlist(&mut engine, "News", vec![news], &news_at("13:00:05"));
+    let (p, clock) = offline(engine, |_| {});
+    let before = run(&p, &clock, 1.0);
+    let _ = p
+        .send(Command::PlaylistSetRulesScript {
+            playlist,
+            script: news_at("13:00:07"),
+        })
+        .unwrap();
+    let after = run(&p, &clock, 7.5);
+    let program = [before, after].concat();
+
+    let target = 7 * SR;
+    let start = first_audible(&program, 1, 0).expect("the event sounds");
+    assert!(
+        start.abs_diff(target) <= SR / 200,
+        "event at {start}, target {target}"
+    );
+    assert!(
+        first_audible(&program, 1, target + SR + SR / 10).is_none(),
+        "it aired twice"
+    );
+    let view = p.snapshot();
+    assert!(
+        view.alarms
+            .iter()
+            .all(|a| !matches!(a.alarm, radio_playout::Alarm::HardEventMissed { .. }))
     );
 }

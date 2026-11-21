@@ -296,6 +296,20 @@ impl Engine {
         }
     }
 
+    /// Like `loaded`, and if `expect` names an item, the deck must still hold it.
+    fn loaded_with(&self, deck: u8, expect: Option<ItemId>) -> Result<(), EngineError> {
+        self.loaded(deck)?;
+        let found = self.state.decks[usize::from(deck)];
+        match expect {
+            Some(expected) if found != Some(expected) => Err(EngineError::StaleTarget {
+                deck,
+                expected,
+                found,
+            }),
+            _ => Ok(()),
+        }
+    }
+
     fn loaded(&self, deck: u8) -> Result<(), EngineError> {
         let d = self.deck(deck)?;
         if self.state.decks[d].is_none() {
@@ -519,20 +533,20 @@ impl Engine {
                 self.state.decks[d] = Some(item);
                 Ok(self.audio(AudioIntent::Load { deck, item }))
             }
-            C::DeckPlay { deck } => {
-                self.loaded(deck)?;
+            C::DeckPlay { deck, expect_item } => {
+                self.loaded_with(deck, expect_item)?;
                 Ok(self.audio(AudioIntent::Play { deck }))
             }
-            C::DeckPause { deck } => {
-                self.loaded(deck)?;
+            C::DeckPause { deck, expect_item } => {
+                self.loaded_with(deck, expect_item)?;
                 Ok(self.audio(AudioIntent::Pause { deck }))
             }
-            C::DeckFade { deck } => {
-                self.loaded(deck)?;
+            C::DeckFade { deck, expect_item } => {
+                self.loaded_with(deck, expect_item)?;
                 Ok(self.audio(AudioIntent::Fade { deck }))
             }
-            C::DeckSkip { deck } => {
-                self.loaded(deck)?;
+            C::DeckSkip { deck, expect_item } => {
+                self.loaded_with(deck, expect_item)?;
                 Ok(self.audio(AudioIntent::Skip { deck }))
             }
             C::ModeSet { mode } => {
@@ -661,6 +675,7 @@ impl Engine {
             && self.state.decks[d] != item
         {
             self.state.decks[d] = item;
+            self.store.snapshot(self.state.clone());
             self.emit(EngineEvent::StateChanged);
         }
     }

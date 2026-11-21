@@ -109,32 +109,37 @@ fn restart_resumes_or_replays_by_playlist() {
     assert!(rows[0].end.is_some_and(|end| end <= rows[1].entry.start));
 }
 
-/// Many files wait for analysis, and the next item still opens at once. Analysis has its
-/// own lane, so an open never waits behind it.
+static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// An analysis that blocks its worker until the test releases it.
+fn blocking_analysis(_: &std::path::Path) -> Option<radio_model::Timing> {
+    while !RELEASE.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    None
+}
+
+/// Analysis jobs that never finish fill their lane, and the next item still opens:
+/// an open never waits behind analysis.
 #[test]
 fn next_item_opens_while_analysis_is_busy() {
     let one = file_item(1, "One", &wav("busy-one", 2.0, Side::Left), 2.0, 1.5, 0.0);
     let mut engine = engine_with(vec![one]);
-    let long = wav("busy-long", 20.0, Side::Both);
-    let untimed: Vec<_> = (100..130)
+    let untimed: Vec<_> = (100..110)
         .map(|id| {
-            let mut item = file_item(id, &format!("Untimed {id}"), &long, 20.0, 19.0, 0.0);
+            let mut item = file_item(id, &format!("Untimed {id}"), "untimed.wav", 20.0, 19.0, 0.0);
             item.timing = None;
             item.planned_len = Some(Duration::from_secs(20));
             item
         })
         .collect();
     crate::fixtures::add_playlist(&mut engine, "Library", untimed, "");
-    let (p, clock) = offline(engine, |_| {});
-    let begun = std::time::Instant::now();
+    let (p, clock) = offline(engine, |cfg| cfg.analyse = blocking_analysis);
     let program = run(&p, &clock, 0.3);
+    RELEASE.store(true, std::sync::atomic::Ordering::Relaxed);
 
     assert!(
         first_audible(&program, 0, 0).is_some(),
         "item one did not open"
-    );
-    assert!(
-        begun.elapsed() < Duration::from_millis(1500),
-        "the open waited"
     );
 }

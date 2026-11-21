@@ -25,9 +25,10 @@ pub use view::{
 use jiff::Timestamp;
 use radio_audio::{MeterReader, MixerConfig};
 use radio_engine::{AsPlayed, Command, Engine, EngineError, LogHandle, Outcome};
+use radio_model::Timing;
 use radio_scheduler::PlanOptions;
 use radio_stream::IcecastConfig;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -78,6 +79,14 @@ pub struct PlayoutConfig {
     pub webhook: Option<String>,
     /// The longest time [`Playout::dispatch`] waits for the mixer to confirm audio.
     pub confirm_timeout: Duration,
+    /// Finds the cue points of a file without timing. It runs on the analysis lane. The
+    /// default is [`analyse_file`]; tests put a slow or fake one here.
+    pub analyse: fn(&Path) -> Option<Timing>,
+}
+
+/// The default analysis: [`radio_library::analyse`], keeping only the timing.
+pub fn analyse_file(path: &Path) -> Option<Timing> {
+    radio_library::analyse(path).ok().map(|a| a.timing)
 }
 
 impl PlayoutConfig {
@@ -99,6 +108,7 @@ impl PlayoutConfig {
             station_name: String::new(),
             webhook: None,
             confirm_timeout: Duration::from_secs(1),
+            analyse: analyse_file,
         }
     }
 }

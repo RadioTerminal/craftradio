@@ -125,9 +125,11 @@ impl Core {
             .timeline
             .entries
             .iter()
-            // Never a fixed or locked entry, and never one far ahead: those keep their time.
-            .filter(|e| e.fixed.is_none() && !e.locked && e.start <= add(now, ON_DEMAND_AHEAD))
-            .find(|e| e.start >= from && !assigned.contains(&(e.item, e.start)))
+            .filter(|e| e.start >= from && !assigned.contains(&(e.item, e.start)))
+            // A fixed or locked entry keeps its time and stops the search. Nothing after
+            // it moves in front of it, and nothing far ahead moves either.
+            .take_while(|e| e.fixed.is_none() && !e.locked && e.start <= add(now, ON_DEMAND_AHEAD))
+            .next()
             .cloned();
         let Some(entry) = next else { return false };
         let Some(item) = self.items.get(&entry.item).cloned() else {
@@ -360,9 +362,9 @@ impl Core {
                 None => {
                     self.analysis.done.insert(item.id, None);
                     let (id, path) = (item.id, path.clone());
-                    self.work.run_slow(move || {
-                        Done::Analysed(id, radio_library::analyse(&path).ok().map(|a| a.timing))
-                    });
+                    let analyse = self.cfg.analyse;
+                    self.work
+                        .run_slow(move || Done::Analysed(id, analyse(Path::new(&path))));
                 }
             }
         }

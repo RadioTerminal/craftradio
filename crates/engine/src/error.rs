@@ -9,6 +9,14 @@ pub enum EngineError {
     UnknownItem(ItemId),
     #[error("deck {0} does not exist (decks are 0..=3)")]
     UnknownDeck(u8),
+    /// The deck holds another item than the command expected. An automatic change
+    /// between a click and its command can cause this.
+    #[error("deck {deck} holds {found:?}, not the expected {expected:?}")]
+    StaleTarget {
+        deck: u8,
+        expected: ItemId,
+        found: Option<ItemId>,
+    },
     #[error("bad argument: {0}")]
     BadArgument(String),
     /// The rules script failed; the line is in the message and in [`EngineError::script_line`].

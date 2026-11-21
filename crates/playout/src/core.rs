@@ -25,6 +25,19 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// An entry taken off a deck for a hard event. It cannot load again before `until`.
+struct Blocked {
+    item: ItemId,
+    start: Timestamp,
+    until: Timestamp,
+}
+
+/// Tells if two entries are the same fixed event: the same playlist, item and target.
+fn same_event(a: &Entry, b: &Entry) -> bool {
+    let target = |e: &Entry| e.fixed.as_ref().map(|f| f.target);
+    a.playlist == b.playlist && a.item == b.item && target(a) == target(b)
+}
+
 /// Playout plans again at least this often.
 const PLAN_EVERY: Duration = Duration::from_secs(1);
 /// The most planned entries that wait on decks. The other decks stay free for operators.
@@ -262,7 +275,7 @@ pub(crate) struct Core {
     /// timeline, but playout still finds it here.
     hard_seen: Vec<Entry>,
     /// Items taken off a deck for a hard event. They wait until that event starts.
-    blocked: Vec<(ItemId, Timestamp)>,
+    blocked: Vec<Blocked>,
     out_clock: Option<SampleClock>,
 }
 
@@ -651,11 +664,12 @@ impl Core {
             .iter()
             .flat_map(|p| p.items.iter().map(|i| (i.id, i.clone())))
             .collect();
+        // A queued hard event is not pinned: the plan must still produce it, or it goes.
         let pinned: Vec<Entry> = self
             .slots
             .iter()
             .flatten()
-            .filter(|s| s.pinned())
+            .filter(|s| s.pinned() && !(s.is_hard() && s.not_started()))
             .map(|s| s.entry.clone())
             .collect();
         let input = PlanInput {
@@ -674,6 +688,7 @@ impl Core {
             self.save_due = true;
         }
         self.timeline = tl;
+        self.prune_hard(now);
         self.planned = true;
         self.dirty = false;
         self.last_plan = Some(now);
@@ -723,7 +738,7 @@ impl Core {
                 !self
                     .blocked
                     .iter()
-                    .any(|(id, until)| *id == e.item && now < *until)
+                    .any(|b| b.item == e.item && b.start == e.start && now < b.until)
             })
             .filter(|e| last.is_none_or(|l| e.start > l))
             .take_while(|e| e.start <= horizon)
@@ -1118,9 +1133,41 @@ impl Core {
     /// decks that playout loads.
     fn sync_engine_decks(&mut self) {
         for i in 0..4 {
-            let item = self.slots[i].as_ref().map(|s| s.item.id);
+            // Only station items: the fallback files have made-up ids.
+            let item = self.slots[i]
+                .as_ref()
+                .map(|s| s.item.id)
+                .filter(|id| self.items.contains_key(id));
             if self.engine.state().decks[i] != item {
                 self.engine.set_deck(i as u8, item);
+            }
+        }
+    }
+
+    /// Forgets hard events that the plan no longer has: a moved or deleted event. A queued
+    /// one leaves its deck. A past event stays while its item is still in the station,
+    /// because the planner never shows past targets.
+    fn prune_hard(&mut self, now: Timestamp) {
+        let timeline = &self.timeline.entries;
+        let items = &self.items;
+        self.hard_seen.retain(|h| {
+            if h.start <= now {
+                items.contains_key(&h.item)
+            } else {
+                timeline.iter().any(|e| same_event(e, h))
+            }
+        });
+        for i in 0..4 {
+            let gone = self.slots[i].as_ref().is_some_and(|s| {
+                s.role == DeckRole::Plan
+                    && s.is_hard()
+                    && s.not_started()
+                    && !timeline.iter().any(|e| same_event(e, &s.entry))
+            });
+            if gone && let Some(s) = self.slots[i].take() {
+                let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
+                let _ = self.mixer.send(cmd.for_item(s.tag));
+                self.dirty = true;
             }
         }
     }
@@ -1152,17 +1199,13 @@ impl Core {
                 && e.start > now
                 && e.start <= horizon
         }) {
-            if !self
-                .hard_seen
-                .iter()
-                .any(|h| h.item == e.item && h.start == e.start)
-            {
+            if !self.hard_seen.iter().any(|h| same_event(h, e)) {
                 self.hard_seen.push(e.clone());
             }
         }
         self.hard_seen
             .retain(|h| !assigned.contains(&(h.item, h.start)));
-        self.blocked.retain(|(_, until)| now < *until);
+        self.blocked.retain(|b| now < b.until);
         let mut missed = Vec::new();
         let mut due = Vec::new();
         for h in &self.hard_seen {
@@ -1174,8 +1217,7 @@ impl Core {
             }
         }
         for m in missed {
-            self.hard_seen
-                .retain(|h| !(h.item == m.item && h.start == m.start));
+            self.hard_seen.retain(|h| !same_event(h, &m));
             let alarm = Alarm::HardEventMissed {
                 item: m.item,
                 target: m.start,
@@ -1217,7 +1259,11 @@ impl Core {
         if let Some(s) = self.slots[i].take() {
             let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
             let _ = self.mixer.send(cmd.for_item(s.tag));
-            self.blocked.push((s.item.id, target));
+            self.blocked.push(Blocked {
+                item: s.item.id,
+                start: s.entry.start,
+                until: target,
+            });
             if s.role == DeckRole::Operator {
                 let alarm = Alarm::OperatorItemEvicted {
                     deck: i as u8,
