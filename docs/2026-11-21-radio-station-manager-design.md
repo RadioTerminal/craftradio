@@ -233,8 +233,35 @@ or silence detection (my call).
   - *Offline renders:* Program is the lookahead late. An offline render of N timeline
     frames that ends calls `drain_offline` once and has N + latency frames, ending with the
     last input frame.
-- **Loudness:** files are measured with EBU R128 at import, and each item gets a gain to bring
-  it to a target level (default −18 LUFS, my call), so the limiter isn't doing the leveling.
+- **Loudness:** each file item on a deck gets a gain that brings it to a target level, so
+  the limiter isn't doing the leveling (user, 2026-11-21: "transitions are smooth").
+  - *Measure:* EBU R128 integrated loudness and true peak (ebur128 `TRUE_PEAK`, 4× oversampled),
+    on the playout analysis lane. Playout measures the planned items that start within 15
+    minutes (at most 12 entries), and any file an operator loads, so the result is normally
+    ready before air. A silent or unreadable file is measured once per run and plays at unity.
+  - *Cache:* the engine keeps each measurement by file content hash (`settings_by_part`, part
+    `loudness`, key = hash) with the item → hash map, so a file is measured once and a
+    restart keeps it. Items with the same file share it. `item.set_loudness` stores one.
+  - *Tag fallback:* until a file is measured, playout reads `REPLAYGAIN_TRACK_GAIN`/`_PEAK`
+    (ReplayGain 2.0, reference −18 LUFS) or the Opus `R128_TRACK_GAIN` (Q7.8 dB, reference
+    −23 LUFS) and converts it to the station target. With neither, the item plays at unity and
+    the deck says "not measured".
+  - *Gain:* target − loudness + the item trim, then the clamps: a boost never lifts the true
+    peak over −1 dBTP (it limits a boost, never turns it into a cut); at most the max boost
+    (default +12 dB) and at least −24 dB. A tag without a peak gets no boost. The clamps apply
+    after the trim, so a trim can't defeat the peak guard.
+  - *On the deck:* an item gain stage before the strip fader. The gain goes with the deck load
+    and applies from the first sample. A change while the item is on air (a late measurement,
+    a trim, a settings change) ramps linearly over 1.5 s; on a deck that isn't playing it
+    changes at once. The render does no allocation for it.
+  - *Settings:* station-level on/off (default on), target −30…−10 LUFS (default −18), max boost
+    0…+12 dB, through `mixer.set_loudness` (stored as part `dynamics`, key `loudness`, applied
+    live). In the UI: Mixer ⚙ → Processing → Loudness, above the compressor.
+  - *Per item:* a manual trim (±12 dB) through `item.set_gain_trim`, undoable, in the metadata
+    editor (Loudness → Gain trim).
+  - *Shown:* each deck card shows "RG −3.2 dB" (measured), "tag −2.1 dB" (from a tag),
+    "not measured" or "RG off", with a tooltip of the LUFS, the peak, the target, the trim and
+    any clamp. It shows the gain that playout sent to the mixer, never one it didn't.
 - **Several devices:** one output device is the master clock. Every other device (live
   input, PFL card) goes through a drift-compensating resampler. Losing a device triggers a
   re-open with an alarm.
