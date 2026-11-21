@@ -117,6 +117,9 @@ fn exit_code(timeline: &Timeline) -> u8 {
 
 /// The model's message, with the item's title when the error names an item.
 fn describe(station: &Station, error: &ModelError) -> String {
+    if let ModelError::UnknownTimeZone(tz) = error {
+        return format!("unknown time zone '{tz}'");
+    }
     let id = match error {
         ModelError::BadTiming { item, .. } | ModelError::MissingPlannedLen(item) => Some(*item),
         _ => None,
