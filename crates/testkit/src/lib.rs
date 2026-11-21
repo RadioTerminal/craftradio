@@ -10,6 +10,7 @@ fn secs(s: u32) -> Duration {
 fn base_item(id: u64, title: &str, artist: Option<&str>, source: Source) -> Item {
     Item {
         id: ItemId(id),
+        meta: radio_model::ItemMeta::default(),
         title: title.to_owned(),
         artist: artist.map(str::to_owned),
         source,
@@ -89,6 +90,7 @@ pub fn live(id: u64, planned_secs: u32) -> Item {
 pub fn playlist(id: u64, name: &str, items: Vec<Item>) -> Playlist {
     Playlist {
         id: PlaylistId(id),
+        source: None,
         name: name.to_owned(),
         color: [128, 128, 128],
         enabled: true,
