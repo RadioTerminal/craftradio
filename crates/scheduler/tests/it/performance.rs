@@ -4,7 +4,7 @@ use radio_scheduler::{PlanInput, PlanOptions, PlayHistory, plan};
 use radio_testkit::{jingle, playlist, station, track};
 use std::time::{Duration, Instant};
 
-fn measure(seconds: u64) -> Duration {
+fn measure(seconds: u64, replan: bool) -> Duration {
     let now: Timestamp = "2026-11-21T00:00:00Z".parse().unwrap();
     let mut main = playlist(
         1,
@@ -51,11 +51,22 @@ fn measure(seconds: u64) -> Duration {
         horizon: Duration::from_secs(seconds),
         pinned: &[],
     };
+    let opts = PlanOptions::default();
+    let prev = replan.then(|| {
+        plan(
+            &PlanInput {
+                now: now - Duration::from_secs(1),
+                ..input
+            },
+            &opts,
+            None,
+        )
+    });
     let start = Instant::now();
-    let timeline = plan(&input, &PlanOptions::default(), None);
+    let timeline = plan(&input, &opts, prev.as_ref());
     let elapsed = start.elapsed();
     eprintln!(
-        "plan {seconds}s: {elapsed:?}, {} entries, {} fits",
+        "replan={replan} plan {seconds}s: {elapsed:?}, {} entries, {} fits",
         timeline.entries.len(),
         timeline.fits.len()
     );
@@ -72,13 +83,13 @@ fn measure(seconds: u64) -> Duration {
 
 #[test]
 fn short_items_small_horizon() {
-    assert!(measure(1800) < Duration::from_secs(2));
+    assert!(measure(1800, false) < Duration::from_secs(2));
 }
 
 #[test]
 #[ignore = "24 hour performance benchmark; run with --release --ignored"]
 fn short_items_full_day() {
-    let elapsed = measure(86400);
+    let elapsed = measure(86400, false);
     let budget = if cfg!(debug_assertions) { 10 } else { 2 };
     assert!(
         elapsed < Duration::from_secs(budget),
@@ -182,4 +193,151 @@ fn history_indexes_keep_out_of_order_plays_and_cutoffs() {
         &history,
         &tz
     ));
+}
+
+#[test]
+#[ignore = "24 hour replan benchmark; run with --release --ignored"]
+fn short_items_full_day_replan() {
+    let elapsed = measure(86400, true);
+    let budget = if cfg!(debug_assertions) {
+        Duration::from_secs(10)
+    } else {
+        Duration::from_millis(150)
+    };
+    assert!(elapsed < budget, "{elapsed:?} exceeds {budget:?}");
+}
+
+#[test]
+fn daily_caps_use_local_midnight_and_exclude_later_days() {
+    use radio_model::{Constraint, PlaylistId};
+    use radio_scheduler::{Played, allowed};
+    let tz = jiff::tz::TimeZone::get("Europe/Ljubljana").unwrap();
+    // Ordinary, 23-hour and 25-hour local days.
+    for (midnight, following) in [
+        ("2026-11-20T23:00:00Z", "2026-11-21T23:00:00Z"),
+        ("2026-03-28T23:00:00Z", "2026-03-29T22:00:00Z"),
+        ("2026-10-24T22:00:00Z", "2026-10-25T23:00:00Z"),
+    ] {
+        let at: Timestamp = midnight.parse().unwrap();
+        let next: Timestamp = following.parse().unwrap();
+        let mut item = track(1, "day-piece", "day-voice", 1);
+        item.timing.as_mut().unwrap().segue = Duration::from_secs(1);
+        item.max_per_day = Some(1);
+        let mut history = PlayHistory::new();
+        let played = |at| Played {
+            item: item.id,
+            playlist: PlaylistId(1),
+            at,
+            artist: item.artist.clone(),
+            title: item.title.clone(),
+        };
+        // Future days must not count, even when the history was supplied out of order.
+        history.push(played(next));
+        history.push(played(at - Duration::from_secs(1)));
+        assert!(!allowed(
+            &Constraint::MaxPerDay(1),
+            &item,
+            PlaylistId(1),
+            at - Duration::from_secs(1),
+            None,
+            &history,
+            &tz
+        ));
+        assert!(allowed(
+            &Constraint::MaxPerDay(1),
+            &item,
+            PlaylistId(1),
+            at,
+            None,
+            &history,
+            &tz
+        ));
+        let mut main = playlist(1, "day-main", vec![item.clone()]);
+        main.is_main = true;
+        let st = station("Europe/Ljubljana", vec![main]);
+        let input = PlanInput {
+            station: &st,
+            history: &history,
+            now: at,
+            horizon: Duration::from_secs(3),
+            pinned: &[],
+        };
+        let fresh = plan(&input, &PlanOptions::default(), None);
+        assert_eq!(fresh.entries.len(), 1);
+        history.push(played(at));
+        assert!(!allowed(
+            &Constraint::MaxPerDay(1),
+            &item,
+            PlaylistId(1),
+            at,
+            None,
+            &history,
+            &tz
+        ));
+        assert!(allowed(
+            &Constraint::MaxPerDay(2),
+            &item,
+            PlaylistId(1),
+            at,
+            None,
+            &history,
+            &tz
+        ));
+        let capped = plan(
+            &PlanInput {
+                station: &st,
+                history: &history,
+                now: at,
+                horizon: Duration::from_secs(3),
+                pinned: &[],
+            },
+            &PlanOptions::default(),
+            None,
+        );
+        assert!(capped.entries.is_empty());
+    }
+}
+
+#[test]
+fn equal_length_search_keeps_the_dp_tie_order() {
+    use radio_scheduler::select_before;
+    for before in 0_u32..64 {
+        for movable in [0_u32, 21, 42, 63] {
+            let cands: Vec<_> = (0..6)
+                .map(|i| {
+                    (
+                        Duration::from_secs(1),
+                        movable & (1 << i) != 0,
+                        before & (1 << i) != 0,
+                    )
+                })
+                .collect();
+            for half_seconds in 0..15_u64 {
+                let gap = Duration::from_millis(half_seconds * 500);
+                let expected = (0_u32..64)
+                    .filter(|mask| {
+                        (0..6).all(|i| {
+                            movable & (1 << i) != 0
+                                || (mask & (1 << i) != 0) == (before & (1 << i) != 0)
+                        })
+                    })
+                    .min_by_key(|mask| {
+                        let millis = u64::from(mask.count_ones()) * 1000;
+                        (
+                            gap.as_millis().abs_diff(u128::from(millis)),
+                            (mask ^ before).count_ones(),
+                            millis,
+                            *mask,
+                        )
+                    })
+                    .unwrap();
+                let (picked, _) = select_before(gap, &cands);
+                let actual = picked.iter().fold(0_u32, |mask, i| mask | (1 << i));
+                assert_eq!(
+                    actual, expected,
+                    "before={before}, movable={movable}, gap={gap:?}"
+                );
+            }
+        }
+    }
 }

@@ -1,3 +1,4 @@
+use crate::history::HistoryRead;
 use crate::{Entry, PlayHistory};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -19,6 +20,18 @@ pub fn allowed(
     at: Timestamp,
     prev: Option<&Entry>,
     hist: &PlayHistory,
+    tz: &TimeZone,
+) -> bool {
+    allowed_with(c, cand, pl, at, prev, hist, tz)
+}
+
+pub(crate) fn allowed_with(
+    c: &Constraint,
+    cand: &Item,
+    pl: PlaylistId,
+    at: Timestamp,
+    prev: Option<&Entry>,
+    hist: &impl HistoryRead,
     tz: &TimeZone,
 ) -> bool {
     match c {
@@ -46,7 +59,11 @@ pub fn allowed(
         }
         Constraint::MaxPerHour(cap) => {
             let since = before(at, Duration::from_secs(3600));
-            hist.playlist_since(pl, since).len() < *cap as usize
+            hist.playlist_since(pl, since)
+                .iter()
+                .map(|times| times.len())
+                .sum::<usize>()
+                < *cap as usize
         }
         Constraint::MaxPerDay(cap) => {
             plays_on_local_day(tz, at, |start| hist.playlist_since(pl, start)) < *cap as usize
@@ -58,19 +75,24 @@ pub fn allowed(
 fn plays_on_local_day<'a>(
     tz: &TimeZone,
     at: Timestamp,
-    times: impl FnOnce(Timestamp) -> &'a [Timestamp],
+    times: impl FnOnce(Timestamp) -> [&'a [Timestamp]; 2],
 ) -> usize {
     let day = tz.to_datetime(at).date();
     let start = resolve_local(tz, day.at(0, 0, 0, 0));
     times(start)
-        .iter()
-        .filter(|&&at| tz.to_datetime(at).date() == day)
-        .count()
+        .into_iter()
+        .map(|times| {
+            times
+                .iter()
+                .take_while(|&&at| tz.to_datetime(at).date() == day)
+                .count()
+        })
+        .sum()
 }
 
 /// Item validity at `at`: inside its valid_from / valid_to local dates and under its
 /// `max_per_day` cap.
-pub(crate) fn item_ok(item: &Item, at: Timestamp, hist: &PlayHistory, tz: &TimeZone) -> bool {
+pub(crate) fn item_ok(item: &Item, at: Timestamp, hist: &impl HistoryRead, tz: &TimeZone) -> bool {
     let day = tz.to_datetime(at).date();
     if item.valid_from.is_some_and(|from| day < from) || item.valid_to.is_some_and(|to| day > to) {
         return false;

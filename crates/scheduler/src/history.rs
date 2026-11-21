@@ -78,3 +78,61 @@ impl PlayHistory {
         self.entries[index..].iter()
     }
 }
+
+/// Borrowed history plus the small set of plays in one speculative check.
+pub(crate) struct HistoryOverlay<'a> {
+    pub base: &'a PlayHistory,
+    pub scratch: PlayHistory,
+}
+
+pub(crate) trait HistoryRead {
+    fn last_played(&self, item: ItemId) -> Option<Timestamp>;
+    fn artist_after(&self, artist: &str, cutoff: Timestamp) -> bool;
+    fn title_after(&self, title: &str, cutoff: Timestamp) -> bool;
+    fn playlist_since(&self, playlist: PlaylistId, since: Timestamp) -> [&[Timestamp]; 2];
+    fn item_since(&self, item: ItemId, since: Timestamp) -> [&[Timestamp]; 2];
+}
+
+impl HistoryRead for PlayHistory {
+    fn last_played(&self, item: ItemId) -> Option<Timestamp> {
+        self.last_played(item)
+    }
+    fn artist_after(&self, artist: &str, cutoff: Timestamp) -> bool {
+        self.artist_after(artist, cutoff)
+    }
+    fn title_after(&self, title: &str, cutoff: Timestamp) -> bool {
+        self.title_after(title, cutoff)
+    }
+    fn playlist_since(&self, playlist: PlaylistId, since: Timestamp) -> [&[Timestamp]; 2] {
+        [self.playlist_since(playlist, since), &[]]
+    }
+    fn item_since(&self, item: ItemId, since: Timestamp) -> [&[Timestamp]; 2] {
+        [self.item_since(item, since), &[]]
+    }
+}
+
+impl HistoryRead for HistoryOverlay<'_> {
+    fn last_played(&self, item: ItemId) -> Option<Timestamp> {
+        self.base
+            .last_played(item)
+            .max(self.scratch.last_played(item))
+    }
+    fn artist_after(&self, artist: &str, cutoff: Timestamp) -> bool {
+        self.base.artist_after(artist, cutoff) || self.scratch.artist_after(artist, cutoff)
+    }
+    fn title_after(&self, title: &str, cutoff: Timestamp) -> bool {
+        self.base.title_after(title, cutoff) || self.scratch.title_after(title, cutoff)
+    }
+    fn playlist_since(&self, playlist: PlaylistId, since: Timestamp) -> [&[Timestamp]; 2] {
+        [
+            self.base.playlist_since(playlist, since),
+            self.scratch.playlist_since(playlist, since),
+        ]
+    }
+    fn item_since(&self, item: ItemId, since: Timestamp) -> [&[Timestamp]; 2] {
+        [
+            self.base.item_since(item, since),
+            self.scratch.item_since(item, since),
+        ]
+    }
+}
