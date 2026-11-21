@@ -41,6 +41,17 @@ fn window_of(entries: &[Entry], fit: &FitResult) -> Option<Range<usize>> {
     Some(start..end)
 }
 
+/// The last entry of `before` matching `is_dup` that is not in a kept (frozen) window.
+fn earlier_dup(before: &[Entry], is_dup: impl Fn(&Entry) -> bool) -> Option<usize> {
+    (0..before.len()).rev().find(|&d| {
+        is_dup(&before[d])
+            && before[d + 1..]
+                .iter()
+                .find(|e| is_anchor(e))
+                .is_none_or(|ev| ev.fixed.as_ref().is_none_or(|f| !f.frozen))
+    })
+}
+
 fn ids(entries: &[Entry]) -> Vec<ItemId> {
     entries.iter().map(|e| e.item).collect()
 }
@@ -146,12 +157,12 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         // raw window had already were spliced out with it; their later airings are rotation.
         for id in forced_set.difference(&raw_ids) {
             let is_dup = |e: &Entry| e.origin == Origin::Main && !is_anchor(e) && e.item == *id;
-            // The nearest later airing, else the nearest earlier one outside the window.
+            // The nearest later airing, else the nearest earlier one in a window not kept.
             let dup = raw.entries[ev + 1..]
                 .iter()
                 .position(is_dup)
                 .map(|d| ev + 1 + d)
-                .or_else(|| raw.entries[..head].iter().rposition(is_dup));
+                .or_else(|| earlier_dup(&raw.entries[..head], is_dup));
             if let Some(d) = dup {
                 raw.entries.remove(d);
                 if d < head {

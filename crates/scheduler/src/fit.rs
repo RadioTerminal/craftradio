@@ -738,6 +738,13 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             }
         };
 
+        if fx.frozen && slots[i] != target {
+            // Its slot went elsewhere and the window is not fitted; what was displaced still
+            // follows the frozen entries.
+            while let Some(e) = deferred.pop_back() {
+                flow.push_front(e);
+            }
+        }
         if slots[i] == target {
             // Entries that end more than MAX_GAP before the target stay as they are.
             if let Some(front) = flow.front() {

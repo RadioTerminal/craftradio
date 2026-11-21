@@ -280,3 +280,49 @@ fn normal_event_before_frozen_window_leaves_it_untouched() {
 fn ids_of(entries: &[Entry]) -> Vec<ItemId> {
     entries.iter().map(|e| e.item).collect()
 }
+
+#[test]
+fn frozen_windows_keep_order_with_close_events() {
+    let mut st = make_station(tracks(30), 5);
+    let mut second = st.playlists[1].rules[0].clone();
+    second.trigger = Trigger::At {
+        at: date(2026, 11, 21).at(13, 6, 0, 0),
+        repeat: Repeat::Once,
+    };
+    let mut other = playlist(3, "event-2", vec![jingle(102, 30)]);
+    other.rules = vec![second];
+    st.playlists.push(other);
+    let prev = run(&st, &[], None);
+    let fixed = |tl: &Timeline| -> Vec<usize> {
+        (0..tl.entries.len())
+            .filter(|&i| tl.entries[i].fixed.is_some())
+            .collect()
+    };
+    let pf = fixed(&prev);
+    let (first, second_w) = (
+        ids_of(&prev.entries[..pf[0]]),
+        ids_of(&prev.entries[pf[0] + 1..pf[1]]),
+    );
+    // The first track leaves the library: both windows differ and are kept.
+    let mut st2 = st.clone();
+    st2.playlists[0].items.retain(|i| i.id != first[0]);
+    let tl = run(&st2, &[], Some(&prev));
+    let f = fixed(&tl);
+    let main = |r: std::ops::Range<usize>| -> Vec<ItemId> {
+        tl.entries[r]
+            .iter()
+            .filter(|e| e.origin == Origin::Main)
+            .map(|e| e.item)
+            .collect()
+    };
+    let subsequence = |got: &[ItemId], of: &[ItemId]| {
+        let mut rest = of.iter();
+        got.iter().all(|g| rest.any(|o| o == g))
+    };
+    assert!(subsequence(&main(0..f[0]), &first), "{:?}", main(0..f[0]));
+    assert!(
+        subsequence(&main(f[0] + 1..f[1]), &second_w),
+        "{:?} vs {second_w:?}",
+        main(f[0] + 1..f[1])
+    );
+}
