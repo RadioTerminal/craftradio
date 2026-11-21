@@ -527,12 +527,14 @@ impl Engine {
             }
             C::ModeSet { mode } => {
                 self.state.mode = mode;
-                Ok(self.audio(AudioIntent::SetMode(mode)))
+                self.emit(EngineEvent::AudioIntent(AudioIntent::SetMode(mode)));
+                Ok(Outcome::default())
             }
             C::PlayoutNext => Ok(self.audio(AudioIntent::Next)),
             C::StationStopAfterCurrent => {
                 self.state.stop_after_current = true;
-                Ok(self.audio(AudioIntent::StopAfterCurrent))
+                self.emit(EngineEvent::AudioIntent(AudioIntent::StopAfterCurrent));
+                Ok(Outcome::default())
             }
             C::CartAssign { page, slot, item } => {
                 if !self.state.has_item(item) {
@@ -601,24 +603,20 @@ impl Engine {
 
     // ---- as-played log ----
 
+    /// A handle to the as-played log and the runtime values for another thread. Its
+    /// writes go to the writer thread in order, and the `*_later` calls do not wait.
+    pub fn log_handle(&self) -> Result<LogHandle, EngineError> {
+        Ok(LogHandle {
+            writer: self
+                .store
+                .writer()
+                .ok_or_else(|| EngineError::Store("writer thread is gone".into()))?,
+        })
+    }
+
     /// Record that an item went to air. Written at once (not on the 1 s checkpoint).
     pub fn log_start(&self, entry: &LogEntry) -> Result<RowId, EngineError> {
-        let e = entry.clone();
-        self.store.call(move |c| {
-            c.execute(
-                "INSERT INTO as_played (start_ms, playlist, title, artist, origin, rule)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    e.start.as_millisecond(),
-                    e.playlist,
-                    e.title,
-                    e.artist,
-                    e.origin,
-                    e.rule
-                ],
-            )?;
-            Ok(RowId(c.last_insert_rowid()))
-        })
+        self.log_handle()?.log_start(entry)
     }
 
     /// Complete a row when its item ends.
@@ -628,102 +626,38 @@ impl Engine {
         end: Timestamp,
         status: LogStatus,
     ) -> Result<(), EngineError> {
-        self.store.call(move |c| {
-            c.execute(
-                "UPDATE as_played SET end_ms = ?1, status = ?2 WHERE id = ?3",
-                params![end.as_millisecond(), status.as_str(), row.0],
-            )?;
-            Ok(())
-        })
+        self.log_handle()?.log_end(row, end, status)
     }
 
-    /// Stores a runtime value under `key`, for example the playout state for a
-    /// resume. The value goes to disk at once. Station snapshots do not touch it.
+    /// Stores a runtime value under `key` (see [`LogHandle::save_runtime`]).
     pub fn save_runtime(&self, key: &str, value: &Value) -> Result<(), EngineError> {
-        let (key, value) = (key.to_string(), value.to_string());
-        self.store.call(move |c| {
-            c.execute(
-                "INSERT INTO settings_by_part (part, key, value) VALUES ('runtime', ?1, ?2)
-                 ON CONFLICT (part, key) DO UPDATE SET value = excluded.value",
-                params![key, value],
-            )?;
-            Ok(())
-        })
+        self.log_handle()?.save_runtime(key, value)
     }
 
-    /// The runtime value under `key`, if [`Engine::save_runtime`] stored one.
+    /// The runtime value under `key`, if a save stored one.
     pub fn runtime(&self, key: &str) -> Result<Option<Value>, EngineError> {
-        let key = key.to_string();
-        let text: Option<String> = self.store.call(move |c| {
-            let mut stmt = c.prepare(
-                "SELECT value FROM settings_by_part WHERE part = 'runtime' AND key = ?1",
-            )?;
-            let mut rows = stmt.query_map(params![key], |r| r.get(0))?;
-            rows.next().transpose()
-        })?;
-        text.map(|t| serde_json::from_str(&t).map_err(|e| EngineError::Store(e.to_string())))
-            .transpose()
+        self.log_handle()?.runtime(key)
     }
 
     /// Rows starting at or after `since`, oldest first, at most `limit`.
     pub fn history(&self, since: Timestamp, limit: u32) -> Result<Vec<AsPlayed>, EngineError> {
-        self.rows(since, Timestamp::MAX, Some(limit))
+        self.log_handle()?.history(since, limit)
     }
 
-    fn rows(
-        &self,
-        since: Timestamp,
-        until: Timestamp,
-        limit: Option<u32>,
-    ) -> Result<Vec<AsPlayed>, EngineError> {
-        let (s, u) = (since.as_millisecond(), until.as_millisecond());
-        let limit = i64::from(limit.unwrap_or(u32::MAX));
-        self.store.call(move |c| {
-            let mut stmt = c.prepare(
-                "SELECT id, start_ms, end_ms, playlist, title, artist, origin, rule, status
-                 FROM as_played WHERE start_ms >= ?1 AND start_ms < ?2
-                 ORDER BY start_ms, id LIMIT ?3",
-            )?;
-            let ts = |ms: i64| {
-                Timestamp::from_millisecond(ms).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Integer,
-                        Box::new(e),
-                    )
-                })
-            };
-            let rows = stmt.query_map(params![s, u, limit], |r| {
-                let status: String = r.get(8)?;
-                let end: Option<i64> = r.get(2)?;
-                Ok(AsPlayed {
-                    id: RowId(r.get(0)?),
-                    entry: LogEntry {
-                        start: ts(r.get(1)?)?,
-                        playlist: r.get(3)?,
-                        title: r.get(4)?,
-                        artist: r.get(5)?,
-                        origin: r.get(6)?,
-                        rule: r.get(7)?,
-                    },
-                    end: end.map(ts).transpose()?,
-                    status: match status.as_str() {
-                        "aired" => Some(LogStatus::Aired),
-                        "interrupted" => Some(LogStatus::Interrupted),
-                        "unfinished" => Some(LogStatus::Unfinished),
-                        _ => None,
-                    },
-                })
-            })?;
-            rows.collect()
-        })
+    /// Clears the stop-after-current flag. Playout calls this when the stop takes effect.
+    pub fn clear_stop_after_current(&mut self) {
+        if self.state.stop_after_current {
+            self.state.stop_after_current = false;
+            self.store.snapshot(self.state.clone());
+            self.emit(EngineEvent::StateChanged);
+        }
     }
 
     /// CSV of the rows that started in `[since, until)`:
     /// `start,end,playlist,title,artist,origin,rule,status`. Times are UTC, RFC 3339.
     pub fn export_csv(&self, since: Timestamp, until: Timestamp) -> Result<String, EngineError> {
         let mut out = String::from("start,end,playlist,title,artist,origin,rule,status\n");
-        for r in self.rows(since, until, None)? {
+        for r in self.log_handle()?.rows(since, until, None)? {
             let status = r.status.map_or("onair", LogStatus::as_str);
             let fields = [
                 r.entry.start.to_string(),
@@ -798,5 +732,171 @@ fn csv_field(f: &str) -> String {
         format!("\"{}\"", f.replace('"', "\"\""))
     } else {
         f.to_string()
+    }
+}
+
+/// The as-played log and the runtime values, usable from any thread. Each call runs on
+/// the writer thread of the engine, in the order of the calls.
+#[derive(Clone)]
+pub struct LogHandle {
+    writer: store::Writer,
+}
+
+fn insert_start(c: &mut rusqlite::Connection, e: &LogEntry) -> rusqlite::Result<RowId> {
+    c.execute(
+        "INSERT INTO as_played (start_ms, playlist, title, artist, origin, rule)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            e.start.as_millisecond(),
+            e.playlist,
+            e.title,
+            e.artist,
+            e.origin,
+            e.rule
+        ],
+    )?;
+    Ok(RowId(c.last_insert_rowid()))
+}
+
+fn update_end(
+    c: &mut rusqlite::Connection,
+    row: RowId,
+    end: Timestamp,
+    status: LogStatus,
+) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE as_played SET end_ms = ?1, status = ?2 WHERE id = ?3",
+        params![end.as_millisecond(), status.as_str(), row.0],
+    )?;
+    Ok(())
+}
+
+fn upsert_runtime(c: &mut rusqlite::Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO settings_by_part (part, key, value) VALUES ('runtime', ?1, ?2)
+         ON CONFLICT (part, key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+impl LogHandle {
+    /// Record that an item went to air, and wait for the row id.
+    pub fn log_start(&self, entry: &LogEntry) -> Result<RowId, EngineError> {
+        let e = entry.clone();
+        self.writer.call(move |c| insert_start(c, &e))
+    }
+
+    /// Complete a row when its item ends, and wait for the write.
+    pub fn log_end(
+        &self,
+        row: RowId,
+        end: Timestamp,
+        status: LogStatus,
+    ) -> Result<(), EngineError> {
+        self.writer.call(move |c| update_end(c, row, end, status))
+    }
+
+    /// Stores a runtime value under `key`, for example the playout state for a
+    /// resume. Station snapshots do not touch it.
+    pub fn save_runtime(&self, key: &str, value: &Value) -> Result<(), EngineError> {
+        let (key, value) = (key.to_string(), value.to_string());
+        self.writer.call(move |c| upsert_runtime(c, &key, &value))
+    }
+
+    /// The runtime value under `key`, if a save stored one.
+    pub fn runtime(&self, key: &str) -> Result<Option<Value>, EngineError> {
+        let key = key.to_string();
+        let text: Option<String> = self.writer.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT value FROM settings_by_part WHERE part = 'runtime' AND key = ?1",
+            )?;
+            let mut rows = stmt.query_map(params![key], |r| r.get(0))?;
+            rows.next().transpose()
+        })?;
+        text.map(|t| serde_json::from_str(&t).map_err(|e| EngineError::Store(e.to_string())))
+            .transpose()
+    }
+
+    /// Rows starting at or after `since`, oldest first, at most `limit`.
+    pub fn history(&self, since: Timestamp, limit: u32) -> Result<Vec<AsPlayed>, EngineError> {
+        self.rows(since, Timestamp::MAX, Some(limit))
+    }
+
+    /// Like [`LogHandle::log_start`], but returns at once. `done` gets the row id on the
+    /// writer thread.
+    pub fn log_start_later(
+        &self,
+        entry: &LogEntry,
+        done: impl FnOnce(Result<RowId, EngineError>) + Send + 'static,
+    ) {
+        let e = entry.clone();
+        let _ = self
+            .writer
+            .spawn(move |c| done(insert_start(c, &e).map_err(EngineError::from)));
+    }
+
+    /// Like [`LogHandle::log_end`], but returns at once.
+    pub fn log_end_later(&self, row: RowId, end: Timestamp, status: LogStatus) {
+        let _ = self.writer.spawn(move |c| {
+            let _ = update_end(c, row, end, status);
+        });
+    }
+
+    /// Like [`LogHandle::save_runtime`], but returns at once.
+    pub fn save_runtime_later(&self, key: &str, value: Value) {
+        let (key, value) = (key.to_string(), value.to_string());
+        let _ = self.writer.spawn(move |c| {
+            let _ = upsert_runtime(c, &key, &value);
+        });
+    }
+
+    pub(crate) fn rows(
+        &self,
+        since: Timestamp,
+        until: Timestamp,
+        limit: Option<u32>,
+    ) -> Result<Vec<AsPlayed>, EngineError> {
+        let (s, u) = (since.as_millisecond(), until.as_millisecond());
+        let limit = i64::from(limit.unwrap_or(u32::MAX));
+        self.writer.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT id, start_ms, end_ms, playlist, title, artist, origin, rule, status
+                 FROM as_played WHERE start_ms >= ?1 AND start_ms < ?2
+                 ORDER BY start_ms, id LIMIT ?3",
+            )?;
+            let ts = |ms: i64| {
+                Timestamp::from_millisecond(ms).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Integer,
+                        Box::new(e),
+                    )
+                })
+            };
+            let rows = stmt.query_map(params![s, u, limit], |r| {
+                let status: String = r.get(8)?;
+                let end: Option<i64> = r.get(2)?;
+                Ok(AsPlayed {
+                    id: RowId(r.get(0)?),
+                    entry: LogEntry {
+                        start: ts(r.get(1)?)?,
+                        playlist: r.get(3)?,
+                        title: r.get(4)?,
+                        artist: r.get(5)?,
+                        origin: r.get(6)?,
+                        rule: r.get(7)?,
+                    },
+                    end: end.map(ts).transpose()?,
+                    status: match status.as_str() {
+                        "aired" => Some(LogStatus::Aired),
+                        "interrupted" => Some(LogStatus::Interrupted),
+                        "unfinished" => Some(LogStatus::Unfinished),
+                        _ => None,
+                    },
+                })
+            })?;
+            rows.collect()
+        })
     }
 }
