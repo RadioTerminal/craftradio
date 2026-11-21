@@ -4,6 +4,7 @@ use radio_model::{Item, ItemId, PlaylistId, Source};
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 mod dynamics;
+mod one_off;
 
 const MAIN: PlaylistId = PlaylistId(1);
 
@@ -624,6 +625,9 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
         "until": "2026-11-22T00:00:00Z", "limit": 10,
         "id": 1, "ids": [1]
     });
+    let mut values = values;
+    values["start"] = serde_json::json!("2026-11-22T09:00:00");
+    values["one_off"] = serde_json::to_value(item(9, "One-off")).unwrap();
     let specs = registry();
     let command_schema = schemars::schema_for!(Command).to_value();
     assert_eq!(

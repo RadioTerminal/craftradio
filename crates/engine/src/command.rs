@@ -1,11 +1,26 @@
-use jiff::Timestamp;
-use radio_model::{Item, ItemId, PlaylistId};
+use jiff::{Timestamp, civil};
+use radio_model::{FixMode, Item, ItemId, PlaylistId, Repeat};
 use schemars::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 fn yes() -> bool {
     true
+}
+
+fn hard() -> FixMode {
+    FixMode::Hard
+}
+
+fn once() -> Repeat {
+    Repeat::Once
+}
+
+/// The tolerance of a fixed event that nobody set (spec 6.3).
+pub const DEFAULT_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn default_tolerance() -> std::time::Duration {
+    DEFAULT_TOLERANCE
 }
 
 /// Operating mode (spec 6.15).
@@ -356,6 +371,37 @@ pub enum Command {
     /// alarms themselves (playout and the plan raise them), so the caller names the ids.
     #[serde(rename = "alarm.ack_all")]
     AlarmAckAll { ids: Vec<u64> },
+    /// Adds a one-off item to Upcoming. It starts at `start`, a local time of the station.
+    /// The system playlist One-off holds it, with one At rule. The data is the item id. An
+    /// id of 0 gets a new id. A time in a DST gap fails; a time that happens twice airs
+    /// the first time, and the note says so.
+    #[serde(rename = "schedule.add")]
+    ScheduleAdd {
+        one_off: Item,
+        start: civil::DateTime,
+        #[serde(default = "hard")]
+        fix: FixMode,
+        #[serde(default = "default_tolerance")]
+        tolerance: std::time::Duration,
+        #[serde(default = "once")]
+        repeat: Repeat,
+    },
+    /// Replaces the item, the time and the timing of the one-off `id`. It keeps the id.
+    #[serde(rename = "schedule.update")]
+    ScheduleUpdate {
+        id: ItemId,
+        one_off: Item,
+        start: civil::DateTime,
+        #[serde(default = "hard")]
+        fix: FixMode,
+        #[serde(default = "default_tolerance")]
+        tolerance: std::time::Duration,
+        #[serde(default = "once")]
+        repeat: Repeat,
+    },
+    /// Removes the one-off `id` and its rule.
+    #[serde(rename = "schedule.remove")]
+    ScheduleRemove { id: ItemId },
 }
 
 impl Command {
@@ -416,6 +462,9 @@ impl Command {
             Self::MixerSetDynamics { .. } => "mixer.set_dynamics",
             Self::AlarmAck { .. } => "alarm.ack",
             Self::AlarmAckAll { .. } => "alarm.ack_all",
+            Self::ScheduleAdd { .. } => "schedule.add",
+            Self::ScheduleUpdate { .. } => "schedule.update",
+            Self::ScheduleRemove { .. } => "schedule.remove",
         }
     }
 
@@ -475,7 +524,10 @@ impl Command {
             | Self::MixerSetStrip { .. }
             | Self::MixerSetDynamics { .. }
             | Self::AlarmAck { .. }
-            | Self::AlarmAckAll { .. } => Tier::OnAir,
+            | Self::AlarmAckAll { .. }
+            | Self::ScheduleAdd { .. }
+            | Self::ScheduleUpdate { .. }
+            | Self::ScheduleRemove { .. } => Tier::OnAir,
         }
     }
 }
@@ -849,6 +901,28 @@ pub fn registry() -> Vec<CommandSpec> {
             "Acknowledge the alarms and warnings with these ids",
             A,
             &[("ids", "array")],
+        ),
+        spec(
+            "schedule.add",
+            "Add a one-off item at a local time: hard or soft, with a tolerance and a repeat",
+            A,
+            &[("one_off", "object"), ("start", "string")],
+        ),
+        spec(
+            "schedule.update",
+            "Change the item, time or timing of a one-off",
+            A,
+            &[
+                ("id", "integer"),
+                ("one_off", "object"),
+                ("start", "string"),
+            ],
+        ),
+        spec(
+            "schedule.remove",
+            "Remove a one-off and its rule",
+            A,
+            &[("id", "integer")],
         ),
         spec("station.get", "Read the station state", R, &[]),
         spec(
