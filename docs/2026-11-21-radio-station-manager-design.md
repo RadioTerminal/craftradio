@@ -404,6 +404,20 @@ audio. The mitigations:
 - **Editing:** main rows are dragged to reorder, or dragged in from the library. Live / stream
   items have an "end now" button.
 
+**Tool windows (user, 2026-11-21).** The cartwall, mixer, clock and history are separate
+windows, each its own OS window (egui viewport) that can go on a second screen. They're opened
+from a Windows menu in the deck strip, and the main window keeps the decks and the two playlist
+panes.
+- **Cartwall:** pages of carts, and stop-all.
+- **Mixer:** a strip each for players A–D, the cart bus, live input and Out, with faders,
+  stereo VU meters with peak hold and numeric dB, and mute/PFL.
+- **Clock:** a large clock that scales with the window, plus countdowns to the next fixed
+  event and to the end of the current item.
+- **History:** the as-played log (aired at, playlist, title, length, origin), newest first,
+  filterable by text and playlist.
+
+The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§6.6).
+
 ### 6.13 Testing
 
 - The `timing` and `scheduler` crates are pure and deterministic: they're tested with a fake
