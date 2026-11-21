@@ -9,7 +9,6 @@ license.workspace = true
 symphonia.workspace = true
 rubato.workspace = true
 rtrb.workspace = true
-triple_buffer.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

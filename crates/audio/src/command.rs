@@ -77,6 +77,26 @@ pub struct Command {
     pub at_sample: u64,
     /// What to do.
     pub kind: CommandKind,
+    /// The tag of the deck item that this command is for, from [`crate::LoadOptions`]. A
+    /// deck command with a tag has no effect when the deck holds a different item.
+    pub item_tag: Option<u64>,
+}
+
+impl Command {
+    /// Makes a command with no item tag.
+    pub fn new(at_sample: u64, kind: CommandKind) -> Self {
+        Self {
+            at_sample,
+            kind,
+            item_tag: None,
+        }
+    }
+
+    /// Limits the command to the deck item with this tag.
+    pub fn for_item(mut self, item_tag: u64) -> Self {
+        self.item_tag = Some(item_tag);
+        self
+    }
 }
 
 /// What a [`Command`] does.
@@ -88,14 +108,16 @@ pub enum CommandKind {
     Pause(DeckId),
     /// Stops the deck at once and unloads its item. The deck becomes empty.
     Stop(DeckId),
-    /// Fades the deck to silence over `over`, then unloads it and sends `DeckEnded`.
+    /// Fades the deck to silence over `over`, then unloads it and sends `DeckEnded`. A late
+    /// fade still ends at `at_sample + over`.
     FadeOut {
         /// The deck.
         deck: DeckId,
         /// The length of the fade.
         over: Duration,
     },
-    /// Sets the fader of a strip, in dB. The change ramps over 5 ms.
+    /// Sets the fader of a strip, in dB. The change ramps over 5 ms. The handle refuses NaN
+    /// and +inf, takes -inf as mute, and limits the gain to +12 dB.
     SetGain {
         /// The strip.
         strip: Strip,
@@ -111,7 +133,7 @@ pub enum CommandKind {
     StopCarts,
     /// Lowers decks and live input by `db` over `attack`. Carts mix in after the duck.
     Duck {
-        /// The duck depth in dB, for example −12.
+        /// The duck depth in dB, for example −12. The handle refuses NaN and +inf.
         db: f32,
         /// The time to reach the full depth.
         attack: Duration,
@@ -125,6 +147,10 @@ pub enum CommandKind {
 /// An event from the render thread.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AudioEvent {
+    /// The mixer took the new item for the deck.
+    Loaded(DeckId),
+    /// The mixer refused the new item, because the deck was on air. The deck keeps its item.
+    LoadRejected(DeckId),
     /// The item on the deck came to its end, or its fade-out finished. The deck is empty.
     DeckEnded(DeckId),
     /// The ring of a playing deck became empty before the end of the file. The deck plays

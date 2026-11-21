@@ -53,6 +53,17 @@ pub struct LoadOptions {
     pub cue_in: Duration,
     /// The length of the fade-in from silence at the start. Zero means no fade.
     pub fade_in: Duration,
+    /// A tag that the engine picks for the item. A [`crate::Command`] with a different tag
+    /// has no effect on the deck.
+    pub item_tag: Option<u64>,
+}
+
+/// The answer of the mixer to a load.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    Pending,
+    Accepted,
+    Rejected,
 }
 
 /// State that the feeder, the render thread and the handle share for one loaded item.
@@ -65,6 +76,7 @@ pub(crate) struct DeckShared {
     pub(crate) failed: AtomicBool,
     /// The ring of the playing deck is empty before the end of the file.
     pub(crate) underrun: AtomicBool,
+    verdict: AtomicU8,
 }
 
 impl DeckShared {
@@ -74,6 +86,7 @@ impl DeckShared {
             eof: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             underrun: AtomicBool::new(false),
+            verdict: AtomicU8::new(0),
         }
     }
 
@@ -83,6 +96,23 @@ impl DeckShared {
 
     pub(crate) fn set_state(&self, state: DeckState) {
         self.state.store(state.as_u8(), Ordering::Release);
+    }
+
+    pub(crate) fn verdict(&self) -> Verdict {
+        match self.verdict.load(Ordering::Acquire) {
+            1 => Verdict::Accepted,
+            2 => Verdict::Rejected,
+            _ => Verdict::Pending,
+        }
+    }
+
+    pub(crate) fn set_verdict(&self, verdict: Verdict) {
+        let v = match verdict {
+            Verdict::Pending => 0,
+            Verdict::Accepted => 1,
+            Verdict::Rejected => 2,
+        };
+        self.verdict.store(v, Ordering::Release);
     }
 
     /// Changes `Loading` to `Ready`. It keeps any state that the mixer set.
@@ -101,6 +131,7 @@ pub(crate) struct DeckSource {
     pub(crate) consumer: Consumer<f32>,
     pub(crate) shared: Arc<DeckShared>,
     pub(crate) fade_in: u64,
+    pub(crate) item_tag: Option<u64>,
 }
 
 /// The decoder thread of one loaded item. It fills the ring of the deck from the file. It

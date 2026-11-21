@@ -1,9 +1,15 @@
 //! Level meters, and the snapshot that the UI reads.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
+
 use crate::{SAMPLE_RATE, Strip};
 
 /// The lowest level that a meter shows, in dBFS. Silence reads as this value.
 pub const METER_FLOOR_DB: f32 = -120.0;
+
+/// Ballistic values below this level become 0, so they never become denormals.
+const FLUSH: f32 = 1e-20;
 
 /// The levels of one strip, per channel (left, right), in dBFS.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -50,6 +56,10 @@ fn to_db(lin: f32) -> f32 {
     }
 }
 
+fn flush(x: f32) -> f32 {
+    if x.abs() < FLUSH { 0.0 } else { x }
+}
+
 /// The ballistics of one channel. It runs on the render thread.
 #[derive(Copy, Clone, Debug, Default)]
 struct Channel {
@@ -86,8 +96,8 @@ impl MeterBank {
         };
         for (ch, x) in chans.iter_mut().zip(frame) {
             let a = x.abs();
-            ch.peak = a.max(ch.peak * self.peak_fall);
-            ch.mean_square += self.rms_coef * (x * x - ch.mean_square);
+            ch.peak = flush(a.max(ch.peak * self.peak_fall));
+            ch.mean_square = flush(ch.mean_square + self.rms_coef * (x * x - ch.mean_square));
             if a >= ch.hold {
                 ch.hold = a;
                 ch.hold_age = 0;
@@ -98,6 +108,7 @@ impl MeterBank {
                     ch.hold_age = 0;
                 }
             }
+            ch.hold = flush(ch.hold);
         }
     }
 
@@ -114,6 +125,99 @@ impl MeterBank {
             }
         }
         snap
+    }
+}
+
+/// The number of f32 values in a snapshot.
+const FIELDS: usize = Strip::COUNT * 6;
+
+/// A sequence lock over atomics, for one writer and any number of readers. The writer
+/// never waits. A reader tries again when it sees a write in progress.
+pub(crate) struct MeterBoard {
+    seq: AtomicU64,
+    at_sample: AtomicU64,
+    values: [AtomicU32; FIELDS],
+}
+
+impl MeterBoard {
+    pub(crate) fn new() -> Self {
+        let board = Self {
+            seq: AtomicU64::new(0),
+            at_sample: AtomicU64::new(0),
+            values: std::array::from_fn(|_| AtomicU32::new(METER_FLOOR_DB.to_bits())),
+        };
+        board.publish(&MeterSnapshot::default());
+        board
+    }
+
+    /// Writes a snapshot. Only the render thread calls this.
+    pub(crate) fn publish(&self, snap: &MeterSnapshot) {
+        let seq = self.seq.load(Ordering::Relaxed);
+        self.seq.store(seq.wrapping_add(1), Ordering::Relaxed);
+        fence(Ordering::Release);
+        self.at_sample.store(snap.at_sample, Ordering::Relaxed);
+        let fields = snap
+            .strips
+            .iter()
+            .flat_map(|m| m.peak_db.into_iter().chain(m.rms_db).chain(m.peak_hold_db));
+        for (slot, v) in self.values.iter().zip(fields) {
+            slot.store(v.to_bits(), Ordering::Relaxed);
+        }
+        self.seq.store(seq.wrapping_add(2), Ordering::Release);
+    }
+
+    fn try_read(&self) -> Option<MeterSnapshot> {
+        let before = self.seq.load(Ordering::Acquire);
+        if before % 2 == 1 {
+            return None;
+        }
+        let mut snap = MeterSnapshot {
+            at_sample: self.at_sample.load(Ordering::Relaxed),
+            ..MeterSnapshot::default()
+        };
+        let mut values = self
+            .values
+            .iter()
+            .map(|v| f32::from_bits(v.load(Ordering::Relaxed)));
+        for m in &mut snap.strips {
+            for field in [&mut m.peak_db, &mut m.rms_db, &mut m.peak_hold_db] {
+                for v in field.iter_mut() {
+                    *v = values.next().unwrap_or(METER_FLOOR_DB);
+                }
+            }
+        }
+        fence(Ordering::Acquire);
+        (self.seq.load(Ordering::Relaxed) == before).then_some(snap)
+    }
+}
+
+/// A reader of the mixer meters. Clone it for each thread that shows meters, for
+/// example the UI thread. A read never blocks the render thread.
+#[derive(Clone)]
+pub struct MeterReader {
+    board: Arc<MeterBoard>,
+    last: MeterSnapshot,
+}
+
+impl MeterReader {
+    pub(crate) fn new(board: Arc<MeterBoard>) -> Self {
+        Self {
+            board,
+            last: MeterSnapshot::default(),
+        }
+    }
+
+    /// Returns the meters from the last render block. If the render thread writes all the
+    /// time, it returns the last complete snapshot that this reader saw.
+    pub fn read(&mut self) -> MeterSnapshot {
+        for _ in 0..64 {
+            if let Some(snap) = self.board.try_read() {
+                self.last = snap;
+                return snap;
+            }
+            std::hint::spin_loop();
+        }
+        self.last
     }
 }
 

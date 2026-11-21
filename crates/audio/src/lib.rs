@@ -15,9 +15,10 @@ pub use command::{AudioEvent, Command, CommandKind, DeckId, Strip};
 pub use deck::{DeckFeeder, DeckState, LoadOptions};
 pub use decode::{Clip, Decoder, MAX_CHANNELS, MAX_RATE, MIN_RATE, Probe, probe};
 pub use error::AudioError;
-pub use meter::{METER_FLOOR_DB, MeterSnapshot, SilenceDetector, StripMeter};
+pub use meter::{METER_FLOOR_DB, MeterReader, MeterSnapshot, SilenceDetector, StripMeter};
 pub use mixer::{
-    CART_VOICES, DeviceRenderer, LiveInput, Mixer, MixerConfig, MixerHandle, render_offline,
+    CART_VOICES, COMMAND_CAPACITY, DeviceRenderer, LiveInput, MAX_GAIN_DB, Mixer, MixerConfig,
+    MixerHandle, render_offline,
 };
 
 /// The engine sample rate in Hz.

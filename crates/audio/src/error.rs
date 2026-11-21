@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use crate::DeckId;
-
 /// An error from decoding, loading or control of the mixer.
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -32,9 +30,9 @@ pub enum AudioError {
     /// The queue to the render thread is full. Try again later.
     #[error("the mixer queue is full")]
     QueueFull,
-    /// The deck plays or holds a paused item, so it cannot take a new item.
-    #[error("deck {0:?} is on air")]
-    DeckBusy(DeckId),
+    /// The command has a value that the mixer cannot use, for example a gain that is NaN.
+    #[error("invalid command: {0}")]
+    InvalidCommand(&'static str),
     /// The cartwall has no slot with this number.
     #[error("cart slot {0} does not exist")]
     NoSuchCartSlot(usize),

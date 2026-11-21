@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use radio_audio::{
-    AudioEvent, Clip, Command, CommandKind, DeckId, LoadOptions, Mixer, MixerConfig, Strip,
-    render_offline,
+    AudioError, AudioEvent, Clip, Command, CommandKind, DeckId, DeckState, LoadOptions, Mixer,
+    MixerConfig, Strip, render_offline,
 };
 
 use crate::fixtures::{frames, peak_db, rms_db, tone_samples, tone_wav, wait_ready};
@@ -10,10 +10,7 @@ use crate::fixtures::{frames, peak_db, rms_db, tone_samples, tone_wav, wait_read
 const SR: usize = 48_000;
 
 fn play(at_sample: u64, deck: DeckId) -> Command {
-    Command {
-        at_sample,
-        kind: CommandKind::Play(deck),
-    }
+    Command::new(at_sample, CommandKind::Play(deck))
 }
 
 /// A deck with a −6 dBFS tone reaches Program, and the Out peak meter shows about −6 dBFS.
@@ -43,7 +40,7 @@ fn a_playing_deck_reaches_program_and_the_out_meter_without_allocating() {
     );
 
     assert!(loudest > -7.0, "program is too quiet: {loudest} dBFS");
-    let out = handle.meters().strip(Strip::Out).peak_db;
+    let out = handle.meter_reader().read().strip(Strip::Out).peak_db;
     for ch in out {
         assert!((ch - -6.0).abs() < 0.5, "Out peak meter reads {ch} dBFS");
     }
@@ -83,13 +80,13 @@ fn fade_out_is_silent_by_its_end() {
     let over = Duration::from_millis(500);
     handle.send(play(0, DeckId::C)).expect("send");
     handle
-        .send(Command {
-            at_sample: start as u64,
-            kind: CommandKind::FadeOut {
+        .send(Command::new(
+            start as u64,
+            CommandKind::FadeOut {
                 deck: DeckId::C,
                 over,
             },
-        })
+        ))
         .expect("send");
 
     let out = render_offline(&mut mixer, 2 * SR);
@@ -127,20 +124,17 @@ fn ducking_under_a_cart_lowers_program() {
     let fire = SR as u64;
     handle.send(play(0, DeckId::A)).expect("send");
     handle
-        .send(Command {
-            at_sample: fire,
-            kind: CommandKind::FireCart { slot: 0 },
-        })
+        .send(Command::new(fire, CommandKind::FireCart { slot: 0 }))
         .unwrap();
     handle
-        .send(Command {
-            at_sample: fire,
-            kind: CommandKind::Duck {
+        .send(Command::new(
+            fire,
+            CommandKind::Duck {
                 db: -12.0,
                 attack: Duration::from_millis(50),
                 release: Duration::from_millis(200),
             },
-        })
+        ))
         .unwrap();
 
     let out = render_offline(&mut mixer, 2 * SR);
@@ -166,7 +160,7 @@ fn silence_detector_fires_after_its_threshold() {
         !handle
             .events()
             .any(|e| matches!(e, AudioEvent::Silence { .. })),
-        "fired early"
+        "fired early",
     );
 
     let _ = render_offline(&mut mixer, SR / 5);
@@ -175,4 +169,67 @@ fn silence_detector_fires_after_its_threshold() {
         fired.contains(&AudioEvent::Silence { since_sample: 0 }),
         "events: {fired:?}"
     );
+}
+
+/// The handle refuses a NaN or +inf gain. Program stays finite, also with a very high gain.
+#[test]
+fn a_gain_that_is_not_a_number_is_rejected_and_program_stays_finite() {
+    let path = tone_wav("nan-gain", 48_000, 1.0, 1_000.0, -6.0);
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    handle
+        .load(DeckId::A, &path, LoadOptions::default())
+        .expect("load");
+    wait_ready(&handle, DeckId::A);
+    handle.send(play(0, DeckId::A)).expect("send");
+
+    for db in [f32::NAN, f32::INFINITY] {
+        let gain = CommandKind::SetGain {
+            strip: Strip::Deck(DeckId::A),
+            db,
+        };
+        let sent = handle.send(Command::new(0, gain));
+        assert!(
+            matches!(sent, Err(AudioError::InvalidCommand(_))),
+            "{db} dB: {sent:?}"
+        );
+    }
+    let loud = CommandKind::SetGain {
+        strip: Strip::Deck(DeckId::A),
+        db: 1.0e9,
+    };
+    handle.send(Command::new(0, loud)).expect("a high gain");
+
+    let out = render_offline(&mut mixer, SR / 2);
+    assert!(out.iter().all(|s| s.is_finite()), "Program is not finite");
+    assert!(peak_db(&out) <= -0.99, "the limiter let a peak through");
+    assert!(peak_db(&out) > -7.0, "the deck is not audible");
+}
+
+/// The mixer refuses a load onto a deck that is on air, and the deck keeps its item.
+#[test]
+fn a_load_onto_a_playing_deck_is_rejected() {
+    let first = tone_wav("on-air", 48_000, 3.0, 1_000.0, -6.0);
+    let second = tone_wav("next", 48_000, 3.0, 300.0, -20.0);
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    handle
+        .load(DeckId::D, &first, LoadOptions::default())
+        .expect("load");
+    wait_ready(&handle, DeckId::D);
+    handle.send(play(0, DeckId::D)).expect("send");
+    let _ = render_offline(&mut mixer, SR / 10);
+    assert_eq!(handle.deck_state(DeckId::D), DeckState::Playing);
+
+    handle
+        .load(DeckId::D, &second, LoadOptions::default())
+        .expect("send the second load");
+    assert_eq!(handle.deck_state(DeckId::D), DeckState::Playing);
+
+    let out = render_offline(&mut mixer, SR / 10);
+    let events: Vec<_> = handle.events().collect();
+    assert!(
+        events.contains(&AudioEvent::LoadRejected(DeckId::D)),
+        "events: {events:?}"
+    );
+    assert_eq!(handle.deck_state(DeckId::D), DeckState::Playing);
+    assert!(peak_db(&out) > -7.0, "the item on air stopped");
 }

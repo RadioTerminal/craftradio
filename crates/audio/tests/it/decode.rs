@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use radio_audio::{AudioError, Decoder, SAMPLE_RATE, probe};
 
-use crate::fixtures::tone_wav;
+use crate::fixtures::{header_wav, tone_wav};
 
 fn assert_near(frames: usize, expected: usize, what: &str) {
     let diff = frames.abs_diff(expected);
@@ -42,14 +42,23 @@ fn a_44k1_file_decodes_to_the_same_length_at_48k() {
     assert_near(cued.len() / 2, 13 * rate / 10, "from the cue point");
 }
 
-/// A file with a forged sample rate fails as unsupported before the decoder sizes a buffer.
+/// A file with a forged rate or channel count fails as unsupported before the decoder
+/// sizes a buffer.
 #[test]
-fn a_forged_sample_rate_is_rejected() {
-    let path = tone_wav("forged-rate", 10_000_000, 0.001, 440.0, -6.0);
-
-    assert!(matches!(probe(&path), Err(AudioError::Unsupported { .. })));
-    assert!(matches!(
-        Decoder::open(&path),
-        Err(AudioError::Unsupported { .. })
-    ));
+fn a_forged_header_is_rejected() {
+    let forged = [
+        header_wav("forged-rate", 10_000_000, 2),
+        header_wav("forged-channels", 48_000, 9),
+    ];
+    for path in &forged {
+        let probed = probe(path);
+        assert!(
+            matches!(probed, Err(AudioError::Unsupported { .. })),
+            "{path:?}: {probed:?}"
+        );
+        assert!(matches!(
+            Decoder::open(path),
+            Err(AudioError::Unsupported { .. })
+        ));
+    }
 }

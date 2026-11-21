@@ -32,6 +32,23 @@ pub fn tone_wav(name: &str, rate: u32, secs: f64, freq: f64, dbfs: f64) -> PathB
     path
 }
 
+/// Writes a short silent 16-bit WAV with any rate and channel count, for forged headers.
+pub fn header_wav(name: &str, rate: u32, channels: u16) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("radio-audio-{}-{name}.wav", std::process::id()));
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&path, spec).expect("create fixture wav");
+    for _ in 0..usize::from(channels) * 64 {
+        writer.write_sample(0i16).expect("write");
+    }
+    writer.finalize().expect("finalize fixture wav");
+    path
+}
+
 /// Returns stereo interleaved cosine samples at 48 kHz, for cart clips in memory.
 pub fn tone_samples(secs: f64, freq: f64, dbfs: f64) -> Vec<f32> {
     let amp = 10f64.powf(dbfs / 20.0);

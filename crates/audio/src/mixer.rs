@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
-use crate::deck::{DeckShared, DeckSource};
-use crate::meter::{MeterBank, SilenceChange, SilenceState};
+use crate::deck::{DeckShared, DeckSource, Verdict};
+use crate::meter::{MeterBank, MeterBoard, MeterReader, SilenceChange, SilenceState};
 use crate::{
     AudioError, AudioEvent, CHANNELS, Clip, Command, CommandKind, DeckFeeder, DeckId, DeckState,
     Decoder, LoadOptions, MeterSnapshot, SAMPLE_RATE, SilenceDetector, Strip,
@@ -17,7 +17,11 @@ use crate::{
 /// The number of cart voices that can play at the same time.
 pub const CART_VOICES: usize = 16;
 
-const COMMAND_CAPACITY: usize = 256;
+/// The highest fader gain, in dB. The handle limits `SetGain` to this value.
+pub const MAX_GAIN_DB: f32 = 12.0;
+
+/// The number of commands that can wait for their sample at the same time.
+pub const COMMAND_CAPACITY: usize = 256;
 const CONTROL_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 256;
 /// The length of a fader ramp: 5 ms.
@@ -26,6 +30,8 @@ const GAIN_RAMP: u64 = SAMPLE_RATE as u64 / 200;
 const CEILING: f32 = 0.891_250_9;
 /// The limiter is linear below this level (about −3.5 dBFS).
 const KNEE: f32 = CEILING * 0.75;
+/// The deepest duck, in dB. A deeper duck is the same as mute.
+const DUCK_FLOOR_DB: f32 = -120.0;
 
 /// The settings of a mixer.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -70,8 +76,12 @@ fn db_to_gain(db: f32) -> f32 {
     10f32.powf(db / 20.0)
 }
 
-/// A soft clip with a ceiling at −1 dBFS. It does not change levels below the knee.
+/// A soft clip with a ceiling at −1 dBFS. It does not change levels below the knee. It
+/// changes NaN to silence.
 fn limit(x: f32) -> f32 {
+    if x.is_nan() {
+        return 0.0;
+    }
     let a = x.abs();
     if a <= KNEE {
         return x;
@@ -79,6 +89,41 @@ fn limit(x: f32) -> f32 {
     let range = CEILING - KNEE;
     let y = KNEE + range * ((a - KNEE) / range).tanh();
     y.copysign(x)
+}
+
+/// Checks the values of a command and limits them to the range that the mixer uses.
+fn sanitize(kind: CommandKind) -> Result<CommandKind, AudioError> {
+    let usable = |db: f32| !db.is_nan() && db != f32::INFINITY;
+    match kind {
+        CommandKind::SetGain { strip, db } => {
+            if !usable(db) {
+                return Err(AudioError::InvalidCommand(
+                    "gain must be a number below +inf",
+                ));
+            }
+            Ok(CommandKind::SetGain {
+                strip,
+                db: db.min(MAX_GAIN_DB),
+            })
+        }
+        CommandKind::Duck {
+            db,
+            attack,
+            release,
+        } => {
+            if !usable(db) {
+                return Err(AudioError::InvalidCommand(
+                    "duck depth must be a number below +inf",
+                ));
+            }
+            Ok(CommandKind::Duck {
+                db: db.clamp(DUCK_FLOOR_DB, 0.0),
+                attack,
+                release,
+            })
+        }
+        other => Ok(other),
+    }
 }
 
 /// Items that go from the handle to the render thread, outside the sample clock.
@@ -97,6 +142,8 @@ enum Retired {
 struct Shared {
     now: AtomicU64,
     pfl: AtomicU8,
+    /// The number of commands that the mixer took out of its pending store.
+    done: AtomicU64,
 }
 
 /// A linear gain ramp.
@@ -162,7 +209,11 @@ impl Duck {
             } else {
                 self.current_db + self.step_db.copysign(diff)
             };
-            self.gain = db_to_gain(self.current_db);
+            self.gain = if self.current_db <= DUCK_FLOOR_DB {
+                0.0
+            } else {
+                db_to_gain(self.current_db)
+            };
         }
         self.gain
     }
@@ -200,8 +251,8 @@ enum DeckStep {
 /// out. Real-time invariant: [`Mixer::render`] runs on the audio thread. It does no heap
 /// allocation or deallocation, takes no locks, makes no system calls and writes no
 /// logs. The constructor allocates all buffers. The render thread talks to other
-/// threads only through lock-free rtrb rings, atomics and a triple buffer. It gives heap
-/// items back to the [`MixerHandle`], and the handle frees them.
+/// threads only through lock-free rtrb rings and atomics. It gives heap items back to
+/// the [`MixerHandle`], and the handle frees them.
 pub struct Mixer {
     commands: Consumer<Command>,
     pending: Vec<Command>,
@@ -209,7 +260,7 @@ pub struct Mixer {
     control: Consumer<Control>,
     retired: Producer<Retired>,
     events: Producer<AudioEvent>,
-    meters_out: triple_buffer::Input<MeterSnapshot>,
+    board: Arc<MeterBoard>,
     live: Consumer<f32>,
     decks: [DeckSlot; 4],
     gains: [Ramp; Strip::COUNT],
@@ -231,10 +282,11 @@ impl Mixer {
         let (ret_tx, ret_rx) = RingBuffer::new(CONTROL_CAPACITY + 4 + config.cart_slots + 1);
         let (ev_tx, ev_rx) = RingBuffer::new(EVENT_CAPACITY);
         let (live_tx, live_rx) = RingBuffer::new(ring_samples(config.live_buffer));
-        let (meter_in, meter_out) = triple_buffer::triple_buffer(&MeterSnapshot::default());
+        let board = Arc::new(MeterBoard::new());
         let shared = Arc::new(Shared {
             now: AtomicU64::new(0),
             pfl: AtomicU8::new(0),
+            done: AtomicU64::new(0),
         });
         let mixer = Mixer {
             commands: cmd_rx,
@@ -243,7 +295,7 @@ impl Mixer {
             control: ctl_rx,
             retired: ret_tx,
             events: ev_tx,
-            meters_out: meter_in,
+            board: Arc::clone(&board),
             live: live_rx,
             decks: Default::default(),
             gains: [Ramp::UNITY; Strip::COUNT],
@@ -257,12 +309,12 @@ impl Mixer {
         };
         let handle = MixerHandle {
             commands: cmd_tx,
+            sent: 0,
             control: ctl_tx,
             retired: ret_rx,
             events: ev_rx,
-            meters: meter_out,
-            decks: Default::default(),
-            feeders: Default::default(),
+            meters: MeterReader::new(board),
+            items: Default::default(),
             shared,
             deck_buffer: ring_samples(config.deck_buffer),
             cart_slots: config.cart_slots,
@@ -300,7 +352,7 @@ impl Mixer {
             *c = [0.0; CHANNELS];
         }
         cue_rest.fill(0.0);
-        self.meters_out.write(self.meters.snapshot(self.sample));
+        self.board.publish(&self.meters.snapshot(self.sample));
         self.shared.now.store(self.sample, Ordering::Release);
     }
 
@@ -323,21 +375,7 @@ impl Mixer {
     fn take_control(&mut self) {
         while let Ok(item) = self.control.pop() {
             match item {
-                Control::Load { deck, source } => {
-                    let slot = &mut self.decks[deck.index()];
-                    if slot.playing {
-                        self.retire(Retired::Deck(source));
-                        continue;
-                    }
-                    let old = slot.source.replace(source);
-                    *slot = DeckSlot {
-                        source: slot.source.take(),
-                        ..DeckSlot::default()
-                    };
-                    if let Some(old) = old {
-                        self.retire(Retired::Deck(old));
-                    }
-                }
+                Control::Load { deck, source } => self.take_load(deck, source),
                 Control::SetCart { slot, clip } => match self.carts.get_mut(slot) {
                     Some(entry) => {
                         let old = std::mem::replace(entry, clip);
@@ -358,7 +396,31 @@ impl Mixer {
         }
     }
 
+    /// Puts a new item on a deck, or refuses it when the deck is on air.
+    fn take_load(&mut self, deck: DeckId, source: DeckSource) {
+        let slot = &mut self.decks[deck.index()];
+        if slot.playing {
+            source.shared.set_verdict(Verdict::Rejected);
+            self.retire(Retired::Deck(source));
+            self.emit(AudioEvent::LoadRejected(deck));
+            return;
+        }
+        source.shared.set_verdict(Verdict::Accepted);
+        let old = slot.source.replace(source);
+        *slot = DeckSlot {
+            source: slot.source.take(),
+            ..DeckSlot::default()
+        };
+        if let Some(old) = old {
+            old.shared.set_state(DeckState::Empty);
+            self.retire(Retired::Deck(old));
+        }
+        self.emit(AudioEvent::Loaded(deck));
+    }
+
     fn take_commands(&mut self) {
+        // The handle keeps the commands in flight at `COMMAND_CAPACITY` or less, so the
+        // ring is always empty after this loop.
         while self.pending.len() < COMMAND_CAPACITY {
             let Ok(cmd) = self.commands.pop() else { break };
             self.next_due = self.next_due.min(cmd.at_sample);
@@ -370,21 +432,33 @@ impl Mixer {
     fn apply_due(&mut self) {
         let mut next = u64::MAX;
         let mut i = 0;
+        let mut done = 0;
         while let Some(cmd) = self.pending.get(i).copied() {
             if cmd.at_sample <= self.sample {
                 self.pending.remove(i);
-                self.apply(cmd.kind);
+                self.apply(cmd);
+                done += 1;
             } else {
                 next = next.min(cmd.at_sample);
                 i += 1;
             }
         }
         self.next_due = next;
+        self.shared.done.fetch_add(done, Ordering::Release);
     }
 
-    fn apply(&mut self, kind: CommandKind) {
-        match kind {
-            CommandKind::Play(deck) => {
+    /// Returns `true` if a deck command is for the item on the deck.
+    fn for_this_item(&self, deck: DeckId, tag: Option<u64>) -> bool {
+        let Some(tag) = tag else { return true };
+        self.decks[deck.index()]
+            .source
+            .as_ref()
+            .is_some_and(|src| src.item_tag == Some(tag))
+    }
+
+    fn apply(&mut self, cmd: Command) {
+        match cmd.kind {
+            CommandKind::Play(deck) if self.for_this_item(deck, cmd.item_tag) => {
                 let slot = &mut self.decks[deck.index()];
                 if let Some(src) = &slot.source
                     && (!slot.playing || slot.paused)
@@ -394,7 +468,7 @@ impl Mixer {
                     src.shared.set_state(DeckState::Playing);
                 }
             }
-            CommandKind::Pause(deck) => {
+            CommandKind::Pause(deck) if self.for_this_item(deck, cmd.item_tag) => {
                 let slot = &mut self.decks[deck.index()];
                 if let Some(src) = &slot.source
                     && slot.playing
@@ -404,21 +478,27 @@ impl Mixer {
                     src.shared.set_state(DeckState::Paused);
                 }
             }
-            CommandKind::Stop(deck) => self.unload(deck),
-            CommandKind::FadeOut { deck, over } => {
+            CommandKind::Stop(deck) if self.for_this_item(deck, cmd.item_tag) => {
+                self.unload(deck);
+            }
+            CommandKind::FadeOut { deck, over } if self.for_this_item(deck, cmd.item_tag) => {
                 let slot = &mut self.decks[deck.index()];
                 if slot.source.is_none() {
                     return;
                 }
-                let frames = duration_frames(over);
-                if slot.playing && !slot.paused && frames > 0 {
-                    slot.fade = Some((frames, frames));
+                // A late fade keeps its commanded end.
+                let total = duration_frames(over);
+                let late = self.sample.saturating_sub(cmd.at_sample);
+                let remaining = total.saturating_sub(late);
+                if slot.playing && !slot.paused && remaining > 0 {
+                    slot.fade = Some((remaining, total));
                 } else {
                     self.end(deck);
                 }
             }
-            CommandKind::SetGain { strip, db } => {
-                self.gains[strip.index()].set(db_to_gain(db), GAIN_RAMP);
+            CommandKind::SetGain { strip, db } if !db.is_nan() => {
+                let gain = db_to_gain(db.min(MAX_GAIN_DB));
+                self.gains[strip.index()].set(gain, GAIN_RAMP);
             }
             CommandKind::FireCart { slot } => {
                 if !matches!(self.carts.get(slot), Some(Some(_))) {
@@ -446,14 +526,17 @@ impl Mixer {
                 db,
                 attack,
                 release,
-            } => {
+            } if !db.is_nan() => {
                 self.duck.release = duration_frames(release);
-                self.duck.to(db.min(0.0), duration_frames(attack));
+                self.duck
+                    .to(db.clamp(DUCK_FLOOR_DB, 0.0), duration_frames(attack));
             }
             CommandKind::Unduck => {
                 let release = self.duck.release;
                 self.duck.to(0.0, release);
             }
+            // A stale item tag, or a value that the handle did not check.
+            _ => {}
         }
     }
 
@@ -476,10 +559,17 @@ impl Mixer {
     }
 
     fn retire(&mut self, item: Retired) {
-        // The ring has room for every item that can exist, so this push cannot fail.
-        if let Err(PushError::Full(item)) = self.retired.push(item) {
-            drop(item);
-        }
+        // The ring has room for every heap item that can exist, so the push always works.
+        // If that bound breaks, the item leaks, because a free here would break the
+        // real-time invariant.
+        let pushed = match self.retired.push(item) {
+            Ok(()) => true,
+            Err(PushError::Full(item)) => {
+                std::mem::forget(item);
+                false
+            }
+        };
+        debug_assert!(pushed, "the retired ring is full");
     }
 
     fn emit(&mut self, event: AudioEvent) {
@@ -628,33 +718,50 @@ pub fn render_offline(mixer: &mut Mixer, frames: usize) -> Vec<f32> {
     out
 }
 
-/// The control side of a [`Mixer`], for the engine and UI threads. Each method with
-/// `&mut self` also frees the heap items that the mixer gave back.
+/// One load that the handle sent, with its decoder thread.
+struct Item {
+    shared: Arc<DeckShared>,
+    _feeder: DeckFeeder,
+}
+
+/// The control side of a [`Mixer`], for the engine thread. Each method with `&mut self`
+/// also frees the heap items that the mixer gave back.
 pub struct MixerHandle {
     commands: Producer<Command>,
+    sent: u64,
     control: Producer<Control>,
     retired: Consumer<Retired>,
     events: Consumer<AudioEvent>,
-    meters: triple_buffer::Output<MeterSnapshot>,
-    decks: [Option<Arc<DeckShared>>; 4],
-    feeders: [Option<DeckFeeder>; 4],
+    meters: MeterReader,
+    /// The loads of each deck, oldest first. The first is the item that the mixer took.
+    /// The others wait for the answer of the mixer.
+    items: [Vec<Item>; 4],
     shared: Arc<Shared>,
     deck_buffer: usize,
     cart_slots: usize,
 }
 
 impl MixerHandle {
-    /// Sends a command. The mixer applies it at `at_sample`.
+    /// Sends a command. The mixer applies it at `at_sample`. The handle refuses a NaN or
+    /// +inf gain, and refuses the command when `COMMAND_CAPACITY` commands wait already.
     pub fn send(&mut self, command: Command) -> Result<(), AudioError> {
         self.collect();
+        let kind = sanitize(command.kind)?;
+        let done = self.shared.done.load(Ordering::Acquire);
+        if self.sent.saturating_sub(done) >= COMMAND_CAPACITY as u64 {
+            return Err(AudioError::QueueFull);
+        }
         self.commands
-            .push(command)
-            .map_err(|_| AudioError::QueueFull)
+            .push(Command { kind, ..command })
+            .map_err(|_| AudioError::QueueFull)?;
+        self.sent += 1;
+        Ok(())
     }
 
-    /// Opens a file and loads it onto an empty or stopped deck. The file opens on this
-    /// thread, so a missing or broken file fails here. A decoder thread then fills the ring
-    /// of the deck, and the deck goes from `Loading` to `Ready`.
+    /// Opens a file and sends it to a deck. The file opens on this thread, so a missing or
+    /// broken file fails here. A decoder thread then fills the ring of the item. The mixer
+    /// answers with `AudioEvent::Loaded`, or with `AudioEvent::LoadRejected` when the deck
+    /// is on air. Until the answer, `deck_state` shows the item on air, if there is one.
     pub fn load(
         &mut self,
         deck: DeckId,
@@ -662,12 +769,6 @@ impl MixerHandle {
         options: LoadOptions,
     ) -> Result<(), AudioError> {
         self.collect();
-        if matches!(
-            self.deck_state(deck),
-            DeckState::Playing | DeckState::Paused
-        ) {
-            return Err(AudioError::DeckBusy(deck));
-        }
         let decoder = Decoder::open_at(path, options.cue_in)?;
         let (producer, consumer) = RingBuffer::new(self.deck_buffer);
         let shared = Arc::new(DeckShared::new());
@@ -676,12 +777,15 @@ impl MixerHandle {
             consumer,
             shared: Arc::clone(&shared),
             fade_in: duration_frames(options.fade_in),
+            item_tag: options.item_tag,
         };
         self.control
             .push(Control::Load { deck, source })
             .map_err(|_| AudioError::QueueFull)?;
-        self.decks[deck.index()] = Some(shared);
-        self.feeders[deck.index()] = Some(feeder);
+        self.items[deck.index()].push(Item {
+            shared,
+            _feeder: feeder,
+        });
         Ok(())
     }
 
@@ -709,24 +813,35 @@ impl MixerHandle {
         }
     }
 
+    /// Returns the item that the deck shows. That is the item on air, or else the newest
+    /// load that the mixer did not refuse.
+    fn current(&self, deck: DeckId) -> Option<&DeckShared> {
+        let items = &self.items[deck.index()];
+        let live = |it: &&Item| it.shared.verdict() != Verdict::Rejected;
+        let on_air = items
+            .iter()
+            .filter(live)
+            .find(|it| matches!(it.shared.state(), DeckState::Playing | DeckState::Paused));
+        on_air
+            .or_else(|| items.iter().rev().find(live))
+            .map(|it| &*it.shared)
+    }
+
     /// Returns the state of a deck.
     pub fn deck_state(&self, deck: DeckId) -> DeckState {
-        self.decks[deck.index()]
-            .as_ref()
-            .map_or(DeckState::Empty, |s| s.state())
+        self.current(deck)
+            .map_or(DeckState::Empty, DeckShared::state)
     }
 
     /// Returns `true` while the ring of a playing deck is empty before the end of its file.
     pub fn underrun(&self, deck: DeckId) -> bool {
-        self.decks[deck.index()]
-            .as_ref()
+        self.current(deck)
             .is_some_and(|s| s.underrun.load(Ordering::Acquire))
     }
 
     /// Returns `true` if the decoder of the deck stopped on an error before the file end.
     pub fn decode_failed(&self, deck: DeckId) -> bool {
-        self.decks[deck.index()]
-            .as_ref()
+        self.current(deck)
             .is_some_and(|s| s.failed.load(Ordering::Acquire))
     }
 
@@ -737,7 +852,12 @@ impl MixerHandle {
 
     /// Returns the meters from the last render block.
     pub fn meters(&mut self) -> MeterSnapshot {
-        *self.meters.read()
+        self.meters.read()
+    }
+
+    /// Returns a meter reader for another thread, for example the UI thread.
+    pub fn meter_reader(&self) -> MeterReader {
+        self.meters.clone()
     }
 
     /// Takes the events that the mixer sent since the last call.
@@ -746,7 +866,8 @@ impl MixerHandle {
         std::iter::from_fn(move || self.events.pop().ok())
     }
 
-    /// Frees the heap items that the mixer gave back.
+    /// Frees the heap items that the mixer gave back, and forgets loads that the mixer
+    /// refused or replaced.
     fn collect(&mut self) {
         while let Ok(item) = self.retired.pop() {
             match item {
@@ -754,9 +875,13 @@ impl MixerHandle {
                 Retired::Clip(clip) => drop(clip),
             }
         }
-        for feeder in &mut self.feeders {
-            if feeder.as_ref().is_some_and(DeckFeeder::is_finished) {
-                *feeder = None;
+        for items in &mut self.items {
+            items.retain(|it| it.shared.verdict() != Verdict::Rejected);
+            let newest_taken = items
+                .iter()
+                .rposition(|it| it.shared.verdict() == Verdict::Accepted);
+            if let Some(newest) = newest_taken {
+                items.drain(..newest);
             }
         }
     }
@@ -800,10 +925,11 @@ impl DeviceRenderer {
     /// Renders Program into `out`, interleaved with `channels` channels. Mono gets the mean
     /// of left and right, and channels after the second get silence. It is real-time safe.
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
-        if channels == 0 {
+        let Some(step) = self.max_frames.checked_mul(channels).filter(|s| *s > 0) else {
+            out.fill(0.0);
             return;
-        }
-        for chunk in out.chunks_mut(self.max_frames * channels) {
+        };
+        for chunk in out.chunks_mut(step) {
             let frames = chunk.len() / channels;
             let Some(program) = self.program.get_mut(..frames * CHANNELS) else {
                 return;

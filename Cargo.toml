@@ -21,7 +21,6 @@ proptest = "1"
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm", "all-meta"] }
 rubato = "5"
 rtrb = "0.4"
-triple_buffer = "9"
 hound = "3"
 assert_no_alloc = { version = "1", default-features = false, features = ["warn_debug", "warn_release"] }
 radio-model = { path = "crates/model" }
