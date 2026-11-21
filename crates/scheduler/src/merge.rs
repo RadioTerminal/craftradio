@@ -405,6 +405,15 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
     let mut pinned = input.pinned.to_vec();
     pinned.sort_by_key(|e| e.start);
 
+    // A pinned entry that is this fixed event (a hard event on a deck) stands for it.
+    // Then the rule does not fire a second copy.
+    let covered = |f: &FixedRule| {
+        let id = station.playlists[f.playlist].id;
+        input
+            .pinned
+            .iter()
+            .any(|e| e.playlist == id && e.fixed.as_ref().is_some_and(|x| x.target == f.target))
+    };
     let (mut next_fixed, mut next_pinned) = (0, 0);
     loop {
         while pinned
@@ -418,7 +427,9 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             break;
         }
         while let Some(f) = fixed.get(next_fixed).filter(|f| f.target <= w.next_at) {
-            w.fire_fixed(f);
+            if !covered(f) {
+                w.fire_fixed(f);
+            }
             next_fixed += 1;
         }
         let at = w.next_at;
@@ -447,7 +458,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             }
         }
     }
-    for f in &fixed[next_fixed..] {
+    for f in fixed[next_fixed..].iter().filter(|f| !covered(f)) {
         w.fire_fixed(f);
     }
     for e in pinned[next_pinned..].iter().filter(|e| e.start < end) {
