@@ -50,6 +50,8 @@ enum Msg {
     Snapshot(Box<State>),
     Run(Job),
     Flush(Sender<()>),
+    /// The engine closes: write what is pending, then stop. Log handles may still exist.
+    Stop,
 }
 
 pub(crate) struct Store {
@@ -144,7 +146,10 @@ fn gone() -> EngineError {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        self.tx = None; // the writer writes what is pending, then exits
+        // The writer writes what is pending, then exits, even while log handles exist.
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Msg::Stop);
+        }
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -172,7 +177,7 @@ fn writer(mut conn: Connection, rx: mpsc::Receiver<Msg>, errors: Arc<Mutex<Optio
                 let _ = ack.send(());
             }
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
         }
         if pending.is_some() && last_write.elapsed() >= CHECKPOINT_EVERY {
             write(&mut conn, &mut pending);
