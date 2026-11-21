@@ -64,7 +64,7 @@ fn the_clipboard_is_shared_between_the_library_and_the_main_pane() {
     menu(&mut h, "Dock into main window");
     let pasted = "Mira Solenne – Lanterns of Kelmora";
     let before = count(&h, pasted);
-    h.get_by_label("☰ Lanterns of Kelmora").click_secondary();
+    h.get_by_label("Lanterns of Kelmora").click_secondary();
     h.run_steps(FRAMES);
     menu(&mut h, "Copy");
     // Close the library, so the main pane shows the row again at full height.

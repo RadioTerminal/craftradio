@@ -745,6 +745,8 @@ pub enum Edit {
         to: String,
     },
     DuplicatePlaylist(String),
+    /// Make an empty playlist. The name is a wish; a taken name gets a number.
+    NewPlaylist(String),
     DeletePlaylist(String),
     /// Remove one item of a playlist, by its id.
     RemovePlaylistItem {

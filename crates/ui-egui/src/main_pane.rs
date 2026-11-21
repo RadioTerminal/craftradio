@@ -145,8 +145,8 @@ pub(crate) fn show(
                 let resp = row.response();
                 if on_air {
                     // The "now" line: played rows above, the rest below.
-                    let layer =
-                        egui::LayerId::new(egui::Order::Foreground, egui::Id::new("now_line"));
+                    // The row's own layer, so a window above the pane covers the line too.
+                    let layer = resp.layer_id;
                     let line = Stroke::new(size::ON_AIR_EDGE, t.on_air);
                     let clip = resp.rect.intersect(pane);
                     resp.ctx

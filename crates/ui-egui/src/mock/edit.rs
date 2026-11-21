@@ -227,6 +227,18 @@ impl MockSource {
                 self.tabs.push(copy);
                 Ok(1)
             }
+            Edit::NewPlaylist(name) => {
+                let name = self.unique_name(&name);
+                let colour = crate::theme::PALETTE[self.tabs.len() % crate::theme::PALETTE.len()].1;
+                self.tabs.push(playlist(
+                    &name,
+                    colour,
+                    Pick::Shuffle,
+                    Vec::new(),
+                    Vec::new(),
+                ));
+                Ok(1)
+            }
             Edit::DeletePlaylist(name) => {
                 if self.main.name == name {
                     return Err(

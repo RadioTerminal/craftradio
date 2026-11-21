@@ -2,7 +2,7 @@
 //! Levels come from the view-model. In the preview, the mock simulates them, and nothing plays.
 //! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
 
-use egui::{DragValue, RichText, Sense, Stroke};
+use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::Action;
 use crate::context_menu::{check_item, menu_item};
@@ -13,6 +13,8 @@ use crate::view::{
     DeviceRole, Edit, IcecastView, MeterView, Route, StationView, StreamFormat, StripChange,
 };
 
+/// The dB marks beside a meter.
+const SCALE_DB: [f32; 5] = [0.0, -6.0, -12.0, -20.0, -40.0];
 const NOTE: &str = "preview — simulated levels, no audio";
 const RATES: [u32; 3] = [44_100, 48_000, 96_000];
 const DEFAULT_RATE: u32 = 48_000;
@@ -55,29 +57,19 @@ pub(crate) fn show(
     t: &Tokens,
 ) {
     let mut open = state.settings;
-    settings::header(ui, "Mixer", &mut open, |_| {});
+    settings::header(ui, "Mixer", &mut open, |ui| {
+        ui.label(
+            RichText::new(NOTE)
+                .font(theme::text(theme::CAPTION))
+                .color(t.text_muted),
+        );
+    });
     state.settings = open;
-    ui.label(
-        RichText::new(NOTE)
-            .font(theme::text(theme::CAPTION))
-            .color(t.text_muted),
-    );
     ui.add_space(space::S);
-    egui::ScrollArea::vertical()
-        .id_salt("mixer_body")
-        .show(ui, |ui| {
-            if state.settings {
-                settings::section(ui, "Mixer", t, |ui| mixer_settings(ui, view, actions, t));
-            }
-            if state.icecast_open {
-                let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
-                settings::section(ui, "Icecast", t, |ui| {
-                    icecast_settings(ui, view, draft, streaming, actions, t);
-                });
-            } else {
-                state.icecast = None;
-            }
-            let mut open_settings = false;
+    // The strips stay in view while the settings are open: the settings sit beside them.
+    let mut open_settings = false;
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
             ui.horizontal_top(|ui| {
                 for meter in &view.meters {
                     let is_out = meter.label == "Out";
@@ -85,10 +77,36 @@ pub(crate) fn show(
                         strip_ui(ui, meter, is_out, &mut state.icecast_open, actions, t);
                 }
             });
-            if open_settings {
-                state.settings = true;
-            }
         });
+        if !state.settings && !state.icecast_open {
+            state.icecast = None;
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("mixer_side")
+            .max_width(size::MIXER_SIDE_W)
+            .show(ui, |ui| {
+                ui.set_width(size::MIXER_SIDE_W);
+                ui.vertical(|ui| {
+                    if state.settings {
+                        settings::section(ui, "Mixer", t, |ui| {
+                            mixer_settings(ui, view, actions, t)
+                        });
+                    }
+                    if state.icecast_open {
+                        let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
+                        settings::section(ui, "Icecast", t, |ui| {
+                            icecast_settings(ui, view, draft, streaming, actions, t);
+                        });
+                    } else {
+                        state.icecast = None;
+                    }
+                });
+            });
+    });
+    if open_settings {
+        state.settings = true;
+    }
 }
 
 fn strip_ui(
@@ -112,7 +130,9 @@ fn strip_ui(
         .show(ui, |ui| {
             ui.set_width(size::STRIP_W);
             ui.vertical_centered(|ui| {
-                ui.horizontal(|ui| {
+                // Every name row has the height of a ⚙ button, so all strips line up.
+                let row = egui::vec2(ui.available_width(), size::BADGE);
+                ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
                     let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
                     let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
                     r.context_menu(|ui| settings_wanted |= strip_menu(ui, meter, is_out, actions));
@@ -234,7 +254,8 @@ fn strip_menu(
 /// Two meter bars (left and right) with green, amber and red zones and a peak line.
 fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) -> egui::Response {
     let w = size::METER_BAR_W * 2.0 + space::XXS;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, size::METER_H), Sense::click());
+    let full = w + size::METER_SCALE_W;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(full, size::METER_H), Sense::click());
     let p = ui.painter();
     for ch in 0..2 {
         let left = rect.left() + ch as f32 * (size::METER_BAR_W + space::XXS);
@@ -265,13 +286,17 @@ fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) -> egui::Respons
             );
         }
     }
-    // Scale marks at the zone edges and at 0 dB.
-    for v in [size::METER_AMBER_DB, size::METER_RED_DB, 0.0] {
+    // The scale: a mark and its dB number at the usual steps.
+    for v in SCALE_DB {
         let y = rect.bottom() - rect.height() * frac(v);
-        p.hline(
-            rect.x_range(),
-            y,
-            Stroke::new(size::HAIRLINE, t.field_border),
+        let bars = egui::Rangef::new(rect.left(), rect.left() + w);
+        p.hline(bars, y, Stroke::new(size::HAIRLINE, t.field_border));
+        p.text(
+            egui::pos2(rect.right(), y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{v:.0}"),
+            theme::mono(theme::TINY),
+            t.text_muted,
         );
     }
     resp

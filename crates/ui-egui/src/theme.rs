@@ -152,7 +152,11 @@ pub mod size {
     pub const TOAST_S: f64 = 4.0;
 
     /// Mixer strips.
-    pub const STRIP_W: f32 = 88.0;
+    pub const STRIP_W: f32 = 104.0;
+    /// The dB numbers beside a mixer meter.
+    pub const METER_SCALE_W: f32 = 22.0;
+    /// The settings column beside the mixer strips.
+    pub const MIXER_SIDE_W: f32 = 340.0;
     pub const METER_H: f32 = 220.0;
     pub const METER_BAR_W: f32 = 8.0;
     pub const FADER_W: f32 = 20.0;

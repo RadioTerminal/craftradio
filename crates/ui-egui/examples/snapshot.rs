@@ -58,7 +58,7 @@ fn main() -> ExitCode {
         ("context-menu", Scene::Menu(ROW, "")),
         ("add-menu", Scene::Click(&["+ Add to Music"])),
         ("add-url", Scene::Click(&["+ Add to Music", "Add URL…"])),
-        ("metadata", Scene::Menu(ROW, "Properties")),
+        ("metadata", Scene::Menu(ROW, "Edit metadata")),
     ];
     for (name, scene) in scenes {
         let tz = tz.clone();

@@ -492,17 +492,22 @@ fn status_line(
                     .color(colour),
             );
         }
-        let warn = format!("· {} warnings", view.warnings);
-        let colour = if view.warnings > 0 {
-            t.warn
-        } else {
-            t.text_muted
-        };
-        ui.label(
-            RichText::new(warn)
+        if view.warnings > 0 {
+            let warn = RichText::new(format!("⚠ {} warnings", view.warnings))
                 .font(theme::text(theme::LABEL))
-                .color(colour),
-        );
+                .color(t.warn);
+            if ui.button(warn).on_hover_text("Show the warnings").clicked() {
+                actions.push(Action::Toast(
+                    "preview — the warning list comes with the engine".to_owned(),
+                ));
+            }
+        } else {
+            ui.label(
+                RichText::new("0 warnings")
+                    .font(theme::text(theme::LABEL))
+                    .color(t.text_muted),
+            );
+        }
         if let Some((text, undo)) = toast {
             ui.label(muted(text));
             let label = format!("Undo ({})", shortcuts::label(ui.ctx(), &shortcuts::UNDO));

@@ -2,7 +2,7 @@
 //! The preview plays no audio. A pressed cart only flashes, and the caption says so.
 //! Pages, carts, ducking, mode and colour live in the view source.
 
-use egui::{Align, DragValue, Layout, RichText, Stroke};
+use egui::{DragValue, RichText, Stroke};
 
 use crate::app::{Action, PasteTo};
 use crate::context_menu::{self, PASTE, check_item, menu_item, menu_item_if};
@@ -142,21 +142,20 @@ pub(crate) fn show(
                 }
             }
         });
-    ui.add_space(space::S);
-    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-        let text = RichText::new("■ stop all carts")
-            .font(theme::text(theme::BODY))
-            .color(t.text);
-        let stop = egui::Button::new(text)
-            .fill(t.danger_fill)
-            .stroke(Stroke::new(size::HAIRLINE, t.danger))
-            .min_size(egui::vec2(size::STOP_W, size::CONTROL_MD));
-        let keys = shortcuts::label(ui.ctx(), &shortcuts::STOP_CARTS);
-        let hint = format!("Stop every playing cart now ({keys}) · {NO_AUDIO}");
-        if ui.add(stop).on_hover_text(hint).clicked() {
-            state.stop_all();
-        }
-    });
+    // A wide gap and a full-width bar: easy to find in a hurry, hard to hit by mistake.
+    ui.add_space(space::XL);
+    let text = RichText::new("■ Stop all carts")
+        .font(theme::text(theme::BODY))
+        .color(t.text);
+    let stop = egui::Button::new(text)
+        .fill(t.danger_fill)
+        .stroke(Stroke::new(size::HAIRLINE, t.danger))
+        .min_size(egui::vec2(ui.available_width(), size::CONTROL_MD));
+    let keys = shortcuts::label(ui.ctx(), &shortcuts::STOP_CARTS);
+    let hint = format!("Stop every playing cart now ({keys}) · {NO_AUDIO}");
+    if ui.add(stop).on_hover_text(hint).clicked() {
+        state.stop_all();
+    }
 }
 
 /// The settings of a cart that the source does not know.

@@ -481,6 +481,14 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
             });
             ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
                 stop_after(ui, view, actions, t);
+                if view.warnings > 0 {
+                    // Warnings show here too, where the eyes are.
+                    let chip = RichText::new(format!("⚠ {}", view.warnings))
+                        .font(theme::text(theme::LABEL))
+                        .color(t.warn);
+                    ui.label(chip)
+                        .on_hover_text(format!("{} warnings; see the status line", view.warnings));
+                }
                 countdown(ui, view, t);
             });
         });

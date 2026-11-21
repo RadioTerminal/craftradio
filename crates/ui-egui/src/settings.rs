@@ -26,12 +26,9 @@ pub(crate) fn header(
     open: &mut bool,
     extra: impl FnOnce(&mut egui::Ui),
 ) {
+    // The window title bar names the part, so the header row does not repeat it:
+    // ⚙ far right, then the part's own controls and notes.
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(title)
-                .font(theme::text(theme::SECTION))
-                .strong(),
-        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             settings_button(ui, title, open);
             extra(ui);

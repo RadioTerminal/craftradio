@@ -48,6 +48,8 @@ pub(crate) struct State {
     new_category: String,
     /// The row that the arrow keys move from.
     selected: Option<u64>,
+    /// The row under the pointer in the last frame.
+    hovered: Option<u64>,
 }
 
 impl Default for State {
@@ -60,6 +62,7 @@ impl Default for State {
             new_folder: String::new(),
             new_category: String::new(),
             selected: None,
+            hovered: None,
         }
     }
 }
@@ -147,7 +150,7 @@ pub(crate) fn show(
         } else {
             "Dock into main window"
         };
-        if ui.selectable_label(docked, label).clicked() {
+        if ui.button(label).clicked() {
             docked = !docked;
         }
         if ui.button("+ Add folder…").clicked() {
@@ -171,7 +174,7 @@ pub(crate) fn show(
             .labelled_by(name.id);
         let items = visible(view, state);
         let count = format!(
-            "{} of {} files · drag a title onto a pane, a playlist or a cart",
+            "{} of {} files · drag a title onto a pane, a playlist or a cart, or right-click → Add to",
             items.len(),
             view.library.len()
         );
@@ -337,6 +340,9 @@ fn table(
     }
     let selected = state.selected;
     let mut clicked = None;
+    // The ☰ drag grip shows on the row under the pointer only.
+    let hovered = state.hovered;
+    let mut hover_now = None;
     let head = |s: &str| {
         RichText::new(s)
             .font(theme::text(theme::CAPTION))
@@ -370,8 +376,9 @@ fn table(
                     return;
                 };
                 row.set_selected(selected == Some(item.id));
+                let grip = if hovered == Some(item.id) { "☰ " } else { "" };
                 row.col(|ui| {
-                    let text = RichText::new(format!("☰ {}", item.title));
+                    let text = RichText::new(format!("{grip}{}", item.title));
                     let label = egui::Label::new(text.font(theme::text(theme::SMALL)));
                     ui.add(label.truncate());
                 });
@@ -389,9 +396,13 @@ fn table(
                 });
                 row.col(|ui| {
                     let path = RichText::new(&item.path).font(theme::mono(theme::CAPTION));
-                    ui.add(egui::Label::new(path.color(t.text_muted)).truncate());
+                    ui.add(egui::Label::new(path.color(t.text_muted)).truncate())
+                        .on_hover_text(&item.path);
                 });
                 let resp = row.response();
+                if resp.hovered() {
+                    hover_now = Some(item.id);
+                }
                 if resp.clicked() || resp.secondary_clicked() {
                     clicked = Some(item.id);
                 }
@@ -415,6 +426,10 @@ fn table(
     if let Some(id) = clicked {
         state.selected = Some(id);
         link.focus = Pane::Library;
+    }
+    if hover_now != state.hovered {
+        state.hovered = hover_now;
+        ui.ctx().request_repaint();
     }
 }
 

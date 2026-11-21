@@ -104,8 +104,13 @@ fn tab_bar(
             }
             r.context_menu(|ui| tab_menu(ui, p, actions, t));
         }
-        ui.add_enabled(false, egui::Button::new(label("+")))
-            .on_disabled_hover_text("coming soon");
+        if ui
+            .button("+ Playlist")
+            .on_hover_text("Make a new, empty playlist")
+            .clicked()
+        {
+            actions.push(Action::Edit(Edit::NewPlaylist("New playlist".to_owned())));
+        }
     });
 }
 

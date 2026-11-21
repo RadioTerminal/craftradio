@@ -9,7 +9,6 @@ use crate::app::Action;
 use crate::context_menu::menu_item;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{AUDIO_EXTENSIONS, Edit, StationView, check_stream_url};
-use crate::widgets::icon_button;
 use crate::windows::ToolWindow;
 
 /// The planned length of a new stream or live input, in minutes.
@@ -55,8 +54,25 @@ pub(crate) fn button(
     actions: &mut Vec<Action>,
 ) {
     let name = format!("+ Add to {playlist}");
-    let resp = icon_button(ui, "+", false, &name, "Add items");
-    egui::Popup::menu(&resp).show(|ui| items(ui, playlist, at, actions));
+    let text = RichText::new("+ Add").font(theme::text(theme::LABEL));
+    let resp = ui.button(text).on_hover_text(format!(
+        "Add files, a folder, a stream or a live input to {playlist}"
+    ));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+    egui::Popup::menu(&resp).show(|ui| {
+        // Say where new items go before the person picks.
+        let place = match at {
+            Some(i) => format!("Inserts after row {i}"),
+            None => "Inserts at the end".to_owned(),
+        };
+        ui.label(
+            RichText::new(place)
+                .font(theme::text(theme::CAPTION))
+                .weak(),
+        );
+        ui.separator();
+        items(ui, playlist, at, actions)
+    });
 }
 
 /// The rows of the add menu. Right-click menus use them too.

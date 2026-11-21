@@ -83,6 +83,7 @@ fn describe(edit: &Edit, n: usize) -> String {
         Edit::ToggleLock(_) => format!("changed the lock of {n} rows"),
         Edit::RenamePlaylist { from, to } => format!("renamed {from} to {to}"),
         Edit::DuplicatePlaylist(name) => format!("made a copy of {name}"),
+        Edit::NewPlaylist(_) => "made a new playlist (not saved)".to_owned(),
         Edit::DeletePlaylist(name) => format!("deleted {name}"),
         Edit::RemovePlaylistItem { playlist, .. } => format!("removed {n} items from {playlist}"),
         Edit::MovePlaylistItem { .. } => format!("moved {n} items"),
