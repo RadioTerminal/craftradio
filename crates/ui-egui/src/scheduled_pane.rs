@@ -143,8 +143,9 @@ fn upcoming(
     t: &Tokens,
 ) {
     let now = view.now.timestamp();
-    let target = link.scroll_scheduled.take();
     let order: Vec<u64> = prep.upcoming.iter().map(|i| prep.ids[*i]).collect();
+    link.step_rows(Pane::Scheduled, &order);
+    let target = link.scroll_scheduled.take();
     let step = size::UPCOMING_ROW + space::XXS;
     let mut area = egui::ScrollArea::vertical()
         .id_salt("upcoming")

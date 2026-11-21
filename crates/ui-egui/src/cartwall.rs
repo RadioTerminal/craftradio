@@ -9,6 +9,7 @@ use crate::context_menu::{self, PASTE, check_item, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
 use crate::parts;
 use crate::settings;
+use crate::shortcuts;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{CartChange, CartMode, CartSlot, DropTarget, Edit, StationView};
 use crate::windows::ToolWindow;
@@ -22,7 +23,7 @@ const DUCK_COLS: usize = 2;
 /// The largest grid side in the settings.
 const MAX_GRID: u32 = 8;
 
-const NO_AUDIO: &str = "preview — no audio";
+pub(crate) const NO_AUDIO: &str = "preview — no audio";
 
 /// The view state of the window: the page on show, flashes and draft page names.
 #[derive(Default)]
@@ -36,6 +37,37 @@ pub(crate) struct State {
     names: Vec<String>,
     /// True when the clipboard holds items, for this frame.
     has_clip: bool,
+    /// The carts on a page, for this frame.
+    per_page: usize,
+}
+
+impl State {
+    /// Fire cart `n` of the page on show, as its key does. It returns the cart name.
+    pub(crate) fn fire_on_page(
+        &mut self,
+        view: &StationView,
+        n: usize,
+        now: f64,
+    ) -> Option<String> {
+        let wall = &view.cartwall;
+        if n >= wall.per_page {
+            return None;
+        }
+        let i = self.page.min(wall.pages.len().saturating_sub(1)) * wall.per_page + n;
+        let name = view.carts.get(i).filter(|c| !c.is_empty())?;
+        self.flash_until.resize(view.carts.len(), f64::NEG_INFINITY);
+        if let Some(u) = self.flash_until.get_mut(i) {
+            *u = now + size::CART_FLASH_S;
+        }
+        self.last = Some(i);
+        Some(name.clone())
+    }
+
+    /// Stop every cart, as Escape does.
+    pub(crate) fn stop_all(&mut self) {
+        self.flash_until.fill(f64::NEG_INFINITY);
+        self.last = None;
+    }
 }
 
 fn set_cart(cart: usize, change: CartChange) -> Action {
@@ -52,6 +84,7 @@ pub(crate) fn show(
 ) {
     let wall = &view.cartwall;
     state.has_clip = has_clip;
+    state.per_page = wall.per_page;
     state
         .flash_until
         .resize(view.carts.len(), f64::NEG_INFINITY);
@@ -118,9 +151,10 @@ pub(crate) fn show(
             .fill(t.danger_fill)
             .stroke(Stroke::new(size::HAIRLINE, t.danger))
             .min_size(egui::vec2(size::STOP_W, size::CONTROL_MD));
-        if ui.add(stop).on_hover_text(NO_AUDIO).clicked() {
-            state.flash_until.fill(f64::NEG_INFINITY);
-            state.last = None;
+        let keys = shortcuts::label(ui.ctx(), &shortcuts::STOP_CARTS);
+        let hint = format!("Stop every playing cart now ({keys}) · {NO_AUDIO}");
+        if ui.add(stop).on_hover_text(hint).clicked() {
+            state.stop_all();
         }
     });
 }
@@ -142,6 +176,8 @@ fn cart(
     t: &Tokens,
 ) {
     let now = ui.input(|i| i.time);
+    // The place on the page, for the key that fires the cart.
+    let n = i % state.per_page.max(1);
     let empty = name.is_empty();
     let name = if empty { "empty" } else { name };
     let until = state.flash_until[i];
@@ -170,6 +206,18 @@ fn cart(
         ui.painter()
             .rect_filled(bar, t.radius_sm, Tokens::playlist(c.1));
     }
+    if let Some(key) = shortcuts::cart_label(n) {
+        // The key that fires the cart, in the top-right corner.
+        let at = resp.rect.right_top() + egui::vec2(-size::KEY_INSET, size::KEY_INSET);
+        let ink = if lit { t.flash_ink } else { t.text_muted };
+        ui.painter().text(
+            at,
+            egui::Align2::RIGHT_TOP,
+            key,
+            theme::mono(theme::CAPTION),
+            ink,
+        );
+    }
     let has_clip = state.has_clip;
     resp.context_menu(|ui| cart_menu(ui, i, slot, has_clip, actions));
     if let Some(drag) = resp.dnd_release_payload::<LibraryDrag>() {
@@ -186,8 +234,9 @@ fn cart(
     let colour_name = colour.map_or("no colour", |c| c.0);
     // The tooltip text is made only while the tooltip shows.
     let hint = |ui: &mut egui::Ui| {
+        let key = shortcuts::cart_label(n).map_or(String::new(), |k| format!(" ({k})"));
         ui.label(format!(
-            "{NO_AUDIO} · {} · {colour_name} · ducking {:.0} dB",
+            "Fire the cart{key} · {NO_AUDIO} · {} · {colour_name} · ducking {:.0} dB",
             slot.mode.label(),
             slot.duck_db
         ));

@@ -63,6 +63,7 @@ pub(crate) fn show(
     let files = ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty());
     let pointer = ui.input(|i| i.pointer.latest_pos());
     let pane = ui.max_rect();
+    link.step_rows(Pane::Main, order);
     let target = link.scroll_main.take();
     let mut table = TableBuilder::new(ui)
         .id_salt("main_pane")

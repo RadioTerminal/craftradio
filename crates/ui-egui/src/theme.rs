@@ -56,6 +56,8 @@ pub mod size {
     pub const RING_STEPS: usize = 32;
     /// The edge of the card of the deck on air.
     pub const ON_AIR_EDGE: f32 = 2.0;
+    /// The gap between a cart edge and its key label.
+    pub const KEY_INSET: f32 = 3.0;
 
     /// A row of the main timeline.
     pub const ROW: f32 = 26.0;

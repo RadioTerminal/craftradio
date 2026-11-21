@@ -5,7 +5,7 @@ use egui::{Align, DragValue, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Action, hms, mmss};
+use crate::app::{Action, Linked, Pane, hms, mmss, step};
 use crate::context_menu::{COPY, menu_item};
 use crate::parts;
 use crate::settings;
@@ -45,6 +45,7 @@ pub(crate) fn show(
     ui: &mut egui::Ui,
     view: &StationView,
     state: &mut State,
+    link: &mut Linked,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
@@ -127,12 +128,24 @@ pub(crate) fn show(
         .filter(|(_, on)| *on)
         .map(|((c, _, _), _)| *c)
         .collect();
+    let order: Vec<u64> = rows.iter().map(|r| r.id).collect();
+    let mut scroll = None;
+    if link.focus == Pane::History
+        && link.keys.step != 0
+        && let Some(id) = step(&order, state.selected.last().copied(), link.keys.step)
+    {
+        state.selected = vec![id];
+        scroll = order.iter().position(|o| *o == id);
+    }
     let mut table = TableBuilder::new(ui)
         .id_salt("history_table")
         .striped(true)
         .sense(Sense::click())
         .auto_shrink(false)
         .cell_layout(Layout::left_to_right(Align::Center));
+    if let Some(i) = scroll {
+        table = table.scroll_to_row(i, Some(Align::Center));
+    }
     for c in &cols {
         table = table.column(match c {
             Col::Aired => Column::exact(size::COL_TIME),
@@ -169,6 +182,9 @@ pub(crate) fn show(
                     row.col(|ui| cell(ui, *c, r, t));
                 }
                 let resp = row.response();
+                if resp.clicked() || resp.secondary_clicked() {
+                    link.focus = Pane::History;
+                }
                 if resp.clicked() {
                     if resp.ctx.input(|i| i.modifiers.command) {
                         if let Some(k) = state.selected.iter().position(|s| *s == r.id) {

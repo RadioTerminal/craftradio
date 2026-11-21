@@ -55,6 +55,11 @@ pub(crate) fn label(ctx: &egui::Context, shortcut: &KeyboardShortcut) -> String 
     ctx.format_shortcut(shortcut)
 }
 
+/// The text of the key for cart `n` (from 0) on the page on show.
+pub(crate) fn cart_label(n: usize) -> Option<&'static str> {
+    CARTS.get(n).map(|k| k.name())
+}
+
 /// The shortcuts that a person pressed in this frame.
 #[derive(Default, Clone, Copy, Debug)]
 pub(crate) struct Pressed {
@@ -83,6 +88,8 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
     }
     // Space and the arrows belong to a focused button, slider or list, when there is one.
     let free = ctx.memory(|m| m.focused().is_none());
+    // Escape closes an open menu first.
+    let menu = egui::Popup::is_any_open(ctx);
     ctx.input_mut(|i| {
         let mut p = Pressed::default();
         for e in &i.events {
@@ -101,7 +108,7 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.duplicate = i.consume_shortcut(&DUPLICATE);
         p.delete = i.consume_shortcut(&DELETE);
         p.play_pause = free && i.consume_shortcut(&PLAY_PAUSE);
-        p.stop_carts = i.consume_shortcut(&STOP_CARTS);
+        p.stop_carts = !menu && i.consume_shortcut(&STOP_CARTS);
         p.focus_deck = FOCUS_DECK.iter().position(|s| i.consume_shortcut(s));
         p.cart = CARTS
             .iter()

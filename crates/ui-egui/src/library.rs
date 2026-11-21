@@ -8,7 +8,7 @@ use std::path::Path;
 use egui::{Align, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{Action, FileTarget, Linked, mmss};
+use crate::app::{Action, FileTarget, Linked, Pane, mmss, step};
 use crate::context_menu::{self, COPY, menu_item};
 use crate::parts;
 use crate::settings;
@@ -46,6 +46,8 @@ pub(crate) struct State {
     settings: bool,
     new_folder: String,
     new_category: String,
+    /// The row that the arrow keys move from.
+    selected: Option<u64>,
 }
 
 impl Default for State {
@@ -57,6 +59,7 @@ impl Default for State {
             settings: false,
             new_folder: String::new(),
             new_category: String::new(),
+            selected: None,
         }
     }
 }
@@ -190,7 +193,7 @@ pub(crate) fn show(
             tree(ui, view, state, actions, t);
         });
         ui.separator();
-        ui.vertical(|ui| table(ui, view, state, actions, t));
+        ui.vertical(|ui| table(ui, view, state, link, actions, t));
     });
 }
 
@@ -317,17 +320,33 @@ fn tree(
 fn table(
     ui: &mut egui::Ui,
     view: &StationView,
-    state: &State,
+    state: &mut State,
+    link: &mut Linked,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
     let items = visible(view, state);
+    let order: Vec<u64> = items.iter().map(|i| i.id).collect();
+    let mut scroll = None;
+    if link.focus == Pane::Library
+        && link.keys.step != 0
+        && let Some(id) = step(&order, state.selected, link.keys.step)
+    {
+        state.selected = Some(id);
+        scroll = order.iter().position(|o| *o == id);
+    }
+    let selected = state.selected;
+    let mut clicked = None;
     let head = |s: &str| {
         RichText::new(s)
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted)
     };
-    TableBuilder::new(ui)
+    let mut builder = TableBuilder::new(ui);
+    if let Some(i) = scroll {
+        builder = builder.scroll_to_row(i, Some(Align::Center));
+    }
+    builder
         .id_salt("library_table")
         .striped(true)
         .sense(Sense::click_and_drag())
@@ -350,6 +369,7 @@ fn table(
                 let Some(item) = items.get(row.index()) else {
                     return;
                 };
+                row.set_selected(selected == Some(item.id));
                 row.col(|ui| {
                     let text = RichText::new(format!("☰ {}", item.title));
                     let label = egui::Label::new(text.font(theme::text(theme::SMALL)));
@@ -372,6 +392,9 @@ fn table(
                     ui.add(egui::Label::new(path.color(t.text_muted)).truncate());
                 });
                 let resp = row.response();
+                if resp.clicked() || resp.secondary_clicked() {
+                    clicked = Some(item.id);
+                }
                 // The whole row is the drag handle. A label follows the pointer while it moves.
                 resp.dnd_set_drag_payload(LibraryDrag(item.id));
                 if resp.dragged()
@@ -389,6 +412,10 @@ fn table(
                 resp.context_menu(|ui| item_menu(ui, view, item, actions));
             });
         });
+    if let Some(id) = clicked {
+        state.selected = Some(id);
+        link.focus = Pane::Library;
+    }
 }
 
 fn item_menu(ui: &mut egui::Ui, view: &StationView, item: &LibraryItem, actions: &mut Vec<Action>) {

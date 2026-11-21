@@ -3,4 +3,5 @@
 mod editing;
 mod folders;
 mod guards;
+mod keyboard;
 mod smoke;

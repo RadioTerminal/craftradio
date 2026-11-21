@@ -11,6 +11,7 @@ mod action;
 mod clipboard;
 mod dialogs;
 mod drops;
+mod keys;
 
 pub(crate) use action::{Action, FileTarget, PasteTo};
 pub(crate) use clipboard::{Clipboard, CutSource};
@@ -35,6 +36,22 @@ pub(crate) enum Pane {
     #[default]
     Main,
     Scheduled,
+    Library,
+    History,
+}
+
+/// The id `by` rows away from `current` in `order`, for the arrow keys.
+/// With nothing selected, Down picks the first row and Up the last.
+pub(crate) fn step(order: &[u64], current: Option<u64>, by: i32) -> Option<u64> {
+    let last = order.len().checked_sub(1)?;
+    let at = current.and_then(|c| order.iter().position(|o| *o == c));
+    let next = match at {
+        Some(i) if by < 0 => i.saturating_sub(by.unsigned_abs() as usize),
+        Some(i) => (i + by as usize).min(last),
+        None if by < 0 => last,
+        None => 0,
+    };
+    order.get(next).copied()
 }
 
 /// A question that waits for a yes before its action runs.
@@ -93,6 +110,21 @@ impl Linked {
         match pane {
             Pane::Main => self.scroll_scheduled = Some(id),
             Pane::Scheduled => self.scroll_main = Some(id),
+            Pane::Library | Pane::History => {}
+        }
+    }
+
+    /// Move the selection of the main pane or Upcoming by the arrow keys of this frame.
+    /// Both lists share the selection, so both scroll to the new row.
+    pub fn step_rows(&mut self, pane: Pane, order: &[u64]) {
+        if self.focus != pane || self.keys.step == 0 {
+            return;
+        }
+        if let Some(id) = step(order, self.selected.last().copied(), self.keys.step) {
+            self.selected = vec![id];
+            self.anchor = Some(id);
+            self.scroll_main = Some(id);
+            self.scroll_scheduled = Some(id);
         }
     }
 
@@ -270,7 +302,7 @@ impl RadioApp {
             clock_window::show(ui, view, &mut self.clock_state, actions, t);
         });
         windows::show(ctx, ToolWindow::History, open, t, |ui| {
-            history::show(ui, view, &mut self.history, actions, t);
+            history::show(ui, view, &mut self.history, link, actions, t);
         });
         if self.library.docked {
             // The docked library takes the place of its window.
@@ -368,6 +400,7 @@ impl eframe::App for RadioApp {
             });
 
         self.tool_windows(&ctx, &mut actions, &t);
+        self.global_keys(&ctx, &mut actions);
         self.dialogs(&ctx, &mut actions, &t);
 
         if let Some(tab) = rules_editor::show(&ctx, &mut self.editor, &mut self.link, &t) {

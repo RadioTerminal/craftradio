@@ -33,6 +33,8 @@ pub(crate) struct State {
     confirm: bool,
     /// The armed button: deck, action and the egui time of the first press.
     armed: Option<(usize, Guarded, f64)>,
+    /// The deck that Space, Skip and Fade keys act on.
+    focused: usize,
 }
 
 impl Default for State {
@@ -42,6 +44,7 @@ impl Default for State {
             settings: [false; 4],
             confirm: true,
             armed: None,
+            focused: 0,
         }
     }
 }
@@ -70,6 +73,17 @@ impl State {
             Guarded::Fade => command(deck, DeckCommand::Fade(self.fade_s[deck])),
             Guarded::Skip => command(deck, DeckCommand::Skip),
         })
+    }
+
+    /// Focus deck `deck` for the keys. A number past the last deck is ignored.
+    pub(crate) fn focus(&mut self, deck: usize) {
+        if deck < self.fade_s.len() {
+            self.focused = deck;
+        }
+    }
+
+    pub(crate) fn focused(&self) -> usize {
+        self.focused
     }
 
     /// The part of the arm time that is left for this button, while it is armed.
@@ -213,7 +227,14 @@ fn deck_body(
     let live = is_live(deck);
     let now = ui.input(|i| i.time);
     let head = ui.horizontal(|ui| {
-        let badge = badge(ui, deck.label, live, t).on_hover_text("Right-click for the deck menu");
+        let focused = state.focused == i;
+        let keys = shortcuts::label(ui.ctx(), &shortcuts::FOCUS_DECK[i.min(3)]);
+        let hint = if focused {
+            "The keys act on this deck. Right-click for the deck menu.".to_owned()
+        } else {
+            format!("{keys} focuses this deck for the keys. Right-click for the deck menu.")
+        };
+        let badge = badge(ui, deck.label, live, focused, t).on_hover_text(hint);
         let (word, colour) = match deck.state {
             DeckState::Playing => ("▶ ON AIR", t.on_air),
             DeckState::Fading => ("⤵ FADING", t.warn),
@@ -255,12 +276,13 @@ fn deck_body(
                 } else {
                     ("▶", "Play")
                 };
+                let keys = shortcuts::label(ui.ctx(), &shortcuts::PLAY_PAUSE);
                 let play = icon_button(
                     ui,
                     glyph,
                     false,
                     &format!("{glyph} {verb} deck {name}"),
-                    verb,
+                    &format!("{verb} ({keys} on the focused deck)"),
                 );
                 if play.clicked() {
                     actions.push(command(i, DeckCommand::PlayPause));
@@ -334,7 +356,13 @@ fn deck_body(
     head.inner.union(title)
 }
 
-fn badge(ui: &mut egui::Ui, label: char, playing: bool, t: &Tokens) -> egui::Response {
+fn badge(
+    ui: &mut egui::Ui,
+    label: char,
+    playing: bool,
+    focused: bool,
+    t: &Tokens,
+) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size::BADGE), Sense::click());
     let (fill, ink) = if playing {
         (t.on_air, t.canvas)
@@ -349,6 +377,12 @@ fn badge(ui: &mut egui::Ui, label: char, playing: bool, t: &Tokens) -> egui::Res
         theme::mono(theme::CARD),
         ink,
     );
+    if focused {
+        // A ring outside the badge marks the deck the keys act on.
+        let ring = Stroke::new(size::ON_AIR_EDGE, t.accent);
+        ui.painter()
+            .rect_stroke(rect, t.radius, ring, egui::StrokeKind::Outside);
+    }
     resp
 }
 
