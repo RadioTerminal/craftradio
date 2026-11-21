@@ -36,7 +36,8 @@ and MAY are used as in RFC 2119.
     GPL/LGPL/AGPL crates. **One exception (operator, 2026-11-21):** LAME (LGPL-2.0) for MP3
     encoding of the Icecast output only, kept in its own crate (`crates/stream`) behind a cargo
     feature `mp3` (on by default). Release builds must meet the LGPL relinking terms: link LAME
-    dynamically where the platform allows it, or ship the object files needed to relink.
+    dynamically where the platform allows it, or ship the object files needed to relink. Dynamically linking an OS-provided system library
+    (for example libasound on Linux through cpal) is allowed.
 13. Dates and times use `jiff`. This departs from the template's `chrono` rule, because
     DST-correct local time zones are core to scheduling. Never hand-roll calendar or UTC math.
 
