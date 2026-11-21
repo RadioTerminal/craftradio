@@ -26,6 +26,7 @@ mod context_menu;
 mod decks;
 mod fonts;
 mod history;
+mod icons;
 mod library;
 mod main_pane;
 mod meta_editor;

@@ -7,6 +7,7 @@
 use egui::{Align, ComboBox, DragValue, Layout, RichText, Stroke, TextEdit};
 
 use crate::app::{FileTarget, Linked, mmss};
+use crate::icons::{self, Icon};
 use crate::rules_script;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{Constraint, ConstraintKind, Pick, Placement, PlaylistTab, RuleView, Trigger};
@@ -118,10 +119,17 @@ pub(crate) fn show(
     applied
 }
 
-/// The ⚙ button that opens the rules editor for `name`. It returns true on a click.
+/// The settings button that opens the rules editor for `name`. It returns true on a click.
 pub(crate) fn cog(ui: &mut egui::Ui, name: &str) -> bool {
-    let label = format!("⚙ {name} rules");
-    crate::widgets::icon_button(ui, "⚙", false, &label, &format!("{name} — rules")).clicked()
+    let label = format!("{name} rules");
+    crate::widgets::icon_button(
+        ui,
+        Icon::Settings,
+        false,
+        &label,
+        &format!("{name} — rules"),
+    )
+    .clicked()
 }
 
 fn mode_bar(ui: &mut egui::Ui, editor: &mut Editor) {
@@ -225,7 +233,7 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
             tab.visual.remove(i);
             changed = true;
         }
-        if ui.button("+ Add rule").clicked() {
+        if ui.button(icons::lead(Icon::Plus, "Add rule")).clicked() {
             tab.visual.push(RuleView::new());
             changed = true;
         }
@@ -313,7 +321,7 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
         for (k, c) in rule.constraints.iter_mut().enumerate() {
             changed |= constraint(ui, (i, k), c);
             if ui
-                .small_button("✖")
+                .small_button(icons::glyph(Icon::X).to_string())
                 .on_hover_text("Remove constraint")
                 .clicked()
             {
@@ -324,7 +332,10 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
             rule.constraints.remove(k);
             changed = true;
         }
-        if ui.small_button("+ constraint").clicked() {
+        if ui
+            .small_button(icons::lead(Icon::Plus, "constraint"))
+            .clicked()
+        {
             rule.constraints.push(Constraint {
                 kind: ConstraintKind::NotAdjacentToSelf,
                 n: 1,
@@ -400,7 +411,8 @@ fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, preview: bool, t: &Tokens) {
             } else {
                 "The script is what plays: Apply reads its rules into the scheduler."
             };
-            let note = RichText::new(format!("⚠ {text}")).font(theme::text(theme::LABEL));
+            let note = RichText::new(icons::lead(Icon::TriangleAlert, text))
+                .font(theme::text(theme::LABEL));
             ui.label(note.color(t.warn));
         });
 }

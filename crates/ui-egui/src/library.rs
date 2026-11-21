@@ -10,6 +10,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::app::{Action, FileTarget, Linked, Pane, mmss};
 use crate::context_menu::{self, COPY, menu_item};
+use crate::icons::{self, Icon};
 use crate::parts;
 use crate::select::Selection;
 use crate::settings;
@@ -154,7 +155,7 @@ pub(crate) fn show(
         if ui.button(label).clicked() {
             docked = !docked;
         }
-        if ui.button("+ Add folder…").clicked() {
+        if ui.button(icons::lead(Icon::Plus, "Add folder…")).clicked() {
             add = true;
         }
     });
@@ -228,7 +229,10 @@ fn folder_actions(ui: &mut egui::Ui, folder: &FolderView, actions: &mut Vec<Acti
 
 fn folder_header(ui: &mut egui::Ui, folder: &FolderView, actions: &mut Vec<Action>, t: &Tokens) {
     ui.horizontal(|ui| {
-        let text = format!("📁 {} · {}", folder.path, count_text(folder));
+        let text = icons::lead(
+            Icon::Folder,
+            &format!("{} · {}", folder.path, count_text(folder)),
+        );
         ui.label(RichText::new(text).font(theme::text(theme::LABEL)));
         if !folder.files.is_empty() {
             for (label, main) in [
@@ -299,7 +303,10 @@ fn tree(
                 } else {
                     t.danger
                 };
-                let text = format!("📁 {} ({})", folder_name(&folder.path), count_text(folder));
+                let text = icons::lead(
+                    Icon::Folder,
+                    &format!("{} ({})", folder_name(&folder.path), count_text(folder)),
+                );
                 let r = ui
                     .selectable_label(on, RichText::new(&text).color(colour))
                     .on_hover_text(format!("{}\n{text}", folder.path));
@@ -356,7 +363,7 @@ fn table(
     let selected = &state.selected;
     let mut clicked = None;
     let mut menu_remove = None;
-    // The ☰ drag grip shows on the row under the pointer only.
+    // The drag grip shows on the row under the pointer only.
     let hovered = state.hovered;
     let mut hover_now = None;
     let head = |s: &str| {
@@ -443,7 +450,11 @@ fn table(
                             return;
                         };
                         row.set_selected(selected.contains(item.id));
-                        let grip = if hovered == Some(item.id) { "☰ " } else { "" };
+                        let grip = if hovered == Some(item.id) {
+                            icons::lead(Icon::GripVertical, "")
+                        } else {
+                            String::new()
+                        };
                         row.col(|ui| {
                             let text = RichText::new(format!("{grip}{}", item.title));
                             let label = egui::Label::new(text.font(theme::text(theme::SMALL)));
@@ -488,7 +499,7 @@ fn table(
                                 .fixed_pos(pos + egui::vec2(space::M, space::M))
                                 .show(&resp.ctx, |ui| {
                                     theme::card_frame(t).inner_margin(pad::ROW).show(ui, |ui| {
-                                        ui.label(format!("☰ {}", item.title));
+                                        ui.label(icons::lead(Icon::GripVertical, &item.title));
                                     });
                                 });
                         }
@@ -629,7 +640,10 @@ fn library_settings(
     }
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut state.new_folder).desired_width(size::FIELD_W));
-        if ui.button("+ Add folder by path").clicked() {
+        if ui
+            .button(icons::lead(Icon::Plus, "Add folder by path"))
+            .clicked()
+        {
             let path = std::mem::take(&mut state.new_folder);
             state.add_folder(&path, actions);
         }
@@ -648,7 +662,9 @@ fn library_settings(
     }
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut state.new_category).desired_width(size::FIELD_W));
-        if ui.button("+ Add category").clicked() && !state.new_category.trim().is_empty() {
+        if ui.button(icons::lead(Icon::Plus, "Add category")).clicked()
+            && !state.new_category.trim().is_empty()
+        {
             next.push(state.new_category.trim().to_owned());
             state.new_category.clear();
         }

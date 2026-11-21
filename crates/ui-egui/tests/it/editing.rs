@@ -137,7 +137,7 @@ fn add_url_puts_a_stream_into_the_playlist() {
     h.run_steps(FRAMES);
     let stream = "https://radio.example.org/live";
     assert_eq!(count(&h, "radio.example.org"), 0);
-    h.get_by_label("+ Add to Jingles").click();
+    h.get_by_label("Add to Jingles").click();
     h.run_steps(FRAMES);
     menu(&mut h, "Add URL…");
     let field = h.get_by_label("URL");

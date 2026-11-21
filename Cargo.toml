@@ -54,6 +54,7 @@ eframe = { version = "0.36", default-features = false, features = ["default_font
 egui = "0.36"
 egui_extras = "0.36"
 egui_kittest = "0.36"
+lucide-icons = "1.77"
 rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }

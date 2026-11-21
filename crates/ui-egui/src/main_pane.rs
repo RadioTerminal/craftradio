@@ -7,6 +7,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::add_menu;
 use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo};
 use crate::context_menu;
+use crate::icons::{self, Icon};
 use crate::library::LibraryDrag;
 use crate::prepared::Prepared;
 use crate::rules_editor;
@@ -69,7 +70,11 @@ pub(crate) fn show(
                 actions.push(Action::OpenRules(view.main.name.clone()));
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                let badge = if folder { " 📁" } else { "" };
+                let badge = if folder {
+                    format!(" {}", icons::glyph(Icon::Folder))
+                } else {
+                    String::new()
+                };
                 let title = RichText::new(format!("Main: {}{badge}", view.main.name));
                 let header = ui.add(
                     egui::Label::new(title.font(theme::text(theme::SECTION)).strong())
@@ -333,7 +338,7 @@ fn row_menu(
         .iter()
         .position(|row| row.id == last)
         .map(|i| i + 1);
-    ui.menu_button("+ Add below", |ui| {
+    ui.menu_button(icons::lead(Icon::Plus, "Add below"), |ui| {
         add_menu::items(ui, &view.main.name, below, actions)
     });
     if menu_item(ui, "Play next", None) {
@@ -385,11 +390,11 @@ fn row_menu(
     }
     ui.separator();
     let lock = if r.locked {
-        "📌 Unlock position"
+        icons::lead(Icon::Pin, "Unlock position")
     } else {
-        "📌 Lock position"
+        icons::lead(Icon::Pin, "Lock position")
     };
-    if menu_item(ui, lock, None) {
+    if menu_item(ui, &lock, None) {
         for id in &sel {
             actions.push(Action::Edit(Edit::ToggleLock(*id)));
         }
@@ -461,13 +466,13 @@ fn start_cell(ui: &mut egui::Ui, r: &Row, text: &str, font: f32, ink: egui::Colo
         .deck
         .map_or_else(String::new, |d| crate::widgets::deck_hint(d, &r.start));
     crate::widgets::deck_mark(ui, r.deck, &hint);
-    // ⏱ sits in a slot of its own, so every time starts at the same x.
+    // The timer icon sits in a slot of its own, so every time starts at the same x.
     let (slot, _) = ui.allocate_exact_size(egui::vec2(size::GLYPH_SLOT, font), Sense::hover());
     if r.fixed.is_some() {
         ui.painter().text(
             slot.center(),
             egui::Align2::CENTER_CENTER,
-            "⏱",
+            icons::glyph(Icon::Timer),
             theme::text(font),
             ink,
         );
@@ -501,7 +506,7 @@ fn track_row(
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);
         let text = if r.locked {
-            RichText::new(format!("📌 {}", r.title))
+            RichText::new(icons::lead(Icon::Pin, &r.title))
         } else {
             RichText::new(&r.title)
         };
@@ -538,8 +543,10 @@ fn stream_badge(
     t: &Tokens,
 ) {
     let (text, colour) = match state {
-        StreamState::Connected if preview => ("stream ○ simulated".to_owned(), t.text_muted),
-        StreamState::Connected => ("stream ● connected".to_owned(), t.ok),
+        StreamState::Connected if preview => {
+            (icons::lead(Icon::Circle, "stream simulated"), t.text_muted)
+        }
+        StreamState::Connected => (icons::lead(Icon::CircleDot, "stream connected"), t.ok),
         StreamState::Reconnecting { attempt, next_in_s } => (
             format!("reconnecting · bed playing · try {attempt}, next in {next_in_s} s"),
             t.warn,

@@ -17,6 +17,7 @@ pub(crate) use action::{Action, FileTarget, PasteTo};
 pub(crate) use clipboard::{Clipboard, CutSource};
 
 use crate::add_menu::{self, AddDialog};
+use crate::icons::{self, Icon};
 use crate::meta_editor::{self, MetaEditor};
 use crate::prepared::Prepared;
 use crate::rules_editor::{self, Editor};
@@ -613,15 +614,17 @@ fn status_line(
             ("Icecast", &view.output.icecast),
         ] {
             let (dot, word, colour) = match status {
-                Status::Connected => ("●", "connected".to_owned(), t.ok),
-                Status::Preview => ("○", "preview (no audio)".to_owned(), t.text_muted),
-                Status::NotConnected => ("○", "not connected".to_owned(), t.text_muted),
-                Status::Reconnecting { attempt } => {
-                    ("↻", format!("reconnecting (try {attempt})"), t.warn)
-                }
-                Status::Failed(e) => ("○", format!("failed: {e}"), t.danger),
+                Status::Connected => (Icon::CircleDot, "connected".to_owned(), t.ok),
+                Status::Preview => (Icon::Circle, "preview (no audio)".to_owned(), t.text_muted),
+                Status::NotConnected => (Icon::Circle, "not connected".to_owned(), t.text_muted),
+                Status::Reconnecting { attempt } => (
+                    Icon::RefreshCw,
+                    format!("reconnecting (try {attempt})"),
+                    t.warn,
+                ),
+                Status::Failed(e) => (Icon::Circle, format!("failed: {e}"), t.danger),
             };
-            let text = format!("{name} {dot} {word}");
+            let text = format!("{name} {} {word}", icons::glyph(dot));
             ui.label(
                 RichText::new(text)
                     .font(theme::text(theme::LABEL))
@@ -629,9 +632,12 @@ fn status_line(
             );
         }
         if view.warnings > 0 {
-            let warn = RichText::new(format!("⚠ {} warnings", view.warnings))
-                .font(theme::text(theme::LABEL))
-                .color(t.warn);
+            let warn = RichText::new(icons::lead(
+                Icon::TriangleAlert,
+                &format!("{} warnings", view.warnings),
+            ))
+            .font(theme::text(theme::LABEL))
+            .color(t.warn);
             if ui.button(warn).on_hover_text("Show the warnings").clicked() {
                 actions.push(Action::Toast(
                     view.say(

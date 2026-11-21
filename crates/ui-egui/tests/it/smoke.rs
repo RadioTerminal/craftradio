@@ -48,7 +48,7 @@ fn the_window_shows_upcoming_and_the_next_fixed_news() {
 fn the_cog_opens_the_rules_editor_with_a_script_tab() {
     let mut harness = harness();
     assert!(!shows(&harness, "Music — rules"));
-    click(&mut harness, "⚙ Music rules");
+    click(&mut harness, "Music rules");
     assert!(shows(&harness, "Music — rules"), "the editor window opens");
     click(&mut harness, "Script");
     assert!(
@@ -83,7 +83,7 @@ fn the_mixer_cog_shows_the_device_pickers() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
     assert!(!shows(&harness, "Output device (Out)"));
-    click(&mut harness, "⚙ Mixer settings");
+    click(&mut harness, "Toggle Mixer settings");
     assert!(shows(&harness, "Output device (Out)"));
     assert!(shows(&harness, "Cue device (PFL)"));
     assert!(shows(&harness, "Live input device"));
@@ -123,14 +123,18 @@ fn icon_buttons_keep_their_size_on_hover() {
     click(&mut harness, "Mixer");
     let rects = |h: &Harness<'_, RadioApp>| {
         [
-            h.get_by_label("⚙ Music rules").rect(),
+            h.get_by_label("Music rules").rect(),
             h.get_by_label_contains(" tracks · next").rect(),
-            h.get_by_label("⚙ Mixer settings").rect(),
-            h.get_by_label("⚙ Icecast settings").rect(),
+            h.get_by_label("Toggle Mixer settings").rect(),
+            h.get_by_label("Toggle Icecast settings").rect(),
         ]
     };
     let before = rects(&harness);
-    for cog in ["⚙ Music rules", "⚙ Mixer settings", "⚙ Icecast settings"] {
+    for cog in [
+        "Music rules",
+        "Toggle Mixer settings",
+        "Toggle Icecast settings",
+    ] {
         harness.get_by_label(cog).hover();
         harness.run_steps(FRAMES);
         assert_eq!(rects(&harness), before, "hovering {cog} moves nothing");
@@ -143,8 +147,8 @@ fn play_next_starts_the_next_item() {
     let on_air = "Halvard Pine – Harbours of Kelmora";
     let before = harness.query_all_by_label(on_air).count();
     // Deck A is on air: the first press arms Play next, the second fires it.
-    click(&mut harness, "⏭ Play next");
-    click(&mut harness, "⏭ Play next — press again");
+    click(&mut harness, "Play next");
+    click(&mut harness, "Play next — press again");
     let after = harness.query_all_by_label(on_air).count();
     assert!(
         after < before,
@@ -161,17 +165,17 @@ fn deck_cards_have_no_skip_and_the_header_has_play_next() {
         "no control says Skip"
     );
     assert!(
-        harness.query_all_by_label_contains("⏭").count() == 1,
-        "only the header has ⏭"
+        harness.query_all_by_label_contains("Play next").count() == 1,
+        "only the header has Play next"
     );
-    assert!(shows(&harness, "⏭ Play next"), "the header has Play next");
-    assert!(shows(&harness, "⏸ Pause deck A"), "the deck on air pauses");
+    assert!(shows(&harness, "Play next"), "the header has Play next");
+    assert!(shows(&harness, "Pause deck A"), "the deck on air pauses");
     for deck in ['B', 'C', 'D'] {
-        let play = format!("▶ Play deck {deck}");
+        let play = format!("Play deck {deck}");
         assert!(shows(&harness, &play), "deck {deck} has Play");
     }
     assert!(
-        shows(&harness, "⤵ Fade out"),
+        shows(&harness, "Fade out"),
         "the header fades the item on air"
     );
 }
@@ -183,7 +187,7 @@ fn the_header_says_preview_and_never_live_with_the_mock() {
     assert!(!shows(&harness, "LIVE"), "the mock never claims to be live");
 }
 
-/// The floating Mixer grows when its ⚙ section opens and shrinks back when it closes.
+/// The floating Mixer grows when its section opens and shrinks back when it closes.
 #[test]
 fn the_mixer_window_follows_the_size_of_its_content() {
     let mut harness = harness();
@@ -197,13 +201,13 @@ fn the_mixer_window_follows_the_size_of_its_content() {
             .height()
     };
     let closed = height(&harness);
-    click(&mut harness, "⚙ Mixer settings");
+    click(&mut harness, "Toggle Mixer settings");
     let opened = height(&harness);
     assert!(
         opened > closed + 2.0,
         "the window grows: {closed} → {opened}"
     );
-    click(&mut harness, "⚙ Mixer settings");
+    click(&mut harness, "Toggle Mixer settings");
     let again = height(&harness);
     assert!(
         again < opened - 2.0,
@@ -294,4 +298,25 @@ fn deck_cards_have_equal_height_whatever_their_state() {
             "deck cards differ in height: {rects:?}"
         );
     }
+}
+
+/// The global transport is the largest control of the header: Play next is at least as tall
+/// as the Large control, and Fade out and Stop after current are as tall as Play next.
+#[test]
+fn play_next_is_a_large_button_in_the_header_with_its_siblings_at_the_same_height() {
+    let harness = harness();
+    let play = harness.get_by_label("Play next").rect();
+    assert!(
+        play.height() >= radio_ui_egui::theme::size::CONTROL_LG,
+        "Play next is {} high",
+        play.height()
+    );
+    for name in ["Fade out", "Stop after current"] {
+        let other = harness.get_by_label(name).rect();
+        assert!(
+            (other.height() - play.height()).abs() < 0.5,
+            "{name} has the height of Play next"
+        );
+    }
+    assert!(play.top() < 100.0, "Play next is in the header strip");
 }

@@ -113,19 +113,16 @@ fn main() -> ExitCode {
         ("mixer", Scene::Window(ToolWindow::Mixer)),
         (
             "mixer-settings",
-            Scene::Click(l(&["Mixer", "⚙ Mixer settings"])),
+            Scene::Click(l(&["Mixer", "Toggle Mixer settings"])),
         ),
         ("clock", Scene::Window(ToolWindow::Clock)),
         ("history", Scene::Window(ToolWindow::History)),
         ("library", Scene::Window(ToolWindow::Library)),
-        ("rules-editor", Scene::Click(l(&["⚙ Music rules"]))),
-        (
-            "rules-script",
-            Scene::Click(l(&["⚙ Music rules", "Script"])),
-        ),
+        ("rules-editor", Scene::Click(l(&["Music rules"]))),
+        ("rules-script", Scene::Click(l(&["Music rules", "Script"]))),
         ("context-menu", Scene::Menu(ROW.into(), String::new())),
-        ("add-menu", Scene::Click(l(&["+ Add to Music"]))),
-        ("add-url", Scene::Click(l(&["+ Add to Music", "Add URL…"]))),
+        ("add-menu", Scene::Click(l(&["Add to Music"]))),
+        ("add-url", Scene::Click(l(&["Add to Music", "Add URL…"]))),
         ("metadata", Scene::Menu(ROW.into(), "Edit metadata".into())),
     ];
     for (name, scene) in scenes {
@@ -195,19 +192,19 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
         scenes.push((
             "mixer-settings".into(),
             wide,
-            wc(ToolWindow::Mixer, "⚙ Mixer settings"),
+            wc(ToolWindow::Mixer, "Toggle Mixer settings"),
         ));
         scenes.push((
             "cartwall-settings".into(),
             wide,
-            wc(ToolWindow::Cartwall, "⚙ Cartwall settings"),
+            wc(ToolWindow::Cartwall, "Toggle Cartwall settings"),
         ));
         scenes.push((
             "library-settings".into(),
             wide,
-            wc(ToolWindow::Library, "⚙ Library settings"),
+            wc(ToolWindow::Library, "Toggle Library settings"),
         ));
-        let rules = format!("⚙ {main} rules");
+        let rules = format!("{main} rules");
         scenes.push((
             "rules-visual".into(),
             wide,
@@ -218,7 +215,7 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
             wide,
             Scene::Click(vec![rules, "Script".into()]),
         ));
-        let add = format!("+ Add to {main}");
+        let add = format!("Add to {main}");
         scenes.push(("add-menu".into(), wide, Scene::Click(vec![add.clone()])));
         scenes.push((
             "add-url".into(),

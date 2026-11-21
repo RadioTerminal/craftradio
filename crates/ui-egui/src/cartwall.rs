@@ -6,6 +6,7 @@ use egui::{DragValue, RichText, Stroke};
 
 use crate::app::{Action, PasteTo};
 use crate::context_menu::{PASTE, check_item, menu_item, menu_item_if};
+use crate::icons::{self, Icon};
 use crate::library::LibraryDrag;
 use crate::parts;
 use crate::settings;
@@ -168,7 +169,7 @@ pub(crate) fn show(
         });
     // A wide gap and a full-width bar: easy to find in a hurry, hard to hit by mistake.
     ui.add_space(space::XL);
-    let text = RichText::new("■ Stop all carts")
+    let text = RichText::new(icons::lead(Icon::Square, "Stop all carts"))
         .font(theme::text(theme::BODY))
         .color(t.text);
     let stop = egui::Button::new(text)
@@ -401,7 +402,10 @@ fn cart_settings(
                         }
                     });
                 }
-                if ui.small_button("+ Add page").clicked() {
+                if ui
+                    .small_button(icons::lead(Icon::Plus, "Add page"))
+                    .clicked()
+                {
                     let name = format!("Page {}", wall.pages.len() + 1);
                     state.names.push(name.clone());
                     actions.push(Action::Edit(Edit::AddCartPage { name }));

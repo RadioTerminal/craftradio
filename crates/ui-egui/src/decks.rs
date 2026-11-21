@@ -4,13 +4,14 @@ use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::{Action, hms, mmss};
 use crate::context_menu::{self, menu_item};
+use crate::icons::{self, Icon};
 use crate::mixer;
 use crate::parts;
 use crate::settings;
 use crate::shortcuts;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckCommand, DeckState, DeckView, Edit, PlayMode, StationView, Status};
-use crate::widgets::{self, guard_button, icon_button};
+use crate::widgets::{self, Look, guard_button_sized, icon_button_sized, transport_button};
 
 /// The part setting that switches the second press on the deck on air.
 const CONFIRM_KEY: &str = "confirm_on_air";
@@ -177,9 +178,12 @@ pub(crate) fn show(
         ui.ctx().request_repaint_after_secs(ARM_REPAINT_S);
     }
     state.next = next_ranks(&view.decks);
-    let wide = ui.available_width() >= size::STRIP_WIDE;
-    let clock_width = if wide {
+    let avail = ui.available_width();
+    let wide = avail >= size::STRIP_WIDE;
+    let clock_width = if avail >= size::STRIP_FULL {
         size::CLOCK_W
+    } else if wide {
+        size::CLOCK_MID_W
     } else {
         size::CLOCK_NARROW_W
     };
@@ -221,7 +225,7 @@ pub(crate) fn show(
                                     });
                                 }
                                 strip.cell(|ui| {
-                                    clock(ui, view, state, actions, t);
+                                    cluster(ui, view, state, actions, clock_width, t);
                                 });
                             });
                     });
@@ -306,11 +310,11 @@ fn deck_menu(
 
 /// The one main button of a deck: Pause on air, Resume after a pause, or Play this deck. It
 /// gives the verb, the glyph and the words of the deck menu.
-fn primary(deck: &DeckView) -> (&'static str, &'static str, &'static str) {
+fn primary(deck: &DeckView) -> (&'static str, Icon, &'static str) {
     match deck.state {
-        DeckState::Playing => ("Pause", "⏸", "Pause"),
-        DeckState::Paused => ("Resume", "▶", "Resume"),
-        _ => ("Play", "▶", "Play this deck"),
+        DeckState::Playing => ("Pause", Icon::Pause, "Pause"),
+        DeckState::Paused => ("Resume", Icon::Play, "Resume"),
+        _ => ("Play", Icon::Play, "Play this deck"),
     }
 }
 
@@ -415,11 +419,13 @@ fn deck_body(
             ui.add_enabled_ui(deck.state != DeckState::Empty, |ui| {
                 // One main action: Play this deck, or Pause and Resume on the deck on air.
                 let keys = shortcuts::label(ui.ctx(), &shortcuts::PLAY_PAUSE);
-                let (verb, glyph, _) = primary(deck);
-                let accessible = format!("{glyph} {verb} deck {name}");
+                let (verb, icon, _) = primary(deck);
+                let accessible = format!("{verb} deck {name}");
                 if is_live(deck) {
                     let hint = format!("{verb} the item on air ({keys} on the focused deck)");
-                    if icon_button(ui, glyph, false, &accessible, &hint).clicked() {
+                    if icon_button_sized(ui, icon, false, &accessible, &hint, size::CONTROL_MD)
+                        .clicked()
+                    {
                         actions.push(command(i, DeckCommand::PlayPause));
                     }
                 } else {
@@ -429,7 +435,8 @@ fn deck_body(
                         state.fade_in(i)
                     );
                     let armed = state.armed_left(i, Guarded::Play, now);
-                    let play = guard_button(ui, glyph, &accessible, &hint, armed);
+                    let play =
+                        guard_button_sized(ui, icon, &accessible, &hint, armed, size::CONTROL_MD);
                     let cut = cuts_on_air(decks, i, state.fade_in(i));
                     if play.clicked()
                         && let Some(a) = state.press(i, Guarded::Play, cut, now)
@@ -613,95 +620,145 @@ fn progress(ui: &mut egui::Ui, deck: &DeckView, t: &Tokens) {
     }
 }
 
-fn clock(
+/// How much room the status cluster has: it decides which words and parts show.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    /// One column, icons only, no date.
+    Narrow,
+    /// Two columns. Only Play next keeps its word.
+    Mid,
+    /// Two columns. Every label and the date.
+    Full,
+}
+
+impl Tier {
+    fn of(width: f32) -> Self {
+        if width >= size::CLOCK_W {
+            Self::Full
+        } else if width >= size::CLOCK_MID_W {
+            Self::Mid
+        } else {
+            Self::Narrow
+        }
+    }
+}
+
+/// The block beside the decks: the transport and the mode on the left, the clock, the date and
+/// the Out meter on the right. It is as tall as a deck card and has the same edge.
+fn cluster(
     ui: &mut egui::Ui,
     view: &StationView,
     state: &mut State,
     actions: &mut Vec<Action>,
+    width: f32,
     t: &Tokens,
 ) {
-    ui.vertical(|ui| {
-        ui.with_layout(Layout::top_down(Align::Max), |ui| {
-            ui.spacing_mut().item_spacing.y = space::XXS;
-            let w = ui.available_width();
-            let row = |h: f32| egui::vec2(w, h);
-            let rtl = Layout::right_to_left(Align::Center);
-            // Left to right: Play next, Fade out, the mode, the LIVE chip and the Out meter.
-            // A narrow cluster has no room for the transport here: it goes to the third row.
-            let roomy = w >= size::CLOCK_MID_W;
-            ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
-                ui.spacing_mut().button_padding = egui::vec2(space::XS, space::XXS);
-                out_vu(ui, view, actions, t);
-                live_chip(ui, view, w >= size::CLOCK_MID_W, actions, t);
-                mode_control(ui, view, w >= size::CLOCK_W, actions, t);
-                if roomy {
-                    transport(ui, view, state, actions);
-                }
+    let tier = Tier::of(width);
+    let frame = theme::card_frame(t).inner_margin(pad::DECK);
+    let margin = frame.total_margin();
+    let inner_w = width - margin.sum().x;
+    let inner_h = size::DECK_STRIP_H - margin.sum().y;
+    frame.show(ui, |ui| {
+        ui.set_width(inner_w);
+        ui.set_min_height(inner_h);
+        if tier == Tier::Narrow {
+            ui.spacing_mut().item_spacing.y = space::XS;
+            ui.horizontal(|ui| transport(ui, view, state, actions, tier));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                mode_control(ui, view, false, actions, t);
+                live_chip(ui, view, false, actions, t);
             });
-            // A narrow window drops the date first, then the word of the LIVE chip.
-            let room = w >= size::CLOCK_W;
-            ui.allocate_ui_with_layout(row(theme::TITLE + space::S), rtl, |ui| {
-                ui.label(
-                    RichText::new(hms(&view.now))
-                        .font(theme::mono(theme::TITLE))
-                        .strong(),
-                );
-                if room {
-                    let date = view.now.strftime("%a %-d %b").to_string();
+            ui.label(
+                RichText::new(hms(&view.now))
+                    .font(theme::mono(theme::TITLE))
+                    .strong(),
+            );
+            out_meter(ui, view, size::VU_NARROW_H, false, actions, t);
+            return;
+        }
+        ui.spacing_mut().item_spacing = egui::vec2(space::M, space::S);
+        let right_w = size::CLOCK_COL_W;
+        let left_w = inner_w - right_w - space::M;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_w, inner_h),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    ui.set_min_size(egui::vec2(left_w, inner_h));
+                    ui.spacing_mut().item_spacing.y = space::S;
+                    let group = || {
+                        egui::Frame::new()
+                            .fill(t.canvas)
+                            .stroke(Stroke::new(size::HAIRLINE, t.card_border))
+                            .corner_radius(t.radius_lg)
+                            .inner_margin(pad::GROUP)
+                    };
+                    let first = group().show(ui, |ui| {
+                        ui.set_width(left_w - pad::GROUP.sum().x - 2.0 * size::HAIRLINE);
+                        ui.horizontal(|ui| transport(ui, view, state, actions, tier));
+                    });
+                    let used = first.response.rect.height() + space::S;
+                    group().show(ui, |ui| {
+                        ui.set_width(left_w - pad::GROUP.sum().x - 2.0 * size::HAIRLINE);
+                        let rest = inner_h - used - pad::GROUP.sum().y - 2.0 * size::HAIRLINE;
+                        ui.set_min_height(rest);
+                        // Mode on the first line, the state of the output on the second.
+                        ui.spacing_mut().item_spacing.y = space::S;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::XS;
+                            mode_control(ui, view, left_w >= size::CLOCK_MID_W / 2.0, actions, t);
+                        });
+                        ui.horizontal(|ui| live_chip(ui, view, true, actions, t));
+                    });
+                },
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2(right_w, inner_h),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    ui.set_min_size(egui::vec2(right_w, inner_h));
+                    ui.spacing_mut().item_spacing.y = space::XS;
                     ui.label(
-                        RichText::new(date)
-                            .font(theme::text(theme::CAPTION))
-                            .color(t.text_muted),
+                        RichText::new(hms(&view.now))
+                            .font(theme::mono(theme::TITLE))
+                            .strong(),
                     );
-                }
-            });
-            let wide = w >= size::CLOCK_W;
-            ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
-                stop_after(ui, view, actions, t);
-                if !roomy {
-                    transport(ui, view, state, actions);
-                }
-                if view.warnings > 0 {
-                    // Warnings show here too, where the eyes are.
-                    let chip = RichText::new(format!("⚠ {}", view.warnings))
-                        .font(theme::text(theme::LABEL))
-                        .color(t.warn);
-                    ui.label(chip)
-                        .on_hover_text(format!("{} warnings; see the status line", view.warnings));
-                }
-            });
-            // The countdown has a row of its own, so the warnings never cut it.
-            ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
-                countdown(ui, view, wide, t);
-            });
+                    {
+                        let date = view.now.strftime("%a %-d %b").to_string();
+                        let date = RichText::new(date).font(theme::text(theme::LABEL));
+                        ui.label(date.color(t.text_muted));
+                    }
+                    // The meter sits at the bottom edge, in line with the group beside it.
+                    let meter = size::VU_BARS_H + theme::CAPTION + space::XS;
+                    ui.add_space((ui.available_height() - meter - space::S).max(0.0));
+                    out_meter(ui, view, meter, true, actions, t);
+                },
+            );
         });
     });
 }
 
-/// The transport of the station: Play next and Fade out. Each arms first when it cuts the
-/// item on air before its end.
-fn transport(ui: &mut egui::Ui, view: &StationView, state: &mut State, actions: &mut Vec<Action>) {
+/// The transport of the station: Play next, Fade out and Stop after current, at one height.
+/// Play next and Fade out arm first when they cut the item on air before its end. A narrow
+/// cluster, or a tight one, shows icons alone; the names and the tooltips stay.
+fn transport(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    tier: Tier,
+) {
     let now = ui.input(|i| i.time);
     let air = on_air_deck(&view.decks);
-    // The parent lays out right to left, so Fade out comes first.
-    ui.add_enabled_ui(air.is_some(), |ui| {
-        let deck = air.unwrap_or(0);
-        let keys = shortcuts::label(ui.ctx(), &shortcuts::FADE);
-        let hint = format!("Fade out the item on air ({keys})");
-        let armed = air.and_then(|d| state.armed_left(d, Guarded::Fade, now));
-        let fade = guard_button(ui, "⤵", "⤵ Fade out", &hint, armed);
-        if fade.clicked()
-            && let Some(a) = state.press(deck, Guarded::Fade, true, now)
-        {
-            actions.push(a);
-        }
-    });
     let next = state.next_deck();
+    let full = tier == Tier::Full;
+    let narrow = tier == Tier::Narrow;
+    ui.spacing_mut().item_spacing.x = space::S;
     ui.add_enabled_ui(next.is_some(), |ui| {
         let deck = next.unwrap_or(0);
         let keys = shortcuts::label(ui.ctx(), &shortcuts::PLAY_NEXT);
-        let assist = view.play_mode == PlayMode::Assist;
-        let what = if assist {
+        let what = if view.play_mode == PlayMode::Assist {
             "Next: start"
         } else {
             "Play next: start"
@@ -710,7 +767,15 @@ fn transport(ui: &mut egui::Ui, view: &StationView, state: &mut State, actions: 
             "{what} the NEXT 1 deck now. It fades in and the item on air fades out ({keys})"
         );
         let armed = next.and_then(|d| state.armed_left(d, Guarded::PlayNext, now));
-        let play = guard_button(ui, "⏭", "⏭ Play next", &hint, armed);
+        let play = transport_button(
+            ui,
+            Icon::SkipForward,
+            "Play next",
+            Look::Primary,
+            narrow,
+            armed,
+            &hint,
+        );
         let cut = cuts(view, deck, state);
         if play.clicked()
             && let Some(a) = state.press(deck, Guarded::PlayNext, cut, now)
@@ -718,65 +783,48 @@ fn transport(ui: &mut egui::Ui, view: &StationView, state: &mut State, actions: 
             actions.push(a);
         }
     });
+    ui.add_enabled_ui(air.is_some(), |ui| {
+        let deck = air.unwrap_or(0);
+        let keys = shortcuts::label(ui.ctx(), &shortcuts::FADE);
+        let hint = format!("Fade out the item on air ({keys})");
+        let armed = air.and_then(|d| state.armed_left(d, Guarded::Fade, now));
+        let fade = transport_button(
+            ui,
+            Icon::TrendingDown,
+            "Fade out",
+            Look::Secondary,
+            !full,
+            armed,
+            &hint,
+        );
+        if fade.clicked()
+            && let Some(a) = state.press(deck, Guarded::Fade, true, now)
+        {
+            actions.push(a);
+        }
+    });
+    stop_after(ui, view, actions, !full);
 }
 
-/// "Next: News in 4:12", to the next fixed item. Under a minute it warns, with ⚠ and the colour.
-fn countdown(ui: &mut egui::Ui, view: &StationView, wide: bool, t: &Tokens) {
-    let now = view.now.timestamp();
-    let next = view
-        .rows
-        .iter()
-        .find(|r| r.fixed.is_some() && r.start.timestamp() > now);
-    let Some(r) = next else {
-        let none = RichText::new("No fixed item ahead").font(theme::text(theme::LABEL));
-        ui.label(none.color(t.text_muted));
-        return;
-    };
-    let secs = r.start.timestamp().duration_since(now).as_secs().max(0) as u64;
-    let left = mmss(std::time::Duration::from_secs(secs));
-    // A narrow window puts the time first, so a cut keeps the time.
-    let (text, colour) = if !wide {
-        let colour = if secs < size::NOW_S {
-            t.on_air
-        } else if secs < size::SOON_S {
-            t.warn
-        } else {
-            t.text
-        };
-        let glyph = if secs < size::SOON_S { "⚠" } else { "⏱" };
-        (format!("{glyph} {left} {}", r.title), colour)
-    } else if secs < size::NOW_S {
-        (format!("⚠ {} starts in {left}", r.title), t.on_air)
-    } else if secs < size::SOON_S {
-        (format!("⚠ Next: {} in {left}", r.title), t.warn)
-    } else {
-        (format!("⏱ Next: {} in {left}", r.title), t.text)
-    };
-    let text = RichText::new(text)
-        .font(theme::mono(theme::SECTION))
-        .strong();
-    let at = hms(&r.start);
-    ui.add(egui::Label::new(text.color(colour)).truncate())
-        .on_hover_text(format!("{} is fixed at {at}", r.title));
-}
-
-/// The "Stop after current" toggle. Its word changes with its state.
-fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+/// The "Stop after current" toggle, at the height of the other transport buttons.
+fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, compact: bool) {
     let stop = view.stop_after_current;
-    let word = if stop {
-        "⏹ Stops after current"
-    } else {
-        "Stop after current"
-    };
-    let fill = if stop { t.warn_fill } else { t.field };
-    let button = egui::Button::new(RichText::new(word).font(theme::text(theme::CAPTION)))
-        .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, t.field_border));
     let hint = view.say(
         "The station stops when the item on air ends · preview: here only",
         "The station stops when the item on air ends",
     );
-    if ui.add(button).on_hover_text(hint).clicked() {
+    let (icon, look) = if stop {
+        (Icon::SquareCheckBig, Look::On)
+    } else {
+        (Icon::Square, Look::Secondary)
+    };
+    let hint = if stop {
+        format!("On. {hint}")
+    } else {
+        hint.to_owned()
+    };
+    let button = transport_button(ui, icon, "Stop after current", look, compact, None, &hint);
+    if button.clicked() {
         actions.push(Action::Edit(Edit::StopAfterCurrent(!stop)));
     }
 }
@@ -793,35 +841,50 @@ fn live_chip(
     let out = view.meters.iter().find(|m| m.label == "Out");
     let sound =
         out.is_some_and(|m| !m.mute && m.level_db[0].max(m.level_db[1]) > size::METER_MIN_DB);
-    let (word, ink, fill, why) = match (&view.output.local, &view.output.icecast) {
+    let (icon, word, ink, fill, why) = match (&view.output.local, &view.output.icecast) {
         (Status::Preview, _) => (
-            "◇ PREVIEW",
+            Icon::Eye,
+            "PREVIEW",
             t.text_muted,
             t.field,
             "UI preview: no audio goes out".to_owned(),
         ),
-        (_, Status::Connected) if sound => ("● LIVE", t.on_air, t.on_air_bg, "on air".to_owned()),
+        (_, Status::Connected) if sound => (
+            Icon::Radio,
+            "LIVE",
+            t.on_air,
+            t.on_air_bg,
+            "on air".to_owned(),
+        ),
         (_, Status::Connected) => (
-            "○ SILENT",
+            Icon::VolumeX,
+            "SILENT",
             t.warn,
             t.warn_fill,
             "connected, but Out is silent".to_owned(),
         ),
         (_, Status::Reconnecting { attempt }) => (
-            "↻ RECONNECTING",
+            Icon::RefreshCw,
+            "RECONNECTING",
             t.warn,
             t.warn_fill,
             format!("reconnecting, try {attempt}"),
         ),
-        (_, Status::Failed(e)) => ("○ OFF AIR", t.text_muted, t.field, format!("down: {e}")),
+        (_, Status::Failed(e)) => (
+            Icon::Circle,
+            "OFF AIR",
+            t.text_muted,
+            t.field,
+            format!("down: {e}"),
+        ),
         (_, _) => (
-            "○ OFF AIR",
+            Icon::Circle,
+            "OFF AIR",
             t.text_muted,
             t.field,
             "Icecast is not connected".to_owned(),
         ),
     };
-    let full_word = word;
     let ice = &view.icecast;
     let listeners = view
         .output
@@ -833,44 +896,67 @@ fn live_chip(
         String::new()
     };
     let hint = format!(
-        "{why}\nMount {} · {listeners} · {} {} kbps{clear}\nClick for the Icecast settings",
+        "{word}: {why}\nMount {} · {listeners} · {} {} kbps{clear}\nClick for the Icecast settings",
         ice.mount,
         ice.format.label(),
         ice.kbps
     );
-    // A narrow window keeps only the glyph of the chip. The tooltip still has the words.
-    let word = if wide {
-        word.to_owned()
+    // A narrow cluster keeps only the icon of the chip. The tooltip still has the words.
+    let label = if wide {
+        icons::lead(icon, word)
     } else {
-        word.chars().take(1).collect()
+        icons::glyph(icon).to_string()
     };
-    let hint = if wide {
-        hint
-    } else {
-        format!("{word_all}\n{hint}", word_all = full_word)
-    };
-    let text = RichText::new(word).font(theme::mono(theme::LABEL)).strong();
+    let text = RichText::new(label)
+        .font(theme::mono(theme::LABEL))
+        .strong();
     let chip = egui::Button::new(text.color(ink))
         .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, ink));
-    if ui.add(chip).on_hover_text(hint).clicked() {
+        .stroke(Stroke::new(size::HAIRLINE, ink))
+        .min_size(egui::vec2(0.0, size::CONTROL_SM));
+    let resp = ui.add(chip).on_hover_text(hint);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, word));
+    if resp.clicked() {
         actions.push(Action::OpenIcecast);
     }
 }
 
-/// A compact stereo meter of Out: two bars, the zones from the theme and a peak mark.
-fn out_vu(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+/// The stereo meter of Out: two bars across the column, the zones from the theme and a peak
+/// mark. With `numbers`, the loudest peak in dB sits under the bars.
+fn out_meter(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    height: f32,
+    numbers: bool,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let Some(m) = view.meters.iter().find(|m| m.label == "Out") else {
         return;
     };
-    let h = size::VU_BAR_H * 2.0 + space::XXS;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size::VU_W, h), Sense::click());
+    let db = |v: f32| {
+        if v <= size::METER_MIN_DB {
+            "−∞".to_owned()
+        } else {
+            format!("{v:.1}")
+        }
+    };
+    let peak = m.peak_db[0].max(m.peak_db[1]);
+    let line = theme::CAPTION + space::XS;
+    let bars_h = if numbers {
+        (height - line).max(0.0)
+    } else {
+        height
+    };
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), bars_h), Sense::click());
+    let bar_h = ((rect.height() - size::VU_GAP) / 2.0).max(0.0);
     let p = ui.painter();
     for ch in 0..2 {
-        let top = rect.top() + ch as f32 * (size::VU_BAR_H + space::XXS);
+        let top = rect.top() + ch as f32 * (bar_h + size::VU_GAP);
         let bar = egui::Rect::from_min_size(
             egui::pos2(rect.left(), top),
-            egui::vec2(rect.width(), size::VU_BAR_H),
+            egui::vec2(rect.width(), bar_h),
         );
         p.rect_filled(bar, t.radius_sm, t.canvas);
         let x_of = |v: f32| bar.left() + bar.width() * mixer::frac(v);
@@ -895,13 +981,6 @@ fn out_vu(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &
             );
         }
     }
-    let db = |v: f32| {
-        if v <= size::METER_MIN_DB {
-            "−∞".to_owned()
-        } else {
-            format!("{v:.1}")
-        }
-    };
     let hint = format!(
         "Out · peak L {} dB, R {} dB · simulated levels\nClick for the mixer",
         db(m.peak_db[0]),
@@ -911,6 +990,11 @@ fn out_vu(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Out meter"));
     if resp.clicked() {
         actions.push(Action::OpenWindow(crate::windows::ToolWindow::Mixer));
+    }
+    if numbers {
+        let text = format!("Out peak {} dB", db(peak));
+        let text = RichText::new(text).font(theme::mono(theme::CAPTION));
+        widgets::truncated_label(ui, text.color(t.text_muted));
     }
 }
 
@@ -924,8 +1008,7 @@ fn mode_control(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XXS;
-        // The parent lays out right to left, so the reversed list reads AUTO · ASSIST · MANUAL.
-        for mode in PlayMode::ALL.iter().rev() {
+        for mode in PlayMode::ALL.iter() {
             let on = view.play_mode == *mode;
             // A narrow window shows two letters; the tooltip names the mode.
             let word = if wide {
@@ -943,7 +1026,8 @@ fn mode_control(
             let edge = if on { t.accent } else { t.field_border };
             let button = egui::Button::new(text)
                 .fill(fill)
-                .stroke(Stroke::new(size::HAIRLINE, edge));
+                .stroke(Stroke::new(size::HAIRLINE, edge))
+                .min_size(egui::vec2(0.0, size::CONTROL_MD));
             let hint = format!(
                 "{} mode{}",
                 mode.label(),
