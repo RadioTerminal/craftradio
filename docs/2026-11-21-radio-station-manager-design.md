@@ -258,9 +258,26 @@ from. Exports are CSV for the whole log and a scheduled-vs-aired report per play
 call), which covers ad proof without an ads-specific feature. Importing from a traffic
 system is deferred.
 
-Custom rules written as JavaScript functions are **deferred past v1** (my call, after
-review). v1 scripts can still change any playlist from event hooks (§6.8), and those changes
-are checked against the same constraints.
+**Rules are JavaScript (user, 2026-11-21).** A playlist's rules *are* a script. There's
+nothing special about them: a person, or an agent, can edit them by hand. The visual rule
+editor (⚙ on each playlist) is only a convenient way to write that script. It generates a
+declarative form:
+
+```js
+pick("shuffle");
+rule({ at: { minutes: [20, 50] }, place: "between", take: 3,
+       constraints: [notAdjacentToSelf(), maxPerDay(24)] });
+```
+
+- **How the script runs (my call):** the rules script runs in the embedded JS engine
+  (rquickjs, §6.8) when it's saved or loaded, never per track. Its `rule(...)` / `pick(...)`
+  calls produce the same typed `Rule` / `PickOrder` data the scheduler uses. This keeps the
+  scheduler pure Rust and deterministic, and the time and memory limits from §6.8 apply.
+- **Hand edits:** a script that has been edited by hand stays the source of truth. The
+  visual editor shows it as "edited by hand" and only overwrites it if asked.
+- **Custom logic:** procedural logic (functions that decide insertions at run time) goes
+  through the event hooks in §6.8. It's deferred past v1, and its results are still checked
+  against the same constraints.
 
 ### 6.7 Cartwall
 
