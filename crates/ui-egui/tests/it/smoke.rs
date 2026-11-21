@@ -313,6 +313,23 @@ fn deck_cards_have_equal_height_whatever_their_state() {
     }
 }
 
+/// Every icon button of a deck card has one size: Play, Pause and the settings cog.
+#[test]
+fn deck_card_icon_buttons_share_one_size() {
+    let harness = harness();
+    let play = harness.get_by_label("Play deck B").rect();
+    let cog = harness.get_by_label("Toggle Deck B settings").rect();
+    let pause = harness.get_by_label("Pause deck A").rect();
+    assert!(
+        (cog.size() - play.size()).abs().max_elem() < 0.5,
+        "cog {cog:?} play {play:?}"
+    );
+    assert!(
+        (pause.size() - play.size()).abs().max_elem() < 0.5,
+        "pause {pause:?} play {play:?}"
+    );
+}
+
 /// Arming a button never changes a card: the cards stay as tall as each other and as tall as
 /// before, the header buttons keep their rects, and the sentence is a tooltip, not text.
 #[test]

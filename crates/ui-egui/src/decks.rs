@@ -423,7 +423,12 @@ fn deck_body(
             ui.spacing_mut().item_spacing.x = space::XXS;
             let name = deck.label;
             let mut open = state.settings[i];
-            settings::settings_button(ui, &format!("Deck {name}"), &mut open);
+            settings::settings_button_sized(
+                ui,
+                &format!("Deck {name}"),
+                &mut open,
+                size::DECK_BUTTON,
+            );
             state.settings[i] = open;
             // A gap keeps the settings button away from the transport buttons. A narrow card
             // keeps a smaller gap.
@@ -436,7 +441,7 @@ fn deck_body(
                 let accessible = format!("{verb} deck {name}");
                 if is_live(deck) {
                     let hint = format!("{verb} the item on air ({keys} on the focused deck)");
-                    if icon_button_sized(ui, icon, false, &accessible, &hint, size::CONTROL_MD)
+                    if icon_button_sized(ui, icon, false, &accessible, &hint, size::DECK_BUTTON)
                         .clicked()
                     {
                         actions.push(command(i, DeckCommand::PlayPause));
@@ -457,7 +462,7 @@ fn deck_body(
                         note: &note,
                     });
                     let play =
-                        guard_button_sized(ui, icon, &accessible, &hint, armed, size::CONTROL_MD);
+                        guard_button_sized(ui, icon, &accessible, &hint, armed, size::DECK_BUTTON);
                     let cut = cuts_on_air(decks, i, state.fade_in(i));
                     if play.clicked()
                         && let Some(a) = state.press(i, Guarded::Play, cut, now)

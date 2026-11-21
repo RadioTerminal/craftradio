@@ -61,6 +61,9 @@ pub mod size {
     pub const CONTROL_HERO: f32 = 48.0;
     /// The square of an icon button. It is the same in every state.
     pub const ICON_BUTTON: f32 = 28.0;
+    /// The square of every icon button on a deck card (play, pause, settings, armed). One
+    /// size, so the row of a card looks the same whichever button shows.
+    pub const DECK_BUTTON: f32 = CONTROL_MD;
     /// An armed on-air button waits this long for the second press, in seconds.
     pub const ARM_S: f64 = 3.0;
     /// Line segments in the countdown ring of an armed button.

@@ -13,13 +13,19 @@ pub(crate) const NOT_SAVED: &str = "preview — not saved";
 
 /// The settings toggle of `part`. Its accessible name is the tooltip text.
 pub(crate) fn settings_button(ui: &mut egui::Ui, part: &str, open: &mut bool) {
+    settings_button_sized(ui, part, open, size::ICON_BUTTON);
+}
+
+/// The settings toggle at the square `side`, for a row whose icon buttons share one size.
+pub(crate) fn settings_button_sized(ui: &mut egui::Ui, part: &str, open: &mut bool, side: f32) {
     let name = format!("Toggle {part} settings");
-    let resp = widgets::icon_button(
+    let resp = widgets::icon_button_sized(
         ui,
         Icon::Settings,
         *open,
         &name,
         &format!("Show or hide the {part} settings"),
+        side,
     );
     if resp.clicked() {
         *open = !*open;
