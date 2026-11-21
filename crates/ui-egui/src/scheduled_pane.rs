@@ -8,6 +8,7 @@ use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_i
 use crate::library::LibraryDrag;
 use crate::prepared::Prepared;
 use crate::rules_editor;
+use crate::select::Selection;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
     DropTarget, Edit, FitView, MetaTarget, Pick, PlaylistTab, Row, StationView, Timing,
@@ -426,6 +427,24 @@ fn playlist(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    // The selection belongs to one playlist. Another tab starts with none.
+    if link.playlist_sel_of != p.name {
+        link.playlist_sel = Selection::default();
+        p.name.clone_into(&mut link.playlist_sel_of);
+    }
+    let order = &p.ids;
+    if link.focus == Pane::Playlist {
+        if link.keys.step != 0 {
+            link.playlist_sel.step(order, link.keys.step);
+        }
+        if link.keys.select_all {
+            link.playlist_sel.all(order);
+        }
+        let sel = link.playlist_sel.in_order(order);
+        if link.keys.delete && !sel.is_empty() {
+            actions.push(remove_items(p, decks, sel));
+        }
+    }
     egui::ScrollArea::vertical()
         .id_salt(("playlist_tab", &p.name))
         .auto_shrink(false)
@@ -457,10 +476,19 @@ fn playlist(
             ui.add_space(space::M);
             caption(ui, &format!("ITEMS ({})", p.items.len()), t);
             let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
+            let mut rows = Vec::new();
             let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
                 ui.set_width(ui.available_width());
                 for (i, (name, len)) in p.items.iter().enumerate() {
-                    let row = egui::Frame::new().inner_margin(pad::ROW).show(ui, |ui| {
+                    let id = p.ids.get(i).copied();
+                    let picked = id.is_some_and(|id| link.playlist_sel.contains(id));
+                    let fill = if picked {
+                        t.selection
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    };
+                    let row = egui::Frame::new().fill(fill).corner_radius(t.radius_sm);
+                    let row = row.inner_margin(pad::ROW).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             // The deck that holds the item, if one does.
                             let id = p.ids.get(i).copied();
@@ -485,14 +513,33 @@ fn playlist(
                         });
                     });
                     let resp = row.response.interact(Sense::click());
-                    resp.context_menu(|ui| item_menu(ui, p, i, name, *len, link, actions));
+                    rows.push(resp.rect);
+                    if let Some(id) = id {
+                        let plain = !link.playlist_sel.contains(id);
+                        if resp.clicked() || (resp.secondary_clicked() && plain) {
+                            let m = if resp.clicked() {
+                                resp.ctx.input(|i| i.modifiers)
+                            } else {
+                                egui::Modifiers::NONE
+                            };
+                            link.focus = Pane::Playlist;
+                            link.playlist_sel.click(id, m, order);
+                        }
+                    }
+                    resp.context_menu(|ui| item_menu(ui, p, decks, i, link, actions));
                 }
                 let hint = RichText::new("Drop a library title or files here to add them");
                 ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
             });
-            zone.response
-                .interact(Sense::click())
-                .context_menu(|ui| add_menu::items(ui, &p.name, None, actions));
+            // The zone takes clicks only outside the rows. A click on the zone on top of the
+            // rows would take the clicks of the rows.
+            let pointer = ui.input(|i| i.pointer.interact_pos());
+            let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
+            if !on_row {
+                zone.response
+                    .interact(Sense::click())
+                    .context_menu(|ui| add_menu::items(ui, &p.name, None, actions));
+            }
             if let Some(drag) = dropped {
                 actions.push(Action::Drop {
                     item: drag.0,
@@ -512,15 +559,46 @@ fn playlist(
         });
 }
 
+/// The action that removes items of playlist `p`. Items on a deck stay, with the reason.
+/// More than a few items ask first. Every remove can be undone.
+fn remove_items(p: &PlaylistTab, decks: &[crate::view::DeckView], ids: Vec<u64>) -> Action {
+    let on_deck = decks
+        .iter()
+        .enumerate()
+        .find(|(_, d)| d.item.is_some_and(|i| ids.contains(&i)));
+    if let Some((d, _)) = on_deck {
+        let letter = ['A', 'B', 'C', 'D'].get(d).copied().unwrap_or('?');
+        return Action::Toast(format!(
+            "An item is on deck {letter}, so the items stay. Select the items without it."
+        ));
+    }
+    let n = ids.len();
+    let edit = Action::Edit(Edit::RemovePlaylistItems {
+        playlist: p.name.clone(),
+        ids,
+    });
+    if n > crate::main_pane::CONFIRM_REMOVE_OVER {
+        return Action::Confirm {
+            text: format!("Remove {n} items from {}? You can undo it.", p.name),
+            yes: "Remove".to_owned(),
+            then: Box::new(edit),
+        };
+    }
+    edit
+}
+
 fn item_menu(
     ui: &mut egui::Ui,
     p: &PlaylistTab,
+    decks: &[crate::view::DeckView],
     i: usize,
-    name: &str,
-    len: std::time::Duration,
     link: &mut Linked,
     actions: &mut Vec<Action>,
 ) {
+    let Some((name, len)) = p.items.get(i).cloned() else {
+        return;
+    };
+    let name = name.as_str();
     let id = p.ids.get(i).copied().unwrap_or_default();
     let copy = |cut: bool| Action::CopyTitles {
         titles: vec![(name.to_owned(), len)],
@@ -529,12 +607,8 @@ fn item_menu(
             id,
         }),
     };
-    let remove = || {
-        Action::Edit(Edit::RemovePlaylistItem {
-            playlist: p.name.clone(),
-            id,
-        })
-    };
+    // Remove acts on the selection when it holds this item.
+    let remove = || remove_items(p, decks, link.playlist_sel.targets(id));
     ui.menu_button("+ Add below", |ui| {
         add_menu::items(ui, &p.name, Some(i + 1), actions)
     });

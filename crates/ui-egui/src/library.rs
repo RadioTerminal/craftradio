@@ -8,9 +8,10 @@ use std::path::Path;
 use egui::{Align, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{Action, FileTarget, Linked, Pane, mmss, step};
+use crate::app::{Action, FileTarget, Linked, Pane, mmss};
 use crate::context_menu::{self, COPY, menu_item};
 use crate::parts;
+use crate::select::Selection;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DropTarget, Edit, FolderView, LibraryItem, MetaTarget, Place, StationView};
@@ -46,8 +47,8 @@ pub(crate) struct State {
     settings: bool,
     new_folder: String,
     new_category: String,
-    /// The row that the arrow keys move from.
-    selected: Option<u64>,
+    /// The selected rows. The arrow keys move from the last one.
+    selected: Selection,
     /// The row under the pointer in the last frame.
     hovered: Option<u64>,
 }
@@ -61,7 +62,7 @@ impl Default for State {
             settings: false,
             new_folder: String::new(),
             new_category: String::new(),
-            selected: None,
+            selected: Selection::default(),
             hovered: None,
         }
     }
@@ -340,15 +341,21 @@ fn table(
     let items = visible(view, state);
     let order: Vec<u64> = items.iter().map(|i| i.id).collect();
     let mut scroll = None;
-    if link.focus == Pane::Library
-        && link.keys.step != 0
-        && let Some(id) = step(&order, state.selected, link.keys.step)
-    {
-        state.selected = Some(id);
-        scroll = order.iter().position(|o| *o == id);
+    if link.focus == Pane::Library {
+        if link.keys.step != 0 {
+            scroll = state.selected.step(&order, link.keys.step);
+        }
+        if link.keys.select_all {
+            state.selected.all(&order);
+        }
+        let sel = state.selected.in_order(&order);
+        if link.keys.delete && !sel.is_empty() {
+            actions.push(remove_action(view, state, sel));
+        }
     }
-    let selected = state.selected;
+    let selected = &state.selected;
     let mut clicked = None;
+    let mut menu_remove = None;
     // The ☰ drag grip shows on the row under the pointer only.
     let hovered = state.hovered;
     let mut hover_now = None;
@@ -384,7 +391,7 @@ fn table(
                 let Some(item) = items.get(row.index()) else {
                     return;
                 };
-                row.set_selected(selected == Some(item.id));
+                row.set_selected(selected.contains(item.id));
                 let grip = if hovered == Some(item.id) { "☰ " } else { "" };
                 row.col(|ui| {
                     let text = RichText::new(format!("{grip}{}", item.title));
@@ -412,8 +419,11 @@ fn table(
                 if resp.hovered() {
                     hover_now = Some(item.id);
                 }
-                if resp.clicked() || resp.secondary_clicked() {
-                    clicked = Some(item.id);
+                if resp.clicked() {
+                    clicked = Some((item.id, resp.ctx.input(|i| i.modifiers)));
+                }
+                if resp.secondary_clicked() && !selected.contains(item.id) {
+                    clicked = Some((item.id, egui::Modifiers::NONE));
                 }
                 // The whole row is the drag handle. A label follows the pointer while it moves.
                 resp.dnd_set_drag_payload(LibraryDrag(item.id));
@@ -429,16 +439,53 @@ fn table(
                             });
                         });
                 }
-                resp.context_menu(|ui| item_menu(ui, view, item, actions));
+                resp.context_menu(|ui| {
+                    item_menu(ui, view, item, actions);
+                    ui.separator();
+                    if context_menu::danger_item(ui, "Remove from Library…", t) {
+                        menu_remove = Some(selected.targets(item.id));
+                    }
+                });
             });
         });
-    if let Some(id) = clicked {
-        state.selected = Some(id);
+    if let Some((id, m)) = clicked {
+        state.selected.click(id, m, &order);
         link.focus = Pane::Library;
+    }
+    if let Some(ids) = menu_remove {
+        actions.push(remove_action(view, state, ids));
     }
     if hover_now != state.hovered {
         state.hovered = hover_now;
         ui.ctx().request_repaint();
+    }
+}
+
+/// The action that removes library items. They leave the playlists that hold them, and the
+/// files stay on disk. It always asks first, because a playlist that plays can lose items.
+fn remove_action(view: &StationView, state: &State, ids: Vec<u64>) -> Action {
+    if matches!(state.pick, Pick::Folder(_)) {
+        return Action::Toast(
+            "Files of a folder leave the Library with their folder. Remove the folder instead."
+                .to_owned(),
+        );
+    }
+    let mut from: Vec<&str> = view
+        .library
+        .iter()
+        .filter(|i| ids.contains(&i.id))
+        .map(|i| i.category.as_str())
+        .collect();
+    from.sort_unstable();
+    from.dedup();
+    Action::Confirm {
+        text: format!(
+            "Remove {} items from the Library? They leave {}. The files stay on disk. You can undo it.",
+            ids.len(),
+            from.join(", ")
+        ),
+        yes: "Remove".to_owned(),
+        then: Box::new(Action::Edit(Edit::RemoveLibraryItems(ids))),
     }
 }
 

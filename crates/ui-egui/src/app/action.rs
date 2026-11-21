@@ -101,7 +101,8 @@ fn describe_real(edit: &Edit, n: usize) -> String {
         Edit::DuplicatePlaylist(name) => format!("Made a copy of {name}"),
         Edit::NewPlaylist(_) => "Made a new playlist".to_owned(),
         Edit::DeletePlaylist(name) => format!("Deleted {name}"),
-        Edit::RemovePlaylistItem { playlist, .. } => format!("Removed {n} items from {playlist}"),
+        Edit::RemovePlaylistItems { playlist, .. } => format!("Removed {n} items from {playlist}"),
+        Edit::RemoveLibraryItems(_) => format!("Removed {n} items from the Library"),
         Edit::MovePlaylistItem { .. } => format!("Moved {n} items"),
         Edit::SetMeta(_) => format!("Changed the tags of {n} items; tags are not written to files"),
         Edit::Deck { deck, command } => {
@@ -171,7 +172,8 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         Edit::DuplicatePlaylist(name) => format!("made a copy of {name}"),
         Edit::NewPlaylist(_) => "made a new playlist (not saved)".to_owned(),
         Edit::DeletePlaylist(name) => format!("deleted {name}"),
-        Edit::RemovePlaylistItem { playlist, .. } => format!("removed {n} items from {playlist}"),
+        Edit::RemovePlaylistItems { playlist, .. } => format!("removed {n} items from {playlist}"),
+        Edit::RemoveLibraryItems(_) => format!("removed {n} items from the Library"),
         Edit::MovePlaylistItem { .. } => format!("moved {n} items"),
         Edit::SetMeta(_) => format!("changed the tags of {n} items; tags are not written to files"),
         Edit::Deck { deck, command } => {
@@ -271,7 +273,8 @@ impl RadioApp {
                 self.toast_undo = matches!(
                     edit,
                     Edit::Remove(_)
-                        | Edit::RemovePlaylistItem { .. }
+                        | Edit::RemovePlaylistItems { .. }
+                        | Edit::RemoveLibraryItems(_)
                         | Edit::DeletePlaylist(_)
                         | Edit::RemoveCartPage { .. }
                 );

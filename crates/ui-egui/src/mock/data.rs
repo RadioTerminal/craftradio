@@ -35,6 +35,8 @@ pub(super) const PAST_HOURS: i64 = 3;
 pub(super) const SILENCE_DB: f32 = -90.0;
 /// Manual rows take ids from this base, so they never meet ids made from start times.
 pub(super) const MANUAL_ID: u64 = 1 << 62;
+/// The first id of a playlist item. The ids stay apart from the row ids and the library ids.
+pub(super) const TAB_ITEM_ID: u64 = 1 << 61;
 pub(super) const TRACKS: usize = 200;
 pub(super) const TRACKS_PER_JINGLE: usize = 3;
 pub(super) const ADS_PER_BREAK: usize = 3;

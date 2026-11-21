@@ -16,7 +16,7 @@ use crate::view::{DropTarget, Edit, MetaTarget, MoveTo, Place, Row, StationView,
 use crate::windows::ToolWindow;
 
 /// More rows than this ask before a remove.
-const CONFIRM_REMOVE_OVER: usize = 5;
+pub(crate) const CONFIRM_REMOVE_OVER: usize = 5;
 
 /// Show the main pane.
 pub(crate) fn show(

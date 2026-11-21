@@ -813,11 +813,14 @@ pub enum Edit {
     /// Make an empty playlist. The name is a wish; a taken name gets a number.
     NewPlaylist(String),
     DeletePlaylist(String),
-    /// Remove one item of a playlist, by its id.
-    RemovePlaylistItem {
+    /// Remove items of a playlist, by their ids, as one undo step.
+    RemovePlaylistItems {
         playlist: String,
-        id: u64,
+        ids: Vec<u64>,
     },
+    /// Remove library items from the playlists that hold them, as one undo step. The files
+    /// stay on disk. Files of a folder leave only with their folder.
+    RemoveLibraryItems(Vec<u64>),
     MovePlaylistItem {
         playlist: String,
         index: usize,

@@ -163,13 +163,20 @@ impl MockSource {
         for (i, item) in library.iter_mut().enumerate() {
             item.id = i as u64 + 1;
         }
+        // Every playlist item has an id, so a person can select it.
+        let mut tabs = tabs();
+        let mut next_item_id = TAB_ITEM_ID;
+        for tab in &mut tabs {
+            tab.ids = (next_item_id..).take(tab.items.len()).collect();
+            next_item_id += tab.items.len() as u64;
+        }
         let carts: Vec<String> = CARTS.iter().map(|c| (*c).to_owned()).collect();
         let pages = carts.len().div_ceil(CARTS_PER_PAGE);
         Self {
             tz,
             tracks,
             cache: None,
-            tabs: tabs(),
+            tabs,
             main: main_tab(),
             library,
             cartwall: CartwallView {
@@ -211,7 +218,7 @@ impl MockSource {
             limits: Limits::DEFAULT,
             settings: Settings::new(),
             hours: HOURS,
-            next_item_id: 1,
+            next_item_id,
             undo: Vec::new(),
             redo: Vec::new(),
             edit_depth: 0,

@@ -87,7 +87,10 @@ impl RadioApp {
                 }
                 Some(CutSource::Rows(rows)) => self.source.edit(Edit::Remove(rows)),
                 Some(CutSource::PlaylistItem { playlist, id }) => {
-                    self.source.edit(Edit::RemovePlaylistItem { playlist, id })
+                    self.source.edit(Edit::RemovePlaylistItems {
+                        playlist,
+                        ids: vec![id],
+                    })
                 }
                 None => Ok(0),
             };

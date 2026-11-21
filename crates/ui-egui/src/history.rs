@@ -5,9 +5,10 @@ use egui::{Align, DragValue, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Action, Linked, Pane, hms, mmss, step};
+use crate::app::{Action, Linked, Pane, hms, mmss};
 use crate::context_menu::{COPY, menu_item};
 use crate::parts;
+use crate::select::Selection;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::MetaTarget;
@@ -38,8 +39,11 @@ pub(crate) struct State {
     filter: String,
     playlist: Option<String>,
     settings: bool,
-    selected: Vec<u64>,
+    selected: Selection,
 }
+
+/// Why Delete keeps the rows of the log.
+const KEEPS_ROWS: &str = "The as-played log keeps every row: it is the record of what aired.";
 
 pub(crate) fn show(
     ui: &mut egui::Ui,
@@ -130,12 +134,16 @@ pub(crate) fn show(
         .collect();
     let order: Vec<u64> = rows.iter().map(|r| r.id).collect();
     let mut scroll = None;
-    if link.focus == Pane::History
-        && link.keys.step != 0
-        && let Some(id) = step(&order, state.selected.last().copied(), link.keys.step)
-    {
-        state.selected = vec![id];
-        scroll = order.iter().position(|o| *o == id);
+    if link.focus == Pane::History {
+        if link.keys.step != 0 {
+            scroll = state.selected.step(&order, link.keys.step);
+        }
+        if link.keys.select_all {
+            state.selected.all(&order);
+        }
+        if link.keys.delete && !state.selected.ids.is_empty() {
+            actions.push(Action::Toast(KEEPS_ROWS.to_owned()));
+        }
     }
     let mut table = TableBuilder::new(ui)
         .id_salt("history_table")
@@ -177,7 +185,7 @@ pub(crate) fn show(
                 let Some(r) = rows.get(row.index()) else {
                     return;
                 };
-                row.set_selected(state.selected.contains(&r.id));
+                row.set_selected(state.selected.contains(r.id));
                 for c in &cols {
                     row.col(|ui| cell(ui, *c, r, t));
                 }
@@ -186,17 +194,13 @@ pub(crate) fn show(
                     link.focus = Pane::History;
                 }
                 if resp.clicked() {
-                    if resp.ctx.input(|i| i.modifiers.command) {
-                        if let Some(k) = state.selected.iter().position(|s| *s == r.id) {
-                            state.selected.remove(k);
-                        } else {
-                            state.selected.push(r.id);
-                        }
-                    } else {
-                        state.selected = vec![r.id];
-                    }
+                    let m = resp.ctx.input(|i| i.modifiers);
+                    state.selected.click(r.id, m, &order);
                 }
-                resp.context_menu(|ui| row_menu(ui, view, r, &state.selected, actions));
+                if resp.secondary_clicked() && !state.selected.contains(r.id) {
+                    state.selected.click(r.id, egui::Modifiers::NONE, &order);
+                }
+                resp.context_menu(|ui| row_menu(ui, view, r, &state.selected.ids, actions));
             });
         });
 }

@@ -38,6 +38,8 @@ pub(crate) enum Pane {
     Scheduled,
     Library,
     History,
+    /// The item list of a playlist tab.
+    Playlist,
 }
 
 /// The id `by` rows away from `current` in `order`, for the arrow keys.
@@ -78,6 +80,9 @@ pub(crate) struct Linked {
     pub last_file_target: Option<FileTarget>,
     /// The shortcuts of this frame, read once before the panes draw.
     pub keys: shortcuts::Pressed,
+    /// The selected items of the playlist tab on show, and the name of that playlist.
+    pub playlist_sel: crate::select::Selection,
+    pub playlist_sel_of: String,
     /// The main pane keeps the row on air near the top. A scroll by hand turns it off.
     pub follow: bool,
     /// The row on air that the main pane last scrolled to.
@@ -92,29 +97,13 @@ impl Linked {
     /// Select after a click. Command adds or removes one row; shift selects a range of `order`.
     pub fn click(&mut self, pane: Pane, id: u64, m: egui::Modifiers, order: &[u64]) {
         self.focus = pane;
-        if m.command {
-            if let Some(i) = self.selected.iter().position(|s| *s == id) {
-                self.selected.remove(i);
-            } else {
-                self.selected.push(id);
-            }
-            self.anchor = Some(id);
+        if !crate::select::click(&mut self.selected, &mut self.anchor, id, m, order) {
             return;
         }
-        if m.shift {
-            let a = self.anchor.and_then(|a| order.iter().position(|o| *o == a));
-            let b = order.iter().position(|o| *o == id);
-            if let (Some(a), Some(b)) = (a, b) {
-                self.selected = order[a.min(b)..=a.max(b)].to_vec();
-                return;
-            }
-        }
-        self.selected = vec![id];
-        self.anchor = Some(id);
         match pane {
             Pane::Main => self.scroll_scheduled = Some(id),
             Pane::Scheduled => self.scroll_main = Some(id),
-            Pane::Library | Pane::History => {}
+            Pane::Library | Pane::History | Pane::Playlist => {}
         }
     }
 

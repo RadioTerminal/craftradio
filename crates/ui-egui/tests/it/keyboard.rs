@@ -137,3 +137,45 @@ fn backspace_removes_the_selected_rows_and_undo_brings_them_back() {
         "undo brings both back"
     );
 }
+
+/// The items of the Jingles playlist tab, by their exact names.
+fn jingles(h: &Harness<'_, RadioApp>) -> usize {
+    (1..=3)
+        .map(|n| h.query_all_by_label(&format!("Station ID {n}")).count())
+        .sum()
+}
+
+#[test]
+fn a_playlist_tab_selects_all_its_items_and_backspace_removes_them() {
+    let mut h = harness();
+    h.query_all_by_label_contains("Jingles")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the Jingles tab is on screen")
+        .click();
+    h.run_steps(FRAMES);
+    assert_eq!(jingles(&h), 3, "the tab lists its three items");
+    click_row(&mut h, "Station ID 1", egui::Modifiers::NONE);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(FRAMES);
+    assert_eq!(jingles(&h), 0, "Command+A and Backspace took every item");
+}
+
+#[test]
+fn the_library_selects_all_rows_and_delete_asks_before_it_removes() {
+    let mut h = harness();
+    h.get_by_label("Library").click();
+    h.run_steps(FRAMES);
+    h.get_by_label("Beds (3)").click();
+    h.run_steps(FRAMES);
+    click_row(&mut h, "Bed · Warm Pad", egui::Modifiers::NONE);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(FRAMES);
+    assert!(
+        shows(&h, "Remove 3 items from the Library?"),
+        "Delete asks before the three beds leave their playlist"
+    );
+}

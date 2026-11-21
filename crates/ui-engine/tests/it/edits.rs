@@ -190,3 +190,44 @@ fn adding_a_folder_of_100_files_returns_at_once() {
     let view = wait_for(&mut source, &clock, |v| v.main.items.len() == 100);
     assert_eq!(view.main.items.len(), 100, "the files arrive later");
 }
+
+/// Remove from Library takes an item out of the playlist that holds it, as one undo step.
+/// The file stays on disk.
+#[test]
+fn a_library_item_leaves_its_playlist_and_undo_brings_it_back() {
+    let d = dir();
+    let songs: Vec<_> = (1..=8)
+        .map(|n| {
+            track(
+                n,
+                &format!("Song {n}"),
+                &wav(&d, &format!("s{n}"), 2.0),
+                2.0,
+            )
+        })
+        .collect();
+    let path = songs[7].source.clone();
+    let (mut source, clock) = source(songs);
+    let view = wait_for(&mut source, &clock, |v| v.library.len() == 8);
+    let last = view
+        .library
+        .iter()
+        .find(|l| l.title == "Song 8")
+        .expect("Song 8 is in the library")
+        .id;
+    assert_eq!(source.edit(Edit::RemoveLibraryItems(vec![last])), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| v.library.len() == 7);
+    assert!(view.library.iter().all(|l| l.id != last), "Song 8 left");
+    if let radio_model::Source::File { path } = &path {
+        assert!(
+            std::path::Path::new(path).exists(),
+            "the file stays on disk"
+        );
+    }
+    assert!(source.edit(Edit::Undo).is_ok());
+    let view = wait_for(&mut source, &clock, |v| v.library.len() == 8);
+    assert!(
+        view.library.iter().any(|l| l.id == last),
+        "undo brings it back"
+    );
+}

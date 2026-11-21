@@ -118,11 +118,15 @@ impl ViewSource for MockSource {
                 at: Place::After(after),
             }),
             DropTarget::Playlist(name) => {
+                let id = self.next_item_id;
                 let Some(tab) = self.tab_mut(&name) else {
                     return Err(format!("preview — no playlist {name}"));
                 };
+                tab.ids.truncate(tab.items.len());
                 tab.items.push(entry);
                 tab.weights.push(1);
+                tab.ids.push(id);
+                self.next_item_id += 1;
                 Ok(1)
             }
             DropTarget::Cart(cart) => self.edit(Edit::AssignCart {

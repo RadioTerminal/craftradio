@@ -985,14 +985,16 @@ impl EngineSource {
                 self.run_edit(Command::PlaylistDelete { playlist })?;
                 Ok(1)
             }
-            Edit::RemovePlaylistItem { playlist, id } => {
+            Edit::RemovePlaylistItems { playlist, ids } => {
                 let p = self.playlist_id(&playlist)?;
+                let n = ids.len();
                 self.run_edit(Command::PlaylistRemoveItems {
                     playlist: p,
-                    items: vec![ItemId(id)],
+                    items: ids.into_iter().map(ItemId).collect(),
                 })?;
-                Ok(1)
+                Ok(n)
             }
+            Edit::RemoveLibraryItems(ids) => self.remove_library_items(&ids),
             Edit::MovePlaylistItem {
                 playlist,
                 index,
@@ -1327,6 +1329,37 @@ impl EngineSource {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Removes library items from the playlists that hold them, as one undo step. An id of
+    /// a folder file is in no playlist, so it stays; the folder brings it.
+    fn remove_library_items(&mut self, ids: &[u64]) -> Result<usize, String> {
+        let mut cmds = Vec::new();
+        let mut n = 0;
+        for p in &self.state.station.playlists {
+            let items: Vec<ItemId> = p
+                .items
+                .iter()
+                .filter(|i| ids.contains(&i.id.0))
+                .map(|i| i.id)
+                .collect();
+            if items.is_empty() {
+                continue;
+            }
+            n += items.len();
+            cmds.push(Command::PlaylistRemoveItems {
+                playlist: p.id,
+                items,
+            });
+        }
+        if n == 0 {
+            return Err(
+                "Files of a folder leave the Library with their folder. Remove the folder instead."
+                    .to_owned(),
+            );
+        }
+        self.run_batch(cmds)?;
+        Ok(n)
     }
 
     pub(crate) fn find_ref(&self, title: &str) -> Option<u64> {

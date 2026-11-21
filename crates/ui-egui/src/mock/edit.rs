@@ -304,21 +304,35 @@ impl MockSource {
                 }
                 Ok(1)
             }
-            Edit::RemovePlaylistItem { playlist, id } => {
+            Edit::RemovePlaylistItems { playlist, ids } => {
                 let Some(tab) = self.tab_mut(&playlist) else {
                     return Err(gone(&format!("the playlist {playlist}")));
                 };
-                let Some(index) = tab.ids.iter().position(|i| *i == id) else {
+                if !ids.iter().all(|id| tab.ids.contains(id)) {
                     return Err(gone("that item"));
-                };
-                tab.ids.remove(index);
-                if index < tab.items.len() {
-                    tab.items.remove(index);
                 }
-                if index < tab.weights.len() {
-                    tab.weights.remove(index);
+                // From the end, so the indexes of the rows still to go stay right.
+                for index in (0..tab.ids.len()).rev() {
+                    if !ids.contains(&tab.ids[index]) {
+                        continue;
+                    }
+                    tab.ids.remove(index);
+                    if index < tab.items.len() {
+                        tab.items.remove(index);
+                    }
+                    if index < tab.weights.len() {
+                        tab.weights.remove(index);
+                    }
                 }
-                Ok(1)
+                Ok(ids.len())
+            }
+            Edit::RemoveLibraryItems(ids) => {
+                let before = self.library.len();
+                self.library.retain(|i| !ids.contains(&i.id));
+                match before - self.library.len() {
+                    0 => Err(gone("those items")),
+                    n => Ok(n),
+                }
             }
             Edit::MovePlaylistItem {
                 playlist,
