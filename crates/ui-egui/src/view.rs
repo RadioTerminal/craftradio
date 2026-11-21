@@ -875,6 +875,13 @@ pub enum Edit {
     },
     /// Stop every cart that plays.
     StopCarts,
+    /// Remove every item of a playlist but the items on decks. `expect_count` is the count
+    /// that the person saw; with `remove_locked` false, locked items stay too.
+    ClearPlaylist {
+        playlist: String,
+        expect_count: usize,
+        remove_locked: bool,
+    },
     /// Remove the items of a playlist whose file another item of it has already. The first
     /// item of each file stays.
     RemoveDuplicates {

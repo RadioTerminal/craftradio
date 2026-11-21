@@ -127,6 +127,9 @@ fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
     if menu_item(ui, "Remove duplicates…", None) {
         actions.push(Action::RemoveDuplicates(p.name.clone()));
     }
+    if menu_item(ui, "Clear playlist…", None) {
+        actions.push(Action::ClearPlaylist(p.name.clone()));
+    }
     if menu_item(ui, "Duplicate playlist", None) {
         actions.push(Action::Edit(Edit::DuplicatePlaylist(p.name.clone())));
     }

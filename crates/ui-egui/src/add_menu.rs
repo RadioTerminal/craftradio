@@ -136,6 +136,11 @@ pub(crate) fn items(
     if menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
     }
+    ui.separator();
+    if crate::context_menu::danger_item(ui, "Clear playlist…", &crate::theme::Tokens::get(ui.ctx()))
+    {
+        actions.push(Action::ClearPlaylist(playlist.to_owned()));
+    }
 }
 
 fn planned(ui: &mut egui::Ui, minutes: &mut u32, seconds: &mut u32, t: &Tokens) {

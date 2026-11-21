@@ -167,6 +167,8 @@ pub struct RadioApp {
     /// The toast offers Undo: it reports a remove.
     toast_undo: bool,
     confirm: Option<Confirm>,
+    /// The Clear playlist dialog: the playlist, its item count, and "also remove locked".
+    clear: Option<(String, usize, bool, bool)>,
     rename: Option<(String, String)>,
     meta: Option<MetaEditor>,
     add_dialog: Option<AddDialog>,
@@ -217,6 +219,7 @@ impl RadioApp {
             toast: None,
             toast_undo: false,
             confirm: None,
+            clear: None,
             rename: None,
             meta: None,
             add_dialog: None,

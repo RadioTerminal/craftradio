@@ -95,6 +95,8 @@ pub mod size {
     pub const DECK_MIN_W: f32 = 180.0;
     /// The narrowest deck card. Below the normal width its text truncates.
     pub const DECK_TINY_W: f32 = 184.0;
+    /// The widest text of a dialog. Help text wraps at this width.
+    pub const DIALOG_W: f32 = 420.0;
     /// The deck badge on a row of a list.
     pub const DECK_MARK: f32 = 16.0;
     /// The bar in the deck colour at the left edge of a row on a deck.

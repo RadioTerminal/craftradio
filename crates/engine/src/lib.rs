@@ -364,6 +364,7 @@ fn undoable(cmd: &Command) -> bool {
         | C::PlaylistSetOnInterrupt { .. }
         | C::PlaylistAddItems { .. }
         | C::PlaylistRemoveItems { .. }
+        | C::PlaylistClear { .. }
         | C::PlaylistMoveItems { .. }
         | C::PlaylistSetRulesScript { .. }
         | C::PlaylistSetSource { .. }
@@ -767,6 +768,41 @@ impl Engine {
                 })?;
                 self.state.prune_orphans();
                 Ok(Outcome::default())
+            }
+            C::PlaylistClear {
+                playlist,
+                expect_count,
+                remove_locked,
+            } => {
+                let on_deck: Vec<ItemId> = self.state.decks.iter().flatten().copied().collect();
+                let mut removed = 0usize;
+                self.edit_station(|s| {
+                    let p = playlist_mut(s, playlist)?;
+                    if p.items.len() != expect_count {
+                        return Err(EngineError::BadArgument(
+                            "playlist changed, try again".into(),
+                        ));
+                    }
+                    let before = p.items.len();
+                    p.items
+                        .retain(|i| on_deck.contains(&i.id) || (i.locked && !remove_locked));
+                    removed = before - p.items.len();
+                    // A folder playlist stops watching, or its watch would add it all back.
+                    if let Some(src) = &mut p.source {
+                        src.watch = false;
+                    }
+                    Ok(())
+                })?;
+                if let Some(src) = self.state.sources.get_mut(&playlist)
+                    && let Some(w) = src.get_mut("watch")
+                {
+                    *w = Value::Bool(false);
+                }
+                self.state.prune_orphans();
+                Ok(Outcome {
+                    data: Some(removed.into()),
+                    ..Outcome::default()
+                })
             }
             C::PlaylistMoveItems {
                 playlist,

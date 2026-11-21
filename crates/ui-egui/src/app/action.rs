@@ -69,6 +69,8 @@ pub(crate) enum Action {
     AddDialog(AddDialog),
     /// Select every row of the Main list.
     SelectAllRows,
+    /// Ask before removing every item of a playlist.
+    ClearPlaylist(String),
     /// Count the duplicates of a playlist, then ask before removing them.
     RemoveDuplicates(String),
     /// Make a playlist from a folder of the library, and maybe make it main.
@@ -139,6 +141,7 @@ fn describe_real(edit: &Edit, n: usize) -> String {
         Edit::SetCart { cart, .. } => format!("Changed cart {}", cart + 1),
         Edit::FireCart { cart } => format!("Fired cart {}", cart + 1),
         Edit::RemoveDuplicates { playlist } => format!("Removed {n} duplicates from {playlist}"),
+        Edit::ClearPlaylist { playlist, .. } => format!("Removed {n} items from {playlist}"),
         Edit::StopCarts => "Stopped all carts".to_owned(),
         Edit::AddFolder { path } => format!("Reading the audio files of {path}"),
         Edit::RemoveFolder { path } => format!("Removed {path} from the Library"),
@@ -210,6 +213,7 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         Edit::SetCart { cart, .. } => format!("changed cart {}", cart + 1),
         Edit::FireCart { cart } => format!("cart {} flashes; no audio", cart + 1),
         Edit::RemoveDuplicates { playlist } => format!("removed {n} duplicates from {playlist}"),
+        Edit::ClearPlaylist { playlist, .. } => format!("removed {n} items from {playlist}"),
         Edit::StopCarts => "stopped all carts; no audio".to_owned(),
         Edit::AddFolder { path } => format!("read {n} audio files from {path}"),
         Edit::RemoveFolder { path } => format!("removed {path} from the Library"),
@@ -385,6 +389,18 @@ impl RadioApp {
             }
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
             Action::AddDialog(d) => self.add_dialog = Some(d),
+            Action::ClearPlaylist(name) => {
+                let tab = self
+                    .view
+                    .tabs
+                    .iter()
+                    .chain(std::iter::once(&self.view.main))
+                    .find(|t| t.name == name);
+                if let Some(tab) = tab {
+                    let folder = tab.source.as_ref().is_some_and(|s| s.watch);
+                    self.clear = Some((name, tab.items.len(), true, folder));
+                }
+            }
             Action::SelectAllRows => {
                 self.link.selected = self.view.rows.iter().map(|r| r.id).collect();
                 self.link.focus = Pane::Main;

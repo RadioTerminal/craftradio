@@ -4,6 +4,10 @@ use schemars::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+fn yes() -> bool {
+    true
+}
+
 /// Operating mode (spec 6.15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Mode {
@@ -73,6 +77,16 @@ pub enum Command {
         playlist: PlaylistId,
         items: Vec<Item>,
         at: Option<usize>,
+    },
+    /// Removes every item of a playlist but the items on decks, and the locked items unless
+    /// `remove_locked`. `expect_count` is the item count that the person saw; a playlist that
+    /// changed since fails. A folder playlist stops watching its folder.
+    #[serde(rename = "playlist.clear")]
+    PlaylistClear {
+        playlist: PlaylistId,
+        expect_count: usize,
+        #[serde(default = "yes")]
+        remove_locked: bool,
     },
     #[serde(rename = "playlist.remove_items")]
     PlaylistRemoveItems {
@@ -249,6 +263,7 @@ impl Command {
             Self::PlaylistSetOnInterrupt { .. } => "playlist.set_on_interrupt",
             Self::PlaylistAddItems { .. } => "playlist.add_items",
             Self::PlaylistRemoveItems { .. } => "playlist.remove_items",
+            Self::PlaylistClear { .. } => "playlist.clear",
             Self::PlaylistMoveItems { .. } => "playlist.move_items",
             Self::PlaylistSetRulesScript { .. } => "playlist.set_rules_script",
             Self::PlaylistSetSource { .. } => "playlist.set_source",
@@ -307,6 +322,7 @@ impl Command {
             | Self::PlaylistSetOnInterrupt { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
+            | Self::PlaylistClear { .. }
             | Self::PlaylistMoveItems { .. }
             | Self::PlaylistSetRulesScript { .. }
             | Self::PlaylistSetSource { .. }
@@ -439,6 +455,12 @@ pub fn registry() -> Vec<CommandSpec> {
             "Remove items from a playlist",
             A,
             &[p, ("items", "array")],
+        ),
+        spec(
+            "playlist.clear",
+            "Remove all items of a playlist but those on decks",
+            A,
+            &[p, ("expect_count", "integer"), ("remove_locked", "boolean")],
         ),
         spec(
             "playlist.move_items",

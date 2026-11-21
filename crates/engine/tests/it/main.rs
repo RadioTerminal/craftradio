@@ -441,3 +441,41 @@ fn quick_repeats_of_one_cart_make_one_undo_step() {
         "one undo takes back the drag"
     );
 }
+
+#[test]
+fn clear_keeps_the_item_on_air_and_undo_restores_the_rest_in_order() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let items: Vec<_> = (1..=5).map(|i| item(i, &format!("t{i}"))).collect();
+    e.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items,
+        at: None,
+    })
+    .unwrap();
+    e.set_deck(0, Some(radio_model::ItemId(3)));
+    e.set_live(0, true);
+    let stale = e.dispatch(Command::PlaylistClear {
+        playlist: radio_model::PlaylistId(1),
+        expect_count: 4,
+        remove_locked: true,
+    });
+    assert!(stale.is_err(), "a changed playlist is not cleared");
+    e.dispatch(Command::PlaylistClear {
+        playlist: radio_model::PlaylistId(1),
+        expect_count: 5,
+        remove_locked: true,
+    })
+    .unwrap();
+    assert_eq!(ids(&e), [3], "the item on air stays");
+    e.set_live(0, false);
+    e.dispatch(Command::HistoryUndo).unwrap();
+    assert_eq!(
+        ids(&e),
+        [1, 2, 3, 4, 5],
+        "undo restores every item in order"
+    );
+    assert!(
+        e.state().station.main().items.iter().all(|i| i.locked),
+        "and their locks"
+    );
+}

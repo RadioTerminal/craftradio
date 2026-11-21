@@ -156,6 +156,26 @@ impl MockSource {
                 _ => Err(gone("that cart")),
             },
             Edit::StopCarts => Ok(1),
+            Edit::ClearPlaylist {
+                playlist,
+                expect_count,
+                ..
+            } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                if tab.items.len() != expect_count {
+                    return Err("playlist changed, try again".to_owned());
+                }
+                let n = tab.items.len();
+                tab.items.clear();
+                tab.weights.clear();
+                tab.ids.clear();
+                if let Some(src) = &mut tab.source {
+                    src.watch = false;
+                }
+                Ok(n)
+            }
             Edit::RemoveDuplicates { playlist } => {
                 let Some(tab) = self.tab_mut(&playlist) else {
                     return Err(gone(&format!("the playlist {playlist}")));

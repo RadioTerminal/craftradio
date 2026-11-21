@@ -908,6 +908,23 @@ impl EngineSource {
                 self.run_audio(Command::CartFire { page, slot })
             }
             Edit::StopCarts => self.run_audio(Command::CartStopAll),
+            Edit::ClearPlaylist {
+                playlist,
+                expect_count,
+                remove_locked,
+            } => {
+                let p = self.playlist_id(&playlist)?;
+                let out = self.run_edit(Command::PlaylistClear {
+                    playlist: p,
+                    expect_count,
+                    remove_locked,
+                })?;
+                Ok(out
+                    .data
+                    .and_then(|v| v.as_u64())
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(0))
+            }
             Edit::RemoveDuplicates { playlist } => {
                 let p = self.playlist_id(&playlist)?;
                 let items = self.duplicate_items(p);
