@@ -1,5 +1,9 @@
 //! Time arithmetic and DST-safe local time for the scheduler.
 
+mod occur;
+
+pub use occur::{occurrences, resolve_local};
+
 use jiff::Timestamp;
 use radio_model::Item;
 use std::time::Duration;
