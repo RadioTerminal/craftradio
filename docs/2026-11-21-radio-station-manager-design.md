@@ -418,6 +418,16 @@ panes.
 - **Library:** a folder/category tree plus a searchable table. Items are dragged onto the Main
   pane, onto a playlist or onto a cart; files dropped in from the OS file manager are imported.
 
+**Settings live with their part (user, 2026-11-21). There is no general settings dialog.**
+Every window and pane has its own ⚙ for that part only:
+- **Mixer:** audio devices, sample rate, routing and meters. The Out strip's ⚙ holds the
+  Icecast mount.
+- **Cartwall:** grid, pages and ducking.
+- **Clock:** format and countdowns.
+- **History:** columns and range.
+- **Library:** watched folders and categories.
+- **Playlists:** pick order and rules.
+
 The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§6.6).
 
 ### 6.13 Testing

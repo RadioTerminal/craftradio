@@ -25,24 +25,26 @@ and MAY are used as in RFC 2119.
    never like a working green state.
 8. **Colours, sizes, gaps and fonts come from theme tokens** in `crates/ui-egui/src/theme.rs`.
    Screens never write a size, padding or colour as a number.
-9. UI changes SHOULD work by keyboard, move egui focus (`request_focus`), give each control a
+9. **No general settings screen.** Settings MUST live with the window or pane they configure,
+   behind that part's own ⚙.
+10. UI changes SHOULD work by keyboard, move egui focus (`request_focus`), give each control a
    name that starts with its visible label, keep 4.5:1 text and 3:1 control contrast, and never
    use colour as the only signal (a playlist's colour always comes with its name).
-10. Keep secrets and personal details out of code, logs and fixtures. Fixture names, titles and
+11. Keep secrets and personal details out of code, logs and fixtures. Fixture names, titles and
     artists are invented, never real songs.
-11. A new dependency MUST be MIT, Apache-2.0, BSD, ISC, Zlib, Unicode or MPL-2.0 licensed. No
+12. A new dependency MUST be MIT, Apache-2.0, BSD, ISC, Zlib, Unicode or MPL-2.0 licensed. No
     GPL/LGPL/AGPL crates.
-12. Dates and times use `jiff`. This departs from the template's `chrono` rule, because
+13. Dates and times use `jiff`. This departs from the template's `chrono` rule, because
     DST-correct local time zones are core to scheduling. Never hand-roll calendar or UTC math.
 
 ## Tests
 
-13. A test earns its place by guarding a behaviour a plausible change could break. Test
+14. A test earns its place by guarding a behaviour a plausible change could break. Test
     behaviour, not wiring, constants or library behaviour.
-14. Assert relations ("starts inside the tolerance", "after", "changed") rather than exact
+15. Assert relations ("starts inside the tolerance", "after", "changed") rather than exact
     values we chose, except where the spec pins the value.
-15. Integration tests are one binary per crate: `tests/it/main.rs`, with modules beside it.
-16. Never delete, weaken, `#[ignore]` or skip a test to make a check pass.
+16. Integration tests are one binary per crate: `tests/it/main.rs`, with modules beside it.
+17. Never delete, weaken, `#[ignore]` or skip a test to make a check pass.
 
 ## This repository
 
