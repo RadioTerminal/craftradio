@@ -18,3 +18,9 @@ clap = { version = "4", features = ["derive"] }
 proptest = "1"
 radio-model = { path = "crates/model" }
 radio-testkit = { path = "crates/testkit" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
