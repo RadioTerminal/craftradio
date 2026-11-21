@@ -42,13 +42,16 @@ fn window_of(entries: &[Entry], fit: &FitResult) -> Option<Range<usize>> {
 }
 
 /// The last entry of `before` matching `is_dup` that is not in a kept (frozen) window.
+/// The window is the one of the next fixed event: a locked entry inside a frozen window
+/// does not end it. An entry with no fixed event after it in `before` is in the window
+/// being kept.
 fn earlier_dup(before: &[Entry], is_dup: impl Fn(&Entry) -> bool) -> Option<usize> {
     (0..before.len()).rev().find(|&d| {
         is_dup(&before[d])
             && before[d + 1..]
                 .iter()
-                .find(|e| is_anchor(e))
-                .is_none_or(|ev| ev.fixed.as_ref().is_none_or(|f| !f.frozen))
+                .find_map(|e| e.fixed.as_ref())
+                .is_some_and(|f| !f.frozen)
     })
 }
 
