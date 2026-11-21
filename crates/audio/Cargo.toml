@@ -9,6 +9,7 @@ license.workspace = true
 symphonia.workspace = true
 symphonia-adapter-libopus.workspace = true
 rubato.workspace = true
+bisque.workspace = true
 rtrb.workspace = true
 thiserror.workspace = true
 

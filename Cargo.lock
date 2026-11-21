@@ -604,6 +604,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bisque"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "625cef063f278f034b9ea325a18aa50cf13ebe7a34765b2a1edb0d580aee677e"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2473,9 +2482,9 @@ dependencies = [
 
 [[package]]
 name = "libm"
-version = "0.2.16"
+version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+checksum = "8355be11b20d696c8f18f6cc018c4e372165b1fa8126cef092399c9951984ffa"
 
 [[package]]
 name = "libredox"
@@ -3811,6 +3820,7 @@ name = "radio-audio"
 version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
+ "bisque",
  "hound",
  "radio-model",
  "rtrb",
