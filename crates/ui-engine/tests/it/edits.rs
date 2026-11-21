@@ -291,8 +291,9 @@ fn a_loudness_edit_reaches_the_engine_and_the_view() {
 #[test]
 fn a_deck_shows_the_measured_gain_of_its_file() {
     let dir = dir();
-    let path = wav(&dir, "measured", 20.0);
-    let (mut source, clock) = source(vec![track(1, "Amber Wire", &path, 20.0)]);
+    // A short file, so a debug build measures it well inside the wait.
+    let path = wav(&dir, "measured", 3.0);
+    let (mut source, clock) = source(vec![track(1, "Amber Wire", &path, 3.0)]);
     let view = wait_for(&mut source, &clock, |v| {
         v.decks.iter().any(|d| {
             d.gain

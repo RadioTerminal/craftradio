@@ -23,6 +23,7 @@ ureq.workspace = true
 
 [dev-dependencies]
 hound.workspace = true
+lofty.workspace = true
 radio-testkit.workspace = true
 
 [lints]
