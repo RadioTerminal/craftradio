@@ -2,7 +2,8 @@
 
 use radio_audio::{
     AudioError, Command, CommandKind, CompressorConfig, DeckId, LimiterConfig, LiveInput,
-    LoadOptions, Mixer, MixerConfig, MixerHandle, ProgramDynamics, Strip, render_offline,
+    LoadOptions, Mixer, MixerConfig, MixerHandle, ProgramDynamics, Strip, drain_offline,
+    render_offline,
 };
 
 use crate::fixtures::{frames, peak_db, rms_db, tone_samples};
@@ -262,4 +263,32 @@ fn a_compressor_without_a_limiter_still_soft_clips() {
     let out = render_offline(&mut mixer, SR / 4);
     assert!(out.iter().all(|s| s.is_finite()));
     assert!(peak_db(&out) <= 0.0, "peak {} dBFS", peak_db(&out));
+}
+
+/// An offline render that ends drains the limiter lookahead: the frames of the render are
+/// the input frames plus `latency_frames()`, and the last input frame is in the render,
+/// `latency_frames()` from its end.
+#[test]
+fn an_offline_render_keeps_its_last_frames() {
+    const N: usize = 4_800;
+    // A quiet ramp, so the limiter leaves every sample as it is, and the last one is loud
+    // enough to find.
+    let samples: Vec<f32> = (0..N)
+        .flat_map(|i| {
+            let s = 0.25 * (i + 1) as f32 / N as f32;
+            [s, s]
+        })
+        .collect();
+    let (mut mixer, _handle, _live) = ring_mixer(&samples, limiter_only());
+    let latency = mixer.latency_frames();
+    assert!(latency > 0, "the limiter has a lookahead");
+    let mut out = render_offline(&mut mixer, N);
+    out.extend(drain_offline(&mut mixer));
+    assert_eq!(out.len() / 2, N + latency, "the render has every frame");
+    let last = out[(N + latency - 1) * 2];
+    let want = samples[(N - 1) * 2];
+    assert!(
+        (last - want).abs() < 1e-3,
+        "the last input frame {want} ends the render, not {last}"
+    );
 }

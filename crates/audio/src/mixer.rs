@@ -856,6 +856,19 @@ pub fn render_offline(mixer: &mut Mixer, frames: usize) -> Vec<f32> {
     out
 }
 
+/// Ends an offline render: renders the [`Mixer::latency_frames`] frames that the
+/// lookahead of the dynamics still holds. Program comes out that many frames late, so a
+/// render of `n` timeline frames that ends needs `n + latency` frames in all; without this
+/// tail, it loses its last frames. Call it once, after the last [`render_offline`]. It
+/// returns nothing without dynamics.
+pub fn drain_offline(mixer: &mut Mixer) -> Vec<f32> {
+    let latency = mixer.latency_frames();
+    if latency == 0 {
+        return Vec::new();
+    }
+    render_offline(mixer, latency)
+}
+
 /// Renders Program and PFL offline, waiting for file feeders between blocks.
 pub fn render_offline_buses(mixer: &mut Mixer, frames: usize) -> (Vec<f32>, Vec<f32>) {
     let mut program = vec![0.0; frames * CHANNELS];
