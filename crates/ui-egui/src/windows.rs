@@ -108,7 +108,13 @@ struct Fit {
     loaded: bool,
     /// True while a size request waits for the window system.
     pending: bool,
+    /// The frames since the request, so a request that never settles ends.
+    waited: u8,
 }
+
+/// A size request settles within this many frames, even when the window system takes
+/// several steps or clamps it.
+const SETTLE_FRAMES: u8 = 30;
 
 /// Which tool windows are open, and their sizes.
 #[derive(Default)]
@@ -338,8 +344,14 @@ fn native(
                 // While a request waits, the first change is its answer, even when the
                 // window system clamps it.
                 let moved = fit.seen.is_some_and(|s| differs(s, now));
-                if moved && fit.pending {
-                    fit.pending = false;
+                if fit.pending {
+                    // The window system can answer in several steps. The request settles when
+                    // the size matches it, or after some frames.
+                    fit.waited = fit.waited.saturating_add(1);
+                    let reached = fit.applied.is_some_and(|a| !differs(a, now));
+                    if reached || fit.waited > SETTLE_FRAMES {
+                        fit.pending = false;
+                    }
                 } else if moved && fit.applied.is_some_and(|a| differs(a, now)) {
                     fit.user = Some(now);
                     change = Some(SizeChange::Manual([now.x, now.y]));
@@ -352,6 +364,7 @@ fn native(
                 fit.applied = Some(want);
                 // A request for the size that the window has already brings no change.
                 fit.pending = !same;
+                fit.waited = 0;
             }
             ui.input(|i| i.viewport().close_requested())
         },

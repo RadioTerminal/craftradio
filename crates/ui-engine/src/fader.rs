@@ -9,6 +9,16 @@ use radio_engine::Command;
 
 use crate::EngineSource;
 
+/// The answers to merged commands, by control, that wait for a check.
+pub(crate) type Replies = std::sync::Arc<
+    std::sync::Mutex<
+        Vec<(
+            String,
+            std::sync::mpsc::Receiver<Result<radio_engine::Outcome, radio_engine::EngineError>>,
+        )>,
+    >,
+>;
+
 /// The shortest time between two commands of one control.
 pub(crate) const GAP: Duration = Duration::from_millis(50);
 /// The merger looks for due values this often.
@@ -21,8 +31,8 @@ pub(crate) struct Merger {
 }
 
 impl Merger {
-    /// A merger that hands each merged command to `sink`.
-    pub(crate) fn start(sink: impl Fn(Command) + Send + 'static) -> Option<Self> {
+    /// A merger that hands each merged command, with its control, to `sink`.
+    pub(crate) fn start(sink: impl Fn(String, Command) + Send + 'static) -> Option<Self> {
         let (tx, rx) = channel::<(String, Command)>();
         let thread = std::thread::Builder::new()
             .name("ui-faders".into())
@@ -33,7 +43,7 @@ impl Merger {
                     let open = match rx.recv_timeout(POLL) {
                         Ok((key, cmd)) => {
                             if last.get(&key).is_none_or(|t| t.elapsed() >= GAP) {
-                                sink(cmd);
+                                sink(key.clone(), cmd);
                                 pending.remove(&key);
                                 last.insert(key, Instant::now());
                             } else {
@@ -51,7 +61,7 @@ impl Merger {
                         .collect();
                     for key in due {
                         if let Some(cmd) = pending.remove(&key) {
-                            sink(cmd);
+                            sink(key.clone(), cmd);
                             last.insert(key, Instant::now());
                         }
                     }
@@ -88,8 +98,43 @@ impl Drop for Merger {
 }
 
 impl EngineSource {
-    /// Sends a merged change of control `key`. It does not wait for the engine.
+    /// Takes the errors of merged commands that answered. A failed fader drops its shown
+    /// value, so the snapshot shows the engine's value again.
+    pub(crate) fn fader_errors(&mut self) -> Vec<String> {
+        let mut errors: Vec<(String, String)> = Vec::new();
+        let Ok(mut list) = self.replies.lock() else {
+            return Vec::new();
+        };
+        list.retain(|(key, rx)| match rx.try_recv() {
+            Ok(Ok(_)) => false,
+            Ok(Err(e)) => {
+                errors.push((key.clone(), e.to_string()));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        });
+        drop(list);
+        for (key, _) in &errors {
+            if let Some(strip) = key.strip_prefix("strip:") {
+                self.strip_gain.remove(strip);
+            }
+            if let Some(rest) = key.strip_prefix("part:")
+                && let Some((part, k)) = rest.split_once(':')
+            {
+                self.pending_settings
+                    .remove(&(part.to_owned(), k.to_owned()));
+            }
+        }
+        errors.into_iter().map(|(_, e)| e).collect()
+    }
+
+    /// Sends a merged change of control `key`. It does not wait for the engine. An error of
+    /// an earlier merged command comes back here.
     pub(crate) fn merged(&mut self, key: String, cmd: Command) -> Result<usize, String> {
+        if let Some(e) = self.fader_errors().into_iter().next() {
+            return Err(e);
+        }
         match &self.merger {
             Some(m) => m.push(key, cmd)?,
             None => {
@@ -133,7 +178,7 @@ mod tests {
     fn a_fast_drag_sends_few_commands_and_ends_on_its_last_value() {
         let sent: Arc<Mutex<Vec<Command>>> = Arc::default();
         let log = Arc::clone(&sent);
-        let merger = Merger::start(move |c| log.lock().unwrap().push(c)).unwrap();
+        let merger = Merger::start(move |_, c| log.lock().unwrap().push(c)).unwrap();
         let start = Instant::now();
         for i in 0..40 {
             merger.push("A".into(), gain(-(i as f32))).unwrap();

@@ -150,10 +150,19 @@ pub struct CommandSender(Sender<Request>);
 
 impl CommandSender {
     pub fn send(&self, cmd: Command) -> Result<(), PlayoutError> {
-        let (tx, _rx) = mpsc::channel();
+        self.send_with_reply(cmd).map(|_| ())
+    }
+
+    /// Sends a command, and returns the receiver of its answer.
+    pub fn send_with_reply(
+        &self,
+        cmd: Command,
+    ) -> Result<Receiver<Result<Outcome, EngineError>>, PlayoutError> {
+        let (tx, rx) = mpsc::channel();
         self.0
             .send(Request::Dispatch(cmd, tx))
-            .map_err(|_| PlayoutError::Stopped)
+            .map_err(|_| PlayoutError::Stopped)?;
+        Ok(rx)
     }
 }
 

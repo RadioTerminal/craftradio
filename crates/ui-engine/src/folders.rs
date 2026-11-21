@@ -327,9 +327,10 @@ impl EngineSource {
                 Ok(w) => {
                     self.watches.insert(id, (src, w));
                 }
-                Err(e) => self
-                    .watch_errors
-                    .push(format!("cannot watch {}: {e}", src.path)),
+                Err(e) => push_bounded(
+                    &mut self.watch_errors,
+                    format!("cannot watch {}: {e}", src.path),
+                ),
             }
         }
     }
@@ -340,7 +341,7 @@ impl EngineSource {
         for (id, (_, w)) in &mut self.watches {
             match w.events() {
                 Ok(events) => changes.extend(events.map(|e| (*id, e))),
-                Err(e) => self.watch_errors.push(e.to_string()),
+                Err(e) => push_bounded(&mut self.watch_errors, e.to_string()),
             }
         }
         for (playlist, change) in changes {
@@ -385,5 +386,16 @@ impl EngineSource {
                 WatchEvent::Changed(_) => {}
             }
         }
+    }
+}
+
+/// Keeps at most this many watch problems, the newest ones.
+const WATCH_ERRORS: usize = 100;
+
+fn push_bounded(list: &mut Vec<String>, e: String) {
+    list.push(e);
+    if list.len() > WATCH_ERRORS {
+        let extra = list.len() - WATCH_ERRORS;
+        list.drain(..extra);
     }
 }

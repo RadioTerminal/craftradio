@@ -61,6 +61,8 @@ pub struct SourceOptions {
 pub struct EngineSource {
     /// The fader thread holds a sender of the playout, so it drops first.
     merger: Option<fader::Merger>,
+    /// The answers to merged commands, checked for errors.
+    replies: fader::Replies,
     playout: Playout,
     tz: TimeZone,
     station: String,
@@ -124,13 +126,20 @@ impl EngineSource {
             .map(|d| d.name)
             .collect();
         let state = playout.snapshot().state;
+        let replies: fader::Replies = std::sync::Arc::default();
+        let pending = std::sync::Arc::clone(&replies);
         let merger = playout.command_sender().and_then(|s| {
-            fader::Merger::start(move |c| {
-                let _ = s.send(c);
+            fader::Merger::start(move |key, c| {
+                if let Ok(rx) = s.send_with_reply(c)
+                    && let Ok(mut list) = pending.lock()
+                {
+                    list.push((key, rx));
+                }
             })
         });
         Self {
             merger,
+            replies,
             playout,
             tz: opts.tz,
             station: opts.station_name,
@@ -663,6 +672,7 @@ impl ViewSource for EngineSource {
         }
         self.take_scans();
         self.poll_watches();
+        let _ = self.fader_errors();
         let rows = self.timeline_rows(&pv);
         let decks = self.decks(&pv, now);
         self.deck_states = std::array::from_fn(|i| decks[i].state);

@@ -126,7 +126,9 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             "Saved the mount {}:{}{}; it connects on the next start",
             ice.host, ice.port, ice.mount
         ),
-        Edit::SetDevice { device, .. } => format!("Picked {device}"),
+        Edit::SetDevice { device, .. } => {
+            format!("Picked {device}; the app uses it from its next start")
+        }
         Edit::AddCartPage { name } => format!("Added the page {name}"),
         Edit::RenameCartPage { name, .. } => format!("Renamed the page to {name}"),
         Edit::RemoveCartPage { .. } => "Removed the page".to_owned(),

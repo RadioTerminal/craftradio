@@ -66,8 +66,10 @@ impl EngineSource {
                 .unwrap_or_else(|| "The deck holds another item now; try again".into())),
             Ok(Ok(_)) => Ok(1),
             Ok(Err(e)) => Err(e.to_string()),
-            // The engine took the command. The mixer confirms it later.
-            Err(RecvTimeoutError::Timeout) => Ok(1),
+            // The engine took the command, but the mixer has not confirmed it yet.
+            Err(RecvTimeoutError::Timeout) => {
+                Err("Sent, but the mixer did not confirm it in time".into())
+            }
             Err(RecvTimeoutError::Disconnected) => Err("the playout has stopped".into()),
         }
     }
@@ -885,9 +887,7 @@ impl EngineSource {
                     key: key.into(),
                     value: serde_json::json!(device),
                 })?;
-                Err(format!(
-                    "Saved: the app uses {device} from its next start"
-                ))
+                Ok(1)
             }
             Edit::AddCartPage { name } => {
                 let mut pages = self.page_names();

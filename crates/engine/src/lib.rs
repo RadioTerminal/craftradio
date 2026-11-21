@@ -1062,9 +1062,14 @@ impl Engine {
                 if !STRIPS.contains(&strip.as_str()) {
                     return Err(EngineError::BadArgument(format!("no mixer strip {strip}")));
                 }
-                if gain_db.is_some_and(|g| g.is_nan() || g > 12.0) {
+                // A fader all the way down is a mute; the stored gain stays finite.
+                let (gain_db, mute) = match gain_db {
+                    Some(g) if g == f32::NEG_INFINITY => (None, Some(true)),
+                    other => (other, mute),
+                };
+                if gain_db.is_some_and(|g| !g.is_finite() || g > 12.0) {
                     return Err(EngineError::BadArgument(
-                        "the fader goes up to +12 dB".into(),
+                        "the fader takes a finite value up to +12 dB".into(),
                     ));
                 }
                 let st = self.state.strips.entry(strip.clone()).or_default();

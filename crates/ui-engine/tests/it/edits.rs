@@ -122,3 +122,28 @@ fn a_file_added_after_the_row_on_air_plays_next() {
     );
     let _ = clock.now();
 }
+
+/// A fader change goes out without a wait, so its error comes back with the next change.
+#[test]
+fn a_failed_fader_change_reports_its_error() {
+    use radio_ui_egui::view::StripChange;
+    let (mut source, clock) = source(Vec::new());
+    let _ = wait_for(&mut source, &clock, |_| true);
+    let bad = |source: &mut radio_ui_engine::EngineSource| {
+        source.edit(Edit::SetStrip {
+            strip: "No such strip".into(),
+            change: StripChange::Gain(-3.0),
+        })
+    };
+    assert_eq!(bad(&mut source), Ok(1), "the first change goes out at once");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut answer = Ok(1);
+    while answer.is_ok() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(60));
+        answer = bad(&mut source);
+    }
+    assert!(
+        answer.is_err(),
+        "the error of the merged command comes back"
+    );
+}
