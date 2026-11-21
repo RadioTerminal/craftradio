@@ -1,10 +1,11 @@
 //! `radio-cli`: command-line access to the radio station planner.
 
 use clap::{Parser, Subcommand};
+use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, Zoned};
-use radio_model::{Item, ItemId, ModelError, Station};
+use radio_model::{Item, ItemId, ModelError, PlaylistId, Station};
 use radio_scheduler::{Entry, PlanInput, PlanOptions, PlayHistory, Timeline, Warning, plan};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -35,7 +36,16 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    // Clap's own error exit code (2) would collide with the dead-air code.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let code = u8::from(e.exit_code() != 0);
+            let _ = e.print();
+            return ExitCode::from(code);
+        }
+    };
+    match run(cli) {
         Ok(code) => ExitCode::from(code),
         Err(message) => {
             eprintln!("error: {message}");
@@ -57,6 +67,8 @@ fn run(cli: Cli) -> Result<u8, String> {
             let station: Station =
                 toml::from_str(&text).map_err(|e| format!("cannot parse station file: {e}"))?;
             station.validate().map_err(|e| describe(&station, &e))?;
+            let tz = TimeZone::get(&station.tz)
+                .map_err(|_| format!("unknown time zone '{}'", station.tz))?;
             // The command line is the only place that reads the clock.
             let now = now.unwrap_or_else(Timestamp::now);
             let history = PlayHistory::new();
@@ -71,15 +83,21 @@ fn run(cli: Cli) -> Result<u8, String> {
                 &PlanOptions::default(),
                 None,
             );
-            if json {
-                let out = serde_json::to_string_pretty(&timeline)
-                    .map_err(|e| format!("cannot serialise timeline: {e}"))?;
-                println!("{out}");
+            let printed = if json {
+                serde_json::to_string_pretty(&timeline)
+                    .map_err(|e| format!("cannot serialise timeline: {e}"))
+                    .map(|out| writeln!(io::stdout().lock(), "{out}"))?
             } else {
-                print_text(&station, &timeline);
+                print_text(&station, &tz, &timeline)
+            };
+            match printed {
+                Ok(()) => {}
+                // `| head` closed the pipe: stop quietly.
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(exit_code(&timeline)),
+                Err(e) => return Err(format!("cannot write output: {e}")),
             }
             for w in &timeline.warnings {
-                eprintln!("warning: {w:?}");
+                eprintln!("warning: {}", warning_text(&station, &tz, w));
             }
             Ok(exit_code(&timeline))
         }
@@ -117,24 +135,76 @@ fn find_item(station: &Station, id: ItemId) -> Option<&Item> {
         .find(|i| i.id == id)
 }
 
-fn print_text(station: &Station, timeline: &Timeline) {
-    let tz = TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC);
+fn print_text(station: &Station, tz: &TimeZone, timeline: &Timeline) -> io::Result<()> {
+    let mut out = io::stdout().lock();
     for entry in &timeline.entries {
-        println!("{}", entry_line(station, &tz, entry));
-        if let Some(fixed) = &entry.fixed
-            && let Some(fit) = timeline
+        writeln!(out, "{}", entry_line(station, tz, entry))?;
+        if let Some(fixed) = &entry.fixed {
+            let fit = timeline
                 .fits
                 .iter()
-                .find(|f| f.playlist == entry.playlist && f.target == fixed.target)
-        {
-            let mark = if fit.within_tolerance { '✓' } else { '✗' };
-            println!("    fit: {:+.1} s {mark}", fit.error.as_secs_f64());
+                .find(|f| f.playlist == entry.playlist && f.target == fixed.target);
+            match fit {
+                Some(fit) => {
+                    let mark = if fit.within_tolerance { '✓' } else { '✗' };
+                    writeln!(out, "    fit: {:+.1} s {mark}", fit.error.as_secs_f64())?;
+                }
+                None => writeln!(out, "    fit: —")?,
+            }
         }
+    }
+    Ok(())
+}
+
+fn clock(tz: &TimeZone, at: Timestamp) -> String {
+    at.to_zoned(tz.clone()).strftime("%H:%M:%S").to_string()
+}
+
+fn playlist_name(station: &Station, id: PlaylistId) -> &str {
+    station
+        .playlists
+        .iter()
+        .find(|p| p.id == id)
+        .map_or("?", |p| p.name.as_str())
+}
+
+fn warning_text(station: &Station, tz: &TimeZone, w: &Warning) -> String {
+    match w {
+        Warning::NoEligibleItem { playlist, at } => format!(
+            "no eligible item in {} at {}",
+            playlist_name(station, *playlist),
+            clock(tz, *at)
+        ),
+        Warning::DeadAir { at, gap } => format!(
+            "dead air at {} for {:.1} s",
+            clock(tz, *at),
+            gap.as_secs_f64()
+        ),
+        Warning::FixedConflict {
+            playlist,
+            wanted,
+            got,
+        } => format!(
+            "{} wanted {} but starts at {}",
+            playlist_name(station, *playlist),
+            clock(tz, *wanted),
+            clock(tz, *got)
+        ),
+        Warning::OutsideTolerance { playlist, error } => format!(
+            "{} is outside its tolerance ({:+.1} s)",
+            playlist_name(station, *playlist),
+            error.as_secs_f64()
+        ),
+        Warning::LockedMoved { item, by } => format!(
+            "locked item {} moved by {:.1} s",
+            find_item(station, *item).map_or("?", |i| i.title.as_str()),
+            by.as_secs_f64()
+        ),
+        Warning::UnknownTimeZone { tz } => format!("unknown time zone '{tz}'"),
     }
 }
 
 fn entry_line(station: &Station, tz: &TimeZone, entry: &Entry) -> String {
-    let local: Zoned = entry.start.to_zoned(tz.clone());
     let playlist = station
         .playlists
         .iter()
@@ -153,7 +223,7 @@ fn entry_line(station: &Station, tz: &TimeZone, entry: &Entry) -> String {
     let marker = if entry.fixed.is_some() { "⏱" } else { " " };
     format!(
         "{marker} {}  {playlist:<10}  {what}  {}:{:02}",
-        local.strftime("%H:%M:%S"),
+        clock(tz, entry.start),
         secs / 60,
         secs % 60
     )

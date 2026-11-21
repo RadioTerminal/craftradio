@@ -97,5 +97,6 @@ constraints = []
     );
     let out = plan(&path, &[]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(!out.stderr.is_empty());
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("dead air"), "stderr: {err}");
 }
