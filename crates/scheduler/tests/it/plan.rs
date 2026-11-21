@@ -1,0 +1,147 @@
+use jiff::civil::date;
+use jiff::{SignedDuration, Timestamp};
+use radio_model::{FixMode, Item, ItemId, Placement, Repeat, Rule, Station, Trigger};
+use radio_scheduler::{Entry, Origin, PlanInput, PlanOptions, PlayHistory, Timeline, plan};
+use radio_testkit::{jingle, playlist, station, track};
+use std::time::Duration;
+
+fn now() -> Timestamp {
+    "2026-11-21T13:00:00Z".parse().unwrap()
+}
+
+fn tracks(n: u64) -> Vec<Item> {
+    (1..=n)
+        .map(|i| track(i, &format!("track-{i}"), &format!("artist-{i}"), 180))
+        .collect()
+}
+
+/// Main playlist plus one hard event at 13:`minute`:00 UTC and a pool of 20 s fillers.
+fn make_station(main: Vec<Item>, minute: i8) -> Station {
+    let mut m = playlist(1, "main", main);
+    m.is_main = true;
+    let mut ev = playlist(2, "event", vec![jingle(100, 60)]);
+    ev.rules = vec![Rule {
+        trigger: Trigger::At {
+            at: date(2026, 11, 21).at(13, minute, 0, 0),
+            repeat: Repeat::Once,
+        },
+        placement: Placement::Fixed {
+            mode: FixMode::Hard,
+            tolerance: Duration::from_secs(1),
+        },
+        take: 1,
+        constraints: Vec::new(),
+    }];
+    let mut pool = playlist(9, "fill", (0..12).map(|i| jingle(200 + i, 20)).collect());
+    pool.is_fill_pool = true;
+    station("UTC", vec![m, ev, pool])
+}
+
+fn run(st: &Station, pinned: &[Entry], prev: Option<&Timeline>) -> Timeline {
+    let history = PlayHistory::new();
+    plan(
+        &PlanInput {
+            station: st,
+            history: &history,
+            now: now(),
+            horizon: Duration::from_secs(3600),
+            pinned,
+        },
+        &PlanOptions::default(),
+        prev,
+    )
+}
+
+/// Item ids of the entries before the fixed event.
+fn window(tl: &Timeline) -> Vec<ItemId> {
+    tl.entries
+        .iter()
+        .take_while(|e| e.fixed.is_none())
+        .map(|e| e.item)
+        .collect()
+}
+
+#[test]
+fn pinned_entries_keep_position() {
+    let st = make_station(tracks(30), 30);
+    let item = track(77, "manual", "artist-77", 120);
+    let start = now() + Duration::from_secs(600);
+    let manual = Entry {
+        playlist: st.playlists[0].id,
+        item: item.id,
+        start,
+        len: Duration::from_secs(120),
+        origin: Origin::Manual,
+        locked: true,
+        fixed: None,
+        trim: Duration::ZERO,
+    };
+    let tl = run(&st, std::slice::from_ref(&manual), None);
+    let got = tl.entries.iter().find(|e| e.item == item.id).unwrap();
+    assert_eq!(got.start, start);
+}
+
+#[test]
+fn small_improvement_does_not_reshuffle() {
+    let st = make_station(tracks(30), 30);
+    let fresh = run(&st, &[], None);
+    // A previous plan with the first two tracks swapped and an error only 0.3 s worse.
+    let mut prev = fresh.clone();
+    let (a, b) = (prev.entries[0].item, prev.entries[1].item);
+    prev.entries[0].item = b;
+    prev.entries[1].item = a;
+    let err = prev.fits[0].error;
+    let worse = SignedDuration::from_millis(300);
+    prev.fits[0].error = if err.is_negative() {
+        err - worse
+    } else {
+        err + worse
+    };
+    let again = run(&st, &[], Some(&prev));
+    assert_eq!(window(&again), window(&prev));
+    assert_ne!(window(&again), window(&fresh));
+}
+
+#[test]
+fn locked_window_only_fills_and_trims() {
+    let st = make_station(tracks(30), 9);
+    let prev = run(&st, &[], None);
+    let before = window(&prev);
+    // Drop the second track from the library.
+    let gone = before[1];
+    let mut st2 = st.clone();
+    st2.playlists[0].items.retain(|i| i.id != gone);
+    let tl = run(&st2, &[], Some(&prev));
+    let main: Vec<ItemId> = tl
+        .entries
+        .iter()
+        .take_while(|e| e.fixed.is_none())
+        .filter(|e| e.origin == Origin::Main)
+        .map(|e| e.item)
+        .collect();
+    let kept: Vec<ItemId> = before.iter().copied().filter(|i| *i != gone).collect();
+    assert!(
+        main.iter().all(|i| kept.contains(i)),
+        "{main:?} not within {kept:?}"
+    );
+    assert!(
+        main.windows(2).all(|w| {
+            kept.iter().position(|i| *i == w[0]) < kept.iter().position(|i| *i == w[1])
+        })
+    );
+    assert!(
+        tl.entries
+            .iter()
+            .take_while(|e| e.fixed.is_none())
+            .any(|e| e.origin == Origin::Fill)
+    );
+}
+
+#[test]
+fn same_input_same_output() {
+    let st = make_station(tracks(30), 30);
+    let a = run(&st, &[], None);
+    assert_eq!(a, run(&st, &[], None));
+    let b = run(&st, &[], Some(&a));
+    assert_eq!(b, run(&st, &[], Some(&a)));
+}

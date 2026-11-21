@@ -3,9 +3,11 @@ pub mod fit;
 pub mod history;
 pub mod merge;
 pub mod pick;
+pub mod replan;
 
 pub use constraints::allowed;
 pub use fit::{FitResult, FitStep, MAX_GAP, RESOLUTION, fit_all, select_before};
 pub use history::{PlayHistory, Played};
 pub use merge::{Entry, Fixed, Origin, PlanInput, Timeline, Warning, merge};
 pub use pick::Picker;
+pub use replan::{PlanOptions, plan};
