@@ -481,7 +481,28 @@ impl EngineSource {
             mode: CartMode::OneShot,
             colour: None,
         };
-        let slots = vec![slot; carts.len()];
+        let mut slots = vec![slot; carts.len()];
+        for c in &self.state.cart_settings {
+            let i = c.page as usize * per_page + c.slot as usize;
+            if let Some(s) = slots.get_mut(i) {
+                s.duck_db = c.duck_db;
+                s.mode = match c.mode {
+                    radio_engine::CartMode::OneShot => CartMode::OneShot,
+                    radio_engine::CartMode::Loop => CartMode::Loop,
+                    radio_engine::CartMode::Restart => CartMode::Restart,
+                };
+            }
+        }
+        let colours = self
+            .state
+            .settings(CARTWALL_PART)
+            .and_then(|s| s.get("colours"))
+            .and_then(|v| v.as_object());
+        for (k, v) in colours.into_iter().flatten() {
+            if let Some(slot) = k.parse::<usize>().ok().and_then(|i| slots.get_mut(i)) {
+                slot.colour = v.as_u64().and_then(|c| usize::try_from(c).ok());
+            }
+        }
         let wall = CartwallView {
             pages,
             per_page,

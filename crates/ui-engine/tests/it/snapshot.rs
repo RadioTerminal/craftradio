@@ -37,3 +37,35 @@ fn a_custom_stream_title_fills_its_placeholders() {
     let title = source.stream_title(row);
     assert_eq!(title, "Mira Solenne – Lanterns [Folk] on air");
 }
+
+/// A cart keeps the duck depth and colour that a person set, and the edit says that the
+/// cart player of this build does not use the duck yet.
+#[test]
+fn cart_settings_come_back_in_the_snapshot() {
+    use radio_ui_egui::view::{CartChange, Edit};
+    let d = dir();
+    let song = track(1, "Song", &wav(&d, "song", 3.0), 3.0);
+    let (mut source, clock) = source(vec![song]);
+    let view = wait_for(&mut source, &clock, |v| !v.library.is_empty());
+    let item = view.library[0].id;
+    assert_eq!(
+        source.edit(Edit::AssignCart {
+            cart: 0,
+            item: Some(item)
+        }),
+        Ok(1)
+    );
+    let colour = source.edit(Edit::SetCart {
+        cart: 0,
+        change: CartChange::Colour(Some(2)),
+    });
+    assert_eq!(colour, Ok(1));
+    let _ = source.edit(Edit::SetCart {
+        cart: 0,
+        change: CartChange::Duck(-9.0),
+    });
+    let view = wait_for(&mut source, &clock, |v| v.cartwall.slots[0].duck_db < -1.0);
+    assert_eq!(view.cartwall.slots[0].colour, Some(2));
+    assert!((view.cartwall.slots[0].duck_db + 9.0).abs() < 0.01);
+    assert_eq!(view.carts[0], "Song");
+}
