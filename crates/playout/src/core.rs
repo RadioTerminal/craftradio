@@ -79,20 +79,14 @@ pub(crate) struct Superseded {
 /// rule of it other than `origin`'s own. Then the rule index of `origin` may name another
 /// rule now, so an occurrence of that index is not a move of `origin`'s event.
 fn renumbered(
-    old: Option<&radio_model::Station>,
+    old: Option<Vec<radio_model::Rule>>,
     new: &radio_model::Station,
     origin: &Origin,
 ) -> bool {
     let Origin::Rule { playlist, rule } = origin else {
         return true;
     };
-    let rules = |s: &radio_model::Station| {
-        s.playlists
-            .iter()
-            .find(|p| p.id == *playlist)
-            .map(|p| p.rules.clone())
-    };
-    match (old.and_then(rules), rules(new)) {
+    match (old, rules_of(new, *playlist)) {
         (Some(o), Some(n)) => {
             o.len() != n.len()
                 || o.iter()
@@ -102,6 +96,17 @@ fn renumbered(
         }
         _ => true,
     }
+}
+
+/// The rule list of a playlist.
+fn rules_of(
+    s: &radio_model::Station,
+    playlist: radio_model::PlaylistId,
+) -> Option<Vec<radio_model::Rule>> {
+    s.playlists
+        .iter()
+        .find(|p| p.id == playlist)
+        .map(|p| p.rules.clone())
 }
 
 /// Takes the superseded occurrences out of a plan, with the rest of their take after them.
@@ -394,6 +399,9 @@ pub(crate) struct Core {
     /// Occurrences that a late edit moved a locked hard event to. The locked event airs at
     /// its old time instead, so these do not air. Kept until their target passes.
     superseded: Vec<Superseded>,
+    /// The rule list of the playlist of each hard event when the plan first had the event.
+    /// A later edit compares with it, not with the station of the last plan.
+    planned_rules: Vec<(Entry, Vec<radio_model::Rule>)>,
     out_clock: Option<SampleClock>,
 }
 
@@ -490,6 +498,7 @@ impl Core {
             last_station: None,
             cancelled: Vec::new(),
             superseded: Vec::new(),
+            planned_rules: Vec::new(),
             out_clock: opened.clock,
         })
     }
@@ -859,6 +868,7 @@ impl Core {
             self.timeline_changed = true;
             self.save_due = true;
         }
+        self.note_planned_rules(&station, now);
         self.prune_hard(now);
         self.planned = true;
         self.dirty = false;
@@ -1521,7 +1531,20 @@ impl Core {
                 .cloned();
             // When the edit renumbered the rules, the same rule index is another rule:
             // its occurrence is no move of this event, and it airs.
-            if renumbered(self.last_station.as_ref(), station, &n.origin) {
+            let old = self
+                .planned_rules
+                .iter()
+                .find(|(e, _)| same_event(e, &n))
+                .map(|(_, r)| r.clone())
+                .or_else(|| {
+                    let Origin::Rule { playlist, .. } = n.origin else {
+                        return None;
+                    };
+                    self.last_station
+                        .as_ref()
+                        .and_then(|s| rules_of(s, playlist))
+                });
+            if renumbered(old, station, &n.origin) {
                 continue;
             }
             if let Some(m) = moved_to
@@ -1538,13 +1561,31 @@ impl Core {
         }
     }
 
+    /// Keeps the rule list of each hard event that the plan has for the first time.
+    fn note_planned_rules(&mut self, station: &radio_model::Station, now: Timestamp) {
+        const KEEP: Duration = Duration::from_secs(3600);
+        self.planned_rules
+            .retain(|(e, _)| e.start > now || since(e.start, now) < KEEP);
+        for e in self.timeline.entries.iter().filter(|e| is_hard_entry(e)) {
+            let Origin::Rule { playlist, .. } = e.origin else {
+                continue;
+            };
+            if self.planned_rules.iter().any(|(k, _)| same_event(k, e)) {
+                continue;
+            }
+            if let Some(rules) = rules_of(station, playlist) {
+                self.planned_rules.push((e.clone(), rules));
+            }
+        }
+    }
+
     /// Forgets superseded occurrences whose target passed. If the locked event that stood
     /// in for one did not air, the occurrence was suppressed without airing: that raises
     /// `HardEventMissed` for it.
     fn expire_superseded(&mut self, now: Timestamp) {
         let (past, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.superseded)
             .into_iter()
-            .partition(|x| x.entry.start <= now);
+            .partition(|x| x.entry.start.max(x.stand_in.start) <= now);
         self.superseded = kept;
         for x in past {
             let from = sub(x.stand_in.start, HARD_LOCK);
