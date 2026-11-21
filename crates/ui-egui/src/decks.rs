@@ -1012,8 +1012,8 @@ fn live_chip(
 const SCALE_DB: [f32; 6] = [-48.0, -24.0, -12.0, -6.0, -3.0, 0.0];
 
 /// The stereo meter of Out across the column: two bars, the zones from the theme and a peak
-/// mark each. With `full`, a dB scale runs under the bars and the loudest peak in dB sits at
-/// the right end; without it, only the bars show, for a narrow window.
+/// mark each. With `full`, a dB scale runs under the bars; without it, only the bars show,
+/// for a narrow window. The bars use the whole width: the peak in dB is in the tooltip.
 fn out_meter(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -1032,33 +1032,11 @@ fn out_meter(
             format!("{v:.1}")
         }
     };
-    let peak = m.peak_db[0].max(m.peak_db[1]);
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
     let p = ui.painter();
     let caption = theme::mono(theme::CAPTION);
-    // The numeric peak at the right end, "−12.0 dB" or "−∞" when silent.
-    let mut right = rect.right();
-    if full {
-        let text = if peak > size::METER_MIN_DB {
-            format!("{} dB", db(peak))
-        } else {
-            db(peak)
-        };
-        let galley = p.layout_no_wrap(text, caption.clone(), t.text);
-        // The widest reading keeps the bars from jumping as the number changes.
-        let widest = p
-            .layout_no_wrap("−88.8 dB".to_owned(), caption.clone(), t.text)
-            .size()
-            .x;
-        let bars_h_full = rect.height() - theme::CAPTION - space::XS;
-        let pos = egui::pos2(
-            rect.right() - galley.size().x,
-            rect.top() + (bars_h_full - galley.size().y) / 2.0,
-        );
-        p.galley(pos, galley, t.text);
-        right = rect.right() - widest - space::S;
-    }
+    let right = rect.right();
     let scale_h = if full {
         theme::CAPTION + space::XS
     } else {
