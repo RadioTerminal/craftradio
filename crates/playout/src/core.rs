@@ -2,6 +2,7 @@
 
 use crate::alarm::{Alarm, Alarms, RaisedAlarm};
 use crate::clock::{Clock, ClockMap};
+use crate::deadair::{Analysis, DeadAir};
 use crate::ops::{Carts, Check, Pending};
 use crate::output::{ProgramSource, feed_tap};
 use crate::view::{DeckPhase, DeckRole, DeckView, LocalOutput, OutputStatus, PlayoutView};
@@ -24,6 +25,8 @@ use std::time::Duration;
 
 /// Playout plans again at least this often.
 const PLAN_EVERY: Duration = Duration::from_secs(1);
+/// The most planned entries that wait on decks. The other decks stay free for operators.
+const MAX_QUEUED: usize = 2;
 /// Playout tries a broken item again after this time.
 const RETRY_BROKEN: Duration = Duration::from_secs(300);
 /// The fade of an early end when the item has no fade-out of its own.
@@ -212,6 +215,8 @@ pub(crate) struct Core {
     pub(crate) hold: bool,
     pub(crate) carts: Carts,
     carts_dirty: bool,
+    pub(crate) dead_air: DeadAir,
+    pub(crate) analysis: Analysis,
 }
 
 fn empty_timeline() -> Timeline {
@@ -277,6 +282,8 @@ impl Core {
             hold: false,
             carts,
             carts_dirty: true,
+            dead_air: DeadAir::default(),
+            analysis: Analysis::default(),
         })
     }
 
@@ -374,6 +381,7 @@ impl Core {
         self.load_ahead(now);
         self.cue_starts(now);
         self.cue_ends(now);
+        self.check_dead_air(now);
         self.poll_states();
         self.publish(now);
         self.expire_replies();
@@ -407,7 +415,8 @@ impl Core {
                     self.alarms.raise(now, Alarm::DeckUnderrun { deck });
                 }
             }
-            AudioEvent::Silence { .. } | AudioEvent::SilenceEnded { .. } => {}
+            AudioEvent::Silence { .. } => self.on_silence(now),
+            AudioEvent::SilenceEnded { .. } => self.on_sound(now),
         }
     }
 
@@ -530,6 +539,7 @@ impl Core {
     fn replan(&mut self, now: Timestamp) {
         self.chain(now);
         let mut station = self.engine.state().station.clone();
+        self.apply_analysis(&mut station);
         self.broken.retain(|_, at| since(*at, now) < RETRY_BROKEN);
         for p in &mut station.playlists {
             p.items.retain(|i| !self.broken.contains_key(&i.id));
@@ -566,7 +576,7 @@ impl Core {
         self.last_plan = Some(now);
     }
 
-    fn free_deck(&self) -> Option<usize> {
+    pub(crate) fn free_deck(&self) -> Option<usize> {
         (0..4).map(|k| (self.next_deck + k) % 4).find(|&i| {
             self.slots[i].is_none() && self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Empty
         })
@@ -581,6 +591,7 @@ impl Core {
                 .filter(|s| s.role == DeckRole::Plan)
         };
         let last = plan_slots().map(|s| s.entry.start).max();
+        let queued = plan_slots().filter(|s| s.not_started()).count();
         let assigned: Vec<(ItemId, Timestamp)> = plan_slots()
             .map(|s| (s.entry.item, s.entry.start))
             .collect();
@@ -592,7 +603,7 @@ impl Core {
             .filter(|e| !assigned.contains(&(e.item, e.start)))
             .filter(|e| last.is_none_or(|l| e.start > l))
             .take_while(|e| e.start <= horizon)
-            .take(4)
+            .take(MAX_QUEUED.saturating_sub(queued))
             .cloned()
             .collect();
         for entry in next {
@@ -684,7 +695,9 @@ impl Core {
             if s.role != DeckRole::Plan || !s.not_started() || s.entry.start > soon {
                 continue;
             }
-            if !self.may_start(s) {
+            // A deck whose ring is not full yet would start on silence: it starts late.
+            let ready = self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Ready;
+            if !ready || !self.may_start(s) {
                 continue;
             }
             let at = self.map.sample_at(s.entry.start).max(self.mixer.now());
@@ -793,6 +806,7 @@ impl Core {
         view.now = now;
         view.mode = self.engine.state().mode;
         view.stop_after_current = self.hold;
+        view.emergency = self.dead_air.emergency;
         view.waiting_for_next = waiting;
         view.decks = decks;
         view.outputs.local = self.local.clone();

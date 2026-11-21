@@ -114,11 +114,15 @@ impl Core {
         let deck = |d: u8| usize::from(d).min(3);
         match intent {
             AudioIntent::Load { deck: d, item } => self.op_load(deck(d), item, now),
-            AudioIntent::Play { deck: d } => self.op_play(deck(d)),
+            AudioIntent::Play { deck: d } => {
+                self.leave_emergency(now);
+                self.op_play(deck(d))
+            }
             AudioIntent::Pause { deck: d } => self.op_pause(deck(d)),
             AudioIntent::Fade { deck: d } => self.op_fade(deck(d)),
             AudioIntent::Skip { deck: d } => self.op_skip(deck(d), now),
             AudioIntent::SetMode(_) => {
+                self.leave_emergency(now);
                 self.dirty = true;
                 Check::Now(true)
             }
@@ -127,6 +131,7 @@ impl Core {
                 Check::Now(true)
             }
             AudioIntent::Next => {
+                self.leave_emergency(now);
                 self.hold = false;
                 self.start_next(None)
             }
@@ -150,7 +155,7 @@ impl Core {
         {
             return true;
         }
-        !self.hold && self.engine.state().mode == Mode::Auto
+        !self.hold && !self.dead_air.emergency && self.engine.state().mode == Mode::Auto
     }
 
     /// The item with this id in the station, and the id of its playlist.

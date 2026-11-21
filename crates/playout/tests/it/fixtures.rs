@@ -17,6 +17,7 @@ pub enum Side {
     Left,
     Right,
     Both,
+    Silent,
 }
 
 pub fn t0() -> Timestamp {
@@ -50,6 +51,7 @@ pub fn wav(name: &str, secs: f32, side: Side) -> String {
             Side::Left => (x, 0.0),
             Side::Right => (0.0, x),
             Side::Both => (x, x),
+            Side::Silent => (0.0, 0.0),
         };
         w.write_sample((l * 32767.0) as i16).unwrap();
         w.write_sample((r * 32767.0) as i16).unwrap();

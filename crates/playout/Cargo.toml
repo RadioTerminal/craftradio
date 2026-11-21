@@ -13,6 +13,7 @@ radio-engine = { path = "../engine" }
 radio-audio = { path = "../audio" }
 radio-audio-device = { path = "../audio-device" }
 # MP3 (LAME, LGPL) stays opt-in: the app enables `radio-stream/mp3` itself.
+radio-library = { path = "../library" }
 radio-stream = { path = "../stream", default-features = false }
 jiff.workspace = true
 rtrb.workspace = true
