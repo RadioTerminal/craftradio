@@ -581,7 +581,9 @@ fn dyn_field(
             .range(lo..=hi)
             .speed(speed)
             .max_decimals(1)
-            .suffix(suffix);
+            .suffix(suffix)
+            // A typed value counts when the typing ends, not at each key.
+            .update_while_editing(false);
         let r = ui.add_sized([ui.available_width(), size::CONTROL_SM], field);
         done = r.drag_stopped() || (r.changed() && !r.dragged());
         r
