@@ -15,6 +15,7 @@ mod drops;
 pub(crate) use action::{Action, FileTarget, PasteTo};
 pub(crate) use clipboard::{Clipboard, CutSource};
 
+use crate::add_menu::{self, AddDialog};
 use crate::meta_editor::{self, MetaEditor};
 use crate::rules_editor::{self, Editor};
 
@@ -119,6 +120,7 @@ pub struct RadioApp {
     confirm: Option<(String, Action)>,
     rename: Option<(String, String)>,
     meta: Option<MetaEditor>,
+    add_dialog: Option<AddDialog>,
     decks: decks::State,
 }
 
@@ -153,6 +155,7 @@ impl RadioApp {
             confirm: None,
             rename: None,
             meta: None,
+            add_dialog: None,
             decks: decks::State::default(),
         }
     }

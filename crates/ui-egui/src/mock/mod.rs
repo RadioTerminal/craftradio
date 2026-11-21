@@ -364,4 +364,37 @@ mod tests {
         let text = stream::render("{artist} – {title}", &meta);
         assert_eq!(text, "The {title} Band – Real Title");
     }
+
+    #[test]
+    fn a_kept_alive_stream_reconnects_and_then_plays_on() {
+        use crate::view::StreamState;
+        let tz = TimeZone::get("Europe/Ljubljana").expect("tz");
+        let mut source = MockSource::new(tz);
+        let at = |s: &str| -> Timestamp { s.parse().expect("ts") };
+        let view = source.snapshot(at("2026-11-21T13:58:00Z"));
+        let main = view.main_playlist.clone();
+        let added = source.edit(Edit::AddStream {
+            playlist: main,
+            url: "https://radio.example.org/live".to_owned(),
+            title: "Night Stream".to_owned(),
+            planned_len: Duration::from_secs(60),
+            keep_alive: true,
+            at: Some(view.rows.len() - 1),
+        });
+        assert_eq!(added, Ok(1));
+        let state_at = |source: &mut MockSource, now: &str| {
+            let view = source.snapshot(at(now));
+            view.rows
+                .iter()
+                .find(|r| r.title == "Night Stream")
+                .and_then(|r| r.stream)
+        };
+        let dropped = state_at(&mut source, "2026-11-21T13:58:25Z");
+        assert!(
+            matches!(dropped, Some(StreamState::Reconnecting { .. })),
+            "a dropped stream with keep-alive reconnects, not skips: {dropped:?}"
+        );
+        let back = state_at(&mut source, "2026-11-21T13:58:45Z");
+        assert_eq!(back, Some(StreamState::Connected), "the stream comes back");
+    }
 }

@@ -129,3 +129,30 @@ fn files_dropped_on_the_main_pane_become_rows_and_others_are_skipped() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn add_url_puts_a_stream_into_the_playlist() {
+    let mut h = harness();
+    h.get_by_label("    Jingles").click();
+    h.run_steps(FRAMES);
+    let stream = "https://radio.example.org/live";
+    assert_eq!(count(&h, stream), 0);
+    h.get_by_label("+ Add to Jingles").click();
+    h.run_steps(FRAMES);
+    menu(&mut h, "Add URL…");
+    let field = h.get_by_label("URL");
+    field.focus();
+    field.type_text(stream);
+    h.run_steps(FRAMES);
+    h.get_by_label("Add").click();
+    h.run_steps(FRAMES);
+    assert!(
+        count(&h, stream) > 0,
+        "the stream is an item of Jingles now"
+    );
+    assert!(
+        h.query_by_label_contains("added 1 stream to Jingles")
+            .is_some(),
+        "the message shows the count from the source"
+    );
+}

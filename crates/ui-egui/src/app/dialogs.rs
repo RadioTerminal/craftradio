@@ -4,6 +4,7 @@ use super::*;
 
 impl RadioApp {
     pub(super) fn dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>, t: &Tokens) {
+        add_menu::dialog(ctx, &mut self.add_dialog, &self.view, actions, t);
         if let Some((text, _)) = &self.confirm {
             let text = text.clone();
             let mut answer = None;

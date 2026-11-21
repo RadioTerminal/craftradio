@@ -56,6 +56,8 @@ fn main() -> ExitCode {
         ("rules-editor", Scene::Click(&["⚙ Music rules"])),
         ("rules-script", Scene::Click(&["⚙ Music rules", "Script"])),
         ("context-menu", Scene::Menu(ROW, "")),
+        ("add-menu", Scene::Click(&["+ Add to Music"])),
+        ("add-url", Scene::Click(&["+ Add to Music", "Add URL…"])),
         ("metadata", Scene::Menu(ROW, "Properties")),
     ];
     for (name, scene) in scenes {

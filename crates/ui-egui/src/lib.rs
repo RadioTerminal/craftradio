@@ -1,5 +1,6 @@
 //! The egui desktop UI: the view-model, a mock source for the preview, and the panels.
 
+mod add_menu;
 mod app;
 mod cartwall;
 mod clock_window;

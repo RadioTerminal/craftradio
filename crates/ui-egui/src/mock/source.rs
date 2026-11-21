@@ -29,6 +29,7 @@ impl ViewSource for MockSource {
                 r.meta = m.clone();
             }
             r.timing = self.row_timing.get(&r.id).copied();
+            r.stream = r.meta.keep_alive.map(|keep| stream::simulate(keep, now));
         }
         self.last_all.clone_from(&all);
         let since = now

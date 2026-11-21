@@ -24,7 +24,13 @@ impl MockSource {
                 };
                 let id = self.next_manual;
                 self.next_manual += 1;
-                self.try_op(Op::Insert { at, id, title, len })
+                self.try_op(Op::Insert {
+                    at,
+                    id,
+                    item,
+                    title,
+                    len,
+                })
             }
             Edit::Remove(ids) => {
                 let n = ids.len();
@@ -278,6 +284,68 @@ impl MockSource {
                 }
                 Ok(self.scan_folder(&folder))
             }
+            Edit::AddFiles {
+                playlist,
+                paths,
+                at,
+            } => {
+                let imported = self.import_files(paths, "Unsorted")?;
+                if imported.ids.is_empty() {
+                    return Err(format!(
+                        "preview — no audio files to add · skipped {}",
+                        imported.skipped
+                    ));
+                }
+                self.add_to(&playlist, &imported.ids, at)
+            }
+            Edit::AddFolderItems {
+                playlist,
+                path,
+                recursive,
+            } => {
+                let scan = folders::scan(std::path::Path::new(&path), recursive, self.limits);
+                if scan.files.is_empty() {
+                    let why = scan.errors.first().cloned().unwrap_or_default();
+                    return Err(format!("preview — no audio files in {path} {why}"));
+                }
+                let ids = self.add_library_files(&scan.files, "Unsorted");
+                self.add_to(&playlist, &ids, None)
+            }
+            Edit::AddStream {
+                playlist,
+                url,
+                title,
+                planned_len,
+                keep_alive,
+                at,
+            } => {
+                crate::view::check_stream_url(&url).map_err(|e| format!("preview — {e}"))?;
+                let title = if title.trim().is_empty() {
+                    url.clone()
+                } else {
+                    title.trim().to_owned()
+                };
+                let id = self.add_special(&title, &url, planned_len, "Streams");
+                if let Some(l) = self.library.iter_mut().find(|l| l.id == id) {
+                    l.meta.keep_alive = Some(keep_alive);
+                }
+                self.add_to(&playlist, &[id], at)
+            }
+            Edit::AddLive {
+                playlist,
+                device,
+                channels,
+                planned_len,
+                at,
+            } => {
+                if !DEVICES.contains(&device.as_str()) {
+                    return Err(format!("preview — no device {device}"));
+                }
+                let title = format!("Live input · {device} ({}/{})", channels.0, channels.1);
+                let path = format!("live://{device}");
+                let id = self.add_special(&title, &path, planned_len, "Live");
+                self.add_to(&playlist, &[id], at)
+            }
             Edit::SetPartSetting { part, key, value } => {
                 self.settings
                     .entry(part.clone())
@@ -289,6 +357,62 @@ impl MockSource {
                 Ok(1)
             }
         }
+    }
+
+    /// Add a library item that is not a file, such as a stream. It returns the new id.
+    fn add_special(&mut self, title: &str, path: &str, len: Duration, category: &str) -> u64 {
+        let id = self.next_library_id();
+        self.library.push(LibraryItem {
+            id,
+            title: title.to_owned(),
+            artist: None,
+            len,
+            category: category.to_owned(),
+            path: path.to_owned(),
+            meta: from_title(title, PublishMode::FromTags),
+        });
+        id
+    }
+
+    /// Put library items into a playlist at item index `at`, or at the end.
+    /// For the main playlist, `at` is an index into the rows of the last snapshot.
+    fn add_to(&mut self, playlist: &str, ids: &[u64], at: Option<usize>) -> Result<usize, String> {
+        if playlist == self.main.name {
+            let top = self.last_top.clone();
+            let rows: Vec<Row> = self
+                .current()
+                .into_iter()
+                .filter(|r| top.as_ref().is_none_or(|t| r.start >= *t))
+                .collect();
+            let place = at
+                .and_then(|i| rows.get(i))
+                .map_or(Place::End, |r| Place::Before(r.id));
+            let ordered: Vec<u64> = match place {
+                Place::End => ids.to_vec(),
+                _ => ids.iter().rev().copied().collect(),
+            };
+            let mut placed = 0;
+            for item in ordered {
+                placed += self.apply_edit(Edit::Insert { item, at: place })?;
+            }
+            return Ok(placed);
+        }
+        let entries: Vec<(String, Duration)> = ids
+            .iter()
+            .filter_map(|id| self.library_item(*id))
+            .map(|l| (l.title.clone(), l.len))
+            .collect();
+        let Some(tab) = self.tab_mut(playlist) else {
+            return Err(gone(&format!("the playlist {playlist}")));
+        };
+        tab.weights.resize(tab.items.len(), 1);
+        let at = at.unwrap_or(tab.items.len()).min(tab.items.len());
+        let n = entries.len();
+        for (k, entry) in entries.into_iter().enumerate() {
+            tab.items.insert(at + k, entry);
+            tab.weights.insert(at + k, 1);
+        }
+        Ok(n)
     }
 
     fn move_row(&mut self, id: u64, to: MoveTo) -> Result<usize, String> {

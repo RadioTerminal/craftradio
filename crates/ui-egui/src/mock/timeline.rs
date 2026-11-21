@@ -8,6 +8,8 @@ pub(super) enum Op {
     Insert {
         at: Place,
         id: u64,
+        /// The library item behind the row, for its tags.
+        item: u64,
         title: String,
         len: Duration,
     },
@@ -29,7 +31,13 @@ impl MockSource {
     pub(super) fn apply_ops(&self, rows: &mut Vec<Row>, ops: &[Op]) -> bool {
         for op in ops {
             match op {
-                Op::Insert { at, id, title, len } => {
+                Op::Insert {
+                    at,
+                    id,
+                    item,
+                    title,
+                    len,
+                } => {
                     let Some(i) = index_of(rows, *at) else {
                         continue;
                     };
@@ -48,8 +56,12 @@ impl MockSource {
                             fixed: None,
                             origin: Origin::Manual,
                             locked: false,
-                            meta: from_title(title, PublishMode::FromTags),
+                            meta: self.library_item(*item).map_or_else(
+                                || from_title(title, PublishMode::FromTags),
+                                |l| l.meta.clone(),
+                            ),
                             timing: None,
+                            stream: None,
                             ..base
                         },
                     );
@@ -183,6 +195,7 @@ impl MockSource {
                 locked: false,
                 meta: from_title(&item.title, publish_for(item.playlist)),
                 timing: None,
+                stream: None,
                 title: item.title,
             });
         };

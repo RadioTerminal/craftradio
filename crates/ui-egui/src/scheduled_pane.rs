@@ -3,6 +3,7 @@
 use egui::{Align, Layout, RichText, Sense, Stroke, UiBuilder};
 use jiff::SignedDuration;
 
+use crate::add_menu;
 use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, hms, mmss};
 use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
@@ -338,6 +339,7 @@ fn playlist(
                 if rules_editor::cog(ui, &p.name) {
                     actions.push(Action::OpenRules(p.name.clone()));
                 }
+                add_menu::button(ui, &p.name, None, actions);
             });
             if let Some(src) = &p.source {
                 caption(ui, &format!("From folder {}", src.path), t);
@@ -379,6 +381,9 @@ fn playlist(
                 let hint = RichText::new("Drop a library title or files here to add them");
                 ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
             });
+            zone.response
+                .interact(Sense::click())
+                .context_menu(|ui| add_menu::items(ui, &p.name, None, actions));
             if let Some(drag) = dropped {
                 actions.push(Action::Drop {
                     item: drag.0,
@@ -420,6 +425,9 @@ fn item_menu(
             index: i,
         })
     };
+    ui.menu_button("+ Add below", |ui| {
+        add_menu::items(ui, &p.name, Some(i + 1), actions)
+    });
     // A cut removes the item only after a successful paste.
     if menu_item(ui, "Cut", Some(CUT)) {
         actions.push(copy(true));

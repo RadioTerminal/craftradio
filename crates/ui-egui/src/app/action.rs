@@ -61,6 +61,8 @@ pub(crate) enum Action {
     },
     Rename(String),
     UseAsMain(String),
+    /// Open a dialog that adds a stream or the live input.
+    AddDialog(AddDialog),
     /// Make a playlist from a folder of the library, and maybe make it main.
     FolderPlaylist {
         path: String,
@@ -118,6 +120,11 @@ fn describe(edit: &Edit, n: usize) -> String {
         Edit::RemoveFolder { path } => format!("removed {path} from the Library"),
         Edit::Rescan { folder } => format!("read {n} audio files from {folder}"),
         Edit::SetPartSetting { part, key, .. } => format!("changed {part} {key}"),
+        Edit::AddFiles { playlist, .. } | Edit::AddFolderItems { playlist, .. } => {
+            format!("added {n} files to {playlist}")
+        }
+        Edit::AddStream { playlist, .. } => format!("added {n} stream to {playlist}"),
+        Edit::AddLive { playlist, .. } => format!("added {n} live input to {playlist}"),
     };
     format!("preview — {what} (not saved)")
 }
@@ -238,6 +245,7 @@ impl RadioApp {
             }
             Action::Confirm { text, then } => self.confirm = Some((text, *then)),
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
+            Action::AddDialog(d) => self.add_dialog = Some(d),
             Action::UseAsMain(name) => {
                 let text = match self.source.use_as_main(&name) {
                     Ok(()) => format!("preview — {name} is the main playlist now (not saved)"),

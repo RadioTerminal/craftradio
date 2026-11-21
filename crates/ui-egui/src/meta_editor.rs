@@ -31,6 +31,7 @@ pub(crate) struct MetaEditor {
     touched: [bool; 6],
     publish_touched: bool,
     custom_touched: bool,
+    keep_alive_touched: bool,
     /// The row whose place in the timeline gives the preview line its context.
     base: Row,
     note: bool,
@@ -56,6 +57,7 @@ impl MetaEditor {
             touched: [false; 6],
             publish_touched: false,
             custom_touched: false,
+            keep_alive_touched: false,
             base,
             note: false,
         }
@@ -82,6 +84,10 @@ impl MetaEditor {
         }
         if self.custom_touched {
             out.custom.clone_from(&self.draft.custom);
+        }
+        // Keep-alive applies only to streams.
+        if self.keep_alive_touched && out.keep_alive.is_some() {
+            out.keep_alive = self.draft.keep_alive;
         }
         out
     }
@@ -176,6 +182,16 @@ pub(crate) fn show(
             });
             if ed.targets.len() > 1 {
                 caption(ui, "The line shows the first selected item.", t);
+            }
+            if let Some(keep) = ed.draft.keep_alive.as_mut() {
+                ui.add_space(space::S);
+                caption(ui, "STREAM", t);
+                if ui
+                    .checkbox(keep, crate::add_menu::KEEP_ALIVE_LABEL)
+                    .changed()
+                {
+                    ed.keep_alive_touched = true;
+                }
             }
             ui.add_space(space::S);
             caption(

@@ -51,6 +51,8 @@ pub struct Row {
     pub meta: ItemMeta,
     /// A timing that a person set for a fixed row.
     pub timing: Option<Timing>,
+    /// The state of a stream row. `None` for other rows.
+    pub stream: Option<StreamState>,
 }
 
 /// How strictly a fixed row keeps its time.
@@ -98,6 +100,21 @@ pub struct ItemMeta {
     pub comment: String,
     pub publish: PublishMode,
     pub custom: String,
+    /// For a stream: true when it reconnects until its planned end. `None` for other items.
+    pub keep_alive: Option<bool>,
+}
+
+/// The state of a stream row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamState {
+    Connected,
+    /// The stream dropped. A bed plays while the source tries again.
+    Reconnecting {
+        attempt: u32,
+        next_in_s: u32,
+    },
+    /// The stream dropped and keep-alive is off.
+    Down,
 }
 
 /// An item whose tags a person can edit.
@@ -769,6 +786,54 @@ pub enum Edit {
         key: String,
         value: serde_json::Value,
     },
+    /// Add audio files and folders to a playlist at item index `at`, or at the end.
+    /// For the main playlist, `at` is an index into `StationView::rows`.
+    AddFiles {
+        playlist: String,
+        paths: Vec<String>,
+        at: Option<usize>,
+    },
+    /// Add the audio files of a folder to a playlist once.
+    AddFolderItems {
+        playlist: String,
+        path: String,
+        recursive: bool,
+    },
+    /// Add an internet stream with a planned length.
+    AddStream {
+        playlist: String,
+        url: String,
+        title: String,
+        planned_len: Duration,
+        /// Reconnect until the planned end, and never skip to the next item.
+        keep_alive: bool,
+        at: Option<usize>,
+    },
+    /// Add the live input with a planned length.
+    AddLive {
+        playlist: String,
+        device: String,
+        channels: (u32, u32),
+        planned_len: Duration,
+        at: Option<usize>,
+    },
+}
+
+/// The file extensions that count as audio.
+pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "flac", "wav", "ogg", "m4a", "opus", "aac"];
+
+/// Check a stream address. It returns why the address is not usable.
+pub fn check_stream_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| "the address must start with http:// or https://".to_owned())?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if host.is_empty() || host.contains(char::is_whitespace) {
+        return Err("the address has no host".to_owned());
+    }
+    Ok(())
 }
 
 /// Something that can describe the station at a given instant.

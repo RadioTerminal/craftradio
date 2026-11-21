@@ -1,6 +1,31 @@
 //! The stream title of the mock. The engine will call `radio_model::stream_title` here.
 
-use crate::view::{ItemMeta, PublishMode};
+use jiff::Timestamp;
+
+use crate::view::{ItemMeta, PublishMode, StreamState};
+
+/// The mock drops each stream for part of every minute: from this second ...
+const DROP_FROM_S: i64 = 20;
+/// ... for this many seconds.
+const DROP_FOR_S: i64 = 12;
+/// The time between two tries to connect again, in seconds.
+const RETRY_EVERY_S: i64 = 4;
+const MINUTE_S: i64 = 60;
+
+/// The simulated state of a stream at `now`. No stream plays in the preview.
+pub(super) fn simulate(keep_alive: bool, now: Timestamp) -> StreamState {
+    let s = now.as_second().rem_euclid(MINUTE_S) - DROP_FROM_S;
+    if !(0..DROP_FOR_S).contains(&s) {
+        return StreamState::Connected;
+    }
+    if !keep_alive {
+        return StreamState::Down;
+    }
+    StreamState::Reconnecting {
+        attempt: u32::try_from(1 + s / RETRY_EVERY_S).unwrap_or(1),
+        next_in_s: u32::try_from(RETRY_EVERY_S - s % RETRY_EVERY_S).unwrap_or(0),
+    }
+}
 
 /// Fill the placeholders of `template` from `meta` in one pass over the template.
 // The scan never reads a value again, so a value that holds a placeholder stays as it is.

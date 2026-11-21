@@ -4,12 +4,13 @@
 use egui::{Align, Layout, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
 
+use crate::add_menu;
 use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, hms, is_on_air, mmss};
 use crate::context_menu;
 use crate::library::LibraryDrag;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{DropTarget, Edit, MetaTarget, MoveTo, Place, Row, StationView};
+use crate::view::{DropTarget, Edit, MetaTarget, MoveTo, Place, Row, StationView, StreamState};
 use crate::windows::ToolWindow;
 
 /// Show the main pane.
@@ -28,10 +29,17 @@ pub(crate) fn show(
             egui::Label::new(title.font(theme::text(theme::SECTION)).strong())
                 .sense(Sense::click()),
         );
-        header.context_menu(|ui| empty_menu(ui, link, actions));
+        header.context_menu(|ui| empty_menu(ui, view, link, actions));
         if rules_editor::cog(ui, &view.main.name) {
             actions.push(Action::OpenRules(view.main.name.clone()));
         }
+        // New items go after the last selected row, or at the end.
+        let after = link
+            .selected
+            .last()
+            .and_then(|id| view.rows.iter().position(|r| r.id == *id))
+            .map(|i| i + 1);
+        add_menu::button(ui, &view.main.name, after, actions);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let n = view.rows.iter().filter(|r| r.is_main).count();
             let note = if folder { " · estimated lengths" } else { "" };
@@ -142,7 +150,7 @@ pub(crate) fn show(
     if body.bottom() > top {
         let rest = egui::Rect::from_x_y_ranges(body.x_range(), top..=body.bottom());
         let resp = ui.interact(rest, ui.id().with("main_empty"), Sense::click());
-        resp.context_menu(|ui| empty_menu(ui, link, actions));
+        resp.context_menu(|ui| empty_menu(ui, view, link, actions));
     }
 
     if files && pointer.is_some_and(|p| pane.contains(p)) {
@@ -202,7 +210,9 @@ fn shortcuts(ctx: &egui::Context, view: &StationView, link: &Linked, actions: &m
     }
 }
 
-fn empty_menu(ui: &mut egui::Ui, link: &Linked, actions: &mut Vec<Action>) {
+fn empty_menu(ui: &mut egui::Ui, view: &StationView, link: &Linked, actions: &mut Vec<Action>) {
+    add_menu::items(ui, &view.main.name, None, actions);
+    ui.separator();
     if context_menu::menu_item_if(ui, link.has_clip, "Paste", Some(context_menu::PASTE)) {
         actions.push(Action::Paste(PasteTo::Main(Place::End)));
     }
@@ -226,6 +236,14 @@ fn row_menu(
     let sel = link.targets(r.id);
     let first = sel.first().copied().unwrap_or(r.id);
     let last = sel.last().copied().unwrap_or(r.id);
+    let below = view
+        .rows
+        .iter()
+        .position(|row| row.id == last)
+        .map(|i| i + 1);
+    ui.menu_button("+ Add below", |ui| {
+        add_menu::items(ui, &view.main.name, below, actions)
+    });
     if menu_item(ui, "Play next", None) {
         actions.push(Action::Edit(Edit::Move {
             id: r.id,
@@ -337,6 +355,9 @@ fn track_row(row: &mut egui_extras::TableRow<'_, '_>, r: &Row, on_air: bool, t: 
         on_air_bg(ui, on_air, false, t);
         let pin = if r.locked { "📌 " } else { "" };
         let text = RichText::new(format!("{pin}{}", r.title)).font(theme::text(theme::BODY));
+        if let Some(state) = r.stream {
+            stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), t);
+        }
         ui.add(egui::Label::new(if on_air { text.strong() } else { text }).truncate());
     });
     row.col(|ui| {
@@ -349,6 +370,25 @@ fn track_row(row: &mut egui_extras::TableRow<'_, '_>, r: &Row, on_air: bool, t: 
             );
         });
     });
+}
+
+/// The state badge of a stream row. It says that no real stream plays in the preview.
+fn stream_badge(ui: &mut egui::Ui, state: StreamState, keep_alive: bool, t: &Tokens) {
+    let (text, colour) = match state {
+        StreamState::Connected => ("stream ○ simulated".to_owned(), t.text_muted),
+        StreamState::Reconnecting { attempt, next_in_s } => (
+            format!("reconnecting · bed playing · try {attempt}, next in {next_in_s} s"),
+            t.warn,
+        ),
+        StreamState::Down => ("down · keep-alive is off".to_owned(), t.danger),
+    };
+    let keep = if keep_alive { " · keep alive" } else { "" };
+    let text = format!("{text}{keep} · preview — no real stream");
+    ui.label(
+        RichText::new(text)
+            .font(theme::text(theme::CAPTION))
+            .color(colour),
+    );
 }
 
 /// A row from another playlist: `── HH:MM:SS Name (m:ss) ──` in the playlist colour.

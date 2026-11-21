@@ -6,8 +6,7 @@
 
 use std::path::Path;
 
-/// The file extensions that count as audio.
-pub(super) const AUDIO: [&str; 7] = ["mp3", "flac", "wav", "ogg", "m4a", "opus", "aac"];
+use crate::view::AUDIO_EXTENSIONS as AUDIO;
 
 /// How far a scan goes.
 #[derive(Clone, Copy, Debug)]
