@@ -49,6 +49,8 @@ impl DeckState {
 /// How a deck plays a new item.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoadOptions {
+    /// Route captured audio through the live strip.
+    pub live_bus: bool,
     /// The point in the file where playback starts.
     pub cue_in: Duration,
     /// The length of the fade-in from silence at the start. Zero means no fade.
@@ -128,6 +130,7 @@ impl DeckShared {
 
 /// The render side of a loaded item: the ring consumer and its shared state.
 pub(crate) struct DeckSource {
+    pub live_bus: bool,
     pub(crate) consumer: Consumer<f32>,
     pub(crate) shared: Arc<DeckShared>,
     pub(crate) fade_in: u64,

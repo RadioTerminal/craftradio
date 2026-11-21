@@ -51,6 +51,7 @@ pub(crate) enum AddDialog {
 pub(crate) fn button(
     ui: &mut egui::Ui,
     playlist: &str,
+    inputs: &[String],
     at: Option<usize>,
     actions: &mut Vec<Action>,
 ) {
@@ -72,7 +73,7 @@ pub(crate) fn button(
                 .weak(),
         );
         ui.separator();
-        items(ui, playlist, at, actions)
+        items(ui, playlist, inputs, at, actions)
     });
 }
 
@@ -80,6 +81,7 @@ pub(crate) fn button(
 pub(crate) fn items(
     ui: &mut egui::Ui,
     playlist: &str,
+    inputs: &[String],
     at: Option<usize>,
     actions: &mut Vec<Action>,
 ) {
@@ -123,12 +125,12 @@ pub(crate) fn items(
             tried: false,
         }));
     }
-    ui.add_enabled_ui(false, |ui| {
+    ui.add_enabled_ui(!inputs.is_empty(), |ui| {
         if menu_item(ui, "Add live input…", None) {
             actions.push(Action::AddDialog(AddDialog::Live {
                 playlist: playlist.to_owned(),
                 at,
-                device: String::new(),
+                device: inputs.first().cloned().unwrap_or_default(),
                 left: 1,
                 right: 2,
                 minutes: DEFAULT_PLANNED_MIN,
@@ -137,7 +139,7 @@ pub(crate) fn items(
         }
     })
     .response
-    .on_disabled_hover_text("Live input playback is not available in this build");
+    .on_disabled_hover_text("No input device is available");
     if menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
     }
@@ -260,7 +262,7 @@ pub(crate) fn dialog(
                             .width(size::COMBO_W)
                             .selected_text(device.as_str())
                             .show_ui(ui, |ui| {
-                                for d in &view.devices {
+                                for d in &view.input_devices {
                                     ui.selectable_value(device, d.clone(), d);
                                 }
                             });
@@ -273,7 +275,7 @@ pub(crate) fn dialog(
                         ui.end_row();
                         planned(ui, minutes, seconds, t);
                         let length = len_of(*minutes, *seconds);
-                        let problem = if view.devices.is_empty() || device.is_empty() {
+                        let problem = if !view.input_devices.contains(device) || device.is_empty() {
                             Some("There is no input device. Connect one, then try again.")
                         } else if length.is_zero() {
                             Some(NO_LENGTH)

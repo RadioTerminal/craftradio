@@ -175,7 +175,9 @@ fn writer(
     subscribers: Arc<Mutex<Vec<Sender<EngineEvent>>>>,
 ) {
     let mut pending: Option<Box<State>> = None;
-    let mut last_write = Instant::now() - CHECKPOINT_EVERY;
+    let mut last_write = Instant::now()
+        .checked_sub(CHECKPOINT_EVERY)
+        .unwrap_or_else(Instant::now);
     let write = |conn: &mut Connection, pending: &mut Option<Box<State>>| {
         if let Some(s) = pending.take() {
             let result = write_state(conn, &s).err().map(|e| e.to_string());

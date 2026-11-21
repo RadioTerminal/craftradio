@@ -90,6 +90,7 @@ impl ViewSource for MockSource {
             meters,
             history,
             library: self.library.clone(),
+            input_devices: Vec::new(),
             devices: DEVICES.iter().map(|d| (*d).to_owned()).collect(),
             device_roles: self.device_roles.clone(),
             carts: self.carts.clone(),

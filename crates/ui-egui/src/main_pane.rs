@@ -65,7 +65,7 @@ pub(crate) fn show(
                 .last()
                 .and_then(|id| prep.index.get(id).copied())
                 .map(|i| i + 1);
-            add_menu::button(ui, &view.main.name, after, actions);
+            add_menu::button(ui, &view.main.name, &view.input_devices, after, actions);
             if rules_editor::cog(ui, &view.main.name) {
                 actions.push(Action::OpenRules(view.main.name.clone()));
             }
@@ -304,7 +304,7 @@ pub(crate) fn remove_action(prep: &Prepared, rows: Vec<u64>) -> Action {
 }
 
 fn empty_menu(ui: &mut egui::Ui, view: &StationView, link: &Linked, actions: &mut Vec<Action>) {
-    add_menu::items(ui, &view.main.name, None, actions);
+    add_menu::items(ui, &view.main.name, &view.input_devices, None, actions);
     ui.separator();
     if context_menu::menu_item_if(ui, link.has_clip, "Paste", Some(context_menu::PASTE)) {
         actions.push(Action::Paste(PasteTo::Main(Place::End)));
@@ -339,7 +339,7 @@ fn row_menu(
         .position(|row| row.id == last)
         .map(|i| i + 1);
     ui.menu_button(icons::lead(Icon::Plus, "Add below"), |ui| {
-        add_menu::items(ui, &view.main.name, below, actions)
+        add_menu::items(ui, &view.main.name, &view.input_devices, below, actions)
     });
     if menu_item(ui, "Play next", None) {
         actions.push(Action::Edit(Edit::Move {

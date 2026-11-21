@@ -13,7 +13,7 @@ use jiff::Timestamp;
 use radio_audio::Decoder;
 use radio_audio::{
     AudioEvent, CHANNELS, Command as Cmd, CommandKind, DeckId, DeckState, LiveInput, LoadOptions,
-    MeterReader, Mixer, MixerConfig, MixerHandle, SAMPLE_RATE, render_offline,
+    MeterReader, Mixer, MixerConfig, MixerHandle, SAMPLE_RATE,
 };
 use radio_audio_device::{NullOutput, SampleClock};
 use radio_engine::{Command, Engine, EngineEvent, LogEntry, LogHandle, LogStatus, RowId};
@@ -207,6 +207,8 @@ pub(crate) struct Slot {
     pub(crate) cut: bool,
     pub(crate) row: Option<RowId>,
     pub(crate) stream: Option<StreamSlot>,
+    pub(crate) capture: Option<Box<dyn crate::Capture>>,
+    live_end: Option<Timestamp>,
     /// The load starts this far after the cue-in (a resume).
     pub(crate) offset: Duration,
     /// The mixer reported that a fade-out began.
@@ -243,10 +245,12 @@ impl Slot {
 
     /// The planned end: the real start plus the length, less the trim of the planner.
     pub(crate) fn planned_end(&self) -> Timestamp {
-        add(
-            self.real_start(),
-            self.entry.len.saturating_sub(self.entry.trim),
-        )
+        self.live_end.unwrap_or_else(|| {
+            add(
+                self.real_start(),
+                self.entry.len.saturating_sub(self.entry.trim),
+            )
+        })
     }
 }
 
@@ -254,6 +258,7 @@ enum Driver {
     Offline {
         mixer: Box<Mixer>,
         tap: Option<rtrb::Producer<f32>>,
+        cue: Option<rtrb::Producer<f32>>,
     },
     Null {
         _out: NullOutput,
@@ -269,6 +274,7 @@ struct OpenedOutput {
     driver: Driver,
     handle: MixerHandle,
     live: LiveInput,
+    cue: crate::cue::Cue,
     local: LocalOutput,
     tap: Option<rtrb::Consumer<f32>>,
     fallback: Option<String>,
@@ -292,6 +298,9 @@ fn open_output(
     let (mixer, handle, live) = Mixer::new(config);
     let (tap_tx, tap_rx) = tap_ring(tap);
     let mut fallback = None;
+    let (cue_tx, cue_rx) = rtrb::RingBuffer::new(48_000 * 2);
+    let mut cue = crate::cue::Cue::start(cue_rx);
+    let mut cue_tx = Some(cue_tx);
     let (mixer, handle, live, tap_tx, tap_rx) = match choice {
         OutputChoice::Offline => {
             return Ok(OpenedOutput {
@@ -299,16 +308,20 @@ fn open_output(
                 driver: Driver::Offline {
                     mixer: Box::new(mixer),
                     tap: tap_tx,
+                    cue: cue_tx.take(),
                 },
                 handle,
                 live,
+                cue,
                 local: LocalOutput::Offline,
                 tap: tap_rx,
                 fallback,
             });
         }
         OutputChoice::Device { name } => {
-            let source = Box::new(ProgramSource::new(mixer, tap_tx));
+            let mut source = ProgramSource::new(mixer, tap_tx);
+            source.cue = cue_tx.take();
+            let source = Box::new(source);
             match crate::device::Device::open(name.clone(), source) {
                 Ok((out, name, clock)) => {
                     let local = LocalOutput::Device { name };
@@ -317,6 +330,7 @@ fn open_output(
                         driver: Driver::Device { out },
                         handle,
                         live,
+                        cue,
                         local,
                         tap: tap_rx,
                         fallback,
@@ -324,13 +338,18 @@ fn open_output(
                 }
                 Err(e) => fallback = Some(e.to_string()),
             }
+            let (new_tx, new_rx) = rtrb::RingBuffer::new(48_000 * 2);
+            cue_tx = Some(new_tx);
+            cue = crate::cue::Cue::start(new_rx);
             let (mixer, handle, live) = Mixer::new(config);
             let (tap_tx, tap_rx) = tap_ring(tap);
             (mixer, handle, live, tap_tx, tap_rx)
         }
         OutputChoice::Null => (mixer, handle, live, tap_tx, tap_rx),
     };
-    let source = Box::new(ProgramSource::new(mixer, tap_tx));
+    let mut source = ProgramSource::new(mixer, tap_tx);
+    source.cue = cue_tx;
+    let source = Box::new(source);
     let null = NullOutput::start(SAMPLE_RATE, CHANNELS as u16, source)
         .map_err(|e| PlayoutError::Output(e.to_string()))?;
     Ok(OpenedOutput {
@@ -338,6 +357,7 @@ fn open_output(
         driver: Driver::Null { _out: null },
         handle,
         live,
+        cue,
         local: LocalOutput::Null,
         tap: tap_rx,
         fallback,
@@ -350,6 +370,8 @@ pub(crate) struct Core {
     pub(crate) mixer: MixerHandle,
     driver: Driver,
     _live: LiveInput,
+    cue: crate::cue::Cue,
+    cue_name: String,
     local: LocalOutput,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) map: ClockMap,
@@ -469,6 +491,8 @@ impl Core {
             mixer: opened.handle,
             driver: opened.driver,
             _live: opened.live,
+            cue: opened.cue,
+            cue_name: String::new(),
             local: opened.local,
             clock: Arc::clone(&cfg.clock),
             map: ClockMap::default(),
@@ -538,10 +562,11 @@ impl Core {
         }
         self.tick();
         self.settle_offline();
-        let Driver::Offline { mixer, tap } = &mut self.driver else {
+        let Driver::Offline { mixer, tap, cue } = &mut self.driver else {
             return Err(PlayoutError::NotOffline);
         };
-        let out = render_offline(mixer, frames);
+        let (out, pfl) = radio_audio::render_offline_buses(mixer, frames);
+        feed_tap(cue, &pfl);
         feed_tap(tap, &out);
         Ok(out)
     }
@@ -676,6 +701,22 @@ impl Core {
         {
             let by_ms = i64::try_from(step.as_millis()).unwrap_or(i64::MAX);
             self.alarms.raise(now, Alarm::ClockStep { by_ms });
+        }
+        let cue_name = self
+            .engine
+            .state()
+            .settings("audio")
+            .and_then(|s| s.get("pfl"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        if self.ticks == 0 || cue_name != self.cue_name {
+            let _ = self.cue.select.send(cue_name.clone());
+            self.cue_name = cue_name;
+            self.sync_strips();
+        }
+        for reason in self.cue.errors.try_iter() {
+            self.alarms.raise(now, Alarm::Unsupported { what: reason });
         }
         self.ticks += 1;
         if self.ticks == 1 {
@@ -997,6 +1038,28 @@ impl Core {
         drop_superseded(&mut tl, &aired);
         self.expire_superseded(now);
         drop_superseded(&mut tl, &self.superseded);
+        // A late fixed event keeps its target for alarms, but its row starts where it
+        // really went on air. The following flow must follow that audible interval.
+        let mut previous: Option<Entry> = None;
+        for entry in &mut tl.entries {
+            if let Some(slot) = self.slots.iter().flatten().find(|s| {
+                s.started.is_some() && s.entry.fixed.is_some() && same_event(&s.entry, entry)
+            }) {
+                entry.start = slot.real_start();
+            } else if entry.fixed.is_none()
+                && let Some(prev) = &previous
+            {
+                let step = self
+                    .items
+                    .get(&prev.item)
+                    .map_or(prev.len, |item| {
+                        radio_timing::advance(item, self.items.get(&entry.item))
+                    })
+                    .saturating_sub(prev.trim);
+                entry.start = entry.start.max(add(prev.start, step));
+            }
+            previous = Some(entry.clone());
+        }
         let old = std::mem::replace(&mut self.timeline, tl);
         if edited {
             if self.planned {
@@ -1205,6 +1268,7 @@ impl Core {
             .as_ref()
             .map_or((Duration::ZERO, Duration::ZERO), |t| (t.cue_in, t.fade_in));
         let options = LoadOptions {
+            live_bus: matches!(item.source, Source::LiveInput { .. }),
             cue_in: cue_in.saturating_add(offset),
             fade_in: if offset.is_zero() {
                 fade_in
@@ -1227,9 +1291,23 @@ impl Core {
             Source::Stream { url, keep_alive } => {
                 stream = Some(self.load_stream(deck, url, *keep_alive, options)?);
             }
-            Source::LiveInput { .. } => return Err("live input is not supported yet".into()),
+            Source::LiveInput { device, channels } => {
+                let (device, channels, open) = (device.clone(), *channels, self.cfg.open_input);
+                self.work.run(move || {
+                    let (producer, consumer) = rtrb::RingBuffer::new(48_000 * 2);
+                    Done::InputOpened {
+                        tag,
+                        result: open(&device, channels, producer)
+                            .map(|capture| (capture, consumer)),
+                    }
+                });
+                phase = Phase::Opening;
+            }
         }
+        let live_end = matches!(item.source, Source::LiveInput { .. })
+            .then(|| add(entry.start, entry.len.saturating_sub(entry.trim)));
         self.slots[i] = Some(Slot {
+            live_end,
             tag,
             entry,
             item,
@@ -1240,6 +1318,7 @@ impl Core {
             cut: false,
             row: None,
             stream,
+            capture: None,
             offset,
             fading: false,
             asap: false,
@@ -1316,7 +1395,8 @@ impl Core {
         let soon = add(now, self.cfg.command_lead);
         for i in 0..4 {
             let Some(s) = &self.slots[i] else { continue };
-            if s.not_started() || s.end_sent || s.phase == Phase::Paused {
+            let live = matches!(s.item.source, Source::LiveInput { .. });
+            if s.not_started() || s.end_sent || (s.phase == Phase::Paused && !live) {
                 continue;
             }
             // Until the mixer reports the start, a cued item starts at its cue frame. A
@@ -1332,7 +1412,20 @@ impl Core {
             } else {
                 Timestamp::MAX
             };
-            let hard = self.hard_between(&s.entry, start, end);
+            if matches!(s.item.source, Source::LiveInput { .. }) {
+                end = s.planned_end();
+            }
+            let hard = if live {
+                self.timeline
+                    .entries
+                    .iter()
+                    .filter(|e| e.fixed.is_some() && !same_event(&s.entry, e))
+                    .map(|e| e.start)
+                    .filter(|t| *t > start && *t < end)
+                    .min()
+            } else {
+                self.hard_between(&s.entry, start, end)
+            };
             if !planned && hard.is_none() {
                 continue;
             }
@@ -1463,8 +1556,51 @@ impl Core {
 
     /// Takes the results of the workers and of the log writer.
     pub(crate) fn take_done(&mut self, now: Timestamp) {
+        for i in 0..4 {
+            let error = self.slots[i]
+                .as_mut()
+                .and_then(|s| s.capture.as_mut())
+                .and_then(|c| c.error());
+            if let Some(reason) = error {
+                if let Some(s) = &self.slots[i] {
+                    let item = s.item.clone();
+                    self.skip_broken(&item, reason, now);
+                }
+                if let Some(s) = &mut self.slots[i] {
+                    s.cut = true;
+                    let _ = self.mixer.send(
+                        Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]))
+                            .for_item(s.tag),
+                    );
+                }
+            }
+        }
         while let Ok(done) = self.work.done_rx.try_recv() {
             match done {
+                Done::InputOpened { tag, result } => {
+                    if let Some(i) = self
+                        .slots
+                        .iter()
+                        .position(|s| s.as_ref().is_some_and(|s| s.tag == tag))
+                    {
+                        let result = result.and_then(|(capture, ring)| {
+                            let Some(s) = self.slots[i].as_mut() else {
+                                return Ok(());
+                            };
+                            self.mixer
+                                .load_ring(DeckId::ALL[i], ring, s.options)
+                                .map_err(|e| e.to_string())?;
+                            s.capture = Some(capture);
+                            s.phase = Phase::Loading;
+                            Ok(())
+                        });
+                        if let Err(reason) = result
+                            && let Some(s) = self.slots[i].take()
+                        {
+                            self.skip_broken(&s.item, reason, now);
+                        }
+                    }
+                }
                 Done::Query => {}
                 Done::Prepared(result, reply) => match result {
                     Ok(cmd) => self.dispatch(cmd, reply),
@@ -1646,7 +1782,11 @@ impl Core {
                     .as_ref()
                     .and_then(|s| rules_of(s, playlist))
                     .zip(rules_of(station, playlist))
-                    .is_some_and(|(a, b)| a.get(rule) == b.get(rule) && b.get(rule).is_some()),
+                    .is_some_and(|(a, b)| {
+                        a.get(rule).zip(b.get(rule)).is_some_and(|(a, b)| {
+                            a.trigger == b.trigger && a.placement == b.placement
+                        })
+                    }),
                 _ => true,
             };
             let present = station

@@ -1008,6 +1008,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
     };
     let mut out: Vec<Entry> = Vec::with_capacity(events.len() + flow.len());
     for (k, &i) in order.iter().enumerate() {
+        let mut trim_moved = false;
         let ev = &events[i];
         let lock = ev.fixed.is_none();
         let fx = ev.fixed.clone().unwrap_or(Fixed {
@@ -1141,6 +1142,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                                 if let Some(e) = seg.pop() {
                                     park(&mut flow, &mut deferred, &mut dropped, e);
                                     moved += 1;
+                                    trim_moved = true;
                                 }
                             }
                             _ => break,
@@ -1184,6 +1186,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                         if let Some(e) = seg.pop().filter(|e| e.origin != Origin::Fill) {
                             park(&mut flow, &mut deferred, &mut dropped, e);
                             moved += 1;
+                            trim_moved = true;
                         }
                         continue;
                     }
@@ -1262,6 +1265,55 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             f.record(&mut sim, e, e.start);
         }
         out.extend(seg);
+        if trim_moved {
+            // Trim can move more entries than the reorder step checked. Choose a valid
+            // continuation with the history that now includes the event.
+            let mut accepted = Vec::new();
+            let mut pending: Vec<Entry> = flow.drain(..).collect();
+            let mut history = sim.clone();
+            let mut previous = out.last().cloned();
+            while !pending.is_empty() {
+                let limit = pending
+                    .iter()
+                    .position(|e| !f.movable(e))
+                    .unwrap_or(pending.len());
+                let start = |entry: &Entry| {
+                    let cursor = previous
+                        .as_ref()
+                        .map_or(t0, |prev| later(prev.start, f.step(prev, Some(entry))));
+                    f.anchor(entry, cursor)
+                };
+                let choice = if limit == 0 {
+                    Some(0)
+                } else {
+                    (0..limit).find(|&index| {
+                        let entry = &pending[index];
+                        f.first_violation(
+                            &history,
+                            previous.as_ref(),
+                            std::slice::from_ref(entry),
+                            &[start(entry)],
+                            &[true],
+                        )
+                        .is_none()
+                    })
+                };
+                match choice {
+                    Some(index) => {
+                        let mut entry = pending.remove(index);
+                        entry.start = start(&entry);
+                        f.record(&mut history, &entry, entry.start);
+                        previous = Some(entry.clone());
+                        accepted.push(entry);
+                    }
+                    None => {
+                        let entry = pending.remove(0);
+                        dropped.push(drop_warning(&entry, DropReason::RotationAfterTrim));
+                    }
+                }
+            }
+            flow.extend(accepted);
+        }
         // What was moved after the event now follows it.
         f.drop_clashing_front(out.last(), &mut flow, &mut dropped);
     }

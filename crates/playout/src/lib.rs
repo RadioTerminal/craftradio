@@ -8,8 +8,11 @@
 mod alarm;
 mod clock;
 mod core;
+mod cue;
 mod deadair;
 mod device;
+mod input;
+pub use input::{Capture, OpenInput, open_input};
 mod ops;
 mod output;
 mod resume;
@@ -83,6 +86,7 @@ pub struct PlayoutConfig {
     /// Finds the cue points of a file without timing. It runs on the analysis lane. The
     /// default is [`analyse_file`]; tests put a slow or fake one here.
     pub analyse: fn(&Path) -> Option<Timing>,
+    pub open_input: OpenInput,
 }
 
 /// The default analysis: [`radio_library::analyse`], keeping only the timing.
@@ -110,6 +114,7 @@ impl PlayoutConfig {
             webhook: None,
             confirm_timeout: Duration::from_secs(1),
             analyse: analyse_file,
+            open_input,
         }
     }
 }

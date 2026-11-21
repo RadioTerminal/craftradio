@@ -495,6 +495,7 @@ pub struct StationView {
     pub library: Vec<LibraryItem>,
     /// Audio devices that the mixer can pick.
     pub devices: Vec<String>,
+    pub input_devices: Vec<String>,
     /// The device for each job.
     pub device_roles: DeviceRoles,
     pub carts: Vec<String>,
@@ -568,8 +569,8 @@ impl Route {
     pub fn label(self) -> &'static str {
         match self {
             Self::Out => "Out",
-            Self::OutAndCue => "Out (cue unavailable)",
-            Self::CueOnly => "Cue only (no cue output)",
+            Self::OutAndCue => "Out and cue",
+            Self::CueOnly => "Cue only",
         }
     }
 }

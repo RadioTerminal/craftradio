@@ -72,6 +72,7 @@ pub struct EngineSource {
     tz: TimeZone,
     station: String,
     devices: Vec<String>,
+    input_devices: Vec<String>,
     /// The state revision of the caches below.
     revision: Option<u64>,
     state: Arc<State>,
@@ -139,6 +140,10 @@ impl EngineSource {
             .into_iter()
             .map(|d| d.name)
             .collect();
+        let input_devices = radio_audio_device::list_inputs()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
         let state = playout.snapshot().state;
         let replies: fader::Replies = std::sync::Arc::default();
         let pending = std::sync::Arc::clone(&replies);
@@ -160,6 +165,7 @@ impl EngineSource {
             tz: opts.tz,
             station: opts.station_name,
             devices,
+            input_devices,
             revision: None,
             state,
             items: HashMap::new(),
@@ -296,11 +302,7 @@ impl EngineSource {
             start: self.zoned(start),
             playlist: name,
             color,
-            title: if matches!(item.source, Source::LiveInput { .. }) {
-                format!("{} · Live input unavailable", display_title(item))
-            } else {
-                display_title(item)
-            },
+            title: display_title(item),
             len: item_len(item),
             is_main,
             fixed: None,
@@ -642,7 +644,7 @@ impl EngineSource {
                     peak_db: m.peak_hold_db,
                     gain_db: self.strip_gain.get(label).copied().unwrap_or(st.gain_db),
                     mute: st.mute,
-                    pfl: false,
+                    pfl: st.pfl,
                     route: match st.route {
                         radio_engine::Route::Out => Route::Out,
                         radio_engine::Route::OutAndCue => Route::OutAndCue,
@@ -788,13 +790,26 @@ impl ViewSource for EngineSource {
                 .chain(self.files.iter().map(|f| f.view.clone()))
                 .collect(),
             devices: self.devices.clone(),
+            input_devices: self.input_devices.clone(),
             device_roles: DeviceRoles {
                 out: match &pv.outputs.local {
                     LocalOutput::Device { name } => name.clone(),
                     _ => String::new(),
                 },
-                pfl: String::new(),
-                input: String::new(),
+                pfl: self
+                    .state
+                    .settings(AUDIO_PART)
+                    .and_then(|s| s.get("pfl"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                input: self
+                    .state
+                    .settings(AUDIO_PART)
+                    .and_then(|s| s.get("input"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
             },
             carts,
             cartwall,

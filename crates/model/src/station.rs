@@ -2,7 +2,7 @@ use crate::{Item, ItemId, ModelError, Playlist, PlaylistId, Source};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Station {
     /// IANA time zone name.
     pub tz: String,

@@ -568,26 +568,23 @@ fn checkpoint_failure_and_recovery_are_evented() {
 }
 
 #[test]
-fn live_input_cannot_be_scheduled() {
+fn live_input_with_a_planned_length_can_be_scheduled() {
     let mut e = Engine::open_in_memory().unwrap();
     let mut live = item(500, "Studio");
     live.source = Source::LiveInput {
         device: "Test input".into(),
         channels: [1, 2],
     };
-    let result = e.dispatch(Command::PlaylistAddItems {
+    live.planned_len = Some(Duration::from_secs(60));
+    live.timing = None;
+    e.dispatch(Command::PlaylistAddItems {
         playlist: MAIN,
         items: vec![live],
         at: None,
         lock: true,
-    });
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Live input playback is not available")
-    );
-    assert!(ids(&e).is_empty());
+    })
+    .unwrap();
+    assert!(ids(&e).contains(&500));
 }
 
 #[test]
@@ -607,4 +604,85 @@ fn unavailable_cue_output_is_rejected_without_showing_pfl_on() {
             .contains("Cue output is not available")
     );
     assert!(!e.state().strips.get("A").is_some_and(|s| s.pfl));
+}
+
+#[test]
+fn every_registered_command_deserializes_and_has_typed_arguments() {
+    let e = Engine::open_in_memory().unwrap();
+    let values = serde_json::json!({
+        "playlist": 1, "item": 1, "deck": 0, "name": "Test playlist",
+        "enabled": true, "fill_pool": false, "on_interrupt": "Resume",
+        "items": [], "at": 0, "lock": true, "expect_count": 0, "remove_locked": true,
+        "to": 0, "script": "", "pick": "InOrder", "rules": [], "constraints": [],
+        "source": {}, "meta": {}, "missing": false, "path": "test.wav",
+        "hash": "test", "size": 1, "keep_alive": true, "mode": "Auto",
+        "page": 0, "slot": 0, "commands": [], "station": e.state().station,
+        "part": "test", "key": "test", "value": true, "color": [0,0,0],
+        "duck_db": -6.0, "strip": "A", "since": "2026-11-21T00:00:00Z",
+        "until": "2026-11-22T00:00:00Z", "limit": 10
+    });
+    let specs = registry();
+    let command_schema = schemars::schema_for!(Command).to_value();
+    assert_eq!(
+        specs.len(),
+        command_schema["oneOf"].as_array().unwrap().len()
+    );
+    for spec in specs {
+        let schema = spec.args_schema.as_value();
+        let props = schema["properties"].as_object().expect(spec.id);
+        let mut args = serde_json::Map::new();
+        for key in schema["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+        {
+            let value = if spec.id == "cart.set" && key == "mode" {
+                serde_json::json!("OneShot")
+            } else {
+                values
+                    .get(key)
+                    .unwrap_or_else(|| panic!("sample for {}.{key}", spec.id))
+                    .clone()
+            };
+            args.insert(key.into(), value);
+        }
+        let encoded = if props.is_empty() {
+            serde_json::json!({"id": spec.id})
+        } else {
+            serde_json::json!({"id": spec.id, "args": args})
+        };
+        let command: Command =
+            serde_json::from_value(encoded).unwrap_or_else(|e| panic!("{}: {e}", spec.id));
+        assert_eq!(command.id(), spec.id);
+        assert_eq!(command.tier(), spec.tier);
+        if let Some(args) = serde_json::to_value(command)
+            .unwrap()
+            .get("args")
+            .and_then(|v| v.as_object())
+        {
+            for key in args.keys() {
+                assert!(props.contains_key(key), "{} misses {key}", spec.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn csv_quotes_formula_prefixes_in_untrusted_tags() {
+    let e = Engine::open_in_memory().unwrap();
+    for (n, title) in ["=SUM(1,2)", "+test", "-test", "@test", "  =test"]
+        .iter()
+        .enumerate()
+    {
+        let row = e.log_start(&entry(1000 + n as i64, title)).unwrap();
+        e.log_end(row, Timestamp::from_second(1100).unwrap(), LogStatus::Aired)
+            .unwrap();
+    }
+    let csv = e
+        .export_csv(Timestamp::UNIX_EPOCH, Timestamp::from_second(2000).unwrap())
+        .unwrap();
+    for title in ["'=SUM(1,2)", "'+test", "'-test", "'@test", "'  =test"] {
+        assert!(csv.contains(title), "{csv}");
+    }
 }

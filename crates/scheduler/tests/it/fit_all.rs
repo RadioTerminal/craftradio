@@ -597,3 +597,31 @@ fn hard_event_fill_overrun_must_keep_half_the_bed() {
     assert_eq!(dead_air_before(&tl, target), Duration::from_secs(3));
     assert_eq!(tl.entries[event_index(&tl, 100)].start, target);
 }
+
+#[test]
+fn trim_rechecks_rotation_after_the_event() {
+    let main = vec![
+        track(1, "Opening", "Alpha", 60),
+        track(2, "Moved", "Beta", 60),
+        track(3, "Spacer", "Gamma", 60),
+    ];
+    let mut event = jingle(100, 10);
+    event.artist = Some("Beta".into());
+    let mut st = make_station(main, vec![(event, 0)], vec![]);
+    st.playlists[0].constraints = vec![Constraint::ArtistSeparation(Duration::from_secs(30))];
+    st.playlists[0].items[0].movable = false;
+    let target = t0() + Duration::from_millis(58_500);
+    let mut tl = timeline(&st, &[(target, FixMode::Hard)]);
+    fit(&st, &mut tl);
+    let event = tl.entries.iter().find(|e| e.item == ItemId(100)).unwrap();
+    let moved = tl
+        .entries
+        .iter()
+        .find(|e| e.item == ItemId(2))
+        .expect("moved track stays in the plan");
+    assert!(
+        moved.start >= event.start + Duration::from_secs(30),
+        "{:#?}",
+        tl.entries
+    );
+}

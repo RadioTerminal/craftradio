@@ -88,6 +88,14 @@ impl Core {
             return;
         }
         self.alarms.raise(now, Alarm::DeadAir);
+        if self
+            .slots
+            .iter()
+            .flatten()
+            .any(|s| !s.not_started() && matches!(s.item.source, Source::LiveInput { .. }))
+        {
+            return;
+        }
         if self.dead_air.emergency {
             return;
         }

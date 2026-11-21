@@ -76,8 +76,15 @@ pub(crate) fn show(
             ui.horizontal_top(|ui| {
                 for meter in &view.meters {
                     let is_out = meter.label == "Out";
-                    open_settings |=
-                        strip_ui(ui, meter, is_out, &mut state.icecast_open, actions, t);
+                    open_settings |= strip_ui(
+                        ui,
+                        meter,
+                        is_out,
+                        !view.device_roles.pfl.is_empty(),
+                        &mut state.icecast_open,
+                        actions,
+                        t,
+                    );
                 }
             });
         });
@@ -116,6 +123,7 @@ fn strip_ui(
     ui: &mut egui::Ui,
     meter: &MeterView,
     is_out: bool,
+    cue: bool,
     icecast: &mut bool,
     actions: &mut Vec<Action>,
     t: &Tokens,
@@ -138,14 +146,16 @@ fn strip_ui(
                 ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
                     let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
                     let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
-                    r.context_menu(|ui| settings_wanted |= strip_menu(ui, meter, is_out, actions));
+                    r.context_menu(|ui| {
+                        settings_wanted |= strip_menu(ui, meter, is_out, cue, actions)
+                    });
                     if is_out {
                         settings::settings_button(ui, "Icecast", icecast);
                     }
                 });
                 ui.horizontal(|ui| {
                     meter_bars(ui, meter, t).context_menu(|ui| {
-                        settings_wanted |= strip_menu(ui, meter, is_out, actions)
+                        settings_wanted |= strip_menu(ui, meter, is_out, cue, actions)
                     });
                     ui.spacing_mut().slider_width = size::METER_H;
                     let range = size::METER_MIN_DB..=size::METER_MAX_DB;
@@ -168,8 +178,18 @@ fn strip_ui(
                     if toggle(ui, word, fill, t).clicked() {
                         mute = !mute;
                     }
-                    ui.add_enabled(false, egui::Button::new("PFL unavailable"))
-                        .on_disabled_hover_text("Cue output is not available in this build");
+                    if ui
+                        .add_enabled(
+                            cue && !is_out,
+                            egui::Button::new(if meter.pfl { "PFL ON" } else { "PFL" }),
+                        )
+                        .on_disabled_hover_text(
+                            "Choose a cue output device in Mixer settings first",
+                        )
+                        .clicked()
+                    {
+                        actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
+                    }
                 });
             });
         });
@@ -227,18 +247,25 @@ fn strip_menu(
     ui: &mut egui::Ui,
     meter: &MeterView,
     is_out: bool,
+    cue: bool,
     actions: &mut Vec<Action>,
 ) -> bool {
     if check_item(ui, meter.mute, "Mute") {
         actions.push(mute_action(meter, is_out, !meter.mute));
     }
-    ui.add_enabled(false, egui::Button::new("PFL unavailable"));
+    ui.add_enabled_ui(cue && !is_out, |ui| {
+        if check_item(ui, meter.pfl, "PFL") {
+            actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
+        }
+    })
+    .response
+    .on_disabled_hover_text("Choose a cue output device first");
     if menu_item(ui, "Reset gain to 0 dB", None) {
         actions.push(strip_edit(&meter.label, StripChange::Gain(0.0)));
     }
     ui.menu_button("Route to", |ui| {
         for route in Route::ALL {
-            if route != Route::OutAndCue && check_item(ui, meter.route == route, route.label()) {
+            if (route == Route::Out || cue) && check_item(ui, meter.route == route, route.label()) {
                 actions.push(strip_edit(&meter.label, StripChange::Route(route)));
             }
         }
@@ -303,8 +330,11 @@ fn device_pick(ui: &mut egui::Ui, id: &str, current: &str, devices: &[String]) -
     let mut picked = None;
     egui::ComboBox::from_id_salt(id)
         .width(size::COMBO_W)
-        .selected_text(current)
+        .selected_text(if current.is_empty() { "None" } else { current })
         .show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_empty(), "None").clicked() && !current.is_empty() {
+                picked = Some(String::new());
+            }
             for d in devices {
                 if ui.selectable_label(d == current, d).clicked() && d != current {
                     picked = Some(d.clone());
@@ -345,12 +375,21 @@ fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Actio
                 ),
             ] {
                 settings::label(ui, label, t);
-                let picker = ui.add_enabled_ui(role != DeviceRole::Pfl, |ui| {
-                    device_pick(ui, id, current, &view.devices)
+                let picker = ui.add_enabled_ui(true, |ui| {
+                    device_pick(
+                        ui,
+                        id,
+                        current,
+                        if role == DeviceRole::Input {
+                            &view.input_devices
+                        } else {
+                            &view.devices
+                        },
+                    )
                 });
                 picker
                     .response
-                    .on_disabled_hover_text("Cue output is not available in this build");
+                    .on_disabled_hover_text("Choose an output device");
                 if let Some(device) = picker.inner {
                     actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
                 }

@@ -219,3 +219,47 @@ fn pinned_ads_of_a_fixed_break_keep_the_rest_of_the_break() {
         );
     }
 }
+
+#[test]
+fn late_break_adopts_second_pinned_ad_before_picking_third() {
+    use radio_model::{FixMode, Repeat};
+    let rule = Rule {
+        trigger: Trigger::At {
+            at: date(2026, 11, 21).at(15, 0, 0, 0),
+            repeat: Repeat::Once,
+        },
+        placement: Placement::Fixed {
+            mode: FixMode::Hard,
+            tolerance: Duration::from_secs(30),
+        },
+        take: 3,
+        constraints: vec![],
+    };
+    let st = station_with(jingles(100, 3), vec![rule]);
+    let now = at_14(55);
+    let horizon = Duration::from_secs(3600);
+    let first = run(&st, now, horizon);
+    let mut pinned: Vec<_> = first
+        .entries
+        .iter()
+        .filter(|e| e.playlist == ADS)
+        .take(2)
+        .cloned()
+        .collect();
+    // Keep the fixed target, but the second ad follows a first ad that started late.
+    pinned[1].start += Duration::from_secs(90);
+    let tl = merge(&PlanInput {
+        station: &st,
+        history: &PlayHistory::new(),
+        now,
+        horizon,
+        pinned: &pinned,
+    });
+    let ads: Vec<_> = tl.entries.iter().filter(|e| e.playlist == ADS).collect();
+    assert_eq!(ads.len(), 3);
+    let third = ads
+        .iter()
+        .find(|e| !pinned.iter().any(|p| p.item == e.item))
+        .expect("third distinct ad");
+    assert!(third.start >= pinned[1].start + pinned[1].len, "{ads:?}");
+}
