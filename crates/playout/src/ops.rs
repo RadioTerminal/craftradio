@@ -68,7 +68,9 @@ impl Core {
             reply,
             outcome,
             check,
-            deadline: Instant::now() + self.cfg.confirm_timeout,
+            deadline: Instant::now()
+                .checked_add(self.cfg.confirm_timeout)
+                .unwrap_or_else(Instant::now),
         });
         self.expire_replies();
     }

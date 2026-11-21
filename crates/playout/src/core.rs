@@ -701,7 +701,7 @@ impl Core {
             .as_ref()
             .map_or((Duration::ZERO, Duration::ZERO), |t| (t.cue_in, t.fade_in));
         let options = LoadOptions {
-            cue_in: cue_in + offset,
+            cue_in: cue_in.saturating_add(offset),
             fade_in: if offset.is_zero() {
                 fade_in
             } else {
