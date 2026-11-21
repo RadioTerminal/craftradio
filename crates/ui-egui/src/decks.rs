@@ -339,7 +339,6 @@ fn deck_card(
     t: &Tokens,
 ) -> egui::Response {
     let deck = &decks[i];
-    let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
     // The edge has the colour of the deck. The deck on air has a thick edge, its fill and
     // the ON AIR word, so the colour is not the only sign.
     // An armed button turns the edge to the danger colour. Its width stays, so the card
@@ -356,7 +355,7 @@ fn deck_card(
     };
     let frame = theme::card_frame(t)
         .inner_margin(pad::DECK)
-        .fill(if live { t.on_air_bg } else { t.field })
+        .fill(card_fill(i, deck, t))
         .stroke(Stroke::new(edge_w, edge));
     let inner = width - frame.total_margin().sum().x - edge_w * 2.0;
     let frame_h = frame.total_margin().sum().y;
@@ -371,6 +370,16 @@ fn deck_card(
     ui.ctx()
         .data_mut(|d| d.insert_temp(card_rect_id(i), shown.response.rect));
     shown.inner
+}
+
+/// The fill of a deck card: a dark tint of the deck colour while it is on air (playing or
+/// fading), else the plain field.
+fn card_fill(i: usize, deck: &DeckView, t: &Tokens) -> egui::Color32 {
+    if matches!(deck.state, DeckState::Playing | DeckState::Fading) {
+        t.deck_on_air_fill(i)
+    } else {
+        t.field
+    }
 }
 
 /// Where the card of deck `i` was drawn, for tests.
@@ -539,7 +548,7 @@ fn deck_body(
             );
             (
                 deck.playlist.as_str(),
-                t.readable(deck.playlist_color, t.field),
+                t.readable(deck.playlist_color, card_fill(i, deck, t)),
             )
         };
         let name = RichText::new(name).font(theme::text(theme::CAPTION));
