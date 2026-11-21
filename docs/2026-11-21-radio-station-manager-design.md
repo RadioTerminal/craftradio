@@ -323,6 +323,34 @@ rule({ at: { minutes: [20, 50] }, place: "between", take: 3,
   through the event hooks in §6.8. It's deferred past v1, and its results are still checked
   against the same constraints.
 
+### One-off scheduled items (Ruling 38)
+
+A one-off plays one source at a set local time, from **Add one-off** in Upcoming or the
+command `schedule.add`.
+
+- **Source:** an audio file, a library item, a URL stream (keep-alive and a planned length)
+  or the live input (a planned length). These are the existing item sources.
+- **Start:** a local date and time in the station time zone. The dialog starts at the next
+  full hour. The check uses jiff: a time that the clocks skip (DST gap) is an error; a time
+  that happens twice (DST fold) airs the first time, and the dialog and the command say so.
+  A one-off with no repeat cannot start in the past.
+- **Timing:** `hard` (cuts in at the time) or `soft` with a tolerance (default ±1 s). The
+  normal fit (reorder → fill → trim) places it, and the fitter never drops it.
+- **Repeat:** none, daily, Monday to Friday or weekly, as the At trigger has them.
+- **Storage:** the system playlist "One-off" holds the items. It has no tab, its items are
+  not library files, and playlist commands that would delete, rename, switch off or edit it
+  fail. Each item has one At rule with the constraint `onlyItem("<id>")`, so the rule plays
+  that item only. The engine writes the rules script from the rules after each change, so a
+  person or an agent can read and edit it like any other script.
+- **Commands:** `schedule.add` (returns the item id), `schedule.update` and `schedule.remove`,
+  with Undo and Redo. `radio-cli cmd --data-dir <folder> '<command JSON>'` runs them on a
+  station folder while the app is closed.
+- **After air:** the as-played log and History keep the airing. Then playout removes a
+  one-off with no repeat and its rule. This is no undo step. A one-off with no repeat that
+  passed its time and tolerance without air (for example, the app was closed) raises the
+  alarm `OneOffMissed`, and then it leaves too. The clean-up waits while a one-off is on a
+  deck or starts soon, because it renumbers the rules of the playlist.
+
 ### 6.7 Cartwall
 
 - Pages of carts (my call: a 4×4 grid per page, several pages, keyboard shortcuts).
@@ -439,8 +467,9 @@ audio. The mitigations:
     next planned time of every item.
   - **[+]** creates a new named playlist.
 - **"+ Add item"** in a playlist tab adds an item (a file, live input, stream or show). In
-  *Upcoming* it adds a one-off timed item: playlist, source, time, `soft`/`hard`, tolerance
-  and repeat. You can also drag items from the library onto a time.
+  *Upcoming*, **Add one-off** adds a one-off timed item: source, time, `soft`/`hard`,
+  tolerance and repeat (see "One-off scheduled items" in §6.6). You can also drag items from
+  the library onto a time.
 - **Rule editor:** each playlist tab has a rules section, built from the triggers,
   placements and constraints in §6.6, using drop-downs. No code is needed.
 - **Main pane:** shows a thin divider row wherever an inserted item cuts into the music, with
