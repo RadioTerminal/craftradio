@@ -77,3 +77,12 @@ fn once_in_past_yields_nothing() {
     let to = local(date(2026, 11, 22).at(0, 0, 0, 0));
     assert!(occurrences(&ljubljana(), &trigger, from, to).is_empty());
 }
+
+#[test]
+fn hourly_trigger_fires_in_both_dst_fold_passes() {
+    let from = local(date(2026, 10, 25).at(0, 0, 0, 0));
+    let to = local(date(2026, 10, 25).at(4, 0, 0, 0));
+    let got = occurrences(&ljubljana(), &Trigger::AtMinutes(vec![0]), from, to);
+    // 00, 01, 02 CEST, 02 CET, 03: the fold hour is on air twice.
+    assert_eq!(got.len(), 5);
+}

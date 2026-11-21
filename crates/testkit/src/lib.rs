@@ -30,7 +30,9 @@ pub fn track(id: u64, title: &str, artist: &str, secs_len: u32) -> Item {
         id,
         title,
         Some(artist),
-        Source::File { path: format!("{title}.mp3") },
+        Source::File {
+            path: format!("{title}.mp3"),
+        },
     );
     item.timing = Some(Timing {
         cue_in: Duration::ZERO,
@@ -49,7 +51,9 @@ pub fn jingle(id: u64, secs_len: u32) -> Item {
         id,
         &format!("jingle-{id}"),
         None,
-        Source::File { path: format!("jingle-{id}.wav") },
+        Source::File {
+            path: format!("jingle-{id}.wav"),
+        },
     );
     item.timing = Some(Timing {
         cue_in: Duration::ZERO,
@@ -70,7 +74,10 @@ pub fn live(id: u64, planned_secs: u32) -> Item {
         id,
         &format!("live-{id}"),
         None,
-        Source::LiveInput { device: "default".to_owned(), channels: [0, 1] },
+        Source::LiveInput {
+            device: "default".to_owned(),
+            channels: [0, 1],
+        },
     );
     item.planned_len = Some(secs(planned_secs));
     item.movable = false;
@@ -96,5 +103,8 @@ pub fn playlist(id: u64, name: &str, items: Vec<Item>) -> Playlist {
 }
 
 pub fn station(tz: &str, playlists: Vec<Playlist>) -> Station {
-    Station { tz: tz.to_owned(), playlists }
+    Station {
+        tz: tz.to_owned(),
+        playlists,
+    }
 }

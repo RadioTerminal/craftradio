@@ -1,13 +1,17 @@
+use jiff::civil;
 use radio_model::{
     Constraint, FixMode, Item, ItemId, ModelError, PickOrder, Placement, Repeat, Rule, Source,
     Station, Trigger,
 };
 use radio_testkit::{jingle, live, playlist, station, track};
-use jiff::civil;
 use std::time::Duration;
 
 fn valid_station() -> Station {
-    let mut main = playlist(1, "Main", vec![track(1, "Song", "Artist", 180), jingle(2, 10)]);
+    let mut main = playlist(
+        1,
+        "Main",
+        vec![track(1, "Song", "Artist", 180), jingle(2, 10)],
+    );
     main.is_main = true;
     station("Europe/Ljubljana", vec![main])
 }
@@ -17,7 +21,9 @@ fn station_roundtrips_through_toml() {
     let mut st = valid_station();
     let mut ads = playlist(2, "Ads", vec![live(3, 60), track(4, "Ad", "Brand", 30)]);
     ads.is_fill_pool = true;
-    ads.pick = PickOrder::Weighted { weights: vec![(ItemId(3), 2), (ItemId(4), 5)] };
+    ads.pick = PickOrder::Weighted {
+        weights: vec![(ItemId(3), 2), (ItemId(4), 5)],
+    };
     ads.constraints = vec![
         Constraint::NotAdjacentToSelf,
         Constraint::MinGapSameItem(Duration::from_secs(600)),
@@ -62,7 +68,10 @@ fn station_roundtrips_through_toml() {
     let text = toml::to_string(&st).unwrap();
     let back: Station = toml::from_str(&text).unwrap();
     assert_eq!(st, back);
-    assert!(matches!(back.playlists[1].items[0].source, Source::LiveInput { .. }));
+    assert!(matches!(
+        back.playlists[1].items[0].source,
+        Source::LiveInput { .. }
+    ));
 }
 
 #[test]
@@ -127,7 +136,10 @@ fn validate_rejects_segue_before_cue_in() {
     st.playlists[0].items.push(bad);
     assert!(matches!(
         st.validate(),
-        Err(ModelError::BadTiming { item: ItemId(7), .. })
+        Err(ModelError::BadTiming {
+            item: ItemId(7),
+            ..
+        })
     ));
 }
 
@@ -141,7 +153,10 @@ fn validate_rejects_cue_out_before_segue() {
     st.playlists[0].items.push(bad);
     assert!(matches!(
         st.validate(),
-        Err(ModelError::BadTiming { item: ItemId(8), .. })
+        Err(ModelError::BadTiming {
+            item: ItemId(8),
+            ..
+        })
     ));
 }
 
@@ -155,11 +170,16 @@ fn validate_requires_planned_len_for_live_and_stream() {
 
     let mut st = valid_station();
     let mut s = track(10, "S", "A", 60);
-    s.source = Source::Stream { url: "http://x/y".into() };
+    s.source = Source::Stream {
+        url: "http://x/y".into(),
+    };
     s.timing = None;
     s.planned_len = None;
     st.playlists[0].items.push(s);
-    assert_eq!(st.validate(), Err(ModelError::MissingPlannedLen(ItemId(10))));
+    assert_eq!(
+        st.validate(),
+        Err(ModelError::MissingPlannedLen(ItemId(10)))
+    );
 }
 
 #[test]
@@ -168,7 +188,10 @@ fn file_without_timing_needs_planned_len() {
     let mut f = track(11, "F", "A", 60);
     f.timing = None;
     st.playlists[0].items.push(f.clone());
-    assert_eq!(st.validate(), Err(ModelError::MissingPlannedLen(ItemId(11))));
+    assert_eq!(
+        st.validate(),
+        Err(ModelError::MissingPlannedLen(ItemId(11)))
+    );
     st.playlists[0].items.last_mut().unwrap().planned_len = Some(Duration::from_secs(60));
     st.validate().unwrap();
 }
@@ -177,7 +200,10 @@ fn file_without_timing_needs_planned_len() {
 fn validate_rejects_unknown_tz() {
     let mut st = valid_station();
     st.tz = "Mars/Base".into();
-    assert_eq!(st.validate(), Err(ModelError::UnknownTimeZone("Mars/Base".into())));
+    assert_eq!(
+        st.validate(),
+        Err(ModelError::UnknownTimeZone("Mars/Base".into()))
+    );
 }
 
 #[test]

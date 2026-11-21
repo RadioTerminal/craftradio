@@ -50,10 +50,16 @@ impl Station {
 fn validate_item(item: &Item) -> Result<(), ModelError> {
     if let Some(t) = &item.timing {
         if t.segue < t.cue_in {
-            return Err(ModelError::BadTiming { item: item.id, reason: "segue before cue_in" });
+            return Err(ModelError::BadTiming {
+                item: item.id,
+                reason: "segue before cue_in",
+            });
         }
         if t.cue_out < t.segue {
-            return Err(ModelError::BadTiming { item: item.id, reason: "cue_out before segue" });
+            return Err(ModelError::BadTiming {
+                item: item.id,
+                reason: "cue_out before segue",
+            });
         }
     }
     let needs_len = match item.source {

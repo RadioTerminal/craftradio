@@ -1,23 +1,41 @@
 use jiff::Timestamp;
 use jiff::civil::{self, Weekday};
-use jiff::tz::TimeZone;
+use jiff::tz::{AmbiguousOffset, TimeZone};
 use radio_model::{Repeat, Trigger};
 
 /// Resolves a wall-clock time in `tz`. A time skipped by a DST gap moves forward by the gap;
 /// a repeated time takes its first occurrence (jiff's "compatible" rule). A time outside
 /// jiff's range yields [`Timestamp::MIN`].
 pub fn resolve_local(tz: &TimeZone, at: civil::DateTime) -> Timestamp {
-    tz.to_ambiguous_timestamp(at)
-        .compatible()
-        .unwrap_or(Timestamp::MIN)
+    try_resolve(tz, at).unwrap_or(Timestamp::MIN)
+}
+
+/// Like [`resolve_local`], but `None` for a time outside jiff's range.
+fn try_resolve(tz: &TimeZone, at: civil::DateTime) -> Option<Timestamp> {
+    tz.to_ambiguous_timestamp(at).compatible().ok()
+}
+
+/// Every instant at which the wall-clock time `at` happens: both passes of a DST fold,
+/// otherwise the one `try_resolve` finds.
+fn resolve_all(tz: &TimeZone, at: civil::DateTime) -> Vec<Timestamp> {
+    let ambiguous = tz.to_ambiguous_timestamp(at);
+    if matches!(ambiguous.offset(), AmbiguousOffset::Fold { .. }) {
+        [ambiguous.earlier(), ambiguous.later()]
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect()
+    } else {
+        try_resolve(tz, at).into_iter().collect()
+    }
 }
 
 /// Every instant in `[from, to)` at which a fixed or clock trigger fires, in ascending order.
 ///
 /// `AtMinutes(m)` fires at :m of every local hour; `EveryNMinutes(n)` fires at every local
 /// minute whose minute-of-day is a multiple of `n`. `EveryNTracks` and `ScriptEvent` are not
-/// clock-driven and return an empty `Vec`. During a DST fold a repeated wall-clock time fires
-/// once, at its first occurrence.
+/// clock-driven and return an empty `Vec`. During a DST fold an explicit `At` time fires once,
+/// at its first occurrence, while the hourly triggers (`AtMinutes`, `EveryNMinutes`) fire in
+/// both passes, because both are real hours on air.
 pub fn occurrences(
     tz: &TimeZone,
     trigger: &Trigger,
@@ -38,10 +56,13 @@ pub fn occurrences(
     let mut day = first;
     while day <= last {
         for time in times_on(trigger, day) {
-            let t = resolve_local(tz, day.to_datetime(time));
-            if from <= t && t < to {
-                out.push(t);
-            }
+            let wall = day.to_datetime(time);
+            let instants = if matches!(trigger, Trigger::At { .. }) {
+                try_resolve(tz, wall).into_iter().collect()
+            } else {
+                resolve_all(tz, wall)
+            };
+            out.extend(instants.into_iter().filter(|t| from <= *t && *t < to));
         }
         match day.tomorrow() {
             Ok(next) => day = next,
