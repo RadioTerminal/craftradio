@@ -129,3 +129,38 @@ fn empty_playlist_rule_warns_and_continues() {
     assert!(tl.entries.len() > 5);
     assert!(tl.entries.iter().all(|e| e.playlist == MAIN));
 }
+
+#[test]
+fn fixed_entry_mid_track_keeps_main_walk_monotonic() {
+    use radio_model::{FixMode, Repeat};
+    let fixed_rule = Rule {
+        trigger: Trigger::At {
+            at: date(2026, 11, 21).at(15, 0, 0, 0),
+            repeat: Repeat::Once,
+        },
+        placement: Placement::Fixed {
+            mode: FixMode::Soft,
+            tolerance: Duration::from_secs(60),
+        },
+        take: 1,
+        constraints: Vec::new(),
+    };
+    let st = station_with(jingles(100, 1), vec![fixed_rule]);
+    let tl = run(&st, at_14(0), Duration::from_secs(2 * 3600));
+    let target = date(2026, 11, 21)
+        .at(15, 0, 0, 0)
+        .in_tz("Europe/Ljubljana")
+        .unwrap()
+        .timestamp();
+    let fixed_at = tl.entries.iter().position(|e| e.fixed.is_some()).unwrap();
+    assert_eq!(tl.entries[fixed_at].start, target);
+    // The fixed time falls inside the preceding track.
+    assert!(tl.entries[fixed_at - 1].start < target);
+    let main: Vec<_> = tl.entries.iter().filter(|e| e.playlist == MAIN).collect();
+    // Each track's segue point is 2 s before its end, so the next may start 178 s after.
+    assert!(
+        main.windows(2)
+            .all(|w| w[1].start >= w[0].start + Duration::from_secs(178))
+    );
+    assert!(tl.entries.windows(2).all(|w| w[0].start <= w[1].start));
+}

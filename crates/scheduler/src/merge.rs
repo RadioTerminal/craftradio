@@ -170,9 +170,11 @@ impl<'a> Walk<'a> {
             fixed,
             trim: Duration::ZERO,
         });
-        self.next_at = start
+        // A fixed entry can start before the walk's position; never move the walk backwards.
+        let end = start
             .checked_add(Self::step(item))
             .unwrap_or(Timestamp::MAX);
+        self.next_at = self.next_at.max(end);
     }
 
     fn adopt(&mut self, e: &Entry) {

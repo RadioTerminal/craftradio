@@ -27,11 +27,17 @@ pub fn allowed(
         Constraint::MinGapSameItem(gap) => hist
             .last_played(cand.id)
             .is_none_or(|last| at.duration_since(last).unsigned_abs() >= *gap),
+        // A play exactly `gap` ago is allowed, as for MinGapSameItem.
         Constraint::ArtistSeparation(gap) => cand.artist.as_ref().is_none_or(|artist| {
-            hist.count_since(|p| p.artist.as_ref() == Some(artist), before(at, *gap)) == 0
+            let cutoff = before(at, *gap);
+            hist.count_since(
+                |p| p.at > cutoff && p.artist.as_ref() == Some(artist),
+                cutoff,
+            ) == 0
         }),
         Constraint::TitleSeparation(gap) => {
-            hist.count_since(|p| p.title == cand.title, before(at, *gap)) == 0
+            let cutoff = before(at, *gap);
+            hist.count_since(|p| p.at > cutoff && p.title == cand.title, cutoff) == 0
         }
         Constraint::Daypart { from, to } => {
             let now = tz.to_datetime(at).time();
