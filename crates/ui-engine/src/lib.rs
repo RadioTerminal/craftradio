@@ -863,11 +863,13 @@ impl ViewSource for EngineSource {
             return Some(radio_ui_egui::view::MeterFrame::default());
         }
         Some(radio_ui_egui::view::MeterFrame {
-            level_db: Strip::ALL.iter().map(|s| snap.strip(*s).rms_db).collect(),
+            // The peak of the last block: the bar rises with the sound at once.
+            level_db: Strip::ALL.iter().map(|s| snap.strip(*s).peak_db).collect(),
             peak_db: Strip::ALL
                 .iter()
                 .map(|s| snap.strip(*s).peak_hold_db)
                 .collect(),
+            at_sample: snap.at_sample,
         })
     }
 

@@ -51,3 +51,36 @@ fn the_meters_are_read_once_per_frame() {
     harness.run_steps(frames);
     assert_eq!(reads.load(Ordering::Relaxed) - before, frames);
 }
+
+/// A step from silence to -6 dBFS shows on the same frame; after the sound stops, the bar
+/// falls by at least 20 dB within 200 ms of frame time, at 60 and at 144 frames per second.
+#[test]
+fn a_meter_attacks_at_once_and_releases_fast() {
+    use radio_ui_egui::view::Ballistics;
+    for fps in [60.0_f32, 144.0] {
+        let dt = 1.0 / fps;
+        let silent = [-120.0; 2];
+        let mut shown = Ballistics::default();
+        shown.step(silent, silent, dt);
+        shown.step([-6.0; 2], [-6.0; 2], dt);
+        assert!(
+            shown.level.iter().all(|l| (l - -6.0).abs() < 0.01),
+            "the attack is not instant at {fps} fps: {:?}",
+            shown.level
+        );
+        let mut t = 0.0;
+        while t < 0.2 {
+            shown.step(silent, silent, dt);
+            t += dt;
+        }
+        assert!(
+            shown.level.iter().all(|l| *l <= -26.0),
+            "the bar fell too little in 200 ms at {fps} fps: {:?}",
+            shown.level
+        );
+        assert!(
+            shown.hold.iter().all(|h| (h - -6.0).abs() < 0.01),
+            "the peak mark must hold for 1.5 s"
+        );
+    }
+}

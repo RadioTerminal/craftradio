@@ -949,7 +949,11 @@ fn out_meter(
         p.galley(pos, galley, t.text);
         right = rect.right() - widest - space::S;
     }
-    let scale_h = if full { theme::CAPTION + space::XS } else { 0.0 };
+    let scale_h = if full {
+        theme::CAPTION + space::XS
+    } else {
+        0.0
+    };
     let zone_h = if full { size::HAIRLINE * 2.0 } else { 0.0 };
     let bars_h = (rect.height() - scale_h - zone_h).max(0.0);
     let bar_h = ((bars_h - size::VU_GAP) / 2.0).max(0.0);
