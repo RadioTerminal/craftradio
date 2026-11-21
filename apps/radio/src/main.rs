@@ -212,10 +212,33 @@ fn headless(
     let _ = source.snapshot(Timestamp::now());
     println!("radio: folder watches started");
     let until = run_for.map(|d| Instant::now() + d);
+    let mut gains: [Option<(u64, radio_model::ItemGain)>; 4] = Default::default();
     loop {
         let _ = source.snapshot(Timestamp::now());
         for notice in source.take_notices() {
             println!("radio: {notice}");
+        }
+        // The item gain that playout sent to each deck, when it changes.
+        let view = source.playout().snapshot();
+        for (i, d) in view.decks.iter().enumerate() {
+            let now = d.item.zip(d.gain).map(|(id, g)| (id.0, g));
+            if now != gains[i] {
+                if let Some((_, g)) = now {
+                    let loudness = g
+                        .loudness
+                        .map_or("unknown".to_owned(), |l| format!("{:.2} LUFS", l.lufs));
+                    println!(
+                        "radio: deck {} {:?}: gain {:+.2} dB ({:?}, {loudness}, target {:.1} LUFS, clamp {:?})",
+                        ['A', 'B', 'C', 'D'][i],
+                        d.title,
+                        g.db,
+                        g.source,
+                        g.target_lufs,
+                        g.clamp
+                    );
+                }
+                gains[i] = now;
+            }
         }
         let wait = match until {
             Some(u) => match u.checked_duration_since(Instant::now()) {
