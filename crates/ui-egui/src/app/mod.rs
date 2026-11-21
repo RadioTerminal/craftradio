@@ -302,25 +302,63 @@ impl RadioApp {
         let view = &self.view;
         let open = &mut self.open;
         let link = &mut self.link;
-        windows::show(ctx, ToolWindow::Cartwall, open, t, |ui| {
-            cartwall::show(ui, view, &mut self.carts, link.has_clip, actions, t);
-        });
-        windows::show(ctx, ToolWindow::Mixer, open, t, |ui| {
-            mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
-        });
-        windows::show(ctx, ToolWindow::Clock, open, t, |ui| {
-            clock_window::show(ui, view, &mut self.clock_state, actions, t);
-        });
-        windows::show(ctx, ToolWindow::History, open, t, |ui| {
-            history::show(ui, view, &mut self.history, link, actions, t);
-        });
+        let mut sized = Vec::new();
+        let saved = |w: ToolWindow| saved_size(view, w);
+        let mut note = |w: ToolWindow, c: Option<windows::SizeChange>| {
+            if let Some(c) = c {
+                sized.push((w, c));
+            }
+        };
+        let w = ToolWindow::Cartwall;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                cartwall::show(ui, view, &mut self.carts, link.has_clip, actions, t);
+            }),
+        );
+        let w = ToolWindow::Mixer;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
+            }),
+        );
+        let w = ToolWindow::Clock;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                clock_window::show(ui, view, &mut self.clock_state, actions, t);
+            }),
+        );
+        let w = ToolWindow::History;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                history::show(ui, view, &mut self.history, link, actions, t);
+            }),
+        );
         if self.library.docked {
             // The docked library takes the place of its window.
             open.set(ToolWindow::Library, false);
         } else {
-            windows::show(ctx, ToolWindow::Library, open, t, |ui| {
-                library::show(ui, view, &mut self.library, link, actions, t);
-            });
+            let w = ToolWindow::Library;
+            note(
+                w,
+                windows::show(ctx, w, open, saved(w), t, |ui| {
+                    library::show(ui, view, &mut self.library, link, actions, t);
+                }),
+            );
+        }
+        for (w, c) in sized {
+            let value = match c {
+                windows::SizeChange::Manual([x, y]) => serde_json::json!([x, y]),
+                windows::SizeChange::Fit => serde_json::Value::Null,
+            };
+            actions.push(Action::EditQuiet(Edit::SetPartSetting {
+                part: w.part().to_owned(),
+                key: windows::SIZE_KEY.to_owned(),
+                value,
+            }));
         }
     }
 }
@@ -565,6 +603,19 @@ pub(crate) fn is_on_air(row: &Row, now: Timestamp) -> bool {
     let start = row.start.timestamp();
     let end = SignedDuration::try_from(row.len).map_or(start, |d| start + d);
     start <= now && now < end
+}
+
+/// The size that a person gave tool window `w` by hand, from the settings of its part.
+fn saved_size(view: &StationView, w: ToolWindow) -> Option<[f32; 2]> {
+    let v = view
+        .settings
+        .get(w.part())?
+        .get(windows::SIZE_KEY)?
+        .as_array()?;
+    match v.as_slice() {
+        [x, y] => Some([x.as_f64()? as f32, y.as_f64()? as f32]),
+        _ => None,
+    }
 }
 
 /// A length as m:ss. Zero means unknown and shows as "—".

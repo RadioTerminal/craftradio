@@ -61,6 +61,7 @@ pub(crate) fn section(
                     let note = RichText::new(NOT_SAVED).font(theme::text(theme::CAPTION));
                     ui.label(note.color(t.text_muted));
                 }
+                crate::windows::fit_item(ui);
             });
             ui.add_space(space::S);
             add(ui);

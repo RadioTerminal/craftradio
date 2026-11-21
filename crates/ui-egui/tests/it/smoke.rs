@@ -155,3 +155,26 @@ fn the_header_says_preview_and_never_live_with_the_mock() {
     assert!(shows(&harness, "PREVIEW"), "the header names the preview");
     assert!(!shows(&harness, "LIVE"), "the mock never claims to be live");
 }
+
+/// The floating Mixer grows when its ⚙ section opens and shrinks back when it closes.
+#[test]
+fn the_mixer_window_follows_the_size_of_its_content() {
+    let mut harness = harness();
+    harness.state_mut().set_window(ToolWindow::Mixer, true);
+    harness.run_steps(FRAMES);
+    let id = ToolWindow::Mixer.area_id();
+    let height = |h: &Harness<'_, RadioApp>| {
+        h.ctx
+            .memory(|m| m.area_rect(id))
+            .expect("the mixer floats as an egui window")
+            .height()
+    };
+    let closed = height(&harness);
+    click(&mut harness, "⚙ Mixer settings");
+    let opened = height(&harness);
+    assert!(opened > closed + 2.0, "the window grows: {closed} → {opened}");
+    click(&mut harness, "⚙ Mixer settings");
+    let again = height(&harness);
+    assert!(again < opened - 2.0, "the window shrinks back: {opened} → {again}");
+    assert!((again - closed).abs() <= 2.0, "back to its size: {closed} vs {again}");
+}

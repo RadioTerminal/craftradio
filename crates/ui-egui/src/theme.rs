@@ -61,6 +61,8 @@ pub mod size {
 
     /// A row of the main timeline.
     pub const ROW: f32 = 26.0;
+    /// A tool window resizes to its content only when the content size moves more than this.
+    pub const FIT_SLACK: f32 = 2.0;
     /// A thin divider row for an item from another playlist.
     pub const DIVIDER_ROW: f32 = 20.0;
     /// The fit line under a fixed row in Upcoming.
