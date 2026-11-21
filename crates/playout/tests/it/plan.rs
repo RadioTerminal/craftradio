@@ -1,7 +1,7 @@
 use crate::fixtures::*;
 use radio_engine::{AsPlayed, Command, Engine, LogStatus};
 use radio_model::{OnInterrupt, PlaylistId};
-use radio_playout::{OutputChoice, Playout, PlayoutConfig};
+use radio_playout::{DeckPhase, OutputChoice, Playout, PlayoutConfig};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -380,5 +380,72 @@ fn the_decks_stay_loaded_with_what_comes_next() {
         decks(&p),
         [Some(5), Some(2), Some(3), Some(4)],
         "A, freed, takes item 5 as next 3; no item moved"
+    );
+}
+
+/// A playlist woven in "every 3 tracks" airs while the operator presses Play next.
+/// Its items load on decks and reach the as-played log about every fourth slot.
+#[test]
+fn every_3_tracks_rule_airs_while_play_next_cuts_items() {
+    let path = wav("cadence", 4.0, Side::Left);
+    let main: Vec<_> = (1..=8)
+        .map(|id| file_item(id, &format!("Song {id}"), &path, 4.0, 3.5, 0.2))
+        .collect();
+    let mut engine = engine_with(main);
+    let pop: Vec<_> = (40..44)
+        .map(|id| file_item(id, &format!("Pop {id}"), &path, 4.0, 3.5, 0.2))
+        .collect();
+    add_playlist(
+        &mut engine,
+        "POP",
+        pop,
+        r#"rule({every: {tracks: 3}, place: "between", take: 1, constraints: []});"#,
+    );
+    // Hand-added items are locked. Library items are not, so unlock them.
+    for id in (1..=8).chain(40..44) {
+        let item = radio_model::ItemId(id);
+        engine.dispatch(Command::ItemUnlock { item }).unwrap();
+    }
+    let (p, clock) = offline(engine, |_| {});
+    for _ in 0..12 {
+        run(&p, &clock, 1.0);
+        // Play next: the waiting deck with the earliest start goes on air now.
+        let view = p.snapshot();
+        let next = view
+            .decks
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.item.is_some())
+            .filter(|(_, d)| matches!(d.phase, DeckPhase::Loading | DeckPhase::Ready))
+            .min_by_key(|(_, d)| d.start)
+            .map(|(k, d)| (k, d.item));
+        let Some((deck, expect_item)) = next else {
+            continue;
+        };
+        let deck = u8::try_from(deck).unwrap();
+        let _ = p
+            .send(Command::DeckPlay {
+                deck,
+                expect_item,
+                fade_in: Duration::ZERO,
+            })
+            .unwrap();
+    }
+    run(&p, &clock, 1.0);
+    let rows = p.history(t0(), 50).unwrap();
+    let names: Vec<&str> = rows.iter().map(|r| r.entry.playlist.as_str()).collect();
+    let pops: Vec<usize> = (0..names.len()).filter(|&i| names[i] == "POP").collect();
+    assert!(
+        pops.first().is_some_and(|&i| i < 5),
+        "a POP item airs within the first 5 items: {names:?}"
+    );
+    assert!(pops.len() >= 2, "POP keeps airing: {names:?}");
+    assert!(
+        pops.windows(2).all(|w| w[1] - w[0] > 3 && w[1] - w[0] <= 4),
+        "3 main items air between two POP items: {names:?}"
+    );
+    assert!(
+        pops.iter().all(|&i| rows[i].entry.origin == "rule"),
+        "the log marks POP items as rule insertions: {names:?}"
     );
 }
