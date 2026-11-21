@@ -10,12 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 use symphonia::core::{
-    audio::SampleBuffer,
-    codecs::DecoderOptions,
-    formats::FormatOptions,
+    codecs::audio::AudioDecoderOptions,
+    formats::{FormatOptions, TrackType, probe::Hint},
     io::{MediaSource, MediaSourceStream},
     meta::MetadataOptions,
-    probe::Hint,
 };
 use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
@@ -271,37 +269,43 @@ fn decode(
         stop: stop.clone(),
     };
     let stream = MediaSourceStream::new(Box::new(source), Default::default());
-    let mut format = symphonia::default::get_probe()
-        .format(
-            &Hint::new(),
-            stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )?
-        .format;
-    let track = format.default_track().ok_or("no audio track")?;
+    let mut format = symphonia::default::get_probe().probe(
+        &Hint::new(),
+        stream,
+        FormatOptions::default(),
+        MetadataOptions::default(),
+    )?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or("no audio track")?;
     let id = track.id;
-    let mut decoder =
-        symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or("no audio track")?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())?;
     let mut phase = 0.0;
     let mut previous = [0.0f32; 2];
+    let mut samples: Vec<f32> = Vec::new();
     while !stop.load(Ordering::Relaxed) {
-        let packet = format.next_packet()?;
-        if packet.track_id() != id {
+        // The end of a stream is an error here, as it was before: the caller reconnects.
+        let packet = format.next_packet()?.ok_or("end of stream")?;
+        if packet.track_id != id {
             continue;
         }
         let decoded = decoder.decode(&packet)?;
-        let spec = *decoded.spec();
-        let channels = spec.channels.count();
-        if channels == 0 || spec.rate == 0 {
+        let spec = decoded.spec().clone();
+        let channels = spec.channels().count();
+        if channels == 0 || spec.rate() == 0 {
             return Err("invalid audio format".into());
         }
-        let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        buffer.copy_interleaved_ref(decoded);
+        decoded.copy_to_vec_interleaved(&mut samples);
         // A bounded occupancy correction compensates for independent stream clocks.
         let fill = 1.0 - frames.slots() as f64 / frames.buffer().capacity() as f64;
-        let ratio = 48_000.0 / f64::from(spec.rate) * (1.0 + (0.5 - fill) * 0.002);
-        for frame in buffer.samples().chunks_exact(channels) {
+        let ratio = 48_000.0 / f64::from(spec.rate()) * (1.0 + (0.5 - fill) * 0.002);
+        for frame in samples.chunks_exact(channels) {
             let current = [frame[0], frame[if channels > 1 { 1 } else { 0 }]];
             phase += ratio;
             while phase >= 1.0 {

@@ -16,8 +16,10 @@ use std::{
     time::Duration,
 };
 use symphonia::core::{
-    audio::SampleBuffer, codecs::DecoderOptions, errors::Error as DecodeError,
-    formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+    codecs::audio::AudioDecoderOptions,
+    formats::{FormatOptions, TrackType, probe::Hint},
+    io::MediaSourceStream,
+    meta::MetadataOptions,
 };
 pub use watch::{WatchEvent, Watcher};
 
@@ -193,25 +195,30 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
     }
     let source = MediaSourceStream::new(Box::new(File::open(path)?), Default::default());
     let mut format = symphonia::default::get_probe()
-        .format(
+        .probe(
             &hint,
             source,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
-        .map_err(media)?
-        .format;
+        .map_err(media)?;
     let track = format
-        .default_track()
+        .default_track(TrackType::Audio)
         .ok_or_else(|| media("no audio track"))?;
     let id = track.id;
-    let mut registry = symphonia::core::codecs::CodecRegistry::new();
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or_else(|| media("no audio track"))?;
+    let mut registry = symphonia::core::codecs::registry::CodecRegistry::new();
     symphonia::default::register_enabled_codecs(&mut registry);
-    registry.register_all::<symphonia_adapter_libopus::OpusDecoder>();
+    registry.register_audio_decoder::<symphonia_adapter_libopus::OpusDecoder>();
     let mut decoder = registry
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(media)?;
     let mut meter = None;
+    let mut samples: Vec<f32> = Vec::new();
     let mut rate = 0;
     let mut channels = 0;
     let mut frames = 0u64;
@@ -222,18 +229,18 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
     let mut count = 0u32;
     loop {
         let packet = match format.next_packet() {
-            Ok(p) => p,
-            Err(DecodeError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Ok(Some(p)) => p,
+            Ok(None) => break,
             Err(e) => return Err(media(e)),
         };
-        if packet.track_id() != id {
+        if packet.track_id != id {
             continue;
         }
         let decoded = decoder.decode(&packet).map_err(media)?;
-        let spec = *decoded.spec();
+        let spec = decoded.spec().clone();
         if meter.is_none() {
-            rate = spec.rate;
-            channels = spec.channels.count();
+            rate = spec.rate();
+            channels = spec.channels().count();
             if channels == 0 {
                 return Err(media("audio has no channels"));
             }
@@ -241,15 +248,14 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
                 ebur128::EbuR128::new(channels as u32, rate, ebur128::Mode::I).map_err(media)?,
             );
         }
-        if rate != spec.rate || channels != spec.channels.count() {
+        if rate != spec.rate() || channels != spec.channels().count() {
             return Err(media("audio format changed"));
         }
-        let mut samples = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        samples.copy_interleaved_ref(decoded);
+        decoded.copy_to_vec_interleaved(&mut samples);
         if let Some(m) = meter.as_mut() {
-            m.add_frames_f32(samples.samples()).map_err(media)?;
+            m.add_frames_f32(&samples).map_err(media)?;
         }
-        for frame in samples.samples().chunks_exact(channels) {
+        for frame in samples.chunks_exact(channels) {
             let peak = frame.iter().fold(0.0f32, |a, s| a.max(s.abs()));
             if peak > 10.0f32.powf(-45.0 / 20.0) {
                 first.get_or_insert(frames);
