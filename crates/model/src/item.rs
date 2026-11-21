@@ -99,6 +99,8 @@ pub fn stream_title(item: &Item, previous: &str, station_name: &str) -> String {
                     "title" => &m.title,
                     "album" => &m.album,
                     "year" => &m.year,
+                    "genre" => &m.genre,
+                    "comment" => &m.comment,
                     _ => &rest[..=end],
                 });
                 rest = &rest[end + 1..];
@@ -146,6 +148,14 @@ mod tests {
         item.meta.publish = PublishMode::Custom;
         item.meta.custom = "{title}/{album}/{year}/{artist}".into();
         assert_eq!(stream_title(&item, "old", "station"), "Echo/Dawn/2026/");
+        item.meta.genre = "Ambient".into();
+        item.meta.comment = "live".into();
+        item.meta.custom = "{genre} {comment} {nope}".into();
+        assert_eq!(
+            stream_title(&item, "old", "station"),
+            "Ambient live {nope}",
+            "genre and comment fill, an unknown field stays"
+        );
         item.meta.publish = PublishMode::KeepPrevious;
         assert_eq!(stream_title(&item, "old", "station"), "old");
         item.meta.publish = PublishMode::Hide;

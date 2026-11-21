@@ -41,7 +41,7 @@ impl ViewSource for MockSource {
             .filter(|r| r.start.timestamp() >= since && r.start.timestamp() <= now)
             .cloned()
             .collect();
-        let rows: Vec<Row> = all.into_iter().filter(|r| r.start >= top).collect();
+        let mut rows: Vec<Row> = all.into_iter().filter(|r| r.start >= top).collect();
 
         let on_air = rows
             .iter()
@@ -67,7 +67,14 @@ impl ViewSource for MockSource {
             deck('C', at(2), DeckState::Ready, Duration::ZERO),
             deck('D', at(3), DeckState::Ready, Duration::ZERO),
         ];
+        // The deck of each row: A holds the row on air, B to D the next three.
+        if let Some(i) = on_air {
+            for (k, r) in rows.iter_mut().skip(i).take(4).enumerate() {
+                r.deck = Some(k);
+            }
+        }
         let meters = meters(now, &decks, &self.strips);
+        self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
         StationView {
             now: local,
@@ -96,6 +103,7 @@ impl ViewSource for MockSource {
             folders: self.folder_views(),
             settings: self.settings.clone(),
             warnings: 0,
+            preview: true,
         }
     }
 
@@ -110,11 +118,15 @@ impl ViewSource for MockSource {
                 at: Place::After(after),
             }),
             DropTarget::Playlist(name) => {
+                let id = self.next_item_id;
                 let Some(tab) = self.tab_mut(&name) else {
                     return Err(format!("preview — no playlist {name}"));
                 };
+                tab.ids.truncate(tab.items.len());
                 tab.items.push(entry);
                 tab.weights.push(1);
+                tab.ids.push(id);
+                self.next_item_id += 1;
                 Ok(1)
             }
             DropTarget::Cart(cart) => self.edit(Edit::AssignCart {
@@ -245,6 +257,18 @@ impl ViewSource for MockSource {
         };
         *slot = tab;
         Ok(())
+    }
+
+    fn meters(&self) -> Option<crate::view::MeterFrame> {
+        // The simulated levels move with the time since the last snapshot.
+        let (decks, at) = self.last_decks.as_ref()?;
+        let run = SignedDuration::try_from(at.elapsed()).unwrap_or_default();
+        let now = self.last_now.checked_add(run).unwrap_or(self.last_now);
+        let m = meters(now, decks, &self.strips);
+        Some(crate::view::MeterFrame {
+            level_db: m.iter().map(|m| m.level_db).collect(),
+            peak_db: m.iter().map(|m| m.peak_db).collect(),
+        })
     }
 
     fn stream_title(&self, row: &Row) -> String {

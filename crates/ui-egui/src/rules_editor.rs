@@ -31,6 +31,8 @@ pub(crate) struct Editor {
     draft: PlaylistTab,
     mode: Mode,
     applied: bool,
+    /// The source is the preview, which applies no rules.
+    pub(crate) preview: bool,
 }
 
 impl Editor {
@@ -39,6 +41,7 @@ impl Editor {
             draft: tab.clone(),
             mode: Mode::Visual,
             applied: false,
+            preview: true,
         }
     }
 
@@ -80,14 +83,14 @@ pub(crate) fn show(
             ui.add_space(space::S);
             match editor.mode {
                 Mode::Visual => visual(ui, &mut editor.draft, t),
-                Mode::Script => script(ui, &mut editor.draft, t),
-                Mode::Items => items(ui, &mut editor.draft, link, t),
+                Mode::Script => script(ui, &mut editor.draft, editor.preview, t),
+                Mode::Items => items(ui, &mut editor.draft, link, editor.preview, t),
             }
             ui.add_space(space::M);
             ui.separator();
             ui.horizontal(|ui| {
                 // Scripts do not run yet, so the Script tab saves in a neutral style.
-                let apply = if editor.mode == Mode::Script {
+                let apply = if editor.mode == Mode::Script && editor.preview {
                     egui::Button::new("Save script (not run yet)")
                 } else {
                     egui::Button::new(RichText::new("Apply").color(t.canvas)).fill(t.accent)
@@ -102,7 +105,7 @@ pub(crate) fn show(
                 if ui.add(cancel).clicked() {
                     close = true;
                 }
-                if editor.applied {
+                if editor.applied && editor.preview {
                     // Apply only stores the copy. The note must never read as success.
                     let note = RichText::new(NOT_APPLIED).font(theme::text(theme::LABEL));
                     ui.label(note.color(t.warn));
@@ -348,8 +351,35 @@ fn constraint(ui: &mut egui::Ui, id: (usize, usize), c: &mut Constraint) -> bool
     changed
 }
 
-fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
+fn highlighted_script(ui: &egui::Ui, code: &str, t: &Tokens) -> egui::text::LayoutJob {
+    let code_theme = egui_extras::syntax_highlighting::CodeTheme::dark(theme::CODE);
+    let mut job =
+        egui_extras::syntax_highlighting::highlight(ui.ctx(), ui.style(), &code_theme, code, "js");
+    theme::script_palette(&mut job, t);
+    job
+}
+
+fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, preview: bool, t: &Tokens) {
+    let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
+        let key = (egui::util::hash(text.as_str()), width.to_bits());
+        let cache_id = ui.id().with("script_palette");
+        let cached = ui
+            .ctx()
+            .data_mut(|data| data.get_temp::<((u64, u32), egui::text::LayoutJob)>(cache_id));
+        let job = match cached {
+            Some((cached_key, job)) if cached_key == key => job,
+            _ => {
+                let mut job = highlighted_script(ui, text.as_str(), t);
+                job.wrap.max_width = width;
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(cache_id, (key, job.clone())));
+                job
+            }
+        };
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    };
     let edit = TextEdit::multiline(&mut tab.script)
+        .layouter(&mut layouter)
         .font(theme::mono(theme::CODE))
         .code_editor()
         .desired_rows(size::SCRIPT_ROWS)
@@ -365,20 +395,25 @@ fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
         .corner_radius(t.radius)
         .inner_margin(pad::ROW)
         .show(ui, |ui| {
-            let note = RichText::new(format!("⚠ {SCRIPT_NOTE}")).font(theme::text(theme::LABEL));
+            let text = if preview {
+                SCRIPT_NOTE
+            } else {
+                "The script is what plays: Apply reads its rules into the scheduler."
+            };
+            let note = RichText::new(format!("⚠ {text}")).font(theme::text(theme::LABEL));
             ui.label(note.color(t.warn));
         });
 }
 
 /// The items of the playlist, and the folder behind it. Files from the file manager drop here.
-fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, t: &Tokens) {
+fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, preview: bool, t: &Tokens) {
     if let Some(src) = &mut tab.source {
         caption(ui, "FOLDER", t);
         ui.label(RichText::new(&src.path).font(theme::mono(theme::CODE)));
         ui.checkbox(&mut src.recursive, "Include subfolders");
         ui.horizontal(|ui| {
             ui.checkbox(&mut src.watch, "Watch for changes");
-            if src.watch {
+            if src.watch && preview {
                 let note = RichText::new(WATCH_NOTE).font(theme::text(theme::CAPTION));
                 ui.label(note.color(t.text_muted));
             }
@@ -433,5 +468,27 @@ fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, t: &Tokens
         let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
         ui.painter()
             .rect_stroke(rect, t.radius, edge, egui::StrokeKind::Outside);
+    }
+}
+
+#[cfg(test)]
+mod highlighting_tests {
+    #[test]
+    fn javascript_has_multiple_colours() {
+        let ctx = egui::Context::default();
+        let mut colours = std::collections::HashSet::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let job = super::highlighted_script(
+                ui,
+                "// a rule\nconst take = 3; rule({name: \"Day\"});",
+                &crate::theme::Tokens::DARK,
+            );
+            colours.extend(job.sections.iter().map(|section| section.format.color));
+        });
+        output.textures_delta.clear();
+        assert!(
+            colours.len() > 1,
+            "JavaScript tokens must have different colours"
+        );
     }
 }

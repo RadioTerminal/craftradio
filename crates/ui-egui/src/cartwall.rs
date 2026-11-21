@@ -5,7 +5,7 @@
 use egui::{DragValue, RichText, Stroke};
 
 use crate::app::{Action, PasteTo};
-use crate::context_menu::{self, PASTE, check_item, menu_item, menu_item_if};
+use crate::context_menu::{PASTE, check_item, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
 use crate::parts;
 use crate::settings;
@@ -39,16 +39,18 @@ pub(crate) struct State {
     has_clip: bool,
     /// The carts on a page, for this frame.
     per_page: usize,
+    /// The source is the preview, for this frame.
+    preview: bool,
 }
 
 impl State {
-    /// Fire cart `n` of the page on show, as its key does. It returns the cart name.
+    /// Fire cart `n` of the page on show, as its key does. It returns the cart index and name.
     pub(crate) fn fire_on_page(
         &mut self,
         view: &StationView,
         n: usize,
         now: f64,
-    ) -> Option<String> {
+    ) -> Option<(usize, String)> {
         let wall = &view.cartwall;
         if n >= wall.per_page {
             return None;
@@ -60,7 +62,7 @@ impl State {
             *u = now + size::CART_FLASH_S;
         }
         self.last = Some(i);
-        Some(name.clone())
+        Some((i, name.clone()))
     }
 
     /// Stop every cart, as Escape does.
@@ -85,6 +87,7 @@ pub(crate) fn show(
     let wall = &view.cartwall;
     state.has_clip = has_clip;
     state.per_page = wall.per_page;
+    state.preview = view.preview;
     state
         .flash_until
         .resize(view.carts.len(), f64::NEG_INFINITY);
@@ -97,23 +100,42 @@ pub(crate) fn show(
         .last
         .filter(|&i| state.flash_until.get(i).is_some_and(|u| *u > now))
         .and_then(|i| view.carts.get(i));
-    let caption = match flashing {
-        Some(name) => format!("{name} · {NO_AUDIO}"),
-        None => NO_AUDIO.to_owned(),
+    let caption = match (flashing, view.preview) {
+        (Some(name), true) => format!("{name} · {NO_AUDIO}"),
+        (None, true) => NO_AUDIO.to_owned(),
+        (Some(name), false) => format!("{name} fired"),
+        (None, false) => String::new(),
     };
     settings::header(ui, "Cartwall", &mut open, |ui| {
-        for page in (0..wall.pages.len()).rev() {
-            if ui
-                .selectable_label(state.page == page, &wall.pages[page])
-                .clicked()
-            {
-                state.page = page;
+        if wall.pages.len() > size::PAGE_TABS_MAX {
+            // Many pages: one picker instead of a row of tabs that runs out of the window.
+            let current = wall.pages.get(state.page).cloned().unwrap_or_default();
+            egui::ComboBox::from_id_salt("cart_page")
+                .width(size::COMBO_W)
+                .truncate()
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    for (page, name) in wall.pages.iter().enumerate() {
+                        ui.selectable_value(&mut state.page, page, name);
+                    }
+                });
+        } else {
+            for page in (0..wall.pages.len()).rev() {
+                let name = &wall.pages[page];
+                let tab = egui::Button::selectable(state.page == page, name.as_str()).truncate();
+                let r = crate::widgets::with_max_width(ui, size::PAGE_TAB_MAX_W, |ui| ui.add(tab));
+                if r.on_hover_text(name).clicked() {
+                    state.page = page;
+                }
             }
         }
-        ui.label(
-            RichText::new(caption)
-                .font(theme::text(theme::CAPTION))
-                .color(t.text_muted),
+        ui.add(
+            egui::Label::new(
+                RichText::new(caption)
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.text_muted),
+            )
+            .truncate(),
         );
     });
     if open && !state.settings {
@@ -121,12 +143,14 @@ pub(crate) fn show(
     }
     state.settings = open;
     if state.settings {
-        settings::section(ui, "Cartwall", t, |ui| {
+        settings::section(ui, "Cartwall", view.preview, t, |ui| {
             cart_settings(ui, view, state, actions, t)
         });
     }
     ui.add_space(space::S);
 
+    // The bar under the grid is as wide as the grid, so an auto-sized window fits the carts.
+    let grid_w = cols as f32 * size::CART_W + cols.saturating_sub(1) as f32 * space::S;
     let first = state.page * wall.per_page;
     egui::Grid::new("cartwall_grid")
         .spacing(egui::vec2(space::S, space::S))
@@ -150,11 +174,20 @@ pub(crate) fn show(
     let stop = egui::Button::new(text)
         .fill(t.danger_fill)
         .stroke(Stroke::new(size::HAIRLINE, t.danger))
-        .min_size(egui::vec2(ui.available_width(), size::CONTROL_MD));
+        .min_size(egui::vec2(
+            grid_w.min(ui.available_width()),
+            size::CONTROL_MD,
+        ));
     let keys = shortcuts::label(ui.ctx(), &shortcuts::STOP_CARTS);
-    let hint = format!("Stop every playing cart now ({keys}) · {NO_AUDIO}");
+    let audio = if view.preview {
+        format!(" · {NO_AUDIO}")
+    } else {
+        String::new()
+    };
+    let hint = format!("Stop every playing cart now ({keys}){audio}");
     if ui.add(stop).on_hover_text(hint).clicked() {
         state.stop_all();
+        actions.push(Action::EditQuiet(Edit::StopCarts));
     }
 }
 
@@ -193,11 +226,12 @@ fn cart(
     let text = RichText::new(name)
         .font(theme::text(theme::LABEL))
         .color(ink);
+    // Every cart has one size. A long name truncates, and the tooltip shows all of it.
     let button = egui::Button::new(text)
+        .truncate()
         .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, edge))
-        .min_size(egui::vec2(size::CART_W, size::CART_H));
-    let resp = ui.add(button);
+        .stroke(Stroke::new(size::HAIRLINE, edge));
+    let resp = ui.add_sized(egui::vec2(size::CART_W, size::CART_H), button);
     let colour = slot.colour.and_then(|c| theme::PALETTE.get(c));
     if let Some(c) = colour {
         let mut bar = resp.rect;
@@ -234,8 +268,14 @@ fn cart(
     // The tooltip text is made only while the tooltip shows.
     let hint = |ui: &mut egui::Ui| {
         let key = shortcuts::cart_label(n).map_or(String::new(), |k| format!(" ({k})"));
+        let audio = if state.preview {
+            format!(" · {NO_AUDIO}")
+        } else {
+            String::new()
+        };
+        ui.label(name);
         ui.label(format!(
-            "Fire the cart{key} · {NO_AUDIO} · {} · {colour_name} · ducking {:.0} dB",
+            "Fire the cart{key}{audio} · {} · {colour_name} · ducking {:.0} dB",
             slot.mode.label(),
             slot.duck_db
         ));
@@ -243,6 +283,9 @@ fn cart(
     if resp.on_hover_ui(hint).clicked() {
         state.flash_until[i] = now + size::CART_FLASH_S;
         state.last = Some(i);
+        if !empty {
+            actions.push(Action::EditQuiet(Edit::FireCart { cart: i }));
+        }
     }
     if lit {
         ui.ctx()
@@ -257,10 +300,11 @@ fn cart_menu(
     has_clip: bool,
     actions: &mut Vec<Action>,
 ) {
-    for label in ["Play", "Stop"] {
-        if menu_item(ui, label, None) {
-            actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
-        }
+    if menu_item(ui, "Play", None) {
+        actions.push(Action::EditQuiet(Edit::FireCart { cart: i }));
+    }
+    if menu_item(ui, "Stop", None) {
+        actions.push(Action::EditQuiet(Edit::StopCarts));
     }
     if menu_item(ui, "Assign from library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));

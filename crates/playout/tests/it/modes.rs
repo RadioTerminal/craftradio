@@ -502,3 +502,140 @@ fn removing_a_locked_hard_event_cancels_it() {
         .any(|a| matches!(a.alarm, radio_playout::Alarm::HardEventLocked { .. }));
     assert!(cancelled && !locked);
 }
+
+/// One playlist has two hard events, at :05 and :12. Inside the last 10 s before :05,
+/// an operator deletes the :05 rule, so the :12 rule takes its place in the rule list.
+/// The :05 event still airs (it is locked), and the :12 event airs too: the renumbering
+/// never passes for a move of the :05 event.
+#[test]
+fn deleting_a_hard_rule_near_its_target_keeps_the_other_hard_event() {
+    let main: Vec<_> = (1..=6)
+        .map(|i| {
+            let path = wav(&format!("dr{i}"), 4.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5)
+        })
+        .collect();
+    let mut engine = engine_with(main);
+    let mut news = file_item(10, "News", &wav("dr-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    news.movable = false;
+    news.trimmable = false;
+    let both = format!("{}\n{}", news_at("13:00:05"), news_at("13:00:12"));
+    let playlist = add_playlist(&mut engine, "News", vec![news], &both);
+    let (p, clock) = offline(engine, |_| {});
+    let before = run(&p, &clock, 1.0);
+    let _ = p
+        .send(Command::PlaylistSetRulesScript {
+            playlist,
+            script: news_at("13:00:12"),
+        })
+        .unwrap();
+    let after = run(&p, &clock, 13.5);
+    let program = [before, after].concat();
+
+    let first = first_audible(&program, 1, 0).expect("the :05 event sounds");
+    assert!(
+        first.abs_diff(5 * SR) <= SR / 200,
+        "the locked event at {first}, target {}",
+        5 * SR
+    );
+    let second = first_audible(&program, 1, first + SR + SR / 10).expect("the :12 event airs");
+    assert!(
+        second.abs_diff(12 * SR) <= SR / 200,
+        "the other event at {second}, target {}",
+        12 * SR
+    );
+    let rows = p.history(t0(), 40).unwrap();
+    let news = rows.iter().filter(|r| r.entry.title == "News").count();
+    assert_eq!(news, 2, "both hard events air");
+}
+
+/// An item that an operator sends to play next airs right after the item on air, not a round
+/// of the playlist later.
+#[test]
+fn a_play_next_item_airs_right_after_the_item_on_air() {
+    let main: Vec<_> = (1..=3)
+        .map(|i| {
+            let path = wav(&format!("pn{i}"), 4.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 4.0, 4.0, 0.0)
+        })
+        .collect();
+    let engine = engine_with(main);
+    let (p, clock) = offline(engine, |_| {});
+    let before = run(&p, &clock, 1.0);
+    let next = file_item(20, "Next", &wav("pn-next", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    p.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![next],
+        at: None,
+    })
+    .unwrap();
+    p.dispatch(Command::PlayoutPlayNext {
+        item: radio_model::ItemId(20),
+    })
+    .unwrap();
+    let after = run(&p, &clock, 5.5);
+    let program = [before, after].concat();
+    let start = first_audible(&program, 1, 0).expect("the play-next item airs");
+    assert!(
+        start.abs_diff(4 * SR) <= SR / 10,
+        "it starts when song 1 ends: at {start}, song 1 ends at {}",
+        4 * SR
+    );
+    assert!(
+        peak(&program, 0, 4 * SR + SR / 10, 5 * SR - SR / 10) < 0.01,
+        "song 2 waits until the play-next item ends"
+    );
+    let view = p.snapshot();
+    assert!(
+        view.state.queue.is_empty(),
+        "the item left the queue when it started"
+    );
+}
+
+/// The operator deletes the first of two hard rules inside the 10 s window, then moves the
+/// rule that is left from :20 to :22. The second edit moves the other event, not the locked
+/// one: both events air, at :05 and at :22.
+#[test]
+fn deleting_then_editing_a_hard_rule_keeps_the_other_hard_event() {
+    let main: Vec<_> = (1..=6)
+        .map(|i| {
+            let path = wav(&format!("de{i}"), 4.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5)
+        })
+        .collect();
+    let mut engine = engine_with(main);
+    let mut news = file_item(10, "News", &wav("de-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    news.movable = false;
+    news.trimmable = false;
+    let both = format!("{}\n{}", news_at("13:00:05"), news_at("13:00:20"));
+    let playlist = add_playlist(&mut engine, "News", vec![news], &both);
+    let (p, clock) = offline(engine, |_| {});
+    let first = run(&p, &clock, 1.0);
+    let _ = p
+        .send(Command::PlaylistSetRulesScript {
+            playlist,
+            script: news_at("13:00:20"),
+        })
+        .unwrap();
+    let second = run(&p, &clock, 1.0);
+    let edited = news_at("13:00:22");
+    let _ = p
+        .send(Command::PlaylistSetRulesScript {
+            playlist,
+            script: edited,
+        })
+        .unwrap();
+    let third = run(&p, &clock, 22.5);
+    let program = [first, second, third].concat();
+
+    let at5 = first_audible(&program, 1, 0).expect("the :05 event airs");
+    assert!(
+        at5.abs_diff(5 * SR) <= SR / 200,
+        "the locked event at {at5}"
+    );
+    let at14 = first_audible(&program, 1, at5 + SR + SR / 10).expect("the moved event airs");
+    assert!(
+        at14.abs_diff(22 * SR) <= SR / 200,
+        "the other event at {at14}"
+    );
+}

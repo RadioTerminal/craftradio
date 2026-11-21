@@ -144,6 +144,28 @@ pub(crate) enum Request {
     Alarms(mpsc::SyncSender<RaisedAlarm>),
 }
 
+/// Sends commands to a playout from another thread. It ignores the answers.
+#[derive(Clone)]
+pub struct CommandSender(Sender<Request>);
+
+impl CommandSender {
+    pub fn send(&self, cmd: Command) -> Result<(), PlayoutError> {
+        self.send_with_reply(cmd).map(|_| ())
+    }
+
+    /// Sends a command, and returns the receiver of its answer.
+    pub fn send_with_reply(
+        &self,
+        cmd: Command,
+    ) -> Result<Receiver<Result<Outcome, EngineError>>, PlayoutError> {
+        let (tx, rx) = mpsc::channel();
+        self.0
+            .send(Request::Dispatch(cmd, tx))
+            .map_err(|_| PlayoutError::Stopped)?;
+        Ok(rx)
+    }
+}
+
 /// The running playout. A drop stops the control thread, ends the open log rows as
 /// interrupted and closes the outputs.
 pub struct Playout {
@@ -230,6 +252,29 @@ impl Playout {
             view.meters = m.read();
         }
         view
+    }
+
+    /// A handle that sends commands from another thread, without their answers. Drop every
+    /// handle before the playout, or the drop of the playout waits for them.
+    pub fn command_sender(&self) -> Option<CommandSender> {
+        self.tx.clone().map(CommandSender)
+    }
+
+    /// The items on the decks now. It costs no copy of the snapshot.
+    pub fn deck_items(&self) -> [Option<radio_model::ItemId>; 4] {
+        let read = |v: &PlayoutView| std::array::from_fn(|i| v.decks[i].item);
+        self.view
+            .lock()
+            .map(|v| read(&v))
+            .unwrap_or_else(|p| read(&p.into_inner()))
+    }
+
+    /// The revision of the engine state in the snapshot. It costs no copy.
+    pub fn revision(&self) -> u64 {
+        self.view
+            .lock()
+            .map(|v| v.revision)
+            .unwrap_or_else(|p| p.into_inner().revision)
     }
 
     /// A meter reader for a meter display at 30 fps.

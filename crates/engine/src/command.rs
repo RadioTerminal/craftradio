@@ -4,6 +4,10 @@ use schemars::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+fn yes() -> bool {
+    true
+}
+
 /// Operating mode (spec 6.15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Mode {
@@ -11,6 +15,24 @@ pub enum Mode {
     Auto,
     Assist,
     Manual,
+}
+
+/// How a cart plays when somebody fires it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CartMode {
+    #[default]
+    OneShot,
+    Loop,
+    Restart,
+}
+
+/// Where a mixer strip sends its sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Route {
+    #[default]
+    Out,
+    OutAndCue,
+    CueOnly,
 }
 
 /// Who may run a command (spec 6.14). MCP gets `ReadOnly` by default.
@@ -56,6 +78,16 @@ pub enum Command {
         items: Vec<Item>,
         at: Option<usize>,
     },
+    /// Removes every item of a playlist but the items on decks, and the locked items unless
+    /// `remove_locked`. `expect_count` is the item count that the person saw; a playlist that
+    /// changed since fails. A folder playlist stops watching its folder.
+    #[serde(rename = "playlist.clear")]
+    PlaylistClear {
+        playlist: PlaylistId,
+        expect_count: usize,
+        #[serde(default = "yes")]
+        remove_locked: bool,
+    },
     #[serde(rename = "playlist.remove_items")]
     PlaylistRemoveItems {
         playlist: PlaylistId,
@@ -82,6 +114,22 @@ pub enum Command {
     ItemUnlock { item: ItemId },
     #[serde(rename = "item.set_meta")]
     ItemSetMeta { item: ItemId, meta: Value },
+    /// Marks file items as missing (playout skips them) or found again.
+    #[serde(rename = "item.mark_missing")]
+    ItemMarkMissing { items: Vec<ItemId>, missing: bool },
+    /// Points a file item at a new path, for example a file that moved, and clears missing.
+    #[serde(rename = "item.relink")]
+    ItemRelink { item: ItemId, path: String },
+    /// Stores the content hash (hex) and the size of the file of an item, for a relink.
+    #[serde(rename = "item.set_hash")]
+    ItemSetHash {
+        item: ItemId,
+        hash: String,
+        size: u64,
+    },
+    /// Keep-alive of a stream item: it reconnects until its planned end.
+    #[serde(rename = "item.set_keep_alive")]
+    ItemSetKeepAlive { item: ItemId, keep_alive: bool },
     #[serde(rename = "deck.load")]
     DeckLoad { deck: u8, item: ItemId },
     /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
@@ -116,6 +164,9 @@ pub enum Command {
     ModeSet { mode: Mode },
     #[serde(rename = "station.stop_after_current")]
     StationStopAfterCurrent,
+    /// Plays the item right after the item on air, before the plan goes on.
+    #[serde(rename = "playout.play_next")]
+    PlayoutPlayNext { item: ItemId },
     /// Starts the next item now. In `Assist` mode the next item waits for this command.
     #[serde(rename = "playout.next")]
     PlayoutNext,
@@ -135,6 +186,68 @@ pub enum Command {
     HistoryList { since: Timestamp, limit: u32 },
     #[serde(rename = "history.export_csv")]
     HistoryExportCsv { since: Timestamp, until: Timestamp },
+    /// Takes back the last playlist or cart edit.
+    #[serde(rename = "history.undo")]
+    HistoryUndo,
+    /// Does again the last edit that `history.undo` took back.
+    #[serde(rename = "history.redo")]
+    HistoryRedo,
+    /// Runs station edits as one step: all of them, or none. Undo takes them back together.
+    #[serde(rename = "station.batch")]
+    StationBatch { commands: Vec<Command> },
+    /// Replaces all playlists with those of a station file. Scripts and folder sources go.
+    #[serde(rename = "station.import")]
+    StationImport { station: radio_model::Station },
+    /// Station edits that the system makes, such as a watched folder. They run as one step
+    /// and are not undoable, so the undo history starts again after them.
+    #[serde(rename = "station.system")]
+    StationSystem { commands: Vec<Command> },
+    /// Clears a stop-after-current, so the station plays on.
+    #[serde(rename = "station.continue")]
+    StationContinue,
+    /// Stores one setting of one part of the UI.
+    #[serde(rename = "settings.set")]
+    SettingsSet {
+        part: String,
+        key: String,
+        value: Value,
+    },
+    #[serde(rename = "playlist.set_color")]
+    PlaylistSetColor {
+        playlist: PlaylistId,
+        color: [u8; 3],
+    },
+    #[serde(rename = "playlist.set_pick")]
+    PlaylistSetPick {
+        playlist: PlaylistId,
+        pick: radio_model::PickOrder,
+    },
+    /// Copies a playlist with new item ids. The data is the id of the copy.
+    #[serde(rename = "playlist.duplicate")]
+    PlaylistDuplicate { playlist: PlaylistId, name: String },
+    #[serde(rename = "cart.clear")]
+    CartClear { page: u32, slot: u32 },
+    /// Sets the duck depth and the play mode of a cart.
+    #[serde(rename = "cart.set")]
+    CartSet {
+        page: u32,
+        slot: u32,
+        duck_db: f32,
+        mode: CartMode,
+    },
+    /// Sets the fader, mute, PFL or route of a mixer strip (A–D, Cart, Live, Out).
+    #[serde(rename = "mixer.set_strip")]
+    MixerSetStrip {
+        strip: String,
+        #[serde(default)]
+        gain_db: Option<f32>,
+        #[serde(default)]
+        mute: Option<bool>,
+        #[serde(default)]
+        pfl: Option<bool>,
+        #[serde(default)]
+        route: Option<Route>,
+    },
 }
 
 impl Command {
@@ -150,12 +263,17 @@ impl Command {
             Self::PlaylistSetOnInterrupt { .. } => "playlist.set_on_interrupt",
             Self::PlaylistAddItems { .. } => "playlist.add_items",
             Self::PlaylistRemoveItems { .. } => "playlist.remove_items",
+            Self::PlaylistClear { .. } => "playlist.clear",
             Self::PlaylistMoveItems { .. } => "playlist.move_items",
             Self::PlaylistSetRulesScript { .. } => "playlist.set_rules_script",
             Self::PlaylistSetSource { .. } => "playlist.set_source",
             Self::ItemLock { .. } => "item.lock",
             Self::ItemUnlock { .. } => "item.unlock",
             Self::ItemSetMeta { .. } => "item.set_meta",
+            Self::ItemSetKeepAlive { .. } => "item.set_keep_alive",
+            Self::ItemMarkMissing { .. } => "item.mark_missing",
+            Self::ItemRelink { .. } => "item.relink",
+            Self::ItemSetHash { .. } => "item.set_hash",
             Self::DeckLoad { .. } => "deck.load",
             Self::DeckPlay { .. } => "deck.play",
             Self::DeckPause { .. } => "deck.pause",
@@ -164,6 +282,7 @@ impl Command {
             Self::ModeSet { .. } => "mode.set",
             Self::StationStopAfterCurrent => "station.stop_after_current",
             Self::PlayoutNext => "playout.next",
+            Self::PlayoutPlayNext { .. } => "playout.play_next",
             Self::CartAssign { .. } => "cart.assign",
             Self::CartFire { .. } => "cart.fire",
             Self::CartStopAll => "cart.stop_all",
@@ -172,6 +291,19 @@ impl Command {
             Self::StationGet => "station.get",
             Self::HistoryList { .. } => "history.list",
             Self::HistoryExportCsv { .. } => "history.export_csv",
+            Self::HistoryUndo => "history.undo",
+            Self::HistoryRedo => "history.redo",
+            Self::StationBatch { .. } => "station.batch",
+            Self::StationContinue => "station.continue",
+            Self::StationSystem { .. } => "station.system",
+            Self::StationImport { .. } => "station.import",
+            Self::SettingsSet { .. } => "settings.set",
+            Self::PlaylistSetColor { .. } => "playlist.set_color",
+            Self::PlaylistSetPick { .. } => "playlist.set_pick",
+            Self::PlaylistDuplicate { .. } => "playlist.duplicate",
+            Self::CartClear { .. } => "cart.clear",
+            Self::CartSet { .. } => "cart.set",
+            Self::MixerSetStrip { .. } => "mixer.set_strip",
         }
     }
 
@@ -190,12 +322,17 @@ impl Command {
             | Self::PlaylistSetOnInterrupt { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
+            | Self::PlaylistClear { .. }
             | Self::PlaylistMoveItems { .. }
             | Self::PlaylistSetRulesScript { .. }
             | Self::PlaylistSetSource { .. }
             | Self::ItemLock { .. }
             | Self::ItemUnlock { .. }
             | Self::ItemSetMeta { .. }
+            | Self::ItemSetKeepAlive { .. }
+            | Self::ItemMarkMissing { .. }
+            | Self::ItemRelink { .. }
+            | Self::ItemSetHash { .. }
             | Self::DeckLoad { .. }
             | Self::DeckPlay { .. }
             | Self::DeckPause { .. }
@@ -204,11 +341,25 @@ impl Command {
             | Self::ModeSet { .. }
             | Self::StationStopAfterCurrent
             | Self::PlayoutNext
+            | Self::PlayoutPlayNext { .. }
             | Self::CartAssign { .. }
             | Self::CartFire { .. }
             | Self::CartStopAll
             | Self::LibraryAddFolder { .. }
-            | Self::LibraryRemoveFolder { .. } => Tier::OnAir,
+            | Self::LibraryRemoveFolder { .. }
+            | Self::HistoryUndo
+            | Self::HistoryRedo
+            | Self::StationBatch { .. }
+            | Self::StationContinue
+            | Self::StationSystem { .. }
+            | Self::StationImport { .. }
+            | Self::SettingsSet { .. }
+            | Self::PlaylistSetColor { .. }
+            | Self::PlaylistSetPick { .. }
+            | Self::PlaylistDuplicate { .. }
+            | Self::CartClear { .. }
+            | Self::CartSet { .. }
+            | Self::MixerSetStrip { .. } => Tier::OnAir,
         }
     }
 }
@@ -306,6 +457,12 @@ pub fn registry() -> Vec<CommandSpec> {
             &[p, ("items", "array")],
         ),
         spec(
+            "playlist.clear",
+            "Remove all items of a playlist but those on decks",
+            A,
+            &[p, ("expect_count", "integer"), ("remove_locked", "boolean")],
+        ),
+        spec(
             "playlist.move_items",
             "Move items (locked) to a position",
             A,
@@ -342,6 +499,30 @@ pub fn registry() -> Vec<CommandSpec> {
             &[("item", "integer"), ("meta", "object")],
         ),
         spec(
+            "item.mark_missing",
+            "Mark file items as missing (skipped) or found",
+            A,
+            &[("items", "array"), ("missing", "boolean")],
+        ),
+        spec(
+            "item.relink",
+            "Point a file item at a new path",
+            A,
+            &[("item", "integer"), ("path", "string")],
+        ),
+        spec(
+            "item.set_hash",
+            "Store the content hash and size of an item's file",
+            A,
+            &[("item", "integer"), ("hash", "string"), ("size", "integer")],
+        ),
+        spec(
+            "item.set_keep_alive",
+            "Make a stream reconnect until its planned end, or not",
+            A,
+            &[("item", "integer"), ("keep_alive", "boolean")],
+        ),
+        spec(
             "deck.load",
             "Load an item into a deck",
             A,
@@ -367,6 +548,12 @@ pub fn registry() -> Vec<CommandSpec> {
             &[],
         ),
         spec("playout.next", "Start the next item now", A, &[]),
+        spec(
+            "playout.play_next",
+            "Play an item right after the item on air",
+            A,
+            &[("item", "integer")],
+        ),
         spec(
             "cart.assign",
             "Put an item on a cartwall slot",
@@ -395,6 +582,89 @@ pub fn registry() -> Vec<CommandSpec> {
             "Remove a folder from the library",
             A,
             &[("path", "string")],
+        ),
+        spec(
+            "history.undo",
+            "Take back the last playlist or cart edit",
+            A,
+            &[],
+        ),
+        spec(
+            "history.redo",
+            "Do again the edit that undo took back",
+            A,
+            &[],
+        ),
+        spec(
+            "station.batch",
+            "Run station edits as one step (all or none)",
+            A,
+            &[("commands", "array")],
+        ),
+        spec(
+            "station.system",
+            "Run system edits as one step; the undo history starts again",
+            A,
+            &[("commands", "array")],
+        ),
+        spec(
+            "station.import",
+            "Replace all playlists with those of a station file",
+            A,
+            &[("station", "object")],
+        ),
+        spec(
+            "station.continue",
+            "Clear stop-after-current; play on",
+            A,
+            &[],
+        ),
+        spec(
+            "settings.set",
+            "Store one setting of one part of the UI",
+            A,
+            &[("part", "string"), ("key", "string"), ("value", "object")],
+        ),
+        spec(
+            "playlist.set_color",
+            "Set the colour of a playlist",
+            A,
+            &[p, ("color", "array")],
+        ),
+        spec(
+            "playlist.set_pick",
+            "Set the pick order (and weights) of a playlist",
+            A,
+            &[p, ("pick", "object")],
+        ),
+        spec(
+            "playlist.duplicate",
+            "Copy a playlist with new item ids",
+            A,
+            &[p, ("name", "string")],
+        ),
+        spec(
+            "cart.clear",
+            "Clear a cartwall slot",
+            A,
+            &[("page", "integer"), ("slot", "integer")],
+        ),
+        spec(
+            "cart.set",
+            "Set the duck depth and play mode of a cart",
+            A,
+            &[
+                ("page", "integer"),
+                ("slot", "integer"),
+                ("duck_db", "number"),
+                ("mode", "string"),
+            ],
+        ),
+        spec(
+            "mixer.set_strip",
+            "Set the fader, mute, PFL or route of a mixer strip",
+            A,
+            &[("strip", "string")],
         ),
         spec("station.get", "Read the station state", R, &[]),
         spec(

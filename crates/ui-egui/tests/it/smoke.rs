@@ -155,3 +155,100 @@ fn the_header_says_preview_and_never_live_with_the_mock() {
     assert!(shows(&harness, "PREVIEW"), "the header names the preview");
     assert!(!shows(&harness, "LIVE"), "the mock never claims to be live");
 }
+
+/// The floating Mixer grows when its ⚙ section opens and shrinks back when it closes.
+#[test]
+fn the_mixer_window_follows_the_size_of_its_content() {
+    let mut harness = harness();
+    harness.state_mut().set_window(ToolWindow::Mixer, true);
+    harness.run_steps(FRAMES);
+    let id = ToolWindow::Mixer.area_id();
+    let height = |h: &Harness<'_, RadioApp>| {
+        h.ctx
+            .memory(|m| m.area_rect(id))
+            .expect("the mixer floats as an egui window")
+            .height()
+    };
+    let closed = height(&harness);
+    click(&mut harness, "⚙ Mixer settings");
+    let opened = height(&harness);
+    assert!(
+        opened > closed + 2.0,
+        "the window grows: {closed} → {opened}"
+    );
+    click(&mut harness, "⚙ Mixer settings");
+    let again = height(&harness);
+    assert!(
+        again < opened - 2.0,
+        "the window shrinks back: {opened} → {again}"
+    );
+    assert!(
+        (again - closed).abs() <= 2.0,
+        "back to its size: {closed} vs {again}"
+    );
+}
+
+/// Each deck card names the playlist of its item, and a waiting deck says when it starts.
+/// The rows that the decks hold carry the deck letter.
+#[test]
+fn deck_cards_name_their_playlist_and_start_and_rows_show_their_deck() {
+    let harness = harness();
+    let in_strip = |label: &str| {
+        harness
+            .query_all_by_label(label)
+            .any(|n| n.rect().bottom() < 200.0)
+    };
+    assert!(
+        in_strip("Music"),
+        "a deck card shows the playlist of its item"
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("Starts 15:")
+            .any(|n| n.rect().bottom() < 200.0),
+        "a NEXT deck says when it starts"
+    );
+    assert!(
+        harness
+            .query_all_by_label("Deck C")
+            .any(|n| n.rect().top() > 200.0),
+        "the row on deck C shows the C badge"
+    );
+}
+
+#[test]
+fn a_library_column_changes_width_after_a_drag() {
+    let mut harness = harness();
+    harness.state_mut().set_window(ToolWindow::Library, true);
+    harness.run_steps(FRAMES);
+    let artist = harness.get_by_label("ARTIST").rect();
+    let title = harness
+        .query_all_by_label("TITLE")
+        .map(|node| node.rect())
+        .find(|rect| {
+            (rect.center().y - artist.center().y).abs() < 1.0 && rect.left() < artist.left()
+        })
+        .expect("Library title header beside the artist header");
+    let before = artist.left() - title.left();
+    let start = egui::pos2(artist.left() - 4.0, title.center().y);
+    let end = start + egui::vec2(48.0, 0.0);
+    harness.hover_at(start);
+    harness.run_steps(1);
+    harness.drag_at(start);
+    harness.run_steps(1);
+    harness.hover_at(end);
+    harness.run_steps(2);
+    harness.drop_at(end);
+    harness.run_steps(FRAMES);
+    let after = harness.get_by_label("ARTIST").rect().left() - title.left();
+    assert!(
+        after > before,
+        "the title column must grow after dragging: {before} -> {after}"
+    );
+}
+
+#[test]
+fn header_shows_full_mode_names_at_1440() {
+    let harness = harness();
+    assert!(harness.query_all_by_label("Assist").next().is_some());
+}

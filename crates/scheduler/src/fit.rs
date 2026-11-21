@@ -1,4 +1,5 @@
-use crate::constraints::item_ok;
+use crate::constraints::{allowed_with, item_ok};
+use crate::history::HistoryOverlay;
 use crate::{DropReason, Entry, Fixed, Origin, PlayHistory, Played, Timeline, Warning, allowed};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
@@ -66,6 +67,84 @@ pub fn select_before(
             (index, (length.as_nanos() + step / 2) / step, *orig_before)
         })
         .collect();
+    // The original selection is the unique zero-displacement solution. If it
+    // reaches the target exactly in search ticks, no other subset can beat it.
+    let original_ticks: u128 = active
+        .iter()
+        .filter(|(_, _, before)| *before)
+        .map(|(_, ticks, _)| *ticks)
+        .sum();
+    if mandatory_ns <= gap_ns && original_ticks * step == remaining_ns && original_ticks <= limit {
+        let mut kept = mandatory;
+        kept.extend(
+            active
+                .iter()
+                .filter(|(_, _, before)| *before)
+                .map(|(i, _, _)| *i),
+        );
+        kept.sort_unstable();
+        let played: u128 = kept.iter().map(|&i| cands[i].0.as_nanos()).sum();
+        return (
+            kept,
+            SignedDuration::from_nanos_i128(gap_ns as i128 - played as i128),
+        );
+    }
+    // Equal lengths need only a count, not a subset grid. For each count,
+    // retain original entries first. Equal-cost subsets prefer earlier candidates,
+    // just as the descending DP does when taking and skipping have equal cost.
+    if let Some(&(_, ticks, _)) = active.first()
+        && ticks > 0
+        && active.iter().all(|(_, length, _)| *length == ticks)
+    {
+        let before = active.iter().filter(|(_, _, before)| *before).count();
+        let max_count = active.len().min((limit / ticks) as usize);
+        let count = (0..=max_count)
+            .min_by_key(|&count| {
+                let sum = count as u128 * ticks * step;
+                (remaining_ns.abs_diff(sum), count.abs_diff(before), sum)
+            })
+            .unwrap_or(0);
+        let mut kept = mandatory;
+        kept.extend(
+            active
+                .iter()
+                .filter(|(_, _, before)| *before)
+                .take(count)
+                .map(|(i, _, _)| *i),
+        );
+        kept.extend(
+            active
+                .iter()
+                .filter(|(_, _, before)| !*before)
+                .take(count.saturating_sub(before))
+                .map(|(i, _, _)| *i),
+        );
+        kept.sort_unstable();
+        let played: u128 = kept.iter().map(|&i| cands[i].0.as_nanos()).sum();
+        let remainder = (gap_ns as i128 - played as i128).clamp(
+            SignedDuration::MIN.as_nanos(),
+            SignedDuration::MAX.as_nanos(),
+        );
+        return (kept, SignedDuration::from_nanos_i128(remainder));
+    }
+    // Only multiples of the greatest common divisor are reachable. Compress
+    // those cells without changing rounded lengths, costs, or tie breaking.
+    let divisor = active
+        .iter()
+        .fold(0, |mut a, (_, ticks, _)| {
+            let mut b = *ticks;
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        })
+        .max(1);
+    let active: Vec<_> = active
+        .into_iter()
+        .map(|(i, ticks, before)| (i, ticks / divisor, before))
+        .collect();
+    let limit = limit / divisor;
+    let step = step * divisor;
     let reachable_limit = active
         .iter()
         .fold(0_u128, |sum, (_, ticks, _)| sum.saturating_add(*ticks));
@@ -205,6 +284,7 @@ fn mask(len: usize, picked: &[usize]) -> Vec<bool> {
 
 struct Fitter<'a> {
     station: &'a Station,
+    needs_history: bool,
     tz: TimeZone,
     items: BTreeMap<ItemId, &'a Item>,
 }
@@ -376,6 +456,9 @@ impl<'a> Fitter<'a> {
     }
 
     fn record(&self, sim: &mut PlayHistory, e: &Entry, at: Timestamp) {
+        if !self.needs_history {
+            return;
+        }
         if let Some(item) = self.item(e) {
             sim.push(Played {
                 item: item.id,
@@ -398,21 +481,41 @@ impl<'a> Fitter<'a> {
         starts: &[Timestamp],
         check: &[bool],
     ) -> Option<usize> {
-        let mut sim = sim.clone();
-        for (i, (e, &at)) in seq.iter().zip(starts).enumerate() {
+        let last = check.iter().rposition(|check| *check)?;
+        let needs_history = seq.iter().zip(check).take(last + 1).any(|(e, check)| {
+            *check
+                && (self.item(e).is_some_and(|item| item.max_per_day.is_some())
+                    || self.constraints(e).any(|c| {
+                        matches!(
+                            c,
+                            Constraint::MinGapSameItem(_)
+                                | Constraint::ArtistSeparation(_)
+                                | Constraint::TitleSeparation(_)
+                                | Constraint::MaxPerHour(_)
+                                | Constraint::MaxPerDay(_)
+                        )
+                    }))
+        });
+        let mut overlay = HistoryOverlay {
+            base: sim,
+            scratch: PlayHistory::new(),
+        };
+        for (i, (e, &at)) in seq.iter().zip(starts).take(last + 1).enumerate() {
             let before = if i == 0 { prev } else { seq.get(i - 1) };
             if check.get(i).copied().unwrap_or(false)
                 && let Some(item) = self.item(e)
             {
-                let ok = item_ok(item, at, &sim, &self.tz)
+                let ok = item_ok(item, at, &overlay, &self.tz)
                     && self
                         .constraints(e)
-                        .all(|c| allowed(c, item, e.playlist, at, before, &sim, &self.tz));
+                        .all(|c| allowed_with(c, item, e.playlist, at, before, &overlay, &self.tz));
                 if !ok {
                     return Some(i);
                 }
             }
-            self.record(&mut sim, e, at);
+            if needs_history {
+                self.record(&mut overlay.scratch, e, at);
+            }
         }
         None
     }
@@ -581,6 +684,15 @@ impl Fit<'_, '_> {
             .chain((0..n).filter(|&j| !window[j].1).map(Tok::Win))
             .chain(next_tok)
             .collect();
+        let token_index = |t: Tok| match t {
+            Tok::Win(j) => j,
+            Tok::Event => n,
+            Tok::Next => n + 1,
+        };
+        let mut original_prev = vec![None; n + 2];
+        for (pos, &t) in original.iter().enumerate() {
+            original_prev[token_index(t)] = pos.checked_sub(1).map(|i| original[i]);
+        }
         let mut picks = vec![Pick::Free; n];
         for _ in 0..=RETRIES {
             let cands: Vec<_> = window
@@ -614,7 +726,7 @@ impl Fit<'_, '_> {
             let mut check = vec![false; full.len()];
             for (pos, &t) in order.iter().enumerate() {
                 let pulled = matches!(t, Tok::Win(j) if keep[j] && !window[j].1);
-                let rewired = prev_of(&order, t) != prev_of(&original, t);
+                let rewired = pos.checked_sub(1).map(|i| order[i]) != original_prev[token_index(t)];
                 check[seg.len() + pos] = t != Tok::Event && (pulled || rewired);
             }
             let h = self.head.min(full.len());
@@ -780,6 +892,7 @@ pub(crate) fn drop_adjacent_clashes(
 ) {
     let f = Fitter {
         station,
+        needs_history: false,
         tz: TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC),
         items: station
             .playlists
@@ -851,6 +964,22 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
     });
     let f = Fitter {
         station,
+        needs_history: station.playlists.iter().any(|p| {
+            p.items.iter().any(|i| i.max_per_day.is_some())
+                || p.constraints
+                    .iter()
+                    .chain(p.rules.iter().flat_map(|r| &r.constraints))
+                    .any(|c| {
+                        matches!(
+                            c,
+                            Constraint::MinGapSameItem(_)
+                                | Constraint::ArtistSeparation(_)
+                                | Constraint::TitleSeparation(_)
+                                | Constraint::MaxPerHour(_)
+                                | Constraint::MaxPerDay(_)
+                        )
+                    })
+        }),
         tz,
         items: station
             .playlists
@@ -872,7 +1001,11 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&i| (slots[i], i));
 
-    let mut sim = hist.clone();
+    let mut sim = if f.needs_history {
+        hist.clone()
+    } else {
+        PlayHistory::new()
+    };
     let mut out: Vec<Entry> = Vec::with_capacity(events.len() + flow.len());
     for (k, &i) in order.iter().enumerate() {
         let ev = &events[i];

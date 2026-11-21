@@ -3,7 +3,9 @@
 //! Opus uses bundled libopus through the Symphonia adapter. Building requires
 //! CMake and a C compiler. AAC support is AAC-LC; unsupported profiles return errors.
 //! Keep scan results in station data and cache `Analysis` separately for gain and hashes.
+mod listing;
 mod watch;
+pub use listing::{Limits, Listing, list_audio, probe};
 use lofty::{
     file::TaggedFileExt,
     tag::{Accessor, ItemKey, Tag, TagExt},
@@ -151,6 +153,12 @@ pub fn scan(
     errors.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(ScanResult { items, errors })
 }
+/// The content hash and the size of a file, as [`relink`] matches them.
+pub fn content_hash(path: impl AsRef<Path>) -> Result<([u8; 32], u64), LibraryError> {
+    let path = path.as_ref();
+    Ok((hash(path)?, fs::metadata(path)?.len()))
+}
+
 fn hash(path: &Path) -> Result<[u8; 32], LibraryError> {
     let file = File::open(path)?;
     let size = file.metadata()?.len();

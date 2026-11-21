@@ -10,7 +10,7 @@ use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
-    DeviceRole, Edit, IcecastView, MeterView, Route, StationView, StreamFormat, StripChange,
+    DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
 };
 
 /// The dB marks beside a meter.
@@ -58,11 +58,13 @@ pub(crate) fn show(
 ) {
     let mut open = state.settings;
     settings::header(ui, "Mixer", &mut open, |ui| {
-        ui.label(
-            RichText::new(NOTE)
-                .font(theme::text(theme::CAPTION))
-                .color(t.text_muted),
-        );
+        if view.preview {
+            ui.label(
+                RichText::new(NOTE)
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.text_muted),
+            );
+        }
     });
     state.settings = open;
     ui.add_space(space::S);
@@ -89,13 +91,13 @@ pub(crate) fn show(
                 ui.set_width(size::MIXER_SIDE_W);
                 ui.vertical(|ui| {
                     if state.settings {
-                        settings::section(ui, "Mixer", t, |ui| {
+                        settings::section(ui, "Mixer", view.preview, t, |ui| {
                             mixer_settings(ui, view, actions, t)
                         });
                     }
                     if state.icecast_open {
                         let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
-                        settings::section(ui, "Icecast", t, |ui| {
+                        settings::section(ui, "Icecast", view.preview, t, |ui| {
                             icecast_settings(ui, view, draft, streaming, actions, t);
                         });
                     } else {
@@ -412,6 +414,9 @@ fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Actio
         });
 }
 
+/// The warning for a password that goes to another computer without TLS.
+pub(crate) const PASSWORD_IN_CLEAR: &str = "⚠ password sent unencrypted · turn on TLS";
+
 fn icecast_settings(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -420,14 +425,28 @@ fn icecast_settings(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let status = RichText::new("Icecast ○ not connected — preview").font(theme::text(theme::LABEL));
-    ui.label(status.color(t.text_muted));
+    let (word, ink) = match &view.output.icecast {
+        _ if view.preview => ("Icecast ○ not connected — preview".to_owned(), t.text_muted),
+        Status::Connected => ("Icecast ● connected".to_owned(), t.ok),
+        Status::Reconnecting { attempt } => {
+            (format!("Icecast ↻ connecting, try {attempt}"), t.warn)
+        }
+        Status::Failed(e) => (format!("Icecast ○ down: {e}"), t.danger),
+        Status::NotConnected | Status::Preview => {
+            ("Icecast ○ not connected".to_owned(), t.text_muted)
+        }
+    };
+    let status = RichText::new(word).font(theme::text(theme::LABEL));
+    ui.label(status.color(ink));
     ui.horizontal(|ui| {
         ui.label(RichText::new("Now streaming:").color(t.text_muted));
         let text = RichText::new(format!("“{streaming}”")).font(theme::mono(theme::CODE));
         ui.label(text.color(t.accent_ink));
     });
-    let note = "The stream would carry this text. The preview sends nothing.";
+    let note = view.say(
+        "The stream would carry this text. The preview sends nothing.",
+        "Changes to the mount apply on the next start of the app.",
+    );
     ui.label(
         RichText::new(note)
             .font(theme::text(theme::CAPTION))
@@ -447,6 +466,9 @@ fn icecast_settings(
             settings::label(ui, "Port", t);
             ui.add(DragValue::new(&mut ice.port).range(1..=u16::MAX));
             ui.end_row();
+            settings::label(ui, "TLS", t);
+            ui.checkbox(&mut ice.tls, "Encrypt (TLS)");
+            ui.end_row();
             settings::label(ui, "Mount", t);
             field(ui, &mut ice.mount, false);
             ui.end_row();
@@ -454,7 +476,15 @@ fn icecast_settings(
             field(ui, &mut ice.user, false);
             ui.end_row();
             settings::label(ui, "Password", t);
-            field(ui, &mut ice.password, true);
+            let hint = if view.icecast.password_set {
+                "set · leave empty to keep it"
+            } else {
+                "not set"
+            };
+            let edit = egui::TextEdit::singleline(&mut ice.password)
+                .password(true)
+                .hint_text(hint);
+            ui.add(edit.desired_width(size::FIELD_W));
             ui.end_row();
             settings::label(ui, "Format", t);
             ui.horizontal(|ui| {
@@ -476,6 +506,18 @@ fn icecast_settings(
                 });
             ui.end_row();
         });
+    // The edited form decides: a typed password counts as a password.
+    let typed = IcecastView {
+        password_set: view.icecast.password_set || !ice.password.is_empty(),
+        ..ice.clone()
+    };
+    if typed.password_in_clear() {
+        ui.label(
+            RichText::new(PASSWORD_IN_CLEAR)
+                .font(theme::text(theme::CAPTION))
+                .color(t.warn),
+        );
+    }
     ui.horizontal(|ui| {
         let changed = *ice != view.icecast;
         if ui

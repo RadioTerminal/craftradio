@@ -459,3 +459,28 @@ fn frozen_window_keeps_the_pinned_item_on_air() {
         "{main:?} not within {kept:?}"
     );
 }
+
+#[test]
+fn kept_exact_window_reuses_the_complete_fit_result() {
+    let mut main = tracks(12);
+    for item in &mut main {
+        let timing = item.timing.as_mut().unwrap();
+        timing.segue = Duration::from_secs(60);
+        timing.cue_out = timing.segue;
+    }
+    let st = make_station(main, 3);
+    let fresh = run(&st, &[], None);
+    assert!(
+        fresh
+            .fits
+            .iter()
+            .all(|f| f.error.is_zero() && f.steps.is_empty())
+    );
+    let mut prev = fresh.clone();
+    // An unavailable entry makes the old window differ, but keeping its surviving
+    // entries gives the same exact order. No fit details or warnings may change.
+    let mut gone = prev.entries[0].clone();
+    gone.item = ItemId(9999);
+    prev.entries.insert(0, gone);
+    assert_eq!(run(&st, &[], Some(&prev)), fresh);
+}

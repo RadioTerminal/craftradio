@@ -285,3 +285,97 @@ fn restart_resumes_a_late_hard_event_from_its_real_start() {
         "the event did not resume at its position"
     );
 }
+
+/// A mute that the station stored before a restart still mutes Out after it.
+#[test]
+fn a_stored_mute_holds_after_a_restart() {
+    let path = wav("muted", 2.0, Side::Both);
+    let mut engine = engine_with(vec![file_item(1, "Song", &path, 2.0, 2.0, 0.0)]);
+    engine
+        .dispatch(Command::MixerSetStrip {
+            strip: "Out".into(),
+            gain_db: None,
+            mute: Some(true),
+            pfl: None,
+            route: None,
+        })
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let program = run(&p, &clock, 1.0);
+    assert!(
+        peak(&program, 0, SR / 10, SR) < 0.001,
+        "Out stays muted after the start"
+    );
+}
+
+/// A fader drag sends many commands. They change no station data, so they cause no plan.
+#[test]
+fn a_fader_drag_causes_no_plans() {
+    let path = wav("drag", 4.0, Side::Both);
+    let engine = engine_with(vec![file_item(1, "Song", &path, 4.0, 4.0, 0.0)]);
+    let (p, clock) = offline(engine, |_| {});
+    let _ = run(&p, &clock, 0.1);
+    let before = p.snapshot().plans;
+    let steps = 40;
+    for k in 0..steps {
+        let _ = p
+            .send(Command::MixerSetStrip {
+                strip: "Out".into(),
+                gain_db: Some(-(k as f32) / 4.0),
+                mute: None,
+                pfl: None,
+                route: None,
+            })
+            .unwrap();
+        let _ = run(&p, &clock, 0.01);
+    }
+    let after = p.snapshot().plans;
+    eprintln!(
+        "plans during a {steps}-step drag over 0.4 s: {}",
+        after - before
+    );
+    assert!(
+        after - before <= 1,
+        "{} plans for {steps} fader steps",
+        after - before
+    );
+}
+
+/// The decks stay loaded with what comes next, in deck order from the deck on air. When the
+/// item on air ends, the next deck goes on air, and the freed deck takes the next item.
+#[test]
+fn the_decks_stay_loaded_with_what_comes_next() {
+    let items: Vec<_> = (1..=5)
+        .map(|i| {
+            let path = wav(&format!("dk{i}"), 2.0, Side::Both);
+            file_item(i, &format!("Song {i}"), &path, 2.0, 2.0, 0.0)
+        })
+        .collect();
+    let engine = engine_with(items);
+    let (p, clock) = offline(engine, |cfg| cfg.preload = Duration::from_millis(500));
+    let _ = run(&p, &clock, 0.1);
+    let decks = |p: &Playout| -> Vec<Option<u64>> {
+        p.snapshot()
+            .decks
+            .iter()
+            .map(|d| d.item.map(|i| i.0))
+            .collect()
+    };
+    assert_eq!(
+        decks(&p),
+        [Some(1), Some(2), Some(3), Some(4)],
+        "A plays, B to D hold the next three, long before the preload time"
+    );
+    let _ = run(&p, &clock, 2.2);
+    let view = p.snapshot();
+    assert_eq!(
+        view.decks[1].phase,
+        radio_playout::DeckPhase::Playing,
+        "B is on air after A"
+    );
+    assert_eq!(
+        decks(&p),
+        [Some(5), Some(2), Some(3), Some(4)],
+        "A, freed, takes item 5 as next 3; no item moved"
+    );
+}

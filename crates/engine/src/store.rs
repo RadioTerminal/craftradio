@@ -223,6 +223,25 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     set(&tx, "engine", "tz", &json(&s.station.tz)?)?;
     set(&tx, "engine", "mode", &json(&s.mode)?)?;
     set(&tx, "library", "folders", &json(&s.folders)?)?;
+    set(&tx, "library", "missing", &json(&s.missing)?)?;
+    set(&tx, "library", "hashes", &json(&s.hashes)?)?;
+    for (name, st) in &s.strips {
+        set(&tx, "mixer", name, &json(st)?)?;
+    }
+    tx.execute("DELETE FROM settings_by_part WHERE part = 'carts'", [])?;
+    for c in &s.cart_settings {
+        set(&tx, "carts", &format!("{}:{}", c.page, c.slot), &json(c)?)?;
+    }
+    for (part, keys) in &s.settings {
+        for (key, value) in keys {
+            set(
+                &tx,
+                &format!("{}{part}", crate::UI_PREFIX),
+                key,
+                &json(value)?,
+            )?;
+        }
+    }
     tx.commit()
 }
 
@@ -287,5 +306,45 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
             serde_json::from_str(&v).map_err(bad)?,
         );
     }
-    State::from_parts(tz, records, mode, carts, folders, item_meta).map(Some)
+    let mut settings: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    > = std::collections::BTreeMap::new();
+    let mut stmt =
+        conn.prepare("SELECT part, key, value FROM settings_by_part WHERE part LIKE 'ui:%'")?;
+    for row in stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })? {
+        let (part, key, value) = row?;
+        let part = part.trim_start_matches(crate::UI_PREFIX).to_owned();
+        let value = serde_json::from_str(&value).map_err(bad)?;
+        settings.entry(part).or_default().insert(key, value);
+    }
+    let mut state = State::from_parts(tz, records, mode, carts, folders, item_meta)?;
+    state.settings = settings;
+    let mut stmt = conn.prepare("SELECT key, value FROM settings_by_part WHERE part = 'mixer'")?;
+    for kv in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (k, v) = kv?;
+        state
+            .strips
+            .insert(k, serde_json::from_str(&v).map_err(bad)?);
+    }
+    let mut stmt = conn.prepare("SELECT value FROM settings_by_part WHERE part = 'carts'")?;
+    for v in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        state
+            .cart_settings
+            .push(serde_json::from_str(&v?).map_err(bad)?);
+    }
+    state.cart_settings.sort_by_key(|c| (c.page, c.slot));
+    if let Some(v) = get("library", "missing")? {
+        state.missing = serde_json::from_str(&v).map_err(bad)?;
+    }
+    if let Some(v) = get("library", "hashes")? {
+        state.hashes = serde_json::from_str(&v).map_err(bad)?;
+    }
+    Ok(Some(state))
 }

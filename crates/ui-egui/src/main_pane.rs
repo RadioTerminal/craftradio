@@ -16,7 +16,7 @@ use crate::view::{DropTarget, Edit, MetaTarget, MoveTo, Place, Row, StationView,
 use crate::windows::ToolWindow;
 
 /// More rows than this ask before a remove.
-const CONFIRM_REMOVE_OVER: usize = 5;
+pub(crate) const CONFIRM_REMOVE_OVER: usize = 5;
 
 /// Show the main pane.
 pub(crate) fn show(
@@ -29,23 +29,7 @@ pub(crate) fn show(
 ) {
     let folder = view.main.source.is_some();
     ui.horizontal(|ui| {
-        let badge = if folder { " 📁" } else { "" };
-        let title = RichText::new(format!("Main: {}{badge}", view.main.name));
-        let header = ui.add(
-            egui::Label::new(title.font(theme::text(theme::SECTION)).strong())
-                .sense(Sense::click()),
-        );
-        header.context_menu(|ui| empty_menu(ui, view, link, actions));
-        if rules_editor::cog(ui, &view.main.name) {
-            actions.push(Action::OpenRules(view.main.name.clone()));
-        }
-        // New items go after the last selected row, or at the end.
-        let after = link
-            .selected
-            .last()
-            .and_then(|id| prep.index.get(id).copied())
-            .map(|i| i + 1);
-        add_menu::button(ui, &view.main.name, after, actions);
+        // The controls come first, from the right. The title truncates in the room left.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let mut follow = link.follow;
             ui.checkbox(&mut follow, "Follow on air")
@@ -60,12 +44,40 @@ pub(crate) fn show(
             }
             let n = prep.main_count;
             let note = if folder { " · estimated lengths" } else { "" };
-            let caption = format!("{n} tracks · next 6 hours{note}");
+            let picked = link.selected.len();
+            let caption = if picked > 1 {
+                format!(
+                    "{} selected · {n} tracks · next 6 hours{note}",
+                    thousands(picked)
+                )
+            } else {
+                format!("{n} tracks · next 6 hours{note}")
+            };
             ui.label(
                 RichText::new(caption)
                     .font(theme::text(theme::CAPTION))
                     .color(t.text_muted),
             );
+            // New items go after the last selected row, or at the end.
+            let after = link
+                .selected
+                .last()
+                .and_then(|id| prep.index.get(id).copied())
+                .map(|i| i + 1);
+            add_menu::button(ui, &view.main.name, after, actions);
+            if rules_editor::cog(ui, &view.main.name) {
+                actions.push(Action::OpenRules(view.main.name.clone()));
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                let badge = if folder { " 📁" } else { "" };
+                let title = RichText::new(format!("Main: {}{badge}", view.main.name));
+                let header = ui.add(
+                    egui::Label::new(title.font(theme::text(theme::SECTION)).strong())
+                        .truncate()
+                        .sense(Sense::click()),
+                );
+                header.context_menu(|ui| empty_menu(ui, view, link, actions));
+            });
         });
     });
     ui.add_space(space::S);
@@ -136,7 +148,11 @@ pub(crate) fn show(
                 let on_air = prep.on_air == Some(i);
                 let played = prep.on_air.is_some_and(|a| i < a);
                 row.set_selected(link.is_selected(r.id));
-                let look = Look { on_air, played };
+                let look = Look {
+                    on_air,
+                    played,
+                    preview: view.preview,
+                };
                 if r.is_main {
                     track_row(&mut row, r, i, prep, look, t);
                 } else {
@@ -209,7 +225,11 @@ pub(crate) fn show(
         );
     }
 
-    if link.focus == Pane::Main {
+    // Main and Upcoming share one selection, so the list keys act on both.
+    if matches!(link.focus, Pane::Main | Pane::Scheduled) {
+        if link.keys.select_all {
+            link.selected.clone_from(&prep.ids);
+        }
         shortcuts(view, prep, link, actions);
     }
 }
@@ -266,7 +286,7 @@ fn shortcuts(view: &StationView, prep: &Prepared, link: &Linked, actions: &mut V
 /// More than a few rows ask first. Every remove can be undone.
 pub(crate) fn remove_action(prep: &Prepared, rows: Vec<u64>) -> Action {
     if let Some(why) = rows.iter().find_map(|id| prep.protected(*id)) {
-        return Action::Toast(format!("preview — {why}"));
+        return Action::Toast(why.to_owned());
     }
     if rows.len() > CONFIRM_REMOVE_OVER {
         return Action::Confirm {
@@ -283,6 +303,9 @@ fn empty_menu(ui: &mut egui::Ui, view: &StationView, link: &Linked, actions: &mu
     ui.separator();
     if context_menu::menu_item_if(ui, link.has_clip, "Paste", Some(context_menu::PASTE)) {
         actions.push(Action::Paste(PasteTo::Main(Place::End)));
+    }
+    if context_menu::menu_item(ui, "Remove duplicates…", None) {
+        actions.push(Action::RemoveDuplicates(view.main.name.clone()));
     }
     if context_menu::menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
@@ -322,7 +345,7 @@ fn row_menu(
     ui.menu_button("Load to deck", |ui| {
         for deck in ["A", "B", "C", "D"] {
             if menu_item(ui, &format!("Deck {deck}"), None) {
-                actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
+                actions.push(Action::Toast(context_menu::not_here(view)));
             }
         }
     });
@@ -338,6 +361,9 @@ fn row_menu(
             titles: titles(view, &sel),
             cut: Some(CutSource::Rows(ordered(view, &sel))),
         });
+    }
+    if menu_item(ui, "Select all", Some(crate::shortcuts::SELECT_ALL)) {
+        actions.push(Action::SelectAllRows);
     }
     if menu_item(ui, "Copy", Some(COPY)) {
         actions.push(Action::CopyTitles {
@@ -406,7 +432,7 @@ fn row_menu(
 }
 
 /// Paint the on-air background behind a cell, over the gaps between cells too.
-fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
+pub(crate) fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
     if !on_air {
         return;
     }
@@ -424,10 +450,17 @@ fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
 struct Look {
     on_air: bool,
     played: bool,
+    /// The source is the preview, which plays no real stream.
+    preview: bool,
 }
 
 /// The time cell. A played row has a ✔ and the word in its tooltip.
 fn start_cell(ui: &mut egui::Ui, r: &Row, text: &str, font: f32, ink: egui::Color32, played: bool) {
+    // The deck that holds the row: its letter in its colour. The room stays when no deck has it.
+    let hint = r
+        .deck
+        .map_or_else(String::new, |d| crate::widgets::deck_hint(d, &r.start));
+    crate::widgets::deck_mark(ui, r.deck, &hint);
     // ⏱ sits in a slot of its own, so every time starts at the same x.
     let (slot, _) = ui.allocate_exact_size(egui::vec2(size::GLYPH_SLOT, font), Sense::hover());
     if r.fixed.is_some() {
@@ -454,7 +487,11 @@ fn track_row(
     look: Look,
     t: &Tokens,
 ) {
-    let Look { on_air, played } = look;
+    let Look {
+        on_air,
+        played,
+        preview,
+    } = look;
     let time_ink = if on_air { t.on_air } else { t.text_muted };
     row.col(|ui| {
         on_air_bg(ui, on_air, true, t);
@@ -476,7 +513,7 @@ fn track_row(
             text
         };
         if let Some(state) = r.stream {
-            stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), t);
+            stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), preview, t);
         }
         ui.add(egui::Label::new(if on_air { text.strong() } else { text }).truncate());
     });
@@ -493,9 +530,16 @@ fn track_row(
 }
 
 /// The state badge of a stream row. It says that no real stream plays in the preview.
-fn stream_badge(ui: &mut egui::Ui, state: StreamState, keep_alive: bool, t: &Tokens) {
+fn stream_badge(
+    ui: &mut egui::Ui,
+    state: StreamState,
+    keep_alive: bool,
+    preview: bool,
+    t: &Tokens,
+) {
     let (text, colour) = match state {
-        StreamState::Connected => ("stream ○ simulated".to_owned(), t.text_muted),
+        StreamState::Connected if preview => ("stream ○ simulated".to_owned(), t.text_muted),
+        StreamState::Connected => ("stream ● connected".to_owned(), t.ok),
         StreamState::Reconnecting { attempt, next_in_s } => (
             format!("reconnecting · bed playing · try {attempt}, next in {next_in_s} s"),
             t.warn,
@@ -503,11 +547,19 @@ fn stream_badge(ui: &mut egui::Ui, state: StreamState, keep_alive: bool, t: &Tok
         StreamState::Down => ("down · keep-alive is off".to_owned(), t.danger),
     };
     let keep = if keep_alive { " · keep alive" } else { "" };
-    let text = format!("{text}{keep} · preview — no real stream");
-    ui.label(
+    let text = if preview {
+        format!("{text}{keep} · preview — no real stream")
+    } else {
+        format!("{text}{keep}")
+    };
+    // The badge takes at most a third of the cell, so the title keeps its room.
+    let max = ui.available_width() / 3.0;
+    crate::widgets::truncated_label_max(
+        ui,
         RichText::new(text)
             .font(theme::text(theme::CAPTION))
             .color(colour),
+        max,
     );
 }
 
@@ -520,7 +572,7 @@ fn divider_row(
     look: Look,
     t: &Tokens,
 ) {
-    let Look { on_air, played } = look;
+    let Look { on_air, played, .. } = look;
     let bg = if on_air { t.on_air_bg } else { t.canvas };
     let ink = if played {
         t.text_muted
@@ -559,4 +611,17 @@ fn divider_row(
             );
         });
     });
+}
+
+/// A count with thin spaces between thousands, as "3 412".
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push('\u{2009}');
+        }
+        out.push(c);
+    }
+    out
 }

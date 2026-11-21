@@ -8,6 +8,7 @@ mod edit;
 mod folders;
 mod source;
 mod stream;
+mod stress;
 mod tabs;
 mod timeline;
 
@@ -27,6 +28,8 @@ use crate::view::{
     OutputStatus, Pick, Place, Placement, PlaylistTab, PublishMode, Route, Row, RuleView, Settings,
     StationView, Status, StreamFormat, StripChange, Timing, Trigger, ViewSource,
 };
+
+pub use stress::{STRESS_TITLES, StressSource, stress, stress_url};
 
 use data::*;
 use decks::*;
@@ -67,6 +70,8 @@ pub struct MockSource {
     main_tracks: Option<Vec<(String, Duration)>>,
     last_top: Option<Zoned>,
     last_now: Timestamp,
+    /// The decks of the last snapshot and when it came, for the meters between snapshots.
+    last_decks: Option<([DeckView; 4], std::time::Instant)>,
     /// History and timeline of the last snapshot, in time order.
     last_all: Vec<Row>,
     /// Tags that a person changed, by row id.
@@ -158,13 +163,20 @@ impl MockSource {
         for (i, item) in library.iter_mut().enumerate() {
             item.id = i as u64 + 1;
         }
+        // Every playlist item has an id, so a person can select it.
+        let mut tabs = tabs();
+        let mut next_item_id = TAB_ITEM_ID;
+        for tab in &mut tabs {
+            tab.ids = (next_item_id..).take(tab.items.len()).collect();
+            next_item_id += tab.items.len() as u64;
+        }
         let carts: Vec<String> = CARTS.iter().map(|c| (*c).to_owned()).collect();
         let pages = carts.len().div_ceil(CARTS_PER_PAGE);
         Self {
             tz,
             tracks,
             cache: None,
-            tabs: tabs(),
+            tabs,
             main: main_tab(),
             library,
             cartwall: CartwallView {
@@ -178,6 +190,7 @@ impl MockSource {
             main_tracks: None,
             last_top: None,
             last_now: Timestamp::UNIX_EPOCH,
+            last_decks: None,
             last_all: Vec::new(),
             row_meta: HashMap::new(),
             row_timing: HashMap::new(),
@@ -190,6 +203,9 @@ impl MockSource {
                 mount: "/live".to_owned(),
                 user: "source".to_owned(),
                 password: String::new(),
+                password_set: false,
+                keychain_error: None,
+                tls: true,
                 format: StreamFormat::Opus,
                 kbps: ICECAST_KBPS,
             },
@@ -202,7 +218,7 @@ impl MockSource {
             limits: Limits::DEFAULT,
             settings: Settings::new(),
             hours: HOURS,
-            next_item_id: 1,
+            next_item_id,
             undo: Vec::new(),
             redo: Vec::new(),
             edit_depth: 0,

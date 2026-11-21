@@ -61,6 +61,12 @@ pub mod size {
 
     /// A row of the main timeline.
     pub const ROW: f32 = 26.0;
+    /// A tool window resizes to its content only when the content size moves more than this.
+    pub const FIT_SLACK: f32 = 2.0;
+    /// While sound moves the meters, the window draws a frame this often (about 30 fps).
+    pub const METER_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+    /// A meter bar falls back over about this time; it rises at once.
+    pub const METER_RELEASE_S: f32 = 0.3;
     /// A thin divider row for an item from another playlist.
     pub const DIVIDER_ROW: f32 = 20.0;
     /// The fit line under a fixed row in Upcoming.
@@ -69,11 +75,17 @@ pub mod size {
     pub const UPCOMING_ROW: f32 = 34.0;
 
     /// Table columns.
-    pub const COL_TIME: f32 = 104.0;
+    pub const COL_TIME: f32 = 128.0;
     /// The slot for the ⏱ of a fixed row, before its time.
     pub const GLYPH_SLOT: f32 = 14.0;
-    pub const COL_LEN: f32 = 56.0;
+    pub const COL_LEN: f32 = 72.0;
     pub const COL_PLAYLIST: f32 = 78.0;
+    /// Above this many cart pages, a picker replaces the row of page tabs.
+    pub const PAGE_TABS_MAX: usize = 6;
+    /// The widest cart page tab.
+    pub const PAGE_TAB_MAX_W: f32 = 140.0;
+    /// A playlist tab shows at most this many characters of its name.
+    pub const TAB_MAX_CHARS: usize = 22;
 
     /// The part of the central area that the scheduled pane takes.
     pub const SPLIT_FRACTION: f32 = 0.45;
@@ -81,9 +93,26 @@ pub mod size {
 
     /// Deck cards.
     pub const DECK_MIN_W: f32 = 180.0;
+    /// The narrowest deck card. Below the normal width its text truncates.
+    pub const DECK_TINY_W: f32 = 184.0;
+    /// The widest text of a dialog. Help text wraps at this width.
+    pub const DIALOG_W: f32 = 420.0;
+    /// The deck badge on a row of a list.
+    pub const DECK_MARK: f32 = 16.0;
+    /// The bar in the deck colour at the left edge of a row on a deck.
+    pub const DECK_BAR: f32 = 3.0;
+    /// The least room in which a deck card shows its state word.
+    pub const DECK_WORD_MIN_W: f32 = 40.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
+    pub const PLAYLIST_TABLE_H: f32 = 360.0;
     pub const CLOCK_W: f32 = 340.0;
+    /// The clock cluster in a narrow window: no date, and the LIVE chip shows its glyph only.
+    pub const CLOCK_NARROW_W: f32 = 216.0;
+    /// The width of the clock cluster from which the LIVE chip shows its word.
+    pub const CLOCK_MID_W: f32 = 300.0;
+    /// A deck strip at least this wide gives the clock cluster its full width.
+    pub const STRIP_WIDE: f32 = 1200.0;
     /// The height of one row of the header cluster beside the decks.
     pub const HEADER_ROW: f32 = 24.0;
     /// The Out meter in the header: its width and the height of one channel bar.
@@ -138,6 +167,14 @@ pub mod size {
     pub const LIBRARY_H: f32 = 520.0;
     pub const TREE_W: f32 = 180.0;
     pub const DOCK_H: f32 = 260.0;
+    pub const TEXT_COL_MIN: f32 = 64.0;
+    pub const TEXT_COL_MAX: f32 = 640.0;
+    pub const COL_PATH: f32 = 280.0;
+    pub const COL_FIT: f32 = 96.0;
+    pub const UPCOMING_TIME: f32 = 112.0;
+    pub const UPCOMING_PLAYLIST: f32 = 64.0;
+    pub const UPCOMING_LEN: f32 = 52.0;
+    pub const DECK_STRIP_H: f32 = 142.0;
     pub const COL_TITLE: f32 = 240.0;
     pub const COL_ARTIST: f32 = 150.0;
     pub const COL_CATEGORY: f32 = 90.0;
@@ -277,6 +314,22 @@ impl Tokens {
         Color32::from_rgb(rgb[0], rgb[1], rgb[2])
     }
 
+    /// The identity colour of deck `i` (0 is A).
+    pub fn deck(i: usize) -> Color32 {
+        let rgb = DECK_COLOURS[i.min(3)];
+        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+    }
+
+    /// The letter ink on the colour of deck `i`: the canvas or the text, whichever reads.
+    pub fn deck_ink(&self, i: usize) -> Color32 {
+        let bg = Self::deck(i);
+        if contrast(self.canvas, bg) >= contrast(self.text, bg) {
+            self.canvas
+        } else {
+            self.text
+        }
+    }
+
     /// The playlist colour, moved toward `text` until it reads at 4.5:1 on `bg`.
     pub fn readable(&self, rgb: [u8; 3], bg: Color32) -> Color32 {
         let base = Self::playlist(rgb);
@@ -290,6 +343,16 @@ impl Tokens {
 /// Colours that a person can give a playlist or a cart, with their names. The name always
 /// shows too. Red, amber, green and the accent blue mean on air, danger, warning, ok and
 /// selection, so the palette keeps away from them.
+/// The identity colour of each deck, A to D. They are far from each other, from the
+/// playlist palette and from the colours that mean something. The deck letter always comes
+/// with the colour.
+pub const DECK_COLOURS: [[u8; 3]; 4] = [
+    [0x22, 0x44, 0xFF],
+    [0xFF, 0x00, 0xFF],
+    [0x77, 0xFF, 0x33],
+    [0xFF, 0xFF, 0xDD],
+];
+
 pub const PALETTE: [(&str, [u8; 3]); 8] = [
     ("Lime", [0x9C, 0xC0, 0x3A]),
     ("Copper", [0xB8, 0x7A, 0x52]),
@@ -365,6 +428,7 @@ pub fn bar_frame(t: &Tokens, margin: Margin) -> egui::Frame {
 
 /// Set the egui style from the tokens.
 pub fn apply(ctx: &egui::Context) {
+    crate::fonts::install(ctx);
     let t = Tokens::get(ctx);
     ctx.set_theme(egui::Theme::Dark);
     ctx.style_mut_of(egui::Theme::Dark, |style| {
@@ -380,6 +444,8 @@ pub fn apply(ctx: &egui::Context) {
         s.item_spacing = egui::vec2(space::S, space::XS);
         s.button_padding = egui::vec2(space::M, space::XS);
         s.interact_size.y = size::CONTROL_SM;
+        // Scroll bars always show, so a person sees that more content waits.
+        s.scroll = egui::style::ScrollStyle::solid();
         // Rows react to clicks and right-clicks. Selectable text would take those clicks.
         style.interaction.selectable_labels = false;
 
@@ -418,6 +484,30 @@ pub fn apply(ctx: &egui::Context) {
             wv.expansion = 0.0;
         }
     });
+}
+
+/// Map Base16 Mocha Dark syntax classes to the station palette.
+pub(crate) fn script_palette(job: &mut egui::text::LayoutJob, t: &Tokens) {
+    for section in &mut job.sections {
+        let c = section.format.color;
+        let spread = c.r().max(c.g()).max(c.b()) - c.r().min(c.g()).min(c.b());
+        let ink = if spread < 30 {
+            t.text_muted
+        } else if c.g() > c.r() && c.g() > c.b() {
+            t.ok
+        } else if c.r() > c.g() && c.r() > c.b() {
+            t.warn
+        } else {
+            t.accent_ink
+        };
+        section.format.color = if contrast(ink, t.field) >= 4.5 {
+            ink
+        } else {
+            t.text
+        };
+        section.format.font_id = mono(CODE);
+        section.format.underline.color = section.format.color;
+    }
 }
 
 #[cfg(test)]
@@ -473,6 +563,30 @@ mod tests {
                 let d = delta_e(Tokens::playlist(rgb), s);
                 assert!(d >= MIN_DELTA_E, "{name} is {d:.1} from {s:?}");
             }
+        }
+    }
+
+    #[test]
+    fn deck_colours_stay_clear_of_each_other_the_palette_and_the_meanings() {
+        const MIN_DELTA_E: f32 = 20.0;
+        let t = Tokens::DARK;
+        let mut others: Vec<Color32> =
+            vec![t.on_air, t.danger, t.warn, t.ok, t.accent, t.selection];
+        others.extend(PALETTE.iter().map(|(_, rgb)| Tokens::playlist(*rgb)));
+        for i in 0..4 {
+            let d = Tokens::deck(i);
+            for o in &others {
+                let e = delta_e(d, *o);
+                assert!(e >= MIN_DELTA_E, "deck {i} is {e:.1} from {o:?}");
+            }
+            for j in i + 1..4 {
+                let e = delta_e(d, Tokens::deck(j));
+                assert!(e >= MIN_DELTA_E, "decks {i} and {j} are {e:.1} apart");
+            }
+            assert!(
+                contrast(t.deck_ink(i), d) >= MIN_TEXT_CONTRAST,
+                "the letter on deck {i} reads"
+            );
         }
     }
 

@@ -25,6 +25,15 @@ pub struct DeckView {
     pub state: DeckState,
     /// The start time of the item, as the timeline plans it. `None` for an empty deck.
     pub start: Option<jiff::Zoned>,
+    /// The playlist of the item, and its colour.
+    pub playlist: String,
+    pub playlist_color: [u8; 3],
+    /// True when the item is a hard fixed event: it starts on its time sharp.
+    pub hard: bool,
+    /// True when the deck waits for Next (Assist mode) before it starts.
+    pub waiting: bool,
+    /// The id of the item, as `PlaylistTab::ids` has it. `None` when it is not known.
+    pub item: Option<u64>,
 }
 
 /// How well a fixed-time item fits its slot.
@@ -55,6 +64,8 @@ pub struct Row {
     pub timing: Option<Timing>,
     /// The state of a stream row. `None` for other rows.
     pub stream: Option<StreamState>,
+    /// The deck that holds the item of this row (0 is deck A), if a deck holds it.
+    pub deck: Option<usize>,
 }
 
 /// How strictly a fixed row keeps its time.
@@ -494,6 +505,15 @@ pub struct StationView {
     /// Settings of each part of the app, by part and key.
     pub settings: Settings,
     pub warnings: usize,
+    /// True for the UI preview. The preview plays no audio and saves nothing.
+    pub preview: bool,
+}
+
+impl StationView {
+    /// The text for the preview or for a real station, by the source.
+    pub fn say<'a>(&self, preview: &'a str, real: &'a str) -> &'a str {
+        if self.preview { preview } else { real }
+    }
 }
 
 /// Settings by part of the app, then by key.
@@ -511,6 +531,25 @@ pub struct MeterView {
     pub pfl: bool,
     pub route: Route,
 }
+
+/// The meter levels of one instant, in the order of `StationView::meters`, in dBFS.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MeterFrame {
+    pub level_db: Vec<[f32; 2]>,
+    pub peak_db: Vec<[f32; 2]>,
+}
+
+impl MeterFrame {
+    /// True when any meter shows sound.
+    pub fn moving(&self) -> bool {
+        self.level_db
+            .iter()
+            .any(|l| l[0].max(l[1]) > METER_SILENT_DB)
+    }
+}
+
+/// A meter below this level is silent, for the choice of the repaint rate.
+pub const METER_SILENT_DB: f32 = -58.0;
 
 /// Where a mixer strip sends its sound.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -568,12 +607,35 @@ pub struct IcecastView {
     pub port: u16,
     pub mount: String,
     pub user: String,
+    /// A new password to store. A source never fills it in a snapshot, and empty keeps the old one.
     pub password: String,
+    /// True when the source keeps a password for the mount.
+    pub password_set: bool,
+    /// Why the keychain could not answer, when it could not.
+    pub keychain_error: Option<String>,
+    /// Encrypt the connection (TLS). Off sends the password in clear text.
+    pub tls: bool,
     pub format: StreamFormat,
     pub kbps: u32,
 }
 
 // The password never shows in a debug print.
+impl IcecastView {
+    /// True when the password goes over the network in clear text. TLS is then off.
+    /// A password is set, and the host is not this computer.
+    pub fn password_in_clear(&self) -> bool {
+        !self.tls && self.password_set && !is_loopback(&self.host)
+    }
+}
+
+/// True for a host name or address of this computer.
+pub fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 impl std::fmt::Debug for IcecastView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IcecastView")
@@ -582,6 +644,9 @@ impl std::fmt::Debug for IcecastView {
             .field("mount", &self.mount)
             .field("user", &self.user)
             .field("password", &"…")
+            .field("password_set", &self.password_set)
+            .field("keychain_error", &self.keychain_error)
+            .field("tls", &self.tls)
             .field("format", &self.format)
             .field("kbps", &self.kbps)
             .finish()
@@ -748,11 +813,14 @@ pub enum Edit {
     /// Make an empty playlist. The name is a wish; a taken name gets a number.
     NewPlaylist(String),
     DeletePlaylist(String),
-    /// Remove one item of a playlist, by its id.
-    RemovePlaylistItem {
+    /// Remove items of a playlist, by their ids, as one undo step.
+    RemovePlaylistItems {
         playlist: String,
-        id: u64,
+        ids: Vec<u64>,
     },
+    /// Remove library files, as one undo step. Every playlist item of each file goes.
+    /// The files stay on disk. Files of a folder leave only with their folder.
+    RemoveLibraryItems(Vec<u64>),
     MovePlaylistItem {
         playlist: String,
         index: usize,
@@ -826,6 +894,24 @@ pub enum Edit {
     SetMode(PlayMode),
     /// Stop after the item on air, or clear that stop.
     StopAfterCurrent(bool),
+    /// Play cart `cart`, an index into `StationView::carts`.
+    FireCart {
+        cart: usize,
+    },
+    /// Stop every cart that plays.
+    StopCarts,
+    /// Remove every item of a playlist but the items on decks. `expect_count` is the count
+    /// that the person saw; with `remove_locked` false, locked items stay too.
+    ClearPlaylist {
+        playlist: String,
+        expect_count: usize,
+        remove_locked: bool,
+    },
+    /// Remove the items of a playlist whose file another item of it has already. The first
+    /// item of each file stays.
+    RemoveDuplicates {
+        playlist: String,
+    },
     /// Undo the last playlist edit.
     Undo,
     /// Do again the last edit that Undo took back.
@@ -941,6 +1027,22 @@ pub trait ViewSource {
         Err(NOT_SUPPORTED.to_owned())
     }
 
+    /// The number of items of `playlist` whose file another item of it has already.
+    fn duplicates(&self, playlist: &str) -> usize {
+        let _ = playlist;
+        0
+    }
+
+    /// Messages for the person: results and errors of work that finished after its edit.
+    fn take_notices(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The meter levels now. It never blocks: the UI reads it on every frame.
+    fn meters(&self) -> Option<MeterFrame> {
+        None
+    }
+
     /// The exact stream title that Icecast gets for `row`, at its place in the timeline.
     fn stream_title(&self, row: &Row) -> String;
 }
@@ -950,7 +1052,24 @@ pub const NOT_SUPPORTED: &str = "preview — this source cannot do that";
 
 #[cfg(test)]
 mod tests {
-    use super::check_stream_url;
+    use super::{IcecastView, check_stream_url};
+
+    /// The warning shows only when the password goes to another computer in clear text.
+    #[test]
+    fn the_clear_password_warning_needs_no_tls_a_password_and_a_remote_host() {
+        let ice = |host: &str, tls, password_set| IcecastView {
+            host: host.into(),
+            tls,
+            password_set,
+            ..IcecastView::default()
+        };
+        assert!(ice("stream.example.org", false, true).password_in_clear());
+        assert!(!ice("stream.example.org", true, true).password_in_clear());
+        assert!(!ice("stream.example.org", false, false).password_in_clear());
+        for local in ["localhost", "127.0.0.1", "::1"] {
+            assert!(!ice(local, false, true).password_in_clear(), "{local}");
+        }
+    }
 
     #[test]
     fn stream_addresses_need_a_scheme_and_a_host_and_no_credentials() {

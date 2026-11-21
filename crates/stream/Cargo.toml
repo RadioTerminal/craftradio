@@ -22,3 +22,9 @@ ureq.workspace = true
 symphonia.workspace = true
 jiff.workspace = true
 thiserror.workspace = true
+
+rustls.workspace = true
+rustls-native-certs.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true

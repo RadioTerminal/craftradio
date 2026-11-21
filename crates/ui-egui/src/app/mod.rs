@@ -38,6 +38,8 @@ pub(crate) enum Pane {
     Scheduled,
     Library,
     History,
+    /// The item list of a playlist tab.
+    Playlist,
 }
 
 /// The id `by` rows away from `current` in `order`, for the arrow keys.
@@ -78,6 +80,9 @@ pub(crate) struct Linked {
     pub last_file_target: Option<FileTarget>,
     /// The shortcuts of this frame, read once before the panes draw.
     pub keys: shortcuts::Pressed,
+    /// The selected items of the playlist tab on show, and the name of that playlist.
+    pub playlist_sel: crate::select::Selection,
+    pub playlist_sel_of: String,
     /// The main pane keeps the row on air near the top. A scroll by hand turns it off.
     pub follow: bool,
     /// The row on air that the main pane last scrolled to.
@@ -92,29 +97,13 @@ impl Linked {
     /// Select after a click. Command adds or removes one row; shift selects a range of `order`.
     pub fn click(&mut self, pane: Pane, id: u64, m: egui::Modifiers, order: &[u64]) {
         self.focus = pane;
-        if m.command {
-            if let Some(i) = self.selected.iter().position(|s| *s == id) {
-                self.selected.remove(i);
-            } else {
-                self.selected.push(id);
-            }
-            self.anchor = Some(id);
+        if !crate::select::click(&mut self.selected, &mut self.anchor, id, m, order) {
             return;
         }
-        if m.shift {
-            let a = self.anchor.and_then(|a| order.iter().position(|o| *o == a));
-            let b = order.iter().position(|o| *o == id);
-            if let (Some(a), Some(b)) = (a, b) {
-                self.selected = order[a.min(b)..=a.max(b)].to_vec();
-                return;
-            }
-        }
-        self.selected = vec![id];
-        self.anchor = Some(id);
         match pane {
             Pane::Main => self.scroll_scheduled = Some(id),
             Pane::Scheduled => self.scroll_main = Some(id),
-            Pane::Library | Pane::History => {}
+            Pane::Library | Pane::History | Pane::Playlist => {}
         }
     }
 
@@ -167,6 +156,8 @@ pub struct RadioApp {
     /// The toast offers Undo: it reports a remove.
     toast_undo: bool,
     confirm: Option<Confirm>,
+    /// The Clear playlist dialog: the playlist, its item count, and "also remove locked".
+    clear: Option<(String, usize, bool, bool)>,
     rename: Option<(String, String)>,
     meta: Option<MetaEditor>,
     add_dialog: Option<AddDialog>,
@@ -175,6 +166,13 @@ pub struct RadioApp {
     /// The frame time readout, when the app runs with `--perf`.
     perf: Option<Perf>,
     decks: decks::State,
+    /// The levels that the meters show, after the ballistics, and when they last moved.
+    meter_shown: Vec<[f32; 2]>,
+    meter_at: Option<std::time::Instant>,
+    /// True while sound moves any meter, so the Mixer draws at about 30 fps.
+    meters_moving: bool,
+    /// True while sound moves the Out meter, the one meter of the main window.
+    out_moving: bool,
 }
 
 impl RadioApp {
@@ -210,13 +208,62 @@ impl RadioApp {
             toast: None,
             toast_undo: false,
             confirm: None,
+            clear: None,
             rename: None,
             meta: None,
             add_dialog: None,
             prepared,
             perf: None,
             decks: decks::State::default(),
+            meter_shown: Vec::new(),
+            meter_at: None,
+            meters_moving: false,
+            out_moving: false,
         }
+    }
+
+    /// Reads the meters of this instant from the source, and gives them ballistics: a bar
+    /// rises at once and falls back over about 300 ms. The peaks hold as the source holds them.
+    fn read_meters(&mut self) {
+        let Some(frame) = self.source.meters() else {
+            self.meters_moving = false;
+            self.out_moving = false;
+            return;
+        };
+        let now = std::time::Instant::now();
+        let dt = self
+            .meter_at
+            .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        self.meter_at = Some(now);
+        let fall = 1.0 - (-dt / size::METER_RELEASE_S).exp();
+        self.meter_shown
+            .resize(frame.level_db.len(), [size::METER_MIN_DB; 2]);
+        for (i, target) in frame.level_db.iter().enumerate() {
+            let shown = &mut self.meter_shown[i];
+            for ch in 0..2 {
+                shown[ch] = if target[ch] >= shown[ch] {
+                    target[ch]
+                } else {
+                    shown[ch] + (target[ch] - shown[ch]) * fall
+                };
+            }
+            if let Some(m) = self.view.meters.get_mut(i) {
+                m.level_db = if m.mute {
+                    [size::METER_MIN_DB; 2]
+                } else {
+                    *shown
+                };
+                if let Some(p) = frame.peak_db.get(i) {
+                    m.peak_db = *p;
+                }
+            }
+        }
+        let loud = |l: &[f32; 2]| l[0].max(l[1]) > crate::view::METER_SILENT_DB;
+        self.meters_moving = frame.moving() || self.meter_shown.iter().any(loud);
+        let out = self.view.meters.iter().position(|m| m.label == "Out");
+        self.out_moving = out.is_some_and(|i| {
+            frame.level_db.get(i).is_some_and(loud) || self.meter_shown.get(i).is_some_and(loud)
+        });
     }
 
     /// Show the time of each frame in the status line.
@@ -275,7 +322,11 @@ impl RadioApp {
                 r
             }),
         };
-        self.meta = base.map(|b| MetaEditor::new(list, b));
+        self.meta = base.map(|b| {
+            let mut ed = MetaEditor::new(list, b);
+            ed.base_preview = self.view.preview;
+            ed
+        });
     }
 
     pub(super) fn tool_windows(
@@ -298,25 +349,67 @@ impl RadioApp {
         let view = &self.view;
         let open = &mut self.open;
         let link = &mut self.link;
-        windows::show(ctx, ToolWindow::Cartwall, open, t, |ui| {
-            cartwall::show(ui, view, &mut self.carts, link.has_clip, actions, t);
-        });
-        windows::show(ctx, ToolWindow::Mixer, open, t, |ui| {
-            mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
-        });
-        windows::show(ctx, ToolWindow::Clock, open, t, |ui| {
-            clock_window::show(ui, view, &mut self.clock_state, actions, t);
-        });
-        windows::show(ctx, ToolWindow::History, open, t, |ui| {
-            history::show(ui, view, &mut self.history, link, actions, t);
-        });
+        let mut sized = Vec::new();
+        let saved = |w: ToolWindow| saved_size(view, w);
+        let mut note = |w: ToolWindow, c: Option<windows::SizeChange>| {
+            if let Some(c) = c {
+                sized.push((w, c));
+            }
+        };
+        let w = ToolWindow::Cartwall;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                cartwall::show(ui, view, &mut self.carts, link.has_clip, actions, t);
+            }),
+        );
+        let w = ToolWindow::Mixer;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
+            }),
+        );
+        let w = ToolWindow::Clock;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                clock_window::show(ui, view, &mut self.clock_state, actions, t);
+            }),
+        );
+        let w = ToolWindow::History;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                let root = own_keys(ui, link);
+                history::show(ui, view, &mut self.history, link, actions, t);
+                link.keys = root;
+            }),
+        );
         if self.library.docked {
             // The docked library takes the place of its window.
             open.set(ToolWindow::Library, false);
         } else {
-            windows::show(ctx, ToolWindow::Library, open, t, |ui| {
-                library::show(ui, view, &mut self.library, link, actions, t);
-            });
+            let w = ToolWindow::Library;
+            note(
+                w,
+                windows::show(ctx, w, open, saved(w), t, |ui| {
+                    let root = own_keys(ui, link);
+                    library::show(ui, view, &mut self.library, link, actions, t);
+                    link.keys = root;
+                }),
+            );
+        }
+        for (w, c) in sized {
+            let value = match c {
+                windows::SizeChange::Manual([x, y]) => serde_json::json!([x, y]),
+                windows::SizeChange::Fit => serde_json::Value::Null,
+            };
+            actions.push(Action::EditQuiet(Edit::SetPartSetting {
+                part: w.part().to_owned(),
+                key: windows::SIZE_KEY.to_owned(),
+                value,
+            }));
         }
     }
 }
@@ -330,7 +423,27 @@ impl eframe::App for RadioApp {
             self.styled = true;
         }
         self.refresh(false);
-        ctx.request_repaint_after(Duration::from_secs(1));
+        self.read_meters();
+        // Work that finished after its edit reports here, as a toast.
+        let notices = self.source.take_notices();
+        if !notices.is_empty() {
+            self.refresh(true);
+            if let Some(last) = notices.last() {
+                self.toast(&ctx, last.clone());
+            }
+        }
+        // While sound moves a meter on show, draw at about 30 fps. Else once a second is
+        // enough. The main window shows only the Out meter, the Mixer window all of them.
+        // Only the main window asks for frames: each of its frames draws the Mixer window too.
+        // A request of the Mixer window itself adds a second clock, and doubles the frames.
+        let meters = self.out_moving || (self.meters_moving && self.open.get(ToolWindow::Mixer));
+        if meters {
+            // egui starts a delayed frame one frame early. The added frame time undoes that.
+            let dt = ctx.input(|i| Duration::try_from_secs_f32(i.predicted_dt).unwrap_or_default());
+            ctx.request_repaint_after(size::METER_FRAME + dt);
+        } else {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         let t = Tokens::get(&ctx);
         let mut actions = Vec::new();
         self.link.has_clip = !self.clip.items.is_empty();
@@ -411,9 +524,13 @@ impl eframe::App for RadioApp {
 
         if let Some(tab) = rules_editor::show(&ctx, &mut self.editor, &mut self.link, &t) {
             let text = match self.source.apply_rules(tab) {
-                Ok(()) => {
-                    "preview — rules stored; they are not applied to the scheduler yet".to_owned()
-                }
+                Ok(()) => self
+                    .view
+                    .say(
+                        "preview — rules stored; they are not applied to the scheduler yet",
+                        "Rules saved; the next plan uses them",
+                    )
+                    .to_owned(),
                 Err(e) => e,
             };
             self.toast(&ctx, text);
@@ -448,6 +565,25 @@ impl eframe::App for RadioApp {
             let ms = started.elapsed().as_secs_f64() * 1000.0;
             perf.last_ms = ms;
             perf.mean_ms += (ms - perf.mean_ms) * PERF_WEIGHT;
+            perf.frames += 1;
+            // The perf readout also goes to stderr every 5 s, for a measurement by a script.
+            let due = perf
+                .printed
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
+            if due {
+                eprintln!(
+                    "perf: frame {:.2} ms · mean {:.2} ms · {} frames · meters {}",
+                    perf.last_ms,
+                    perf.mean_ms,
+                    perf.frames,
+                    if self.meters_moving {
+                        "moving"
+                    } else {
+                        "still"
+                    }
+                );
+                perf.printed = Some(std::time::Instant::now());
+            }
         }
     }
 
@@ -498,7 +634,11 @@ fn status_line(
                 .color(t.warn);
             if ui.button(warn).on_hover_text("Show the warnings").clicked() {
                 actions.push(Action::Toast(
-                    "preview — the warning list comes with the engine".to_owned(),
+                    view.say(
+                        "preview — the warning list comes with the engine",
+                        "The warning list is not in this build yet; the log has the alarms",
+                    )
+                    .to_owned(),
                 ));
             }
         } else {
@@ -508,30 +648,45 @@ fn status_line(
                     .color(t.text_muted),
             );
         }
-        if let Some((text, undo)) = toast {
-            ui.label(muted(text));
-            let label = format!("Undo ({})", shortcuts::label(ui.ctx(), &shortcuts::UNDO));
-            if undo && ui.small_button(label).clicked() {
-                actions.push(Action::Edit(Edit::Undo));
-            }
-        }
-        if let Some(p) = perf {
-            let text = format!("frame {:.1} ms · mean {:.1} ms", p.last_ms, p.mean_ms);
-            ui.label(
-                RichText::new(text)
-                    .font(theme::mono(theme::CAPTION))
-                    .color(t.text_muted),
-            );
-        }
+        // The right side comes first. The toast truncates in the room that is left.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let zone = view.now.time_zone().iana_name().unwrap_or("local time");
-            ui.label(muted(&format!("UI preview · mock data · {zone}")));
+            let source = view.say("UI preview · mock data", "Station");
+            ui.label(muted(&format!("{source} · {zone}")));
+            if let Some(p) = perf {
+                let text = format!("frame {:.1} ms · mean {:.1} ms", p.last_ms, p.mean_ms);
+                ui.label(
+                    RichText::new(text)
+                        .font(theme::mono(theme::CAPTION))
+                        .color(t.text_muted),
+                );
+            }
+            if let Some((text, undo)) = toast {
+                let label = format!("Undo ({})", shortcuts::label(ui.ctx(), &shortcuts::UNDO));
+                if undo && ui.small_button(label).clicked() {
+                    actions.push(Action::Edit(Edit::Undo));
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    crate::widgets::truncated_label(ui, muted(text));
+                });
+            }
         });
     });
 }
 
 /// Is `row` on air at `now`?
 /// The end instant of a row.
+/// A native tool window gets its own key presses: the main window does not see them.
+/// While the window draws, its keys stand in for the keys of the main window. It returns
+/// the keys of the main window, to put back after the window.
+fn own_keys(ui: &egui::Ui, link: &mut Linked) -> shortcuts::Pressed {
+    let root = link.keys;
+    if ui.ctx().viewport_id() != egui::ViewportId::ROOT {
+        link.keys = shortcuts::read(ui.ctx());
+    }
+    root
+}
+
 pub(crate) fn row_end(row: &Row) -> Timestamp {
     let start = row.start.timestamp();
     SignedDuration::try_from(row.len).map_or(start, |d| start + d)
@@ -544,6 +699,10 @@ pub(crate) struct Perf {
     pub last_ms: f64,
     /// A running mean, in milliseconds.
     pub mean_ms: f64,
+    /// Frames since the start.
+    pub frames: u64,
+    /// When the readout last went to stderr.
+    pub printed: Option<std::time::Instant>,
 }
 
 /// How much of the running mean a new frame takes.
@@ -555,12 +714,29 @@ pub(crate) fn is_on_air(row: &Row, now: Timestamp) -> bool {
     start <= now && now < end
 }
 
+/// The size that a person gave tool window `w` by hand, from the settings of its part.
+fn saved_size(view: &StationView, w: ToolWindow) -> Option<[f32; 2]> {
+    let v = view
+        .settings
+        .get(w.part())?
+        .get(windows::SIZE_KEY)?
+        .as_array()?;
+    match v.as_slice() {
+        [x, y] => Some([x.as_f64()? as f32, y.as_f64()? as f32]),
+        _ => None,
+    }
+}
+
 /// A length as m:ss. Zero means unknown and shows as "—".
 pub(crate) fn mmss(d: Duration) -> String {
     if d.is_zero() {
         return "—".to_owned();
     }
     let s = d.as_secs();
+    if s >= 3600 {
+        // An hour or more reads h:mm:ss, never 720:00.
+        return format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60);
+    }
     format!("{}:{:02}", s / 60, s % 60)
 }
 

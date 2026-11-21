@@ -5,9 +5,10 @@ use egui::{Align, DragValue, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Action, Linked, Pane, hms, mmss, step};
+use crate::app::{Action, Linked, Pane, hms, mmss};
 use crate::context_menu::{COPY, menu_item};
 use crate::parts;
+use crate::select::Selection;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::MetaTarget;
@@ -38,8 +39,11 @@ pub(crate) struct State {
     filter: String,
     playlist: Option<String>,
     settings: bool,
-    selected: Vec<u64>,
+    selected: Selection,
 }
+
+/// Why Delete keeps the rows of the log.
+const KEEPS_ROWS: &str = "The as-played log keeps every row: it is the record of what aired.";
 
 pub(crate) fn show(
     ui: &mut egui::Ui,
@@ -57,7 +61,7 @@ pub(crate) fn show(
     settings::header(ui, "History", &mut open, |_| {});
     state.settings = open;
     if state.settings {
-        settings::section(ui, "History", t, |ui| {
+        settings::section(ui, "History", view.preview, t, |ui| {
             ui.horizontal_wrapped(|ui| {
                 settings::label(ui, "Columns", t);
                 for (i, (_, name, _)) in COLS.iter().enumerate() {
@@ -130,74 +134,120 @@ pub(crate) fn show(
         .collect();
     let order: Vec<u64> = rows.iter().map(|r| r.id).collect();
     let mut scroll = None;
-    if link.focus == Pane::History
-        && link.keys.step != 0
-        && let Some(id) = step(&order, state.selected.last().copied(), link.keys.step)
-    {
-        state.selected = vec![id];
-        scroll = order.iter().position(|o| *o == id);
+    if link.focus == Pane::History {
+        if link.keys.step != 0 {
+            scroll = state.selected.step(&order, link.keys.step);
+        }
+        if link.keys.select_all {
+            state.selected.all(&order);
+        }
+        if link.keys.delete && !state.selected.ids.is_empty() {
+            actions.push(Action::Toast(KEEPS_ROWS.to_owned()));
+        }
     }
-    let mut table = TableBuilder::new(ui)
-        .id_salt("history_table")
-        .striped(true)
-        .sense(Sense::click())
+    egui::ScrollArea::horizontal()
+        .id_salt("history_columns")
         .auto_shrink(false)
-        .cell_layout(Layout::left_to_right(Align::Center));
-    if let Some(i) = scroll {
-        table = table.scroll_to_row(i, Some(Align::Center));
-    }
-    for c in &cols {
-        table = table.column(match c {
-            Col::Aired => Column::exact(size::COL_TIME),
-            Col::Playlist => Column::exact(size::COL_PLAYLIST + space::XL),
-            Col::Title => Column::remainder().clip(true),
-            Col::Length => Column::exact(size::COL_LEN),
-            Col::Origin => Column::exact(size::COL_ORIGIN),
-        });
-    }
-    let head = |s: &str| {
-        RichText::new(s)
-            .font(theme::text(theme::CAPTION))
-            .color(t.text_muted)
-    };
-    table
-        .header(size::DIVIDER_ROW, |mut h| {
+        .show(ui, |ui| {
+            let table_id = ui.id().with(egui::IdSalt::new(("history_table", shown)));
+            let mut widths = Vec::new();
+            let mut table = TableBuilder::new(ui)
+                .id_salt(("history_table", shown))
+                .striped(true)
+                .sense(Sense::click())
+                .auto_shrink(false)
+                .cell_layout(Layout::left_to_right(Align::Center));
+            if let Some(i) = scroll {
+                table = table.scroll_to_row(i, Some(Align::Center));
+            }
             for c in &cols {
-                let name = COLS
-                    .iter()
-                    .find(|(k, _, _)| k == c)
-                    .map_or("", |(_, n, _)| n);
-                h.col(|ui| {
-                    ui.label(head(name));
+                table = table.column(match c {
+                    Col::Aired => Column::exact(size::COL_TIME),
+                    Col::Playlist => Column::initial(parts::f32(
+                        view,
+                        parts::HISTORY,
+                        "width_playlist",
+                        size::COL_PLAYLIST + space::XL,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
+                    Col::Title => Column::initial(parts::f32(
+                        view,
+                        parts::HISTORY,
+                        "width_title",
+                        size::COL_TITLE,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
+                    Col::Length => Column::exact(size::COL_LEN),
+                    Col::Origin => Column::initial(parts::f32(
+                        view,
+                        parts::HISTORY,
+                        "width_origin",
+                        size::COL_ORIGIN,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
                 });
             }
-        })
-        .body(|body| {
-            body.rows(size::ROW, rows.len(), |mut row| {
-                let Some(r) = rows.get(row.index()) else {
-                    return;
-                };
-                row.set_selected(state.selected.contains(&r.id));
-                for c in &cols {
-                    row.col(|ui| cell(ui, *c, r, t));
-                }
-                let resp = row.response();
-                if resp.clicked() || resp.secondary_clicked() {
-                    link.focus = Pane::History;
-                }
-                if resp.clicked() {
-                    if resp.ctx.input(|i| i.modifiers.command) {
-                        if let Some(k) = state.selected.iter().position(|s| *s == r.id) {
-                            state.selected.remove(k);
-                        } else {
-                            state.selected.push(r.id);
-                        }
-                    } else {
-                        state.selected = vec![r.id];
+            let head = |s: &str| {
+                RichText::new(s)
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.text_muted)
+            };
+            table
+                .header(size::DIVIDER_ROW, |mut h| {
+                    for c in &cols {
+                        let name = COLS
+                            .iter()
+                            .find(|(k, _, _)| k == c)
+                            .map_or("", |(_, n, _)| n);
+                        h.col(|ui| {
+                            ui.label(head(name));
+                        });
                     }
-                }
-                resp.context_menu(|ui| row_menu(ui, view, r, &state.selected, actions));
-            });
+                })
+                .body(|body| {
+                    widths = body.widths().to_vec();
+                    body.rows(size::ROW, rows.len(), |mut row| {
+                        let Some(r) = rows.get(row.index()) else {
+                            return;
+                        };
+                        row.set_selected(state.selected.contains(r.id));
+                        for c in &cols {
+                            row.col(|ui| cell(ui, *c, r, t));
+                        }
+                        let resp = row.response();
+                        if resp.clicked() || resp.secondary_clicked() {
+                            link.focus = Pane::History;
+                        }
+                        if resp.clicked() {
+                            let m = resp.ctx.input(|i| i.modifiers);
+                            state.selected.click(r.id, m, &order);
+                        }
+                        if resp.secondary_clicked() && !state.selected.contains(r.id) {
+                            state.selected.click(r.id, egui::Modifiers::NONE, &order);
+                        }
+                        resp.context_menu(|ui| row_menu(ui, view, r, &state.selected.ids, actions));
+                    });
+                });
+            let columns: Vec<_> = cols
+                .iter()
+                .map(|col| match col {
+                    Col::Playlist => "width_playlist",
+                    Col::Title => "width_title",
+                    Col::Origin => "width_origin",
+                    Col::Aired | Col::Length => "",
+                })
+                .zip(widths)
+                .collect();
+            parts::save_column_widths(ui, table_id, parts::HISTORY, &columns, actions);
         });
 }
 

@@ -38,6 +38,8 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::SetPartSetting { .. }
             | Edit::SetMode(_)
             | Edit::StopAfterCurrent(_)
+            | Edit::FireCart { .. }
+            | Edit::StopCarts
             | Edit::Undo
             | Edit::Redo
     )
@@ -148,6 +150,55 @@ impl MockSource {
                 self.play_mode = mode;
                 Ok(1)
             }
+            // The preview plays no audio. The cartwall flashes the cart instead.
+            Edit::FireCart { cart } => match self.carts.get(cart) {
+                Some(c) if !c.is_empty() => Ok(1),
+                _ => Err(gone("that cart")),
+            },
+            Edit::StopCarts => Ok(1),
+            Edit::ClearPlaylist {
+                playlist,
+                expect_count,
+                ..
+            } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                if tab.items.len() != expect_count {
+                    return Err("playlist changed, try again".to_owned());
+                }
+                let n = tab.items.len();
+                tab.items.clear();
+                tab.weights.clear();
+                tab.ids.clear();
+                if let Some(src) = &mut tab.source {
+                    src.watch = false;
+                }
+                Ok(n)
+            }
+            Edit::RemoveDuplicates { playlist } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                let mut seen = std::collections::HashSet::new();
+                let mut gone_n = 0;
+                let mut k = 0;
+                while k < tab.items.len() {
+                    if seen.insert(tab.items[k].0.clone()) {
+                        k += 1;
+                    } else {
+                        tab.items.remove(k);
+                        if k < tab.weights.len() {
+                            tab.weights.remove(k);
+                        }
+                        if k < tab.ids.len() {
+                            tab.ids.remove(k);
+                        }
+                        gone_n += 1;
+                    }
+                }
+                Ok(gone_n)
+            }
             Edit::StopAfterCurrent(on) => {
                 self.stop_after_current = on;
                 Ok(1)
@@ -253,21 +304,35 @@ impl MockSource {
                 }
                 Ok(1)
             }
-            Edit::RemovePlaylistItem { playlist, id } => {
+            Edit::RemovePlaylistItems { playlist, ids } => {
                 let Some(tab) = self.tab_mut(&playlist) else {
                     return Err(gone(&format!("the playlist {playlist}")));
                 };
-                let Some(index) = tab.ids.iter().position(|i| *i == id) else {
+                if !ids.iter().all(|id| tab.ids.contains(id)) {
                     return Err(gone("that item"));
-                };
-                tab.ids.remove(index);
-                if index < tab.items.len() {
-                    tab.items.remove(index);
                 }
-                if index < tab.weights.len() {
-                    tab.weights.remove(index);
+                // From the end, so the indexes of the rows still to go stay right.
+                for index in (0..tab.ids.len()).rev() {
+                    if !ids.contains(&tab.ids[index]) {
+                        continue;
+                    }
+                    tab.ids.remove(index);
+                    if index < tab.items.len() {
+                        tab.items.remove(index);
+                    }
+                    if index < tab.weights.len() {
+                        tab.weights.remove(index);
+                    }
                 }
-                Ok(1)
+                Ok(ids.len())
+            }
+            Edit::RemoveLibraryItems(ids) => {
+                let before = self.library.len();
+                self.library.retain(|i| !ids.contains(&i.id));
+                match before - self.library.len() {
+                    0 => Err(gone("those items")),
+                    n => Ok(n),
+                }
             }
             Edit::MovePlaylistItem {
                 playlist,

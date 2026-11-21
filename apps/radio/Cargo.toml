@@ -7,9 +7,21 @@ license.workspace = true
 
 [dependencies]
 radio-ui-egui.workspace = true
+radio-ui-engine.workspace = true
+radio-engine.workspace = true
+radio-playout.workspace = true
+radio-model.workspace = true
+radio-library.workspace = true
 eframe.workspace = true
 jiff.workspace = true
 clap.workspace = true
+dirs.workspace = true
+toml.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hound.workspace = true
 
 [lints]
 workspace = true

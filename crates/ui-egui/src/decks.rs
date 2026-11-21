@@ -10,7 +10,7 @@ use crate::settings;
 use crate::shortcuts;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckCommand, DeckState, DeckView, Edit, PlayMode, StationView, Status};
-use crate::widgets::{guard_button, icon_button};
+use crate::widgets::{self, guard_button, icon_button};
 
 /// The part setting that switches the second press on the deck on air.
 const CONFIRM_KEY: &str = "confirm_on_air";
@@ -113,6 +113,10 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    // The countdowns of the decks count from the snapshot instant.
+    let now_ts = view.now.timestamp();
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(NOW_KEY), now_ts));
     let labels = ['A', 'B', 'C', 'D'];
     for (i, label) in labels.iter().enumerate() {
         state.fade_s[i] = parts::f32(view, parts::DECKS, &fade_key(*label), DEFAULT_FADE_S);
@@ -128,20 +132,57 @@ pub(crate) fn show(
         // The ring counts down, so the deck strip draws again soon.
         ui.ctx().request_repaint_after_secs(ARM_REPAINT_S);
     }
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = space::M;
-        let gaps = space::M * view.decks.len() as f32;
-        let free = ui.available_width() - size::CLOCK_W - gaps;
-        let card_w = (free / view.decks.len() as f32).max(size::DECK_MIN_W);
-        state.next = next_ranks(&view.decks);
-        for (i, deck) in view.decks.iter().enumerate() {
-            let card = deck_card(ui, i, deck, card_w, state, actions, t);
-            card.context_menu(|ui| deck_menu(ui, i, deck, state, now, actions));
-        }
-        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-            clock(ui, view, actions, t)
+    state.next = next_ranks(&view.decks);
+    let wide = ui.available_width() >= size::STRIP_WIDE;
+    let clock_width = if wide {
+        size::CLOCK_W
+    } else {
+        size::CLOCK_NARROW_W
+    };
+    let deck_min = if wide {
+        size::DECK_MIN_W
+    } else {
+        size::DECK_TINY_W
+    };
+    egui::ScrollArea::horizontal()
+        .id_salt("deck_strip_scroll")
+        .show(ui, |ui| {
+            ui.set_min_width((deck_min + space::M) * view.decks.len() as f32 + clock_width);
+            ui.spacing_mut().item_spacing.x = space::M;
+            egui_extras::StripBuilder::new(ui)
+                .size(egui_extras::Size::exact(size::DECK_STRIP_H))
+                .vertical(|mut strip| {
+                    strip.strip(|builder| {
+                        builder
+                            .sizes(
+                                egui_extras::Size::remainder().at_least(deck_min),
+                                view.decks.len(),
+                            )
+                            .size(egui_extras::Size::exact(clock_width))
+                            .horizontal(|mut strip| {
+                                for (i, deck) in view.decks.iter().enumerate() {
+                                    strip.cell(|ui| {
+                                        let card = deck_card(
+                                            ui,
+                                            i,
+                                            deck,
+                                            ui.available_width(),
+                                            state,
+                                            actions,
+                                            t,
+                                        );
+                                        card.context_menu(|ui| {
+                                            deck_menu(ui, i, deck, view, state, now, actions)
+                                        });
+                                    });
+                                }
+                                strip.cell(|ui| {
+                                    clock(ui, view, actions, t);
+                                });
+                            });
+                    });
+                });
         });
-    });
     if state.confirm != old_confirm {
         actions.push(parts::set(parts::DECKS, CONFIRM_KEY, state.confirm));
     }
@@ -183,6 +224,7 @@ fn deck_menu(
     ui: &mut egui::Ui,
     i: usize,
     deck: &DeckView,
+    view: &StationView,
     state: &mut State,
     now: f64,
     actions: &mut Vec<Action>,
@@ -205,7 +247,7 @@ fn deck_menu(
     ui.separator();
     for label in ["Stop", "Eject", "Reload", "Cue to start"] {
         if menu_item(ui, label, None) {
-            actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
+            actions.push(Action::Toast(context_menu::not_here(view)));
         }
     }
 }
@@ -220,12 +262,12 @@ fn deck_card(
     t: &Tokens,
 ) -> egui::Response {
     let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
-    // The deck on air has a thick edge and the ON AIR word, so the colour is not the only sign.
-    let (edge, edge_w) = match deck.state {
-        DeckState::Playing => (t.on_air, size::ON_AIR_EDGE),
-        DeckState::Fading => (t.warn, size::ON_AIR_EDGE),
-        _ if state.next.get(i).copied().flatten() == Some(1) => (t.accent, size::HAIRLINE),
-        _ => (t.card_border, size::HAIRLINE),
+    // The edge has the colour of the deck. The deck on air has a thick edge, its fill and
+    // the ON AIR word, so the colour is not the only sign.
+    let edge = Tokens::deck(i);
+    let edge_w = match deck.state {
+        DeckState::Playing | DeckState::Fading => size::ON_AIR_EDGE,
+        _ => size::HAIRLINE,
     };
     let frame = theme::card_frame(t)
         .fill(if live { t.on_air_bg } else { t.field })
@@ -260,7 +302,7 @@ fn deck_body(
         } else {
             format!("{keys} focuses this deck for the keys. Right-click for the deck menu.")
         };
-        let badge = badge(ui, deck.label, live, focused, t).on_hover_text(hint);
+        let badge = badge(ui, i, deck.label, focused, t).on_hover_text(hint);
         let (word, colour) = match deck.state {
             DeckState::Playing => ("ON AIR", t.on_air),
             DeckState::Fading => ("FADING", t.warn),
@@ -278,16 +320,20 @@ fn deck_body(
             }
             None => (word, colour),
         };
-        let word = RichText::new(word).font(theme::text(theme::LABEL)).strong();
-        ui.label(word.color(colour));
+        let word = RichText::new(word)
+            .font(theme::text(theme::LABEL))
+            .strong()
+            .color(colour);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = space::XXS;
             let name = deck.label;
             let mut open = state.settings[i];
             settings::settings_button(ui, &format!("Deck {name}"), &mut open);
             state.settings[i] = open;
-            // A gap keeps the settings button away from the transport buttons.
-            ui.add_space(space::M);
+            // A gap keeps the settings button away from the transport buttons. A narrow card
+            // keeps a smaller gap.
+            let narrow = ui.available_width() < size::DECK_MIN_W;
+            ui.add_space(if narrow { space::XS } else { space::M });
             ui.add_enabled_ui(deck.state != DeckState::Empty, |ui| {
                 let keys = shortcuts::label(ui.ctx(), &shortcuts::SKIP);
                 let hint = format!("Skip: fade out and start the next item ({keys})");
@@ -324,6 +370,13 @@ fn deck_body(
                     actions.push(command(i, DeckCommand::PlayPause));
                 }
             });
+            // The word takes the room that the buttons leave, and truncates there.
+            // With no room for a readable word, the card edge and the badge carry the state.
+            if ui.available_width() >= size::DECK_WORD_MIN_W {
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    widgets::truncated_label(ui, word);
+                });
+            }
         });
         badge
     });
@@ -370,6 +423,24 @@ fn deck_body(
     };
     let label = egui::Label::new(RichText::new(title).font(theme::text(theme::BODY)));
     let title = ui.add(label.truncate().sense(Sense::click()));
+    // The playlist of the item, as a chip: its colour and its name.
+    if deck.state == DeckState::Empty {
+        let empty = RichText::new("Empty: nothing planned").font(theme::text(theme::CAPTION));
+        widgets::truncated_label(ui, empty.color(t.text_muted));
+    } else if !deck.playlist.is_empty() {
+        ui.horizontal(|ui| {
+            let (dot, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+            ui.painter().circle_filled(
+                dot.center(),
+                size::DOT_R,
+                Tokens::playlist(deck.playlist_color),
+            );
+            let ink = t.readable(deck.playlist_color, t.field);
+            let name = RichText::new(&deck.playlist).font(theme::text(theme::CAPTION));
+            widgets::truncated_label(ui, name.color(ink));
+        });
+    }
     progress(ui, deck, t);
     let left = deck.len.saturating_sub(deck.elapsed);
     let muted = |s: String| {
@@ -386,33 +457,22 @@ fn deck_body(
                     .strong();
                 ui.label(left).on_hover_text("Time left on this item");
                 let done = format!("{} / {}", mmss(deck.elapsed), mmss(deck.len));
-                ui.label(muted(done));
+                widgets::truncated_label(ui, muted(done));
             });
         }
-        DeckState::Ready => {
-            let at = deck.start.as_ref().map_or_else(|| "—".to_owned(), hms);
-            ui.label(muted(format!("starts {at} · {}", mmss(deck.len))));
-        }
-        DeckState::Empty => {
-            ui.label(muted("no item".to_owned()));
-        }
+        DeckState::Ready | DeckState::Empty => {}
+    }
+    // When the deck starts, or when it started and ends. The times come from the plan.
+    if let Some(line) = start_line(deck, now_ts(deck, ui)) {
+        widgets::truncated_label(ui, muted(line));
     }
     head.inner.union(title)
 }
 
-fn badge(
-    ui: &mut egui::Ui,
-    label: char,
-    playing: bool,
-    focused: bool,
-    t: &Tokens,
-) -> egui::Response {
+fn badge(ui: &mut egui::Ui, i: usize, label: char, focused: bool, t: &Tokens) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size::BADGE), Sense::click());
-    let (fill, ink) = if playing {
-        (t.on_air, t.canvas)
-    } else {
-        (t.hover, t.text)
-    };
+    // The badge has the identity colour of the deck, the same as its rows in the lists.
+    let (fill, ink) = (Tokens::deck(i), t.deck_ink(i));
     ui.painter().rect_filled(rect, t.radius, fill);
     ui.painter().text(
         rect.center(),
@@ -459,10 +519,10 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
             ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
                 ui.spacing_mut().button_padding = egui::vec2(space::XS, space::XXS);
                 out_vu(ui, view, actions, t);
-                live_chip(ui, view, actions, t);
-                mode_control(ui, view, actions, t);
+                live_chip(ui, view, w >= size::CLOCK_MID_W, actions, t);
+                mode_control(ui, view, w >= size::CLOCK_W, actions, t);
             });
-            // A narrow window drops the date first.
+            // A narrow window drops the date first, then the word of the LIVE chip.
             let room = w >= size::CLOCK_W;
             ui.allocate_ui_with_layout(row(theme::TITLE + space::S), rtl, |ui| {
                 ui.label(
@@ -479,6 +539,7 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
                     );
                 }
             });
+            let wide = w >= size::CLOCK_W;
             ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
                 stop_after(ui, view, actions, t);
                 if view.warnings > 0 {
@@ -489,14 +550,17 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
                     ui.label(chip)
                         .on_hover_text(format!("{} warnings; see the status line", view.warnings));
                 }
-                countdown(ui, view, t);
+            });
+            // The countdown has a row of its own, so the warnings never cut it.
+            ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
+                countdown(ui, view, wide, t);
             });
         });
     });
 }
 
 /// "Next: News in 4:12", to the next fixed item. Under a minute it warns, with ⚠ and the colour.
-fn countdown(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
+fn countdown(ui: &mut egui::Ui, view: &StationView, wide: bool, t: &Tokens) {
     let now = view.now.timestamp();
     let next = view
         .rows
@@ -509,7 +573,18 @@ fn countdown(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
     };
     let secs = r.start.timestamp().duration_since(now).as_secs().max(0) as u64;
     let left = mmss(std::time::Duration::from_secs(secs));
-    let (text, colour) = if secs < size::NOW_S {
+    // A narrow window puts the time first, so a cut keeps the time.
+    let (text, colour) = if !wide {
+        let colour = if secs < size::NOW_S {
+            t.on_air
+        } else if secs < size::SOON_S {
+            t.warn
+        } else {
+            t.text
+        };
+        let glyph = if secs < size::SOON_S { "⚠" } else { "⏱" };
+        (format!("{glyph} {left} {}", r.title), colour)
+    } else if secs < size::NOW_S {
         (format!("⚠ {} starts in {left}", r.title), t.on_air)
     } else if secs < size::SOON_S {
         (format!("⚠ Next: {} in {left}", r.title), t.warn)
@@ -520,7 +595,7 @@ fn countdown(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
         .font(theme::mono(theme::SECTION))
         .strong();
     let at = hms(&r.start);
-    ui.label(text.color(colour))
+    ui.add(egui::Label::new(text.color(colour)).truncate())
         .on_hover_text(format!("{} is fixed at {at}", r.title));
 }
 
@@ -536,7 +611,10 @@ fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
     let button = egui::Button::new(RichText::new(word).font(theme::text(theme::CAPTION)))
         .fill(fill)
         .stroke(Stroke::new(size::HAIRLINE, t.field_border));
-    let hint = "The station stops when the item on air ends · preview: here only";
+    let hint = view.say(
+        "The station stops when the item on air ends · preview: here only",
+        "The station stops when the item on air ends",
+    );
     if ui.add(button).on_hover_text(hint).clicked() {
         actions.push(Action::Edit(Edit::StopAfterCurrent(!stop)));
     }
@@ -544,7 +622,13 @@ fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
 
 /// What the listeners get: LIVE only while Icecast is connected and Out has sound.
 /// The preview never shows LIVE. A word and an icon carry the state, not the colour alone.
-fn live_chip(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+fn live_chip(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    wide: bool,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let out = view.meters.iter().find(|m| m.label == "Out");
     let sound =
         out.is_some_and(|m| !m.mute && m.level_db[0].max(m.level_db[1]) > size::METER_MIN_DB);
@@ -576,17 +660,34 @@ fn live_chip(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t
             "Icecast is not connected".to_owned(),
         ),
     };
+    let full_word = word;
     let ice = &view.icecast;
     let listeners = view
         .output
         .listeners
         .map_or("listeners unknown".to_owned(), |n| format!("{n} listeners"));
+    let clear = if ice.password_in_clear() {
+        format!("\n{}", crate::mixer::PASSWORD_IN_CLEAR)
+    } else {
+        String::new()
+    };
     let hint = format!(
-        "{why}\nMount {} · {listeners} · {} {} kbps\nClick for the Icecast settings",
+        "{why}\nMount {} · {listeners} · {} {} kbps{clear}\nClick for the Icecast settings",
         ice.mount,
         ice.format.label(),
         ice.kbps
     );
+    // A narrow window keeps only the glyph of the chip. The tooltip still has the words.
+    let word = if wide {
+        word.to_owned()
+    } else {
+        word.chars().take(1).collect()
+    };
+    let hint = if wide {
+        hint
+    } else {
+        format!("{word_all}\n{hint}", word_all = full_word)
+    };
     let text = RichText::new(word).font(theme::mono(theme::LABEL)).strong();
     let chip = egui::Button::new(text.color(ink))
         .fill(fill)
@@ -653,13 +754,25 @@ fn out_vu(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &
 }
 
 /// Auto, Assist and Manual as a segmented control.
-fn mode_control(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+fn mode_control(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    wide: bool,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XXS;
         // The parent lays out right to left, so the reversed list reads AUTO · ASSIST · MANUAL.
         for mode in PlayMode::ALL.iter().rev() {
             let on = view.play_mode == *mode;
-            let text = RichText::new(mode.label().to_uppercase()).font(theme::mono(theme::LABEL));
+            // A narrow window shows two letters; the tooltip names the mode.
+            let word = if wide {
+                mode.label().to_owned()
+            } else {
+                short_mode(*mode).to_owned()
+            };
+            let text = RichText::new(word).font(theme::mono(theme::LABEL));
             let text = if on {
                 text.strong().color(t.accent_ink)
             } else {
@@ -671,8 +784,12 @@ fn mode_control(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>
                 .fill(fill)
                 .stroke(Stroke::new(size::HAIRLINE, edge));
             let hint = format!(
-                "{} mode · preview: stored here, the scheduler is not connected",
-                mode.label()
+                "{} mode{}",
+                mode.label(),
+                view.say(
+                    " · preview: stored here, the scheduler is not connected",
+                    ""
+                )
             );
             if ui.add(button).on_hover_text(hint).clicked() && !on {
                 let edit = Action::Edit(Edit::SetMode(*mode));
@@ -692,4 +809,51 @@ fn mode_control(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>
             }
         }
     });
+}
+
+/// Two letters for a mode, for a narrow window.
+fn short_mode(mode: PlayMode) -> &'static str {
+    match mode {
+        PlayMode::Auto => "AU",
+        PlayMode::Assist => "AS",
+        PlayMode::Manual => "MN",
+    }
+}
+
+/// The instant of the snapshot, from the clock of the UI.
+fn now_ts(_deck: &DeckView, ui: &egui::Ui) -> Option<jiff::Timestamp> {
+    ui.ctx()
+        .data(|d| d.get_temp::<jiff::Timestamp>(egui::Id::new(NOW_KEY)))
+}
+
+/// The key of the snapshot instant in the egui data, for the countdowns of the decks.
+pub(crate) const NOW_KEY: &str = "decks_now";
+
+/// The line under a deck: when it starts, or when it started and ends.
+fn start_line(deck: &DeckView, now: Option<jiff::Timestamp>) -> Option<String> {
+    let start = deck.start.as_ref()?;
+    match deck.state {
+        DeckState::Empty => None,
+        DeckState::Paused => Some("Paused".to_owned()),
+        DeckState::Playing | DeckState::Fading => {
+            let end = jiff::SignedDuration::try_from(deck.len)
+                .ok()
+                .and_then(|d| start.timestamp().checked_add(d).ok())
+                .map(|e| hms(&e.to_zoned(start.time_zone().clone())))
+                .unwrap_or_default();
+            Some(format!("Started {} · ends {end}", hms(start)))
+        }
+        DeckState::Ready if deck.waiting => Some("Waits for Next".to_owned()),
+        DeckState::Ready => {
+            let left = now.map_or(String::new(), |n| {
+                let secs = start.timestamp().duration_since(n).as_secs().max(0) as u64;
+                format!(" · in {}", mmss(std::time::Duration::from_secs(secs)))
+            });
+            if deck.hard {
+                Some(format!("⏱ Starts {} sharp{left}", hms(start)))
+            } else {
+                Some(format!("Starts {}{left}", hms(start)))
+            }
+        }
+    }
 }

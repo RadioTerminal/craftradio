@@ -6,6 +6,9 @@ mod output;
 pub use input::*;
 pub use output::*;
 
+/// True when this build can encode MP3 (the `mp3` feature, LAME).
+pub const MP3: bool = cfg!(feature = "mp3");
+
 /// Errors from configuration, codecs, or transport.
 #[derive(Debug, thiserror::Error)]
 pub enum StreamError {

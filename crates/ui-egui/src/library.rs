@@ -8,9 +8,10 @@ use std::path::Path;
 use egui::{Align, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{Action, FileTarget, Linked, Pane, mmss, step};
+use crate::app::{Action, FileTarget, Linked, Pane, mmss};
 use crate::context_menu::{self, COPY, menu_item};
 use crate::parts;
+use crate::select::Selection;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DropTarget, Edit, FolderView, LibraryItem, MetaTarget, Place, StationView};
@@ -46,8 +47,8 @@ pub(crate) struct State {
     settings: bool,
     new_folder: String,
     new_category: String,
-    /// The row that the arrow keys move from.
-    selected: Option<u64>,
+    /// The selected rows. The arrow keys move from the last one.
+    selected: Selection,
     /// The row under the pointer in the last frame.
     hovered: Option<u64>,
 }
@@ -61,7 +62,7 @@ impl Default for State {
             settings: false,
             new_folder: String::new(),
             new_category: String::new(),
-            selected: None,
+            selected: Selection::default(),
             hovered: None,
         }
     }
@@ -163,7 +164,7 @@ pub(crate) fn show(
         state.add_folder(&dir.display().to_string(), actions);
     }
     if state.settings {
-        settings::section(ui, "Library", t, |ui| {
+        settings::section(ui, "Library", view.preview, t, |ui| {
             library_settings(ui, view, state, actions, t)
         });
     }
@@ -262,6 +263,8 @@ fn tree(
     egui::CollapsingHeader::new("Categories")
         .default_open(true)
         .show(ui, |ui| {
+            // Long names truncate in the tree; the tooltips have all of them.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
             if ui
                 .selectable_label(state.pick == Pick::All, "All files")
                 .clicked()
@@ -280,7 +283,12 @@ fn tree(
             for c in cats {
                 let n = view.library.iter().filter(|i| i.category == c).count();
                 let on = state.pick == Pick::Category(c.clone());
-                if ui.selectable_label(on, format!("{c} ({n})")).clicked() {
+                let text = format!("{c} ({n})");
+                if ui
+                    .selectable_label(on, &text)
+                    .on_hover_text(&text)
+                    .clicked()
+                {
                     state.pick = Pick::Category(c);
                 }
             }
@@ -292,7 +300,9 @@ fn tree(
                     t.danger
                 };
                 let text = format!("📁 {} ({})", folder_name(&folder.path), count_text(folder));
-                let r = ui.selectable_label(on, RichText::new(text).color(colour));
+                let r = ui
+                    .selectable_label(on, RichText::new(&text).color(colour))
+                    .on_hover_text(format!("{}\n{text}", folder.path));
                 if r.clicked() {
                     state.pick = Pick::Folder(folder.path.clone());
                 }
@@ -331,15 +341,21 @@ fn table(
     let items = visible(view, state);
     let order: Vec<u64> = items.iter().map(|i| i.id).collect();
     let mut scroll = None;
-    if link.focus == Pane::Library
-        && link.keys.step != 0
-        && let Some(id) = step(&order, state.selected, link.keys.step)
-    {
-        state.selected = Some(id);
-        scroll = order.iter().position(|o| *o == id);
+    if link.focus == Pane::Library {
+        if link.keys.step != 0 {
+            scroll = state.selected.step(&order, link.keys.step);
+        }
+        if link.keys.select_all {
+            state.selected.all(&order);
+        }
+        let sel = state.selected.in_order(&order);
+        if link.keys.delete && !sel.is_empty() {
+            actions.push(remove_action(state, sel));
+        }
     }
-    let selected = state.selected;
+    let selected = &state.selected;
     let mut clicked = None;
+    let mut menu_remove = None;
     // The ☰ drag grip shows on the row under the pointer only.
     let hovered = state.hovered;
     let mut hover_now = None;
@@ -348,88 +364,182 @@ fn table(
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted)
     };
-    let mut builder = TableBuilder::new(ui);
-    if let Some(i) = scroll {
-        builder = builder.scroll_to_row(i, Some(Align::Center));
-    }
-    builder
-        .id_salt("library_table")
-        .striped(true)
-        .sense(Sense::click_and_drag())
+    egui::ScrollArea::horizontal()
+        .id_salt("library_columns")
         .auto_shrink(false)
-        .cell_layout(Layout::left_to_right(Align::Center))
-        .column(Column::exact(size::COL_TITLE).clip(true))
-        .column(Column::exact(size::COL_ARTIST).clip(true))
-        .column(Column::exact(size::COL_LEN))
-        .column(Column::exact(size::COL_CATEGORY))
-        .column(Column::remainder().clip(true))
-        .header(size::DIVIDER_ROW, |mut h| {
-            for name in ["TITLE", "ARTIST", "LENGTH", "CATEGORY", "PATH"] {
-                h.col(|ui| {
-                    ui.label(head(name));
-                });
+        .show(ui, |ui| {
+            let table_id = ui.id().with(egui::IdSalt::new("library_table"));
+            let mut widths = Vec::new();
+            let mut builder = TableBuilder::new(ui);
+            if let Some(i) = scroll {
+                builder = builder.scroll_to_row(i, Some(Align::Center));
             }
-        })
-        .body(|body| {
-            body.rows(size::ROW, items.len(), |mut row| {
-                let Some(item) = items.get(row.index()) else {
-                    return;
-                };
-                row.set_selected(selected == Some(item.id));
-                let grip = if hovered == Some(item.id) { "☰ " } else { "" };
-                row.col(|ui| {
-                    let text = RichText::new(format!("{grip}{}", item.title));
-                    let label = egui::Label::new(text.font(theme::text(theme::SMALL)));
-                    ui.add(label.truncate());
-                });
-                row.col(|ui| {
-                    let artist = item.artist.as_deref().unwrap_or("—");
-                    let text = RichText::new(artist).font(theme::text(theme::SMALL));
-                    ui.add(egui::Label::new(text).truncate());
-                });
-                row.col(|ui| {
-                    let text = RichText::new(mmss(item.len)).font(theme::mono(theme::CODE));
-                    ui.label(text.color(t.text_muted));
-                });
-                row.col(|ui| {
-                    ui.label(RichText::new(&item.category).font(theme::text(theme::CAPTION)));
-                });
-                row.col(|ui| {
-                    let path = RichText::new(&item.path).font(theme::mono(theme::CAPTION));
-                    ui.add(egui::Label::new(path.color(t.text_muted)).truncate())
-                        .on_hover_text(&item.path);
-                });
-                let resp = row.response();
-                if resp.hovered() {
-                    hover_now = Some(item.id);
-                }
-                if resp.clicked() || resp.secondary_clicked() {
-                    clicked = Some(item.id);
-                }
-                // The whole row is the drag handle. A label follows the pointer while it moves.
-                resp.dnd_set_drag_payload(LibraryDrag(item.id));
-                if resp.dragged()
-                    && let Some(pos) = resp.ctx.pointer_interact_pos()
-                {
-                    egui::Area::new(egui::Id::new(("library_drag", item.id)))
-                        .order(egui::Order::Tooltip)
-                        .fixed_pos(pos + egui::vec2(space::M, space::M))
-                        .show(&resp.ctx, |ui| {
-                            theme::card_frame(t).inner_margin(pad::ROW).show(ui, |ui| {
-                                ui.label(format!("☰ {}", item.title));
-                            });
+            builder
+                .id_salt("library_table")
+                .striped(true)
+                .sense(Sense::click_and_drag())
+                .auto_shrink(false)
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_title",
+                        size::COL_TITLE,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
+                )
+                .column(
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_artist",
+                        size::COL_ARTIST,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
+                )
+                .column(Column::exact(size::COL_LEN))
+                .column(
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_category",
+                        size::COL_CATEGORY,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
+                )
+                .column(
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_path",
+                        size::COL_PATH,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
+                )
+                .header(size::DIVIDER_ROW, |mut h| {
+                    for name in ["TITLE", "ARTIST", "LENGTH", "CATEGORY", "PATH"] {
+                        h.col(|ui| {
+                            ui.label(head(name));
                         });
-                }
-                resp.context_menu(|ui| item_menu(ui, view, item, actions));
-            });
+                    }
+                })
+                .body(|body| {
+                    widths = body.widths().to_vec();
+                    body.rows(size::ROW, items.len(), |mut row| {
+                        let Some(item) = items.get(row.index()) else {
+                            return;
+                        };
+                        row.set_selected(selected.contains(item.id));
+                        let grip = if hovered == Some(item.id) { "☰ " } else { "" };
+                        row.col(|ui| {
+                            let text = RichText::new(format!("{grip}{}", item.title));
+                            let label = egui::Label::new(text.font(theme::text(theme::SMALL)));
+                            ui.add(label.truncate());
+                        });
+                        row.col(|ui| {
+                            let artist = item.artist.as_deref().unwrap_or("—");
+                            let text = RichText::new(artist).font(theme::text(theme::SMALL));
+                            ui.add(egui::Label::new(text).truncate());
+                        });
+                        row.col(|ui| {
+                            let text = RichText::new(mmss(item.len)).font(theme::mono(theme::CODE));
+                            ui.label(text.color(t.text_muted));
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(&item.category).font(theme::text(theme::CAPTION)),
+                            );
+                        });
+                        row.col(|ui| {
+                            let path = RichText::new(&item.path).font(theme::mono(theme::CAPTION));
+                            ui.add(egui::Label::new(path.color(t.text_muted)).truncate())
+                                .on_hover_text(&item.path);
+                        });
+                        let resp = row.response();
+                        if resp.hovered() {
+                            hover_now = Some(item.id);
+                        }
+                        if resp.clicked() {
+                            clicked = Some((item.id, resp.ctx.input(|i| i.modifiers)));
+                        }
+                        if resp.secondary_clicked() && !selected.contains(item.id) {
+                            clicked = Some((item.id, egui::Modifiers::NONE));
+                        }
+                        // The whole row is the drag handle. A label follows the pointer while it moves.
+                        resp.dnd_set_drag_payload(LibraryDrag(item.id));
+                        if resp.dragged()
+                            && let Some(pos) = resp.ctx.pointer_interact_pos()
+                        {
+                            egui::Area::new(egui::Id::new(("library_drag", item.id)))
+                                .order(egui::Order::Tooltip)
+                                .fixed_pos(pos + egui::vec2(space::M, space::M))
+                                .show(&resp.ctx, |ui| {
+                                    theme::card_frame(t).inner_margin(pad::ROW).show(ui, |ui| {
+                                        ui.label(format!("☰ {}", item.title));
+                                    });
+                                });
+                        }
+                        resp.context_menu(|ui| {
+                            item_menu(ui, view, item, actions);
+                            ui.separator();
+                            if context_menu::danger_item(ui, "Remove from Library…", t) {
+                                menu_remove = Some(selected.targets(item.id));
+                            }
+                        });
+                    });
+                });
+            let keys = [
+                "width_title",
+                "width_artist",
+                "",
+                "width_category",
+                "width_path",
+            ];
+            let columns: Vec<_> = keys.into_iter().zip(widths).collect();
+            parts::save_column_widths(ui, table_id, parts::LIBRARY, &columns, actions);
         });
-    if let Some(id) = clicked {
-        state.selected = Some(id);
+    if let Some((id, m)) = clicked {
+        state.selected.click(id, m, &order);
         link.focus = Pane::Library;
+    }
+    if let Some(ids) = menu_remove {
+        actions.push(remove_action(state, ids));
     }
     if hover_now != state.hovered {
         state.hovered = hover_now;
         ui.ctx().request_repaint();
+    }
+}
+
+/// The action that removes library files. They leave every playlist that holds them, and
+/// the files stay on disk. It always asks first, because a playlist that plays loses items.
+fn remove_action(state: &State, ids: Vec<u64>) -> Action {
+    if matches!(state.pick, Pick::Folder(_)) {
+        return Action::Toast(
+            "Files of a folder leave the Library with their folder. Remove the folder instead."
+                .to_owned(),
+        );
+    }
+    Action::Confirm {
+        text: format!(
+            "Remove {} files from the Library? Every playlist that holds them loses them, the main playlist too. The files stay on disk. You can undo it.",
+            ids.len()
+        ),
+        yes: "Remove".to_owned(),
+        then: Box::new(Action::Edit(Edit::RemoveLibraryItems(ids))),
     }
 }
 
@@ -477,7 +587,7 @@ fn item_menu(ui: &mut egui::Ui, view: &StationView, item: &LibraryItem, actions:
     ui.separator();
     if menu_item(ui, "Reveal in folder", None) {
         let text = format!(
-            "preview — {} · revealing needs the desktop integration",
+            "{} · revealing needs the desktop integration, which this build does not have",
             item.path
         );
         actions.push(Action::Toast(text));

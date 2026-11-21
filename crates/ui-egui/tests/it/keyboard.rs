@@ -75,3 +75,107 @@ fn the_down_arrow_moves_the_selection_to_the_next_row() {
         "the row below it is removed"
     );
 }
+
+fn click_row(h: &mut Harness<'_, RadioApp>, label: &str, modifiers: egui::Modifiers) {
+    h.query_all_by_label(label)
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the row is on screen")
+        .click_modifiers(modifiers);
+    h.run_steps(FRAMES);
+}
+
+#[test]
+fn command_a_selects_every_row_but_not_inside_a_text_field() {
+    let mut h = harness();
+    click_row(&mut h, ROW, egui::Modifiers::NONE);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(FRAMES);
+    assert!(
+        shows(&h, " selected ·"),
+        "the list says how many rows are selected"
+    );
+
+    let mut h = harness();
+    h.get_by_label("Library").click();
+    h.run_steps(FRAMES);
+    h.get_by_label("Search").focus();
+    h.run_steps(FRAMES);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(FRAMES);
+    assert!(!shows(&h, " selected ·"), "the text field keeps Command+A");
+}
+
+#[test]
+fn backspace_removes_the_selected_rows_and_undo_brings_them_back() {
+    let mut h = harness();
+    let first = "Marlo Fenwick – Echoes of Miravel";
+    let second = "Silver Tram – Tides of Quenby";
+    let before = (
+        h.query_all_by_label(first).count(),
+        h.query_all_by_label(second).count(),
+    );
+    click_row(&mut h, first, egui::Modifiers::NONE);
+    click_row(&mut h, second, egui::Modifiers::COMMAND);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_all_by_label(first).count() < before.0,
+        "the first row is gone"
+    );
+    assert!(
+        h.query_all_by_label(second).count() < before.1,
+        "the second row is gone"
+    );
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(FRAMES);
+    assert_eq!(
+        (
+            h.query_all_by_label(first).count(),
+            h.query_all_by_label(second).count()
+        ),
+        before,
+        "undo brings both back"
+    );
+}
+
+/// The items of the Jingles playlist tab, by their exact names.
+fn jingles(h: &Harness<'_, RadioApp>) -> usize {
+    (1..=3)
+        .map(|n| h.query_all_by_label(&format!("Station ID {n}")).count())
+        .sum()
+}
+
+#[test]
+fn a_playlist_tab_selects_all_its_items_and_backspace_removes_them() {
+    let mut h = harness();
+    h.query_all_by_label_contains("Jingles")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the Jingles tab is on screen")
+        .click();
+    h.run_steps(FRAMES);
+    assert_eq!(jingles(&h), 3, "the tab lists its three items");
+    click_row(&mut h, "Station ID 1", egui::Modifiers::NONE);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(FRAMES);
+    assert_eq!(jingles(&h), 0, "Command+A and Backspace took every item");
+}
+
+#[test]
+fn the_library_selects_all_rows_and_delete_asks_before_it_removes() {
+    let mut h = harness();
+    h.get_by_label("Library").click();
+    h.run_steps(FRAMES);
+    h.get_by_label("Beds (3)").click();
+    h.run_steps(FRAMES);
+    click_row(&mut h, "Bed · Warm Pad", egui::Modifiers::NONE);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(FRAMES);
+    assert!(
+        shows(&h, "Remove 3 files from the Library?"),
+        "Delete asks before the three beds leave their playlist"
+    );
+}

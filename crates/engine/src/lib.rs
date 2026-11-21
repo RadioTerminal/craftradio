@@ -8,7 +8,7 @@ mod error;
 mod log;
 mod store;
 
-pub use command::{Command, CommandSpec, Mode, Tier, registry};
+pub use command::{CartMode, Command, CommandSpec, Mode, Route, Tier, registry};
 pub use error::EngineError;
 pub use log::{AsPlayed, LogEntry, LogStatus, Report, RowId};
 
@@ -24,6 +24,30 @@ use std::{
 };
 
 const DECKS: u8 = 4;
+/// The undo history keeps at least this many steps.
+const UNDO_STEPS: usize = 100;
+/// The names of the mixer strips.
+pub const STRIPS: [&str; 7] = ["A", "B", "C", "D", "Cart", "Live", "Out"];
+/// UI parts in `settings_by_part` start with this prefix, so they never meet the parts of the engine.
+pub(crate) const UI_PREFIX: &str = "ui:";
+
+/// The settings of one mixer strip.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct StripState {
+    pub gain_db: f32,
+    pub mute: bool,
+    pub pfl: bool,
+    pub route: Route,
+}
+
+/// The settings of one cart.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CartSettings {
+    pub page: u32,
+    pub slot: u32,
+    pub duck_db: f32,
+    pub mode: CartMode,
+}
 
 /// One cartwall assignment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,7 +80,33 @@ pub struct State {
     pub stop_after_current: bool,
     pub carts: Vec<CartAssign>,
     pub decks: [Option<ItemId>; DECKS as usize],
+    /// True for each deck whose item is on air (started), as playout reports it.
+    pub live: [bool; DECKS as usize],
     pub folders: BTreeSet<String>,
+    /// Settings of each part of the UI, by part and key (`settings_by_part`).
+    pub(crate) settings: BTreeMap<String, BTreeMap<String, Value>>,
+    /// The mixer strips, by name.
+    pub strips: BTreeMap<String, StripState>,
+    /// Items that play right after the item on air, in order. Playout takes each one off
+    /// when it starts.
+    pub queue: Vec<ItemId>,
+    /// File items whose file is missing. Playout skips them until they are found again.
+    pub missing: BTreeSet<ItemId>,
+    /// The content hash (hex) and size of the file of each item, for a relink.
+    pub hashes: BTreeMap<ItemId, (String, u64)>,
+    /// Cart settings that differ from the defaults.
+    pub cart_settings: Vec<CartSettings>,
+}
+
+/// What an undo step restores: playlists, scripts, sources, tags and carts.
+#[derive(Clone)]
+struct Saved {
+    station: Station,
+    scripts: BTreeMap<PlaylistId, String>,
+    sources: BTreeMap<PlaylistId, Value>,
+    item_meta: BTreeMap<ItemId, Value>,
+    carts: Vec<CartAssign>,
+    cart_settings: Vec<CartSettings>,
 }
 
 impl State {
@@ -100,7 +150,14 @@ impl State {
             stop_after_current: false,
             carts: vec![],
             decks: [None; DECKS as usize],
+            live: [false; DECKS as usize],
             folders: BTreeSet::new(),
+            settings: BTreeMap::new(),
+            strips: BTreeMap::new(),
+            cart_settings: Vec::new(),
+            queue: Vec::new(),
+            missing: BTreeSet::new(),
+            hashes: BTreeMap::new(),
         }
     }
 
@@ -156,11 +213,39 @@ impl State {
             .collect();
         self.item_meta.retain(|i, _| live.contains(i));
         self.carts.retain(|c| live.contains(&c.item));
+        self.queue.retain(|i| live.contains(i));
+        self.missing.retain(|i| live.contains(i));
+        self.hashes.retain(|i, _| live.contains(i));
         for d in &mut self.decks {
             if d.is_some_and(|i| !live.contains(&i)) {
                 *d = None;
             }
         }
+    }
+
+    /// The settings of one part of the UI.
+    pub fn settings(&self, part: &str) -> Option<&BTreeMap<String, Value>> {
+        self.settings.get(part)
+    }
+
+    /// The settings of all parts of the UI.
+    pub fn ui_settings(&self) -> &BTreeMap<String, BTreeMap<String, Value>> {
+        &self.settings
+    }
+
+    /// The rules script of a playlist, as a person wrote it.
+    pub fn script(&self, playlist: PlaylistId) -> Option<&str> {
+        self.scripts.get(&playlist).map(String::as_str)
+    }
+
+    /// The folder source of a playlist, as `playlist.set_source` stored it.
+    pub fn source(&self, playlist: PlaylistId) -> Option<&Value> {
+        self.sources.get(&playlist)
+    }
+
+    /// The metadata that `item.set_meta` stored for an item.
+    pub fn item_meta(&self, item: ItemId) -> Option<&Value> {
+        self.item_meta.get(&item)
     }
 
     fn has_item(&self, id: ItemId) -> bool {
@@ -180,10 +265,13 @@ pub struct Outcome {
     pub applied_to_audio: bool,
     /// Result of a query, or the id a command created.
     pub data: Option<Value>,
+    /// Why a part of the command does not reach the audio, when it does not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// What the audio glue should do. Nothing consumes these yet.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AudioIntent {
     Load {
         deck: u8,
@@ -222,19 +310,90 @@ pub enum AudioIntent {
         slot: u32,
     },
     StopAllCarts,
+    /// The station plays on after the item on air.
+    Continue,
+    /// The fader of a strip, with mute applied.
+    SetStrip {
+        strip: String,
+        gain_db: f32,
+        mute: bool,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EngineEvent {
     AudioIntent(AudioIntent),
     /// The station state changed after a command.
     StateChanged,
+    /// Only mixer or cart settings changed: no new plan is needed.
+    SettingsChanged,
 }
 
 pub struct Engine {
     state: State,
     store: store::Store,
     subscribers: Vec<Sender<EngineEvent>>,
+    undo: Vec<Saved>,
+    redo: Vec<Saved>,
+    /// The control of the last undo step and when it came, to merge quick repeats.
+    last_step: Option<(String, std::time::Instant)>,
+}
+
+/// Repeated edits of one control within this time make one undo step.
+const MERGE_STEPS: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The control that an edit changes, for edits that repeat while a person drags.
+fn control_of(cmd: &Command) -> Option<String> {
+    match cmd {
+        Command::CartSet { page, slot, .. } => Some(format!("cart:{page}:{slot}")),
+        _ => None,
+    }
+}
+
+/// True for a command that Undo can take back.
+fn undoable(cmd: &Command) -> bool {
+    use Command as C;
+    match cmd {
+        C::StationBatch { commands } => commands.iter().any(undoable),
+        C::PlaylistCreate { .. }
+        | C::PlaylistRename { .. }
+        | C::PlaylistDelete { .. }
+        | C::PlaylistSetMain { .. }
+        | C::PlaylistEnable { .. }
+        | C::PlaylistSetFillPool { .. }
+        | C::PlaylistSetOnInterrupt { .. }
+        | C::PlaylistAddItems { .. }
+        | C::PlaylistRemoveItems { .. }
+        | C::PlaylistClear { .. }
+        | C::PlaylistMoveItems { .. }
+        | C::PlaylistSetRulesScript { .. }
+        | C::PlaylistSetSource { .. }
+        | C::PlaylistSetColor { .. }
+        | C::PlaylistSetPick { .. }
+        | C::PlaylistDuplicate { .. }
+        | C::ItemLock { .. }
+        | C::ItemUnlock { .. }
+        | C::ItemSetMeta { .. }
+        | C::ItemSetKeepAlive { .. }
+        | C::CartAssign { .. }
+        | C::CartClear { .. }
+        | C::CartSet { .. } => true,
+        _ => false,
+    }
+}
+
+/// True for a command that a batch may hold: a station edit without audio.
+fn batchable(cmd: &Command) -> bool {
+    !matches!(cmd, Command::StationBatch { .. })
+        && (undoable(cmd)
+            || matches!(
+                cmd,
+                Command::SettingsSet { .. }
+                    | Command::PlayoutPlayNext { .. }
+                    | Command::ItemMarkMissing { .. }
+                    | Command::ItemRelink { .. }
+                    | Command::ItemSetHash { .. }
+            ))
 }
 
 impl Engine {
@@ -253,6 +412,9 @@ impl Engine {
             state,
             store: store::Store::start(conn),
             subscribers: vec![],
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last_step: None,
         })
     }
 
@@ -292,12 +454,148 @@ impl Engine {
     /// Run a command. A failed command changes nothing.
     pub fn dispatch(&mut self, cmd: Command) -> Result<Outcome, EngineError> {
         let query = cmd.tier() == Tier::ReadOnly;
+        let control = control_of(&cmd);
+        let merged = control.as_ref().is_some_and(|c| {
+            self.last_step
+                .as_ref()
+                .is_some_and(|(k, at)| k == c && at.elapsed() < MERGE_STEPS)
+        });
+        let is_undoable = undoable(&cmd);
+        let before = (is_undoable && !merged).then(|| self.save());
+        let system = matches!(cmd, Command::StationSystem { .. });
+        // A fader, mute or cart duck changes no station data, so it needs no plan and no
+        // full checkpoint: one settings row goes to disk.
+        let strip_row = match &cmd {
+            Command::MixerSetStrip { strip, .. } => Some(("mixer", strip.clone())),
+            Command::CartSet { page, slot, .. } => Some(("carts", format!("{page}:{slot}"))),
+            _ => None,
+        };
         let outcome = self.apply(cmd)?;
-        if !query {
+        if let Some(before) = before {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_STEPS {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+        if is_undoable {
+            self.last_step = control.map(|c| (c, std::time::Instant::now()));
+        }
+        if system {
+            self.clear_history();
+        }
+        if let Some((part, key)) = strip_row {
+            self.write_row(part, &key);
+            self.emit(EngineEvent::SettingsChanged);
+        } else if !query {
             self.store.snapshot(self.state.clone());
             self.emit(EngineEvent::StateChanged);
         }
         Ok(outcome)
+    }
+
+    /// Writes one row of the strip or cart settings, without a full checkpoint.
+    fn write_row(&self, part: &'static str, key: &str) {
+        let value = match part {
+            "mixer" => self
+                .state
+                .strips
+                .get(key)
+                .and_then(|s| serde_json::to_string(s).ok()),
+            _ => self
+                .state
+                .cart_settings
+                .iter()
+                .find(|c| format!("{}:{}", c.page, c.slot) == key)
+                .and_then(|c| serde_json::to_string(c).ok()),
+        };
+        let (Some(value), Some(writer)) = (value, self.store.writer()) else {
+            return;
+        };
+        let key = key.to_owned();
+        let _ = writer.spawn(move |c| {
+            let _ = c.execute(
+                "INSERT INTO settings_by_part (part, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (part, key) DO UPDATE SET value = excluded.value",
+                params![part, key, value],
+            );
+        });
+    }
+
+    /// Forgets the undo and redo steps, for example after the start-up edits of the app.
+    pub fn clear_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.last_step = None;
+    }
+
+    /// Refuses a restore that takes away an item that is on air on a deck.
+    fn check_decks(&self, saved: &Saved) -> Result<(), EngineError> {
+        for (d, item) in self.state.decks.iter().enumerate() {
+            let Some(item) = item.as_ref().filter(|_| self.state.live[d]) else {
+                continue;
+            };
+            let kept = saved
+                .station
+                .playlists
+                .iter()
+                .any(|p| p.items.iter().any(|i| i.id == *item));
+            if !kept {
+                let deck = ['A', 'B', 'C', 'D'].get(d).copied().unwrap_or('?');
+                return Err(EngineError::BadArgument(format!(
+                    "this step would remove the item on air on deck {deck}; skip it first"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn save(&self) -> Saved {
+        let s = &self.state;
+        Saved {
+            station: s.station.clone(),
+            scripts: s.scripts.clone(),
+            sources: s.sources.clone(),
+            item_meta: s.item_meta.clone(),
+            carts: s.carts.clone(),
+            cart_settings: s.cart_settings.clone(),
+        }
+    }
+
+    fn restore(&mut self, saved: Saved) {
+        let s = &mut self.state;
+        s.station = saved.station;
+        s.scripts = saved.scripts;
+        s.sources = saved.sources;
+        s.item_meta = saved.item_meta;
+        s.carts = saved.carts;
+        s.cart_settings = saved.cart_settings;
+        s.prune_orphans();
+    }
+
+    /// Runs the commands of a batch. A failure restores the state before the batch.
+    fn batch(&mut self, commands: Vec<Command>) -> Result<Outcome, EngineError> {
+        if let Some(bad) = commands.iter().find(|c| !batchable(c)) {
+            return Err(EngineError::BadArgument(format!(
+                "{} cannot run in a batch",
+                bad.id()
+            )));
+        }
+        let before = self.state.clone();
+        let mut data = Vec::new();
+        for c in commands {
+            match self.apply(c) {
+                Ok(o) => data.push(o.data.unwrap_or(Value::Null)),
+                Err(e) => {
+                    self.state = before;
+                    return Err(e);
+                }
+            }
+        }
+        Ok(Outcome {
+            data: Some(Value::Array(data)),
+            ..Outcome::default()
+        })
     }
 
     fn deck(&self, deck: u8) -> Result<usize, EngineError> {
@@ -471,6 +769,41 @@ impl Engine {
                 self.state.prune_orphans();
                 Ok(Outcome::default())
             }
+            C::PlaylistClear {
+                playlist,
+                expect_count,
+                remove_locked,
+            } => {
+                let on_deck: Vec<ItemId> = self.state.decks.iter().flatten().copied().collect();
+                let mut removed = 0usize;
+                self.edit_station(|s| {
+                    let p = playlist_mut(s, playlist)?;
+                    if p.items.len() != expect_count {
+                        return Err(EngineError::BadArgument(
+                            "playlist changed, try again".into(),
+                        ));
+                    }
+                    let before = p.items.len();
+                    p.items
+                        .retain(|i| on_deck.contains(&i.id) || (i.locked && !remove_locked));
+                    removed = before - p.items.len();
+                    // A folder playlist stops watching, or its watch would add it all back.
+                    if let Some(src) = &mut p.source {
+                        src.watch = false;
+                    }
+                    Ok(())
+                })?;
+                if let Some(src) = self.state.sources.get_mut(&playlist)
+                    && let Some(w) = src.get_mut("watch")
+                {
+                    *w = Value::Bool(false);
+                }
+                self.state.prune_orphans();
+                Ok(Outcome {
+                    data: Some(removed.into()),
+                    ..Outcome::default()
+                })
+            }
             C::PlaylistMoveItems {
                 playlist,
                 items,
@@ -534,7 +867,67 @@ impl Engine {
                 if !self.state.has_item(item) {
                     return Err(EngineError::UnknownItem(item));
                 }
+                // Typed tags also go into the item, so playout titles and logs use them.
+                if let Ok(typed) = serde_json::from_value::<radio_model::ItemMeta>(meta.clone()) {
+                    self.edit_station(|s| {
+                        if let Some(i) = item_mut(s, item) {
+                            i.meta = typed;
+                        }
+                        Ok(())
+                    })?;
+                }
                 self.state.item_meta.insert(item, meta);
+                Ok(Outcome::default())
+            }
+            C::ItemMarkMissing { items, missing } => {
+                for item in &items {
+                    if !self.state.has_item(*item) {
+                        return Err(EngineError::UnknownItem(*item));
+                    }
+                }
+                for item in items {
+                    if missing {
+                        self.state.missing.insert(item);
+                    } else {
+                        self.state.missing.remove(&item);
+                    }
+                }
+                Ok(Outcome::default())
+            }
+            C::ItemRelink { item, path } => {
+                self.edit_station(|s| {
+                    let i = item_mut(s, item).ok_or(EngineError::UnknownItem(item))?;
+                    match &mut i.source {
+                        radio_model::Source::File { path: p } => {
+                            *p = path;
+                            Ok(())
+                        }
+                        _ => Err(EngineError::BadArgument("only a file item relinks".into())),
+                    }
+                })?;
+                self.state.missing.remove(&item);
+                Ok(Outcome::default())
+            }
+            C::ItemSetHash { item, hash, size } => {
+                if !self.state.has_item(item) {
+                    return Err(EngineError::UnknownItem(item));
+                }
+                self.state.hashes.insert(item, (hash, size));
+                Ok(Outcome::default())
+            }
+            C::ItemSetKeepAlive { item, keep_alive } => {
+                self.edit_station(|s| {
+                    let i = item_mut(s, item).ok_or(EngineError::UnknownItem(item))?;
+                    match &mut i.source {
+                        radio_model::Source::Stream { keep_alive: k, .. } => {
+                            *k = keep_alive;
+                            Ok(())
+                        }
+                        _ => Err(EngineError::BadArgument(
+                            "only a stream has keep-alive".into(),
+                        )),
+                    }
+                })?;
                 Ok(Outcome::default())
             }
             C::DeckLoad { deck, item } => {
@@ -571,6 +964,14 @@ impl Engine {
                 Ok(Outcome::default())
             }
             C::PlayoutNext => Ok(self.audio(AudioIntent::Next)),
+            C::PlayoutPlayNext { item } => {
+                if !self.state.has_item(item) {
+                    return Err(EngineError::UnknownItem(item));
+                }
+                self.state.queue.retain(|i| *i != item);
+                self.state.queue.insert(0, item);
+                Ok(Outcome::default())
+            }
             C::StationStopAfterCurrent => {
                 self.state.stop_after_current = true;
                 self.emit(EngineEvent::AudioIntent(AudioIntent::StopAfterCurrent));
@@ -613,6 +1014,168 @@ impl Engine {
                 }
                 Ok(Outcome::default())
             }
+            C::HistoryUndo => {
+                let saved = self
+                    .undo
+                    .last()
+                    .ok_or_else(|| EngineError::BadArgument("nothing to undo".into()))?;
+                self.check_decks(saved)?;
+                let saved = self
+                    .undo
+                    .pop()
+                    .ok_or_else(|| EngineError::BadArgument("nothing to undo".into()))?;
+                self.redo.push(self.save());
+                self.restore(saved);
+                Ok(Outcome::default())
+            }
+            C::HistoryRedo => {
+                let saved = self
+                    .redo
+                    .last()
+                    .ok_or_else(|| EngineError::BadArgument("nothing to redo".into()))?;
+                self.check_decks(saved)?;
+                let saved = self
+                    .redo
+                    .pop()
+                    .ok_or_else(|| EngineError::BadArgument("nothing to redo".into()))?;
+                self.undo.push(self.save());
+                self.restore(saved);
+                Ok(Outcome::default())
+            }
+            C::StationBatch { commands } | C::StationSystem { commands } => self.batch(commands),
+            C::StationImport { station } => {
+                station.validate()?;
+                self.state.station = station;
+                self.state.scripts.clear();
+                self.state.sources.clear();
+                self.state.prune_orphans();
+                self.undo.clear();
+                self.redo.clear();
+                Ok(Outcome::default())
+            }
+            C::StationContinue => {
+                self.state.stop_after_current = false;
+                self.emit(EngineEvent::AudioIntent(AudioIntent::Continue));
+                Ok(Outcome::default())
+            }
+            C::SettingsSet { part, key, value } => {
+                if part.is_empty() {
+                    return Err(EngineError::BadArgument(
+                        "the settings part is empty".into(),
+                    ));
+                }
+                self.state
+                    .settings
+                    .entry(part)
+                    .or_default()
+                    .insert(key, value);
+                Ok(Outcome::default())
+            }
+            C::PlaylistSetColor { playlist, color } => {
+                self.edit_station(|s| {
+                    playlist_mut(s, playlist)?.color = color;
+                    Ok(())
+                })?;
+                Ok(Outcome::default())
+            }
+            C::PlaylistSetPick { playlist, pick } => {
+                self.edit_station(|s| {
+                    playlist_mut(s, playlist)?.pick = pick;
+                    Ok(())
+                })?;
+                Ok(Outcome::default())
+            }
+            C::PlaylistDuplicate { playlist, name } => self.duplicate(playlist, name),
+            C::CartClear { page, slot } => {
+                let before = self.state.carts.len();
+                self.state
+                    .carts
+                    .retain(|c| !(c.page == page && c.slot == slot));
+                if self.state.carts.len() == before {
+                    return Err(EngineError::BadArgument(format!(
+                        "cart page {page} slot {slot} is empty"
+                    )));
+                }
+                Ok(Outcome::default())
+            }
+            C::CartSet {
+                page,
+                slot,
+                duck_db,
+                mode,
+            } => {
+                if !duck_db.is_finite() || duck_db > 0.0 {
+                    return Err(EngineError::BadArgument(
+                        "the duck depth must be 0 dB or lower".into(),
+                    ));
+                }
+                let list = &mut self.state.cart_settings;
+                list.retain(|c| !(c.page == page && c.slot == slot));
+                list.push(CartSettings {
+                    page,
+                    slot,
+                    duck_db,
+                    mode,
+                });
+                list.sort_by_key(|c| (c.page, c.slot));
+                Ok(Outcome {
+                    audio_required: true,
+                    applied_to_audio: false,
+                    data: None,
+                    note: Some(
+                        "stored; the cart player of this build plays every cart once, without ducking"
+                            .into(),
+                    ),
+                })
+            }
+            C::MixerSetStrip {
+                strip,
+                gain_db,
+                mute,
+                pfl,
+                route,
+            } => {
+                if !STRIPS.contains(&strip.as_str()) {
+                    return Err(EngineError::BadArgument(format!("no mixer strip {strip}")));
+                }
+                // A fader all the way down is a mute; the stored gain stays finite.
+                let (gain_db, mute) = match gain_db {
+                    Some(g) if g == f32::NEG_INFINITY => (None, Some(true)),
+                    other => (other, mute),
+                };
+                if gain_db.is_some_and(|g| !g.is_finite() || g > 12.0) {
+                    return Err(EngineError::BadArgument(
+                        "the fader takes a finite value up to +12 dB".into(),
+                    ));
+                }
+                let st = self.state.strips.entry(strip.clone()).or_default();
+                if let Some(g) = gain_db {
+                    st.gain_db = g;
+                }
+                if let Some(m) = mute {
+                    st.mute = m;
+                }
+                if let Some(p) = pfl {
+                    st.pfl = p;
+                }
+                if let Some(r) = route {
+                    st.route = r;
+                }
+                let (gain_db, mute) = (st.gain_db, st.mute);
+                let cue = pfl.is_some() || route.is_some();
+                let mut out = self.audio(AudioIntent::SetStrip {
+                    strip,
+                    gain_db,
+                    mute,
+                });
+                if cue {
+                    out.note = Some(
+                        "stored; the mixer of this build has no cue bus, so PFL and routing do not change the sound"
+                            .into(),
+                    );
+                }
+                Ok(out)
+            }
             C::StationGet => Ok(Outcome {
                 data: Some(to_value(&self.state)?),
                 ..Outcome::default()
@@ -626,6 +1189,51 @@ impl Engine {
                 ..Outcome::default()
             }),
         }
+    }
+
+    fn duplicate(&mut self, playlist: PlaylistId, name: String) -> Result<Outcome, EngineError> {
+        let st = &self.state.station;
+        let src = st
+            .playlists
+            .iter()
+            .find(|p| p.id == playlist)
+            .ok_or(EngineError::UnknownPlaylist(playlist))?
+            .clone();
+        let id = PlaylistId(st.playlists.iter().map(|p| p.id.0).max().unwrap_or(0) + 1);
+        let next = st
+            .playlists
+            .iter()
+            .flat_map(|p| p.items.iter().map(|i| i.id.0))
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let mut copy = src;
+        copy.id = id;
+        copy.name = name;
+        copy.is_main = false;
+        let mut map = BTreeMap::new();
+        for (k, item) in (next..).zip(copy.items.iter_mut()) {
+            map.insert(item.id, ItemId(k));
+            item.id = ItemId(k);
+        }
+        if let PickOrder::Weighted { weights } = &mut copy.pick {
+            for (i, _) in weights.iter_mut() {
+                if let Some(n) = map.get(i) {
+                    *i = *n;
+                }
+            }
+        }
+        self.edit_station(|s| {
+            s.playlists.push(copy);
+            Ok(())
+        })?;
+        if let Some(script) = self.state.scripts.get(&playlist).cloned() {
+            self.state.scripts.insert(id, script);
+        }
+        Ok(Outcome {
+            data: Some(id.0.into()),
+            ..Outcome::default()
+        })
     }
 
     fn set_locked(&mut self, item: ItemId, locked: bool) -> Result<Outcome, EngineError> {
@@ -691,6 +1299,22 @@ impl Engine {
             && self.state.decks[d] != item
         {
             self.state.decks[d] = item;
+            self.store.snapshot(self.state.clone());
+            self.emit(EngineEvent::StateChanged);
+        }
+    }
+
+    /// Records if the item of a deck is on air. Undo never takes an item on air away.
+    pub fn set_live(&mut self, deck: u8, live: bool) {
+        if let Ok(d) = self.deck(deck) {
+            self.state.live[d] = live;
+        }
+    }
+
+    /// Takes an item off the play-next queue. Playout calls this when the item starts.
+    pub fn dequeue(&mut self, item: ItemId) {
+        if self.state.queue.contains(&item) {
+            self.state.queue.retain(|i| *i != item);
             self.store.snapshot(self.state.clone());
             self.emit(EngineEvent::StateChanged);
         }
@@ -766,6 +1390,13 @@ impl Engine {
             interrupted,
         })
     }
+}
+
+fn item_mut(s: &mut Station, id: ItemId) -> Option<&mut Item> {
+    s.playlists
+        .iter_mut()
+        .flat_map(|p| p.items.iter_mut())
+        .find(|i| i.id == id)
 }
 
 fn playlist_mut(s: &mut Station, id: PlaylistId) -> Result<&mut Playlist, EngineError> {

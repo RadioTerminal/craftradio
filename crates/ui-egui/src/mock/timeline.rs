@@ -62,6 +62,7 @@ impl MockSource {
                             ),
                             timing: None,
                             stream: None,
+                            deck: None,
                             ..base
                         },
                     );
@@ -204,6 +205,7 @@ impl MockSource {
                 meta: from_title(&item.title, publish_for(item.playlist)),
                 timing: None,
                 stream: None,
+                deck: None,
                 title: item.title,
             });
         };

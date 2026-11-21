@@ -67,8 +67,50 @@ fn still_planned(prev: &Timeline, fresh: &Timeline) -> Timeline {
     kept
 }
 
+/// An occurrence that a late edit moved a locked hard event to. It does not air, because
+/// the locked event (`stand_in`) airs at its old time instead.
+#[derive(Clone)]
+pub(crate) struct Superseded {
+    entry: Entry,
+    stand_in: Entry,
+}
+
+/// Tells if a station edit renumbered the rules of `origin`'s playlist, or changed any
+/// rule of it other than `origin`'s own. Then the rule index of `origin` may name another
+/// rule now, so an occurrence of that index is not a move of `origin`'s event.
+fn renumbered(
+    old: Option<Vec<radio_model::Rule>>,
+    new: &radio_model::Station,
+    origin: &Origin,
+) -> bool {
+    let Origin::Rule { playlist, rule } = origin else {
+        return true;
+    };
+    match (old, rules_of(new, *playlist)) {
+        (Some(o), Some(n)) => {
+            o.len() != n.len()
+                || o.iter()
+                    .zip(&n)
+                    .enumerate()
+                    .any(|(i, (a, b))| i != *rule && a != b)
+        }
+        _ => true,
+    }
+}
+
+/// The rule list of a playlist.
+fn rules_of(
+    s: &radio_model::Station,
+    playlist: radio_model::PlaylistId,
+) -> Option<Vec<radio_model::Rule>> {
+    s.playlists
+        .iter()
+        .find(|p| p.id == playlist)
+        .map(|p| p.rules.clone())
+}
+
 /// Takes the superseded occurrences out of a plan, with the rest of their take after them.
-fn drop_superseded(tl: &mut Timeline, superseded: &[Entry]) {
+fn drop_superseded(tl: &mut Timeline, superseded: &[Superseded]) {
     if superseded.is_empty() {
         return;
     }
@@ -82,7 +124,7 @@ fn drop_superseded(tl: &mut Timeline, superseded: &[Entry]) {
             continue;
         }
         skipping = None;
-        if superseded.iter().any(|x| same_occurrence(x, &e)) {
+        if superseded.iter().any(|x| same_occurrence(&x.entry, &e)) {
             skipping = Some(e.origin.clone());
             continue;
         }
@@ -91,7 +133,11 @@ fn drop_superseded(tl: &mut Timeline, superseded: &[Entry]) {
     tl.entries = out;
     tl.fits.retain(|fit| {
         !superseded.iter().any(|x| {
-            x.playlist == fit.playlist && x.fixed.as_ref().is_some_and(|f| f.target == fit.target)
+            x.entry.playlist == fit.playlist
+                && x.entry
+                    .fixed
+                    .as_ref()
+                    .is_some_and(|f| f.target == fit.target)
         })
     });
 }
@@ -101,8 +147,9 @@ pub(crate) const HARD_LOCK: Duration = Duration::from_secs(10);
 
 /// Playout plans again at least this often.
 const PLAN_EVERY: Duration = Duration::from_secs(1);
-/// The most planned entries that wait on decks. The other decks stay free for operators.
-const MAX_QUEUED: usize = 2;
+/// The most planned entries that wait on decks: every deck but the one on air holds what
+/// comes next.
+const MAX_QUEUED: usize = 3;
 /// Playout tries a broken item again after this time.
 const RETRY_BROKEN: Duration = Duration::from_secs(300);
 /// The fade of an early end when the item has no fade-out of its own.
@@ -326,6 +373,10 @@ pub(crate) struct Core {
     pub(crate) hold: bool,
     pub(crate) carts: Carts,
     carts_dirty: bool,
+    /// The engine state changed since the last publish.
+    state_dirty: bool,
+    /// The number of plans so far, for a check of the plan cost.
+    plans: u64,
     pub(crate) dead_air: DeadAir,
     pub(crate) next_bed: usize,
     pub(crate) icecast: Option<IcecastHandle>,
@@ -350,7 +401,10 @@ pub(crate) struct Core {
     cancelled: Vec<Entry>,
     /// Occurrences that a late edit moved a locked hard event to. The locked event airs at
     /// its old time instead, so these do not air. Kept until their target passes.
-    superseded: Vec<Entry>,
+    superseded: Vec<Superseded>,
+    /// The rule list of the playlist of each hard event when the plan first had the event.
+    /// A later edit compares with it, not with the station of the last plan.
+    planned_rules: Vec<(Entry, Vec<radio_model::Rule>)>,
     out_clock: Option<SampleClock>,
 }
 
@@ -399,6 +453,9 @@ impl Core {
             stream_states: Vec::new(),
             alarms: Vec::new(),
             alarms_dropped: 0,
+            state: Arc::new(engine.state().clone()),
+            revision: 0,
+            plans: 0,
         };
         Ok(Core {
             engine,
@@ -428,6 +485,8 @@ impl Core {
             hold: false,
             carts,
             carts_dirty: true,
+            state_dirty: false,
+            plans: 0,
             dead_air: DeadAir::default(),
             next_bed: 0,
             icecast,
@@ -444,6 +503,7 @@ impl Core {
             last_station: None,
             cancelled: Vec::new(),
             superseded: Vec::new(),
+            planned_rules: Vec::new(),
             out_clock: opened.clock,
         })
     }
@@ -498,7 +558,10 @@ impl Core {
                 EngineEvent::StateChanged => {
                     self.dirty = true;
                     self.carts_dirty = true;
+                    self.state_dirty = true;
                 }
+                // Faders and cart settings: the UI sees them, and no plan runs for them.
+                EngineEvent::SettingsChanged => self.state_dirty = true,
                 EngineEvent::AudioIntent(intent) => {
                     let now = self.clock.now();
                     checks.push(self.intent(intent, now));
@@ -523,6 +586,7 @@ impl Core {
         self.ticks += 1;
         if self.ticks == 1 {
             self.resume(now);
+            self.sync_strips();
         }
         let _ = self.drain_engine();
         self.take_done(now);
@@ -612,12 +676,15 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
+        let id = s.item.id;
         // A hard event keeps its target as its start, so later plans still know it.
         if !s.is_hard() {
             s.entry.start = sub(wall, s.offset);
         }
         self.dirty = true;
         self.save_due = true;
+        // A play-next item leaves the queue when it starts.
+        self.engine.dequeue(id);
         if self.slots[deck.index()]
             .as_ref()
             .is_some_and(|s| s.row.is_none())
@@ -739,13 +806,16 @@ impl Core {
     }
 
     fn replan(&mut self, now: Timestamp) {
+        self.plans += 1;
         self.chain(now);
         self.prune_history(now);
         let mut station = self.engine.state().station.clone();
         self.apply_analysis(&mut station);
         self.broken.retain(|_, at| since(*at, now) < RETRY_BROKEN);
+        let missing = self.engine.state().missing.clone();
         for p in &mut station.playlists {
-            p.items.retain(|i| !self.broken.contains_key(&i.id));
+            p.items
+                .retain(|i| !self.broken.contains_key(&i.id) && !missing.contains(&i.id));
         }
         self.items = station
             .playlists
@@ -756,13 +826,21 @@ impl Core {
         // still produce it, or it goes. Near its target, playout pins it so it stays.
         let lock = add(now, HARD_LOCK);
         let free_hard = |s: &Slot| s.is_hard() && s.not_started() && s.entry.start > lock;
-        let pinned: Vec<Entry> = self
+        // Items to play next go right after the item on air. The queued plan items that
+        // wait on decks give way to them, unless they are hard events.
+        let queued = self.play_next_entries(now, &station);
+        // Until the play-next items are on decks, nothing of the plan waits ahead of them.
+        if !queued.is_empty() {
+            self.unload_waiting_plan_items();
+        }
+        let mut pinned: Vec<Entry> = self
             .slots
             .iter()
             .flatten()
             .filter(|s| s.pinned() && !free_hard(s))
             .map(|s| s.entry.clone())
             .collect();
+        pinned.extend(queued);
         let input = PlanInput {
             station: &station,
             history: &self.history,
@@ -784,7 +862,7 @@ impl Core {
             None => self.planned.then_some(&self.timeline),
         };
         let mut tl = plan(&input, &opts, prev);
-        self.superseded.retain(|e| e.start > now);
+        self.expire_superseded(now);
         drop_superseded(&mut tl, &self.superseded);
         let old = std::mem::replace(&mut self.timeline, tl);
         if edited {
@@ -800,10 +878,80 @@ impl Core {
             self.timeline_changed = true;
             self.save_due = true;
         }
+        self.note_planned_rules(&station, now);
         self.prune_hard(now);
         self.planned = true;
         self.dirty = false;
         self.last_plan = Some(now);
+    }
+
+    /// Pinned entries for the play-next queue of the engine, one after the other from the end
+    /// of the item on air. Items on a deck already are left out.
+    fn play_next_entries(&self, now: Timestamp, station: &radio_model::Station) -> Vec<Entry> {
+        let queue = &self.engine.state().queue;
+        if queue.is_empty() {
+            return Vec::new();
+        }
+        // The item on air ends at its deck's planned end, or else at its end in the plan.
+        let on_deck = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|s| !s.not_started())
+            .map(Slot::planned_end)
+            .max();
+        let in_plan = self
+            .timeline
+            .entries
+            .iter()
+            .filter(|e| e.start <= now && now < add(e.start, e.len))
+            .map(|e| add(e.start, e.len.saturating_sub(e.trim)))
+            .max();
+        let mut at = on_deck.max(in_plan).unwrap_or(now).max(now);
+        let mut out = Vec::new();
+        for id in queue {
+            if self.slots.iter().flatten().any(|s| s.item.id == *id) {
+                continue;
+            }
+            let found = station
+                .playlists
+                .iter()
+                .find_map(|p| p.items.iter().find(|i| i.id == *id).map(|i| (p.id, i)));
+            let Some((playlist, item)) = found else {
+                continue;
+            };
+            let len = radio_timing::item_len(item);
+            out.push(Entry {
+                playlist,
+                item: *id,
+                start: at,
+                len,
+                origin: Origin::Manual,
+                locked: true,
+                fixed: None,
+                trim: Duration::ZERO,
+            });
+            at = add(at, len);
+        }
+        out
+    }
+
+    /// Takes the plan items that wait on decks off them, so a new plan can move them after
+    /// the play-next items. Hard events and operator items stay.
+    fn unload_waiting_plan_items(&mut self) {
+        let queue = self.engine.state().queue.clone();
+        for i in 0..4 {
+            let waiting = self.slots[i].as_ref().is_some_and(|s| {
+                s.role == DeckRole::Plan
+                    && s.not_started()
+                    && !s.is_hard()
+                    && !queue.contains(&s.item.id)
+            });
+            if waiting && let Some(s) = self.slots[i].take() {
+                let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
+                let _ = self.mixer.send(cmd.for_item(s.tag));
+            }
+        }
     }
 
     /// Keeps the play history to the last 48 h, checked once an hour, so plans stay cheap.
@@ -839,7 +987,6 @@ impl Core {
             .filter(|s| s.not_started() && !s.is_hard())
             .count();
         let assigned = self.assigned();
-        let horizon = add(now, self.cfg.preload);
         let next: Vec<Entry> = self
             .timeline
             .entries
@@ -853,7 +1000,6 @@ impl Core {
                     .any(|b| b.item == e.item && b.start == e.start && now < b.until)
             })
             .filter(|e| last.is_none_or(|l| e.start > l))
-            .take_while(|e| e.start <= horizon)
             .take(MAX_QUEUED.saturating_sub(queued))
             .cloned()
             .collect();
@@ -1116,6 +1262,11 @@ impl Core {
             view.timeline = self.timeline.clone();
             self.timeline_changed = false;
         }
+        view.plans = self.plans;
+        if std::mem::take(&mut self.state_dirty) {
+            view.state = Arc::new(self.engine.state().clone());
+            view.revision += 1;
+        }
     }
 
     /// Ends the open log rows as interrupted, and writes the state to disk.
@@ -1260,6 +1411,8 @@ impl Core {
             if self.engine.state().decks[i] != item {
                 self.engine.set_deck(i as u8, item);
             }
+            let live = self.slots[i].as_ref().is_some_and(|s| !s.not_started());
+            self.engine.set_live(i as u8, live);
         }
     }
 
@@ -1385,10 +1538,76 @@ impl Core {
                 })
                 .min_by_key(|e| e.start.duration_since(n.start).unsigned_abs())
                 .cloned();
+            // When the edit renumbered the rules, the same rule index is another rule:
+            // its occurrence is no move of this event, and it airs.
+            let old = self
+                .planned_rules
+                .iter()
+                .find(|(e, _)| same_event(e, &n))
+                .map(|(_, r)| r.clone())
+                .or_else(|| {
+                    let Origin::Rule { playlist, .. } = n.origin else {
+                        return None;
+                    };
+                    self.last_station
+                        .as_ref()
+                        .and_then(|s| rules_of(s, playlist))
+                });
+            if renumbered(old, station, &n.origin) {
+                continue;
+            }
             if let Some(m) = moved_to
-                && !self.superseded.iter().any(|x| same_occurrence(x, &m))
+                && !self
+                    .superseded
+                    .iter()
+                    .any(|x| same_occurrence(&x.entry, &m))
             {
-                self.superseded.push(m);
+                self.superseded.push(Superseded {
+                    entry: m,
+                    stand_in: n,
+                });
+            }
+        }
+    }
+
+    /// Keeps the rule list of each hard event that the plan has for the first time.
+    fn note_planned_rules(&mut self, station: &radio_model::Station, now: Timestamp) {
+        const KEEP: Duration = Duration::from_secs(3600);
+        self.planned_rules
+            .retain(|(e, _)| e.start > now || since(e.start, now) < KEEP);
+        for e in self.timeline.entries.iter().filter(|e| is_hard_entry(e)) {
+            let Origin::Rule { playlist, .. } = e.origin else {
+                continue;
+            };
+            if self.planned_rules.iter().any(|(k, _)| same_event(k, e)) {
+                continue;
+            }
+            if let Some(rules) = rules_of(station, playlist) {
+                self.planned_rules.push((e.clone(), rules));
+            }
+        }
+    }
+
+    /// Forgets superseded occurrences whose target passed. If the locked event that stood
+    /// in for one did not air, the occurrence was suppressed without airing: that raises
+    /// `HardEventMissed` for it.
+    fn expire_superseded(&mut self, now: Timestamp) {
+        let (past, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.superseded)
+            .into_iter()
+            .partition(|x| x.entry.start.max(x.stand_in.start) <= now);
+        self.superseded = kept;
+        for x in past {
+            let from = sub(x.stand_in.start, HARD_LOCK);
+            let aired = self
+                .history
+                .iter_since(from)
+                .any(|p| p.item == x.stand_in.item);
+            if !aired {
+                let alarm = Alarm::HardEventMissed {
+                    item: x.entry.item,
+                    target: x.entry.start,
+                };
+                self.alarms.raise(now, alarm);
             }
         }
     }
