@@ -476,3 +476,18 @@ fn play_next_is_a_large_button_in_the_header_with_its_siblings_at_the_same_heigh
     }
     assert!(play.top() < 100.0, "Play next is in the header strip");
 }
+
+/// The line under the Out meter names the deck on air and its item, with the time left.
+#[test]
+fn the_header_names_what_is_on_air() {
+    let harness = harness();
+    assert!(
+        shows(&harness, "Deck A on air"),
+        "the badge of the deck on air"
+    );
+    let line = harness
+        .query_all_by_label("Halvard Pine – Harbours of Kelmora")
+        .any(|n| n.rect().bottom() < 250.0 && n.rect().left() > 800.0);
+    assert!(line, "the item on air shows in the header cluster");
+    assert!(!shows(&harness, "Nothing playing"), "something is on air");
+}

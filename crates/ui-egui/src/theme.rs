@@ -137,6 +137,8 @@ pub mod size {
     pub const CLOCK_COL_W: f32 = 140.0;
     /// The Out meter in the header: the height of the meter in a narrow cluster.
     pub const VU_NARROW_H: f32 = 20.0;
+    /// The now-playing line under the Out meter.
+    pub const NOW_LINE: f32 = 20.0;
     /// The two channel bars of the Out meter in the cluster, together.
     pub const VU_BARS_H: f32 = 36.0;
     /// The gap between the two channel bars of a meter.
