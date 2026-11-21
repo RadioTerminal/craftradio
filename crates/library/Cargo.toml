@@ -1,0 +1,23 @@
+[package]
+name = "radio-library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+radio-model.workspace = true
+thiserror.workspace = true
+lofty.workspace = true
+symphonia.workspace = true
+symphonia-adapter-libopus.workspace = true
+ebur128.workspace = true
+blake3.workspace = true
+notify.workspace = true
+
+[dev-dependencies]
+hound.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
