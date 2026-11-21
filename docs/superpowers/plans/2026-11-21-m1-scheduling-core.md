@@ -32,6 +32,10 @@ Roadmap: `docs/superpowers/plans/2026-11-21-roadmap.md`.
 - Defaults from the spec: tolerance ±1 s; lock time 10 min; re-plan threshold 0.5 s; fit search resolution 100 ms.
 - No playlist type is special: ads, jingles, shows and news are all `Playlist`s. Behaviour comes only from the flags and rules.
 - CI runs `cargo test --workspace` on Windows, Linux and macOS.
+- **Minimal tests (user directive, 2026-11-21):** each task writes only the 1–3 tests for its
+  core behaviour, plus its Review Focus test if it owns one. Skip the remaining listed tests,
+  the proptest step (Task 8 step 5) and the performance test (Task 6). The goal is to reach
+  the UI (Task 10) fast.
 
 ## Review Focus
 
@@ -430,3 +434,46 @@ examples/station.toml
   `cargo run -p radio-cli -- plan examples/station.toml --now 2026-11-21T13:00:00Z --hours 4`
   and check by eye that ads come in threes at :20 / :50, the news is at 15:00:00 and the show is at about 16:00.
 - [ ] **Step 6: Commit** `feat(cli): radio-cli plan prints the on-air timeline`.
+
+### Task 10: UI preview (egui), the two-pane playlist over the real plan
+
+Added at the user's request ("see the UI first"). There's no audio: the decks and the cartwall
+are visual only. Times come from `plan()` run against `examples/station.toml`.
+
+**Files:** Create `crates/ui-egui/**` (`radio-ui-egui`) and `apps/radio/**` (the desktop binary).
+
+**Interfaces:**
+- Consumes: `Station`, `plan`, `PlanOptions`, `Timeline`, `Entry`, `Origin`, `FitResult`.
+- Produces: `radio_ui_egui::RadioApp::new(station: Station, now: Timestamp) -> RadioApp`,
+  which implements `eframe::App`. Binary: `radio [station.toml] [--now RFC3339]`. It defaults to
+  `examples/station.toml` and to the system clock; this is the only place that reads the clock.
+
+**Layout (spec §6.12 mockup):**
+- **Top: deck strip.** Four deck cards, A–D. Each shows the item it would hold (from the first
+  four timeline entries), a progress bar driven by the clock, and the mode label `AUTO`.
+- **Middle left, Main.** The main playlist entries in an `egui_extras::TableBuilder` that
+  only draws visible rows, with the columns start time (`HH:MM:SS`, local), artist – title and
+  length. Inserted entries appear as thin divider rows coloured with their playlist's colour.
+- **Middle right.** One tab row: `Upcoming`, then one tab per non-main playlist, then `[+]`
+  (disabled).
+  - *Upcoming* lists every non-main entry by time, with a colour dot, the playlist name, the
+    title and the length. Fixed entries show `⏱` and a line `fit: ±S.s s ✓|✗` from their
+    `FitResult`.
+  - A playlist tab shows its items, its pick order and a read-only summary of its rules.
+- **Bottom.** Cartwall: a 4×4 grid of buttons labelled with the station's Jingles items
+  (visual only), and a "■ stop all carts" button. Under it, a status line with
+  `Local ●  Icecast ●` placeholders and a count of warnings.
+- **Linked selection:** clicking a row in either pane highlights the matching entry in the other.
+- **Updates:** `plan()` re-runs once a second with the current time and the previous timeline.
+  The clock (`HH:MM:SS`) is shown in the top-right.
+
+- [ ] **Step 1:** Add the workspace deps `eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }`, `egui = "0.36"` and `egui_extras = "0.36"` (choose the nearest working versions; note them in the report).
+- [ ] **Step 2:** One test, `crates/ui-egui/tests/smoke.rs`, using `egui_kittest`: build
+  `RadioApp` from the testkit station at a fixed `now`, run one frame, and assert that the
+  texts `Upcoming` and `15:00:00` exist.
+- [ ] **Step 3:** Implement. Keep panels in separate files: `decks.rs`, `main_pane.rs`,
+  `scheduled_pane.rs`, `cartwall.rs`, `app.rs`.
+- [ ] **Step 4:** Run `mise exec -- cargo test -p radio-ui-egui`. Expected: PASS. Then
+  `mise exec -- cargo run -p radio -- --now 2026-11-21T13:58:00Z` opens the window. Take a
+  screenshot to check it.
+- [ ] **Step 5: Commit** `feat(ui): two-pane playlist preview over the scheduler`.
