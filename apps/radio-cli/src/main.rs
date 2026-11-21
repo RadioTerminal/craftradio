@@ -3,8 +3,10 @@
 use clap::{Parser, Subcommand};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
-use radio_model::{Item, ItemId, ModelError, Station};
-use radio_scheduler::{Entry, PlanInput, PlanOptions, PlayHistory, Timeline, Warning, plan};
+use radio_model::{Item, ItemId, ModelError, PlaylistId, Station};
+use radio_scheduler::{
+    DropReason, Entry, PlanInput, PlanOptions, PlayHistory, Timeline, Warning, plan,
+};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -78,8 +80,9 @@ fn run(cli: Cli) -> Result<u8, String> {
             } else {
                 print_text(&station, &timeline);
             }
+            let tz = TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC);
             for w in &timeline.warnings {
-                eprintln!("warning: {w:?}");
+                eprintln!("warning: {}", warning_text(&station, &tz, w));
             }
             Ok(exit_code(&timeline))
         }
@@ -129,6 +132,78 @@ fn print_text(station: &Station, timeline: &Timeline) {
         {
             let mark = if fit.within_tolerance { '✓' } else { '✗' };
             println!("    fit: {:+.1} s {mark}", fit.error.as_secs_f64());
+        }
+    }
+}
+
+fn playlist_name(station: &Station, id: PlaylistId) -> String {
+    station
+        .playlists
+        .iter()
+        .find(|p| p.id == id)
+        .map_or_else(|| format!("{id:?}"), |p| p.name.clone())
+}
+
+fn item_name(station: &Station, id: ItemId) -> String {
+    find_item(station, id).map_or_else(|| format!("{id:?}"), |i| i.title.clone())
+}
+
+/// A warning in words, with local times and playlist / item names.
+fn warning_text(station: &Station, tz: &TimeZone, w: &Warning) -> String {
+    let time = |t: &Timestamp| t.to_zoned(tz.clone()).strftime("%H:%M:%S").to_string();
+    let secs = |d: &Duration| d.as_secs_f64();
+    match w {
+        Warning::NoEligibleItem { playlist, at } => format!(
+            "{}: no eligible item at {}",
+            playlist_name(station, *playlist),
+            time(at)
+        ),
+        Warning::DeadAir { at, gap } => {
+            format!("dead air at {} for {:.1} s", time(at), secs(gap))
+        }
+        Warning::FixedConflict {
+            playlist,
+            wanted,
+            got,
+        } => format!(
+            "{}: wanted {}, starts {} (another fixed event has the slot)",
+            playlist_name(station, *playlist),
+            time(wanted),
+            time(got)
+        ),
+        Warning::OutsideTolerance { playlist, error } => format!(
+            "{}: fit {:+.1} s is outside its tolerance",
+            playlist_name(station, *playlist),
+            error.as_secs_f64()
+        ),
+        Warning::LockedMoved { item, by } => format!(
+            "locked \"{}\" starts {:.1} s late",
+            item_name(station, *item),
+            secs(by)
+        ),
+        Warning::UnknownTimeZone { tz } => {
+            format!("unknown time zone \"{tz}\"; local-time rules use UTC")
+        }
+        Warning::EntryDropped {
+            at,
+            playlist,
+            item,
+            reason,
+        } => {
+            let why = match reason {
+                DropReason::AdjacencyAfterMove => {
+                    "moved across a fixed event, it would break an adjacency rule"
+                }
+                DropReason::AdjacencyAfterReplan => {
+                    "after the re-plan, it would break an adjacency rule"
+                }
+            };
+            format!(
+                "{}: dropped \"{}\" planned at {} ({why})",
+                playlist_name(station, *playlist),
+                item_name(station, *item),
+                time(at)
+            )
         }
     }
 }

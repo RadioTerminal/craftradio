@@ -81,6 +81,24 @@ pub enum Warning {
     UnknownTimeZone {
         tz: String,
     },
+    /// An entry was taken out of the plan; `at` is where it was planned to start.
+    EntryDropped {
+        at: Timestamp,
+        playlist: PlaylistId,
+        item: ItemId,
+        reason: DropReason,
+    },
+}
+
+/// Why the planner took an entry out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DropReason {
+    /// The fitter moved this rule insertion across a fixed or locked entry, and there it
+    /// would have broken an adjacency rule (`NotAdjacentToSelf` / `NotAdjacentTo`).
+    AdjacencyAfterMove,
+    /// A re-plan took out a duplicate between rule insertions, and this one would then
+    /// have broken an adjacency rule.
+    AdjacencyAfterReplan,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

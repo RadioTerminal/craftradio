@@ -6,7 +6,8 @@ use radio_model::{
     Constraint, FixMode, Item, Placement, Playlist, PlaylistId, Rule, Station, Trigger,
 };
 use radio_scheduler::{
-    Entry, Fixed, Origin, PlanInput, PlanOptions, PlayHistory, Timeline, fit_all, plan,
+    DropReason, Entry, Fixed, Origin, PlanInput, PlanOptions, PlayHistory, Timeline, Warning,
+    fit_all, plan,
 };
 use radio_testkit::{jingle, playlist, station, track};
 use radio_timing::item_len;
@@ -167,6 +168,23 @@ fn no_adjacent_jingles_when_hard_event_pushes_one_past_it() {
     fit_all(&mut tl, &st, &PlayHistory::new());
     let bad = adjacency_violations(&st, &tl);
     assert!(bad.is_empty(), "adjacent station IDs: {bad:#?}");
+    // Every station ID that is gone is reported, so a missing insertion can be traced.
+    let missing: Vec<_> = [20, 21]
+        .into_iter()
+        .filter(|id| !tl.entries.iter().any(|e| e.item.0 == *id))
+        .collect();
+    assert!(!missing.is_empty(), "the clash was resolved without a drop");
+    for id in missing {
+        assert!(
+            tl.warnings.iter().any(|w| matches!(
+                w,
+                Warning::EntryDropped { item, playlist, reason: DropReason::AdjacencyAfterMove, .. }
+                    if item.0 == id && *playlist == JINGLES
+            )),
+            "no EntryDropped for station ID {id}: {:?}",
+            tl.warnings
+        );
+    }
     let news = tl.entries.iter().find(|e| e.fixed.is_some()).unwrap();
     assert_eq!(news.start, at(300), "the hard event keeps its time");
 }
@@ -210,11 +228,36 @@ fn example_station_has_no_adjacent_entries_from_not_adjacent_playlists_over_a_da
     let bad = adjacency_violations(&st, &first);
     assert!(bad.is_empty(), "first plan: {bad:#?}");
 
-    // Re-planning, also with the next fixed event close enough to be frozen.
+    hard_events_on_target(&first, "first plan");
+
+    // Re-planning, also with the next fixed event inside `lock_before`.
     for later in [0, 30 * 60, 55 * 60] {
         let now = t0() + Duration::from_secs(later);
         let again = plan_example(&st, now, Some(&first));
         let bad = adjacency_violations(&st, &again);
         assert!(bad.is_empty(), "re-plan at {now}: {bad:#?}");
+        hard_events_on_target(&again, &format!("re-plan at {now}"));
+    }
+}
+
+/// Every hard event starts at its target and its fit is within tolerance.
+fn hard_events_on_target(tl: &Timeline, what: &str) {
+    let hard: Vec<&Entry> = tl
+        .entries
+        .iter()
+        .filter(|e| e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
+        .collect();
+    assert!(!hard.is_empty(), "{what}: no hard event to check");
+    for e in hard {
+        let f = e.fixed.as_ref().unwrap();
+        assert_eq!(e.start, f.target, "{what}: hard event {:?} moved", e.item);
+        let outside = tl.warnings.iter().any(
+            |w| matches!(w, Warning::OutsideTolerance { playlist, .. } if *playlist == e.playlist),
+        );
+        assert!(
+            !outside,
+            "{what}: {:?} outside tolerance: {:?}",
+            e.playlist, tl.fits
+        );
     }
 }

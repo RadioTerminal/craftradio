@@ -478,3 +478,67 @@ fn hard_event_beats_locked_entry() {
             if *item == ItemId(3) && locked_at + *by == locked.start
     )));
 }
+
+/// Three 180 s tracks hand over at +534 s; before a hard event the last one plays to +536 s.
+fn hard_fill_case(fill: Vec<Item>) -> (Station, Timeline, Timestamp) {
+    let st = make_station(tracks(1, 12, 180), vec![(jingle(100, 60), 0)], fill);
+    let target = at(546);
+    let tl = timeline(&st, &[(target, FixMode::Hard)]);
+    (st, tl, target)
+}
+
+fn filled_items(result: &FitResult) -> Vec<ItemId> {
+    result
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            FitStep::Filled { items } => Some(items.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn fill_before_hard_event_starts_at_the_segue_of_the_last_track() {
+    // Followed by fill, the last track hands over at its segue (+534 s), not at its end
+    // (+536 s), so the 12 s item closes the gap and the 10 s one would leave dead air.
+    let (st, mut tl, target) = hard_fill_case(vec![jingle(201, 10), jingle(202, 12)]);
+    fit(&st, &mut tl);
+    let result = fit_for(&tl, target);
+    assert_eq!(filled_items(result), vec![ItemId(202)]);
+    assert!(result.within_tolerance, "{result:?}");
+    assert!(
+        !tl.warnings
+            .iter()
+            .any(|w| matches!(w, Warning::DeadAir { .. })),
+        "{:?}",
+        tl.warnings
+    );
+    assert_eq!(tl.entries[event_index(&tl, 100)].start, target);
+    no_overlap_with_fixed(&st, &tl);
+}
+
+#[test]
+fn hard_event_fill_prefers_a_fadeable_overrun_to_dead_air() {
+    // The gap is 12 s. A 10 s bed ends 2 s early, which nothing can close; a 15 s bed runs
+    // 3 s over and can be faded at the target.
+    let bed = |id, secs| {
+        let mut item = jingle(id, secs);
+        item.trimmable = true;
+        item
+    };
+    let (st, mut tl, target) = hard_fill_case(vec![bed(201, 10), bed(202, 15)]);
+    fit(&st, &mut tl);
+    let result = fit_for(&tl, target);
+    assert_eq!(filled_items(result), vec![ItemId(202)]);
+    assert_eq!(result.error, SignedDuration::ZERO, "{result:?}");
+    assert!(
+        result
+            .steps
+            .iter()
+            .any(|s| matches!(s, FitStep::Trimmed { .. })),
+        "{result:?}"
+    );
+    assert_eq!(tl.entries[event_index(&tl, 100)].start, target);
+    no_overlap_with_fixed(&st, &tl);
+}

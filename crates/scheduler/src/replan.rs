@@ -195,7 +195,7 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         return tl;
     }
     // Taking out the duplicates can leave two rule insertions side by side.
-    drop_adjacent_clashes(&mut raw.entries, input.station);
+    drop_adjacent_clashes(&mut raw.entries, input.station, &mut raw.warnings);
     fit_all(&mut raw, input.station, input.history);
     // `frozen` is a planning-time flag; it does not outlive the plan.
     for f in raw.entries.iter_mut().filter_map(|e| e.fixed.as_mut()) {
