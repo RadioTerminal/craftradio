@@ -145,3 +145,28 @@ fn same_input_same_output() {
     let b = run(&st, &[], Some(&a));
     assert_eq!(b, run(&st, &[], Some(&a)));
 }
+
+#[test]
+fn each_main_item_airs_at_most_once() {
+    let st = make_station(tracks(30), 30);
+    let fresh = run(&st, &[], None);
+    // An older plan that had track 12 first; the new merge has it later in the hour.
+    let mut prev = fresh.clone();
+    let dropped = prev.entries[0].item;
+    prev.entries[0].item = ItemId(12);
+    let err = prev.fits[0].error;
+    let worse = SignedDuration::from_millis(300);
+    prev.fits[0].error = if err.is_negative() {
+        err - worse
+    } else {
+        err + worse
+    };
+    let tl = run(&st, &[], Some(&prev));
+    assert_eq!(tl.entries[0].item, ItemId(12));
+    let mut seen = std::collections::BTreeSet::new();
+    for e in tl.entries.iter().filter(|e| e.origin == Origin::Main) {
+        assert!(seen.insert(e.item), "{:?} airs twice", e.item);
+    }
+    // The track the old window lacked is still played, later.
+    assert!(seen.contains(&dropped));
+}
