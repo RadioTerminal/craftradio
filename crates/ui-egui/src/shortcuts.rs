@@ -95,8 +95,11 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
     }
     // Space and the arrows belong to a focused button, slider or list, when there is one.
     let free = ctx.memory(|m| m.focused().is_none());
-    // Escape closes an open menu first, and an open settings page under the pointer or the focus.
-    let menu = egui::Popup::is_any_open(ctx) | crate::settings::escape_claimed(ctx);
+    // Escape closes an open menu first, then the one-off dialog.
+    // It also closes an open settings page under the pointer or the focus.
+    let menu = egui::Popup::is_any_open(ctx)
+        | crate::settings::escape_claimed(ctx)
+        | crate::one_off::escape_claimed(ctx);
     ctx.input_mut(|i| {
         let mut p = Pressed::default();
         for e in &i.events {

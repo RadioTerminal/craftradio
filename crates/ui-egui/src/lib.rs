@@ -33,6 +33,7 @@ mod main_pane;
 mod meta_editor;
 mod mixer;
 pub mod mock;
+mod one_off;
 mod parts;
 mod prepared;
 mod rules_editor;

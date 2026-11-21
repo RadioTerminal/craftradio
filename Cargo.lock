@@ -3846,6 +3846,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "jiff",
+ "radio-engine",
  "radio-model",
  "radio-scheduler",
  "serde_json",
@@ -3860,6 +3861,7 @@ dependencies = [
  "jiff",
  "radio-model",
  "radio-script",
+ "radio-timing",
  "rusqlite",
  "schemars",
  "serde",
@@ -3975,6 +3977,7 @@ dependencies = [
  "jiff",
  "radio-model",
  "radio-testkit",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3988,6 +3991,7 @@ dependencies = [
  "jiff",
  "lucide-icons",
  "radio-model",
+ "radio-timing",
  "rfd",
  "serde_json",
 ]

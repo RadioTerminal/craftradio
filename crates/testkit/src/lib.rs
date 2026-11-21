@@ -96,6 +96,7 @@ pub fn playlist(id: u64, name: &str, items: Vec<Item>) -> Playlist {
         enabled: true,
         is_main: false,
         is_fill_pool: false,
+        role: radio_model::PlaylistRole::User,
         on_interrupt: radio_model::OnInterrupt::Resume,
         priority: 0,
         pick: PickOrder::InOrder,

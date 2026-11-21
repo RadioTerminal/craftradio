@@ -13,6 +13,7 @@ mod deadair;
 mod device;
 mod input;
 mod loudness;
+mod one_off;
 pub use input::{Capture, OpenInput, open_input};
 mod ops;
 mod output;

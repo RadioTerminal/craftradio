@@ -41,7 +41,12 @@ fn run(st: &Station, pinned: &[Entry], prev: Option<&Timeline>) -> Timeline {
     run_for(st, pinned, prev, Duration::from_secs(3600))
 }
 
-fn run_for(st: &Station, pinned: &[Entry], prev: Option<&Timeline>, horizon: Duration) -> Timeline {
+pub(super) fn run_for(
+    st: &Station,
+    pinned: &[Entry],
+    prev: Option<&Timeline>,
+    horizon: Duration,
+) -> Timeline {
     let history = PlayHistory::new();
     plan(
         &PlanInput {

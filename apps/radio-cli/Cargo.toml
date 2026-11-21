@@ -10,6 +10,7 @@ name = "radio-cli"
 path = "src/main.rs"
 
 [dependencies]
+radio-engine.workspace = true
 radio-model.workspace = true
 radio-scheduler.workspace = true
 clap.workspace = true

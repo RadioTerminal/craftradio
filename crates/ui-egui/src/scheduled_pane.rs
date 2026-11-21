@@ -8,12 +8,13 @@ use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, mmss};
 use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_if};
 use crate::icons::{self, Icon};
 use crate::library::LibraryDrag;
+use crate::one_off::OneOffDialog;
 use crate::prepared::Prepared;
 use crate::rules_editor;
 use crate::select::Selection;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
-    DropTarget, Edit, FitView, MetaTarget, Pick, PlaylistTab, Row, StationView, Timing,
+    DropTarget, Edit, FitView, MetaTarget, OneOffView, Pick, PlaylistTab, Row, StationView, Timing,
 };
 
 /// The tolerances that the Edit timing menu offers, in seconds.
@@ -181,6 +182,20 @@ fn upcoming(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    ui.horizontal(|ui| {
+        let text =
+            RichText::new(icons::lead(Icon::Plus, "Add one-off")).font(theme::text(theme::LABEL));
+        let resp = ui
+            .button(text)
+            .on_hover_text("Play a file, a library item, a stream or the live input at a set time");
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add one-off")
+        });
+        if resp.clicked() {
+            actions.push(Action::OneOff(Box::new(OneOffDialog::new(view))));
+        }
+    });
+    ui.add_space(space::XS);
     let clip_rect = ui.clip_rect();
     let now = view.now.timestamp();
     let order: Vec<u64> = prep.upcoming.iter().map(|i| prep.ids[*i]).collect();
@@ -290,7 +305,10 @@ fn upcoming(
                     };
                     link.click(Pane::Scheduled, r.id, m, &order);
                 }
-                resp.context_menu(|ui| upcoming_menu(ui, r, link, actions));
+                resp.context_menu(|ui| match &r.one_off {
+                    Some(o) => one_off_menu(ui, r, o, view, link, actions),
+                    None => upcoming_menu(ui, r, link, actions),
+                });
             });
         });
 }
@@ -328,6 +346,28 @@ fn fit_detail(r: &Row, fit: FitView) -> String {
         text.push_str(" · outside the tolerance");
     }
     text
+}
+
+/// The menu of a one-off row: edit it, remove it, or copy its time.
+pub(crate) fn one_off_menu(
+    ui: &mut egui::Ui,
+    r: &Row,
+    o: &OneOffView,
+    view: &StationView,
+    link: &Linked,
+    actions: &mut Vec<Action>,
+) {
+    if menu_item(ui, "Edit one-off…", None) {
+        actions.push(Action::OneOff(Box::new(OneOffDialog::edit(o, view))));
+    }
+    if menu_item(ui, "Remove", Some(DELETE)) {
+        actions.push(Action::Edit(Edit::Remove(link.targets(r.id))));
+    }
+    if menu_item(ui, "Copy time", None) {
+        let text = o.start.strftime("%Y-%m-%d %H:%M:%S").to_string();
+        ui.ctx().copy_text(text.clone());
+        actions.push(Action::Toast(format!("Copied {text}")));
+    }
 }
 
 fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Vec<Action>) {

@@ -1,8 +1,10 @@
 //! Time arithmetic and DST-safe local time for the scheduler.
 
 mod occur;
+mod start;
 
 pub use occur::{occurrences, resolve_local};
+pub use start::{LocalStart, StartError, local_start};
 
 use jiff::Timestamp;
 use radio_model::Item;

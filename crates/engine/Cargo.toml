@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 radio-model.workspace = true
 radio-script = { path = "../script" }
+radio-timing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true

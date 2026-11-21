@@ -165,6 +165,7 @@ pub struct RadioApp {
     rename: Option<(String, String)>,
     meta: Option<MetaEditor>,
     add_dialog: Option<AddDialog>,
+    one_off: Option<crate::one_off::OneOffDialog>,
     /// Display text and lookups for the current snapshot.
     prepared: Prepared,
     /// The frame time readout, when the app runs with `--perf`.
@@ -222,6 +223,7 @@ impl RadioApp {
             rename: None,
             meta: None,
             add_dialog: None,
+            one_off: None,
             prepared,
             perf: None,
             decks: decks::State::default(),

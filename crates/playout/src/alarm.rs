@@ -53,6 +53,13 @@ pub enum Alarm {
     /// An operator removed the item of a hard event that was about to air, so it does not
     /// air.
     HardEventCancelled { item: ItemId, target: Timestamp },
+    /// A one-off with no repeat passed its time and its tolerance, and it did not air.
+    /// For example, the app did not run then. Playout removes it from the schedule.
+    OneOffMissed {
+        item: ItemId,
+        title: String,
+        target: Timestamp,
+    },
     /// Playout could not use the local output as asked. It runs on the fallback.
     OutputFallback { reason: String },
     /// Writing the as-played log failed.

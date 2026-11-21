@@ -5,6 +5,7 @@ use super::*;
 impl RadioApp {
     pub(super) fn dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>, t: &Tokens) {
         add_menu::dialog(ctx, &mut self.add_dialog, &self.view, actions, t);
+        crate::one_off::show(ctx, &mut self.one_off, &self.view, actions, t);
         if let Some(c) = &self.confirm {
             let text = c.text.clone();
             let yes_label = c.yes.clone();

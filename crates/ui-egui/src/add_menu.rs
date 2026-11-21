@@ -13,7 +13,7 @@ use crate::view::{AUDIO_EXTENSIONS, Edit, StationView, check_stream_url};
 use crate::windows::ToolWindow;
 
 /// The planned length of a new stream or live input, in minutes.
-const DEFAULT_PLANNED_MIN: u32 = 60;
+pub(crate) const DEFAULT_PLANNED_MIN: u32 = 60;
 const MAX_PLANNED_MIN: u32 = 24 * 60;
 const SECONDS_PER_MINUTE: u32 = 60;
 const MAX_CHANNEL: u32 = 16;
@@ -150,7 +150,7 @@ pub(crate) fn items(
     }
 }
 
-fn planned(ui: &mut egui::Ui, minutes: &mut u32, seconds: &mut u32, t: &Tokens) {
+pub(crate) fn planned(ui: &mut egui::Ui, minutes: &mut u32, seconds: &mut u32, t: &Tokens) {
     ui.label(RichText::new("Planned length").color(t.text_muted));
     ui.horizontal(|ui| {
         ui.add(

@@ -362,6 +362,48 @@ mod tests {
     }
 
     #[test]
+    fn a_one_off_starts_at_its_time_and_undo_brings_back_a_removed_one() {
+        use crate::view::{OneOffRepeat, OneOffSource, OneOffView};
+        let tz = TimeZone::get("Europe/Ljubljana").expect("tz");
+        let now: Timestamp = "2026-11-21T13:58:00Z".parse().expect("ts");
+        let mut source = MockSource::new(tz);
+        source.snapshot(now);
+        let start = jiff::civil::date(2026, 11, 21).at(15, 37, 0, 0);
+        let added = source.edit(Edit::ScheduleOneOff(OneOffView {
+            id: 0,
+            source: OneOffSource::Url {
+                url: "https://relay.example.org/live".to_owned(),
+                title: "Relay".to_owned(),
+                keep_alive: true,
+                len: secs(120),
+            },
+            start,
+            hard: true,
+            tolerance_s: 1.0,
+            repeat: OneOffRepeat::Once,
+        }));
+        assert_eq!(added, Ok(1));
+        let view = source.snapshot(now);
+        let row = view
+            .rows
+            .iter()
+            .find(|r| r.one_off.is_some())
+            .expect("the one-off has a row");
+        assert_eq!(row.start.datetime(), start, "it starts at its time");
+        assert_eq!(row.title, "Relay");
+        for pair in view.rows.windows(2) {
+            assert!(pair[0].start < pair[1].start, "rows stay in order");
+        }
+        let id = row.id;
+        assert_eq!(source.edit(Edit::Remove(vec![id])), Ok(1));
+        let gone = source.snapshot(now);
+        assert!(gone.rows.iter().all(|r| r.one_off.is_none()));
+        assert_eq!(source.edit(Edit::Undo), Ok(1));
+        let back = source.snapshot(now);
+        assert!(back.rows.iter().any(|r| r.id == id && r.one_off.is_some()));
+    }
+
+    #[test]
     fn a_scan_stops_at_its_limit_and_keeps_the_first_files_in_name_order() {
         let dir = std::env::temp_dir().join(format!("radio-scan-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");

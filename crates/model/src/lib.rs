@@ -19,7 +19,7 @@ pub use loudness::{
     Clamp, GainSource, ItemGain, Loudness, LoudnessSettings, MAX_CUT_DB, PEAK_CEILING_DB,
     check_trim, range as loudness_range,
 };
-pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist};
+pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist, PlaylistRole};
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
 pub use station::Station;
 

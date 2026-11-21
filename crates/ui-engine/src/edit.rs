@@ -46,6 +46,8 @@ pub(crate) enum ProbeAfter {
     Import {
         category: String,
     },
+    /// A one-off of Upcoming that plays the file.
+    OneOff(radio_ui_egui::view::OneOffView),
 }
 /// The name of the playlist that holds library files for carts.
 const CART_ITEMS: &str = "Cart items";
@@ -428,6 +430,13 @@ impl EngineSource {
                     )
                 }
             }
+            ProbeAfter::OneOff(view) => match items.into_iter().next() {
+                Some(item) => self.send_one_off(&view, item),
+                None => {
+                    let why = errors.first().cloned().unwrap_or_default();
+                    Err(format!("The one-off has no audio file to play {why}"))
+                }
+            },
             ProbeAfter::Import { category } => {
                 let n = items.len();
                 for item in items {
@@ -682,9 +691,20 @@ impl EngineSource {
                 None => by_list.push((r.playlist, vec![r.item])),
             }
         }
+        let one_off = radio_engine::one_off_playlist(&self.state.station);
         let cmds = by_list
             .into_iter()
-            .map(|(playlist, items)| Command::PlaylistRemoveItems { playlist, items })
+            .flat_map(|(playlist, items)| {
+                // A one-off goes with its rule.
+                if Some(playlist) == one_off {
+                    items
+                        .into_iter()
+                        .map(|id| Command::ScheduleRemove { id })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![Command::PlaylistRemoveItems { playlist, items }]
+                }
+            })
             .collect();
         self.run_batch(cmds)?;
         Ok(ids.len())
@@ -988,6 +1008,11 @@ impl EngineSource {
                 Ok(n)
             }
             Edit::RemoveLibraryItems(ids) => self.remove_library_items(&ids),
+            Edit::ScheduleOneOff(view) => self.schedule_one_off(view),
+            Edit::RemoveOneOff(id) => {
+                self.run_edit(Command::ScheduleRemove { id: ItemId(id) })?;
+                Ok(1)
+            }
             Edit::MovePlaylistItem {
                 playlist,
                 index,
@@ -1401,7 +1426,14 @@ impl EngineSource {
         let on_deck = self.playout.deck_items();
         let mut cmds = Vec::new();
         let mut n = 0;
-        for p in &self.state.station.playlists {
+        // One-offs are copies for Upcoming: they stay when their file leaves the Library.
+        let playlists = self
+            .state
+            .station
+            .playlists
+            .iter()
+            .filter(|p| p.role != radio_model::PlaylistRole::OneOff);
+        for p in playlists {
             let items: Vec<&radio_model::Item> = p
                 .items
                 .iter()

@@ -39,6 +39,19 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run one engine command on the station in a folder, and print its outcome as JSON.
+    ///
+    /// The command is JSON: {"id": "schedule.add", "args": {...}}. `commands` lists the
+    /// ids. Close the app first: a running app keeps its own copy of the station.
+    Cmd {
+        /// The folder that holds station.db: the --data-dir of the app.
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// The command as JSON.
+        command: String,
+    },
+    /// List the engine commands: id, tier and summary.
+    Commands,
 }
 
 fn main() -> ExitCode {
@@ -60,8 +73,49 @@ fn main() -> ExitCode {
     }
 }
 
+/// Runs one engine command on `data_dir/station.db`. It never makes a new station.
+fn run_command(data_dir: &std::path::Path, json: &str) -> Result<u8, String> {
+    let db = data_dir.join("station.db");
+    if !db.is_file() {
+        return Err(format!(
+            "no station at {}; start the app with --data-dir first",
+            db.display()
+        ));
+    }
+    let command: radio_engine::Command =
+        serde_json::from_str(json).map_err(|e| format!("cannot read the command: {e}"))?;
+    let mut engine = radio_engine::Engine::open(&db).map_err(|e| e.to_string())?;
+    let outcome = engine.dispatch(command).map_err(|e| e.to_string())?;
+    engine
+        .flush()
+        .map_err(|e| format!("the change is not saved: {e}"))?;
+    let text = serde_json::to_string_pretty(&outcome)
+        .map_err(|e| format!("cannot write the outcome: {e}"))?;
+    writeln!(io::stdout().lock(), "{text}").map_err(|e| e.to_string())?;
+    if let Some(note) = &outcome.note {
+        eprintln!("note: {note}");
+    }
+    if outcome.audio_required && !outcome.applied_to_audio {
+        eprintln!("note: no playout runs here, so no audio command reached the decks");
+    }
+    Ok(0)
+}
+
 fn run(cli: Cli) -> Result<u8, String> {
     match cli.command {
+        Command::Cmd { data_dir, command } => run_command(&data_dir, &command),
+        Command::Commands => {
+            let mut out = io::stdout().lock();
+            for spec in radio_engine::registry() {
+                let tier = match spec.tier {
+                    radio_engine::Tier::ReadOnly => "read-only",
+                    radio_engine::Tier::OnAir => "on-air",
+                };
+                writeln!(out, "{:<28} {tier:<9} {}", spec.id, spec.summary)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(0)
+        }
         Command::Plan {
             station,
             now,

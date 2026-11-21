@@ -24,6 +24,9 @@ pub struct Playlist {
     pub enabled: bool,
     pub is_main: bool,
     pub is_fill_pool: bool,
+    /// What the playlist is for. A system playlist has no tab, and nobody deletes it.
+    #[serde(default)]
+    pub role: PlaylistRole,
     /// What a restart does with an item of this playlist that a crash cut off.
     #[serde(default)]
     pub on_interrupt: OnInterrupt,
@@ -32,6 +35,19 @@ pub struct Playlist {
     pub items: Vec<Item>,
     pub rules: Vec<Rule>,
     pub constraints: Vec<Constraint>,
+}
+
+/// What a playlist is for.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub enum PlaylistRole {
+    /// A playlist that a person made.
+    #[default]
+    User,
+    /// The system playlist "One-off". It holds the one-off items of Upcoming. Each item has
+    /// one At rule that names it with [`Constraint::OnlyItem`](crate::Constraint::OnlyItem).
+    OneOff,
 }
 
 /// What playout does after a restart with an item that the crash cut off (spec §6.11).

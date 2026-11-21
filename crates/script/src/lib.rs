@@ -137,6 +137,13 @@ fn constraint(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Constraint
         },
         "maxPerHour" => Constraint::MaxPerHour(number(a, &name, "count", u32::MAX.into())? as u32),
         "maxPerDay" => Constraint::MaxPerDay(number(a, &name, "count", u32::MAX.into())? as u32),
+        "onlyItem" => Constraint::OnlyItem(ItemId(
+            a.as_str()
+                .and_then(|s| s.parse().ok())
+                .or_else(|| a.as_u64())
+                .filter(|n| *n > 0)
+                .ok_or_else(|| invalid(&name, "item", "expected an item id"))?,
+        )),
         _ => return Err(invalid(&name, "argument", "unknown constraint")),
     })
 }
@@ -401,6 +408,7 @@ pub fn eval_rules(
             "daypart",
             "maxPerHour",
             "maxPerDay",
+            "onlyItem",
         ] {
             let set = set.clone();
             let failure = failure.clone();
@@ -613,6 +621,7 @@ fn constraint_script(c: &Constraint, playlists: &[(String, PlaylistId)]) -> Stri
         ),
         Constraint::MaxPerHour(n) => format!("maxPerHour({n})"),
         Constraint::MaxPerDay(n) => format!("maxPerDay({n})"),
+        Constraint::OnlyItem(id) => format!("onlyItem({})", json!(id.0.to_string())),
     }
 }
 /// Produce a canonical declarative script. Referenced playlist ids must have unique names.

@@ -6,13 +6,16 @@
 mod command;
 mod error;
 mod log;
+mod one_off;
 mod store;
 
 pub use command::{
-    CartMode, Command, CommandSpec, CompressorPatch, LimiterPatch, Mode, Route, Tier, registry,
+    CartMode, Command, CommandSpec, CompressorPatch, DEFAULT_TOLERANCE, LimiterPatch, Mode, Route,
+    Tier, registry,
 };
 pub use error::EngineError;
 pub use log::{AsPlayed, LogEntry, LogStatus, Report, RowId};
+pub use one_off::{ONE_OFF_PLAYLIST, OneOff, one_off_playlist};
 
 use jiff::{Timestamp, civil};
 use radio_model::{
@@ -145,6 +148,7 @@ impl State {
             enabled: true,
             is_main: true,
             is_fill_pool: false,
+            role: radio_model::PlaylistRole::User,
             on_interrupt: radio_model::OnInterrupt::Resume,
             priority: 0,
             pick: PickOrder::InOrder,
@@ -456,7 +460,10 @@ fn undoable(cmd: &Command) -> bool {
         | C::ItemSetGainTrim { .. }
         | C::CartAssign { .. }
         | C::CartClear { .. }
-        | C::CartSet { .. } => true,
+        | C::CartSet { .. }
+        | C::ScheduleAdd { .. }
+        | C::ScheduleUpdate { .. }
+        | C::ScheduleRemove { .. } => true,
         _ => false,
     }
 }
@@ -763,6 +770,7 @@ impl Engine {
                         enabled: true,
                         is_main: false,
                         is_fill_pool: false,
+                        role: radio_model::PlaylistRole::User,
                         on_interrupt: radio_model::OnInterrupt::Resume,
                         priority: 0,
                         pick: PickOrder::InOrder,
@@ -779,6 +787,7 @@ impl Engine {
                 })
             }
             C::PlaylistRename { playlist, name } => {
+                self.refuse_system(playlist)?;
                 self.edit_station(|s| {
                     playlist_mut(s, playlist)?.name = name;
                     Ok(())
@@ -786,6 +795,7 @@ impl Engine {
                 Ok(Outcome::default())
             }
             C::PlaylistDelete { playlist } => {
+                self.refuse_system(playlist)?;
                 self.edit_station(|s| {
                     playlist_mut(s, playlist)?;
                     s.playlists.retain(|p| p.id != playlist);
@@ -797,6 +807,7 @@ impl Engine {
                 Ok(Outcome::default())
             }
             C::PlaylistSetMain { playlist } => {
+                self.refuse_system(playlist)?;
                 self.edit_station(|s| {
                     playlist_mut(s, playlist)?;
                     for p in &mut s.playlists {
@@ -807,6 +818,9 @@ impl Engine {
                 Ok(Outcome::default())
             }
             C::PlaylistEnable { playlist, enabled } => {
+                if !enabled {
+                    self.refuse_system(playlist)?;
+                }
                 self.edit_station(|s| {
                     playlist_mut(s, playlist)?.enabled = enabled;
                     Ok(())
@@ -817,6 +831,7 @@ impl Engine {
                 playlist,
                 fill_pool,
             } => {
+                self.refuse_system(playlist)?;
                 self.edit_station(|s| {
                     playlist_mut(s, playlist)?.is_fill_pool = fill_pool;
                     Ok(())
@@ -839,6 +854,7 @@ impl Engine {
                 at,
                 lock,
             } => {
+                self.refuse_system(playlist)?;
                 self.edit_station(|s| {
                     let list = &mut playlist_mut(s, playlist)?.items;
                     let at = at.unwrap_or(list.len());
@@ -858,6 +874,7 @@ impl Engine {
                 Ok(Outcome::default())
             }
             C::PlaylistRemoveItems { playlist, items } => {
+                self.refuse_system(playlist)?;
                 self.edit_station(|s| {
                     let list = &mut playlist_mut(s, playlist)?.items;
                     for id in &items {
@@ -876,6 +893,7 @@ impl Engine {
                 expect_count,
                 remove_locked,
             } => {
+                self.refuse_system(playlist)?;
                 let on_deck: Vec<ItemId> = self.state.decks.iter().flatten().copied().collect();
                 let mut removed = 0usize;
                 self.edit_station(|s| {
@@ -911,6 +929,7 @@ impl Engine {
                 items,
                 to,
             } => {
+                self.refuse_system(playlist)?;
                 self.edit_station(|s| {
                     let list = &mut playlist_mut(s, playlist)?.items;
                     let mut moved = Vec::new();
@@ -1267,7 +1286,44 @@ impl Engine {
                 })?;
                 Ok(Outcome::default())
             }
-            C::PlaylistDuplicate { playlist, name } => self.duplicate(playlist, name),
+            C::PlaylistDuplicate { playlist, name } => {
+                self.refuse_system(playlist)?;
+                self.duplicate(playlist, name)
+            }
+            C::ScheduleAdd {
+                one_off,
+                start,
+                fix,
+                tolerance,
+                repeat,
+            } => self.schedule(
+                None,
+                one_off::Wish {
+                    item: *one_off,
+                    start,
+                    fix,
+                    tolerance,
+                    repeat,
+                },
+            ),
+            C::ScheduleUpdate {
+                id,
+                one_off,
+                start,
+                fix,
+                tolerance,
+                repeat,
+            } => self.schedule(
+                Some(id),
+                one_off::Wish {
+                    item: *one_off,
+                    start,
+                    fix,
+                    tolerance,
+                    repeat,
+                },
+            ),
+            C::ScheduleRemove { id } => self.unschedule(id),
             C::CartClear { page, slot } => {
                 let before = self.state.carts.len();
                 self.state

@@ -5,6 +5,7 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 mod dynamics;
 mod loudness;
+mod one_off;
 
 const MAIN: PlaylistId = PlaylistId(1);
 
@@ -628,6 +629,8 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
     // The loudness commands: a measurement and an item trim.
     values["lufs"] = serde_json::json!(-18.0);
     values["db"] = serde_json::json!(-1.5);
+    values["start"] = serde_json::json!("2026-11-22T09:00:00");
+    values["one_off"] = serde_json::to_value(item(9, "One-off")).unwrap();
     let specs = registry();
     let command_schema = schemars::schema_for!(Command).to_value();
     assert_eq!(

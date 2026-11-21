@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{By, NodeT, Queryable};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::{MockSource, RadioApp, ToolWindow};
@@ -155,5 +156,95 @@ fn add_url_puts_a_stream_into_the_playlist() {
         h.query_by_label_contains("added 1 stream to Jingles")
             .is_some(),
         "the message shows the count from the source"
+    );
+}
+
+/// The Upcoming row of a one-off, found by its title and the One-off playlist.
+fn one_off_rows(h: &Harness<'_, RadioApp>, title: &str) -> usize {
+    h.query_all_by_label_contains(title)
+        .filter(|n| {
+            n.accesskit_node()
+                .label()
+                .is_some_and(|l| l.contains("One-off"))
+        })
+        .count()
+}
+
+/// Puts `text` in the text field `label` in place of what it holds.
+fn replace_text(h: &mut Harness<'_, RadioApp>, label: &str, text: &str) {
+    h.get(By::new().label(label).role(Role::TextInput)).focus();
+    h.run_steps(FRAMES);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get(By::new().label(label).role(Role::TextInput))
+        .type_text(text);
+    h.run_steps(FRAMES);
+}
+
+#[test]
+fn add_one_off_puts_a_file_into_upcoming_and_delete_removes_it() {
+    let mut h = harness();
+    h.get_by_label("Add one-off").click();
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("Local time in").is_some(),
+        "the dialog opens"
+    );
+    replace_text(&mut h, "File", "/music/evening-relay.wav");
+    // Later than the decks look ahead, so the row is free to remove.
+    replace_text(&mut h, "Time", "15:12");
+    h.get_by_label("Add").click();
+    h.run_steps(FRAMES);
+    assert_eq!(
+        one_off_rows(&h, "evening-relay"),
+        1,
+        "Upcoming shows the one-off with its playlist One-off"
+    );
+    assert!(
+        h.query_by_label_contains("15:12:00 One-off evening-relay")
+            .is_some(),
+        "it starts at the time that the dialog set"
+    );
+    h.query_all_by_label_contains("evening-relay")
+        .find(|n| {
+            n.accesskit_node()
+                .label()
+                .is_some_and(|l| l.contains("One-off"))
+        })
+        .expect("the row")
+        .click();
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(FRAMES);
+    assert_eq!(one_off_rows(&h, "evening-relay"), 0, "Delete removes it");
+}
+
+#[test]
+fn a_one_off_time_in_the_past_keeps_the_dialog_open_with_the_reason() {
+    let mut h = harness();
+    h.get_by_label("Add one-off").click();
+    h.run_steps(FRAMES);
+    replace_text(&mut h, "File", "/music/early.wav");
+    replace_text(&mut h, "Time", "08:00");
+    h.get_by_label("Add").click();
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("That time has passed").is_some(),
+        "the dialog says why it cannot add the one-off"
+    );
+    assert_eq!(one_off_rows(&h, "early"), 0);
+}
+
+#[test]
+fn escape_closes_the_one_off_dialog() {
+    let mut h = harness();
+    h.get_by_label("Add one-off").click();
+    h.run_steps(FRAMES);
+    h.get_by_label("Hard — cuts in at the time").focus();
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("Local time in").is_none(),
+        "Escape closes the dialog"
     );
 }

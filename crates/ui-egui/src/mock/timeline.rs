@@ -24,6 +24,12 @@ pub(super) enum Op {
         id: u64,
         at: Timestamp,
     },
+    /// A one-off of Upcoming at its time. Its row id is its id.
+    OneOff {
+        view: crate::view::OneOffView,
+        title: String,
+        len: Duration,
+    },
 }
 
 impl MockSource {
@@ -63,11 +69,48 @@ impl MockSource {
                             timing: None,
                             stream: None,
                             deck: None,
+                            one_off: None,
                             ..base
                         },
                     );
                 }
                 Op::Remove(id) => rows.retain(|r| r.id != *id),
+                Op::OneOff { view, title, len } => {
+                    let Ok(start) = view.start.to_zoned(self.tz.clone()) else {
+                        continue;
+                    };
+                    let target = start.timestamp();
+                    let Some(i) = rows.iter().position(|r| r.start.timestamp() >= target) else {
+                        continue;
+                    };
+                    if i == 0 {
+                        continue;
+                    }
+                    let fit = FitView {
+                        error_s: if view.hard { 0.0 } else { SOFT_EARLY_S },
+                        ok: true,
+                    };
+                    let mut row = rows[i - 1].clone();
+                    row.id = view.id;
+                    row.start = start;
+                    row.playlist = ONE_OFF_NAME.to_owned();
+                    row.color = ONE_OFF;
+                    row.title.clone_from(title);
+                    row.len = *len;
+                    row.is_main = false;
+                    row.fixed = Some(fit);
+                    row.origin = Origin::Rule;
+                    row.locked = false;
+                    row.meta = from_title(title, PublishMode::FromTags);
+                    row.timing = Some(Timing {
+                        hard: view.hard,
+                        tolerance_s: view.tolerance_s,
+                    });
+                    row.stream = None;
+                    row.deck = None;
+                    row.one_off = Some(view.clone());
+                    rows.insert(i, row);
+                }
                 Op::Move { id, at } => {
                     let Some(from) = rows.iter().position(|r| r.id == *id) else {
                         continue;
@@ -206,6 +249,7 @@ impl MockSource {
                 timing: None,
                 stream: None,
                 deck: None,
+                one_off: None,
                 title: item.title,
             });
         };
