@@ -12,6 +12,7 @@ fn item(id: u64, title: &str) -> Item {
         artist: Some("Test Artist".into()),
         source: Source::Stream {
             url: "http://example.invalid/s".into(),
+            keep_alive: true,
         },
         timing: None,
         planned_len: Some(Duration::from_secs(180)),
