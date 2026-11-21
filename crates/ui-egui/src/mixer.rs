@@ -32,6 +32,13 @@ pub(crate) struct State {
     icecast: Option<IcecastView>,
 }
 
+impl State {
+    /// Open the Icecast settings of the Out strip.
+    pub(crate) fn open_icecast(&mut self) {
+        self.icecast_open = true;
+    }
+}
+
 fn strip_edit(strip: &str, change: StripChange) -> Action {
     Action::EditQuiet(Edit::SetStrip {
         strip: strip.to_owned(),
@@ -193,7 +200,7 @@ fn db(v: f32) -> String {
 }
 
 /// The part of the meter height for a level.
-fn frac(v: f32) -> f32 {
+pub(crate) fn frac(v: f32) -> f32 {
     ((v - size::METER_MIN_DB) / (size::METER_MAX_DB - size::METER_MIN_DB)).clamp(0.0, 1.0)
 }
 

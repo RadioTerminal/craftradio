@@ -47,6 +47,17 @@ pub(crate) fn show(
             .map(|i| i + 1);
         add_menu::button(ui, &view.main.name, after, actions);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let mut follow = link.follow;
+            ui.checkbox(&mut follow, "Follow on air")
+                .on_hover_text("Keep the row on air near the top. Scrolling by hand turns it off.");
+            if !link.follow && ui.button("Jump to on air").clicked() {
+                follow = true;
+                link.followed = None;
+            }
+            if follow != link.follow {
+                link.follow = follow;
+                link.followed = None;
+            }
             let n = prep.main_count;
             let note = if folder { " · estimated lengths" } else { "" };
             let caption = format!("{n} tracks · next 6 hours{note}");
@@ -64,6 +75,19 @@ pub(crate) fn show(
     let pointer = ui.input(|i| i.pointer.latest_pos());
     let pane = ui.max_rect();
     link.step_rows(Pane::Main, order);
+    // A wheel or trackpad scroll over the pane turns follow off.
+    let scrolled =
+        ui.input(|i| i.smooth_scroll_delta.y != 0.0) && pointer.is_some_and(|p| pane.contains(p));
+    if scrolled {
+        link.follow = false;
+    }
+    let on_air_id = prep.on_air.and_then(|i| prep.ids.get(i).copied());
+    // Follow: when a new row goes on air, it scrolls to the second visible row.
+    let mut follow_to = None;
+    if link.follow && on_air_id.is_some() && link.followed != on_air_id {
+        link.followed = on_air_id;
+        follow_to = prep.on_air.map(|i| i.saturating_sub(1));
+    }
     let target = link.scroll_main.take();
     let mut table = TableBuilder::new(ui)
         .id_salt("main_pane")
@@ -73,7 +97,12 @@ pub(crate) fn show(
         .column(Column::exact(size::COL_TIME))
         .column(Column::remainder().clip(true))
         .column(Column::exact(size::COL_LEN));
-    if let Some(i) = target.and_then(|id| prep.index.get(&id).copied()) {
+    if let Some(i) = follow_to {
+        // Follow jumps without animation, so the list does not drift while a person aims.
+        table = table
+            .scroll_to_row(i, Some(Align::Min))
+            .animate_scrolling(false);
+    } else if let Some(i) = target.and_then(|id| prep.index.get(&id).copied()) {
         table = table.scroll_to_row(i, Some(Align::Center));
     }
     let head = |s: &str| {
@@ -105,13 +134,26 @@ pub(crate) fn show(
                     return;
                 };
                 let on_air = prep.on_air == Some(i);
+                let played = prep.on_air.is_some_and(|a| i < a);
                 row.set_selected(link.is_selected(r.id));
+                let look = Look { on_air, played };
                 if r.is_main {
-                    track_row(&mut row, r, i, prep, on_air, t);
+                    track_row(&mut row, r, i, prep, look, t);
                 } else {
-                    divider_row(&mut row, r, i, prep, on_air, t);
+                    divider_row(&mut row, r, i, prep, look, t);
                 }
                 let resp = row.response();
+                if on_air {
+                    // The "now" line: played rows above, the rest below.
+                    let layer =
+                        egui::LayerId::new(egui::Order::Foreground, egui::Id::new("now_line"));
+                    let line = Stroke::new(size::ON_AIR_EDGE, t.on_air);
+                    let clip = resp.rect.intersect(pane);
+                    resp.ctx
+                        .layer_painter(layer)
+                        .with_clip_rect(clip.expand2(egui::vec2(0.0, size::ON_AIR_EDGE)))
+                        .hline(resp.rect.x_range(), resp.rect.top(), line);
+                }
                 last_bottom = Some(resp.rect.bottom());
                 if resp.clicked() {
                     let m = resp.ctx.input(|i| i.modifiers);
@@ -377,23 +419,36 @@ fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
     }
 }
 
+/// How a row looks: on air, or played already.
+#[derive(Clone, Copy)]
+struct Look {
+    on_air: bool,
+    played: bool,
+}
+
+/// The time cell. A played row has a ✔ and the word in its tooltip.
+fn start_cell(ui: &mut egui::Ui, text: &str, font: f32, ink: egui::Color32, played: bool) {
+    let r = ui.label(RichText::new(text).font(theme::mono(font)).color(ink));
+    if played {
+        ui.label(RichText::new("✔").font(theme::mono(font)).color(ink));
+        r.on_hover_text("played");
+    }
+}
+
 fn track_row(
     row: &mut egui_extras::TableRow<'_, '_>,
     r: &Row,
     i: usize,
     prep: &Prepared,
-    on_air: bool,
+    look: Look,
     t: &Tokens,
 ) {
+    let Look { on_air, played } = look;
     let time_ink = if on_air { t.on_air } else { t.text_muted };
     row.col(|ui| {
         on_air_bg(ui, on_air, true, t);
         ui.add_space(space::S);
-        ui.label(
-            RichText::new(&prep.start[i])
-                .font(theme::mono(theme::CODE))
-                .color(time_ink),
-        );
+        start_cell(ui, &prep.start[i], theme::CODE, time_ink, played);
     });
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);
@@ -403,6 +458,12 @@ fn track_row(
             RichText::new(&r.title)
         };
         let text = text.font(theme::text(theme::BODY));
+        // Played rows are dimmed; the ✔ in the time cell says why.
+        let text = if played {
+            text.color(t.text_muted)
+        } else {
+            text
+        };
         if let Some(state) = r.stream {
             stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), t);
         }
@@ -445,11 +506,16 @@ fn divider_row(
     r: &Row,
     i: usize,
     prep: &Prepared,
-    on_air: bool,
+    look: Look,
     t: &Tokens,
 ) {
+    let Look { on_air, played } = look;
     let bg = if on_air { t.on_air_bg } else { t.canvas };
-    let ink = t.readable(r.color, bg);
+    let ink = if played {
+        t.text_muted
+    } else {
+        t.readable(r.color, bg)
+    };
     let line = Stroke::new(size::HAIRLINE, theme::Tokens::playlist(r.color));
     let rule = |ui: &mut egui::Ui| {
         let rect = ui.available_rect_before_wrap();
@@ -464,11 +530,7 @@ fn divider_row(
         let lead = egui::Rangef::new(rect.left(), rect.left() + space::S - space::XXS);
         ui.painter().hline(lead, rect.center().y, line);
         ui.add_space(space::S);
-        ui.label(
-            RichText::new(&prep.start[i])
-                .font(theme::mono(theme::TINY))
-                .color(ink),
-        );
+        start_cell(ui, &prep.start[i], theme::TINY, ink, played);
     });
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);

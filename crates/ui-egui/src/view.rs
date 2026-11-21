@@ -23,6 +23,8 @@ pub struct DeckView {
     pub elapsed: Duration,
     pub len: Duration,
     pub state: DeckState,
+    /// The start time of the item, as the timeline plans it. `None` for an empty deck.
+    pub start: Option<jiff::Zoned>,
 }
 
 /// How well a fixed-time item fits its slot.
@@ -593,6 +595,10 @@ pub enum Status {
     Preview,
     NotConnected,
     Connected,
+    /// The connection dropped; the output tries again.
+    Reconnecting {
+        attempt: u32,
+    },
     Failed(String),
 }
 
@@ -601,6 +607,8 @@ pub enum Status {
 pub struct OutputStatus {
     pub local: Status,
     pub icecast: Status,
+    /// The listener count from the Icecast server, when it reports one.
+    pub listeners: Option<u32>,
 }
 
 /// The job of an audio device.

@@ -63,7 +63,7 @@ fn each_tool_window_opens_from_the_deck_strip() {
     let windows = [
         (ToolWindow::Cartwall, "preview — no audio"),
         (ToolWindow::Mixer, "simulated levels"),
-        (ToolWindow::Clock, " in "),
+        (ToolWindow::Clock, "ends in"),
         (ToolWindow::History, "AIRED AT"),
         (ToolWindow::Library, "Dock into main window"),
     ];
@@ -147,4 +147,11 @@ fn skip_on_deck_a_starts_the_next_item() {
     click(&mut harness, "⏭ Skip deck A — press again");
     let after = harness.query_all_by_label(on_air).count();
     assert!(after < before, "deck A no longer shows the skipped item");
+}
+
+#[test]
+fn the_header_says_preview_and_never_live_with_the_mock() {
+    let harness = harness();
+    assert!(shows(&harness, "PREVIEW"), "the header names the preview");
+    assert!(!shows(&harness, "LIVE"), "the mock never claims to be live");
 }

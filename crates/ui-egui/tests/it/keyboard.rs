@@ -65,7 +65,11 @@ fn the_down_arrow_moves_the_selection_to_the_next_row() {
     // Delete acts on the selection, so it shows where the arrow moved it.
     h.key_press(egui::Key::Delete);
     h.run_steps(FRAMES);
-    assert_eq!(h.query_all_by_label(ROW).count(), row, "the clicked row stays");
+    assert_eq!(
+        h.query_all_by_label(ROW).count(),
+        row,
+        "the clicked row stays"
+    );
     assert!(
         h.query_all_by_label_contains(NEXT_ROW).count() < next,
         "the row below it is removed"

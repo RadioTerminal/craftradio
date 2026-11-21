@@ -4,11 +4,12 @@ use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::{Action, hms, mmss};
 use crate::context_menu::{self, menu_item};
+use crate::mixer;
 use crate::parts;
 use crate::settings;
 use crate::shortcuts;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DeckCommand, DeckState, DeckView, Edit, StationView};
+use crate::view::{DeckCommand, DeckState, DeckView, Edit, PlayMode, StationView, Status};
 use crate::widgets::{guard_button, icon_button};
 
 /// The part setting that switches the second press on the deck on air.
@@ -35,6 +36,8 @@ pub(crate) struct State {
     armed: Option<(usize, Guarded, f64)>,
     /// The deck that Space, Skip and Fade keys act on.
     focused: usize,
+    /// The place of each deck in the queue, for this frame: 1 plays next.
+    next: Vec<Option<usize>>,
 }
 
 impl Default for State {
@@ -45,6 +48,7 @@ impl Default for State {
             confirm: true,
             armed: None,
             focused: 0,
+            next: Vec::new(),
         }
     }
 }
@@ -129,11 +133,14 @@ pub(crate) fn show(
         let gaps = space::M * view.decks.len() as f32;
         let free = ui.available_width() - size::CLOCK_W - gaps;
         let card_w = (free / view.decks.len() as f32).max(size::DECK_MIN_W);
+        state.next = next_ranks(&view.decks);
         for (i, deck) in view.decks.iter().enumerate() {
             let card = deck_card(ui, i, deck, card_w, state, actions, t);
             card.context_menu(|ui| deck_menu(ui, i, deck, state, now, actions));
         }
-        ui.with_layout(Layout::right_to_left(Align::Min), |ui| clock(ui, view, t));
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            clock(ui, view, actions, t)
+        });
     });
     if state.confirm != old_confirm {
         actions.push(parts::set(parts::DECKS, CONFIRM_KEY, state.confirm));
@@ -144,6 +151,24 @@ pub(crate) fn show(
             actions.push(parts::set(parts::DECKS, &fade_key(*label), value));
         }
     }
+}
+
+/// The place of each ready deck in the queue, by its planned start: 1 plays next.
+fn next_ranks(decks: &[DeckView]) -> Vec<Option<usize>> {
+    let mut ready: Vec<(usize, jiff::Timestamp)> = decks
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.state == DeckState::Ready)
+        .filter_map(|(i, d)| d.start.as_ref().map(|s| (i, s.timestamp())))
+        .collect();
+    ready.sort_by_key(|(_, at)| *at);
+    let mut ranks = vec![None; decks.len()];
+    for (rank, (i, _)) in ready.iter().enumerate() {
+        if let Some(r) = ranks.get_mut(*i) {
+            *r = Some(rank + 1);
+        }
+    }
+    ranks
 }
 
 fn fade_key(deck: char) -> String {
@@ -199,6 +224,7 @@ fn deck_card(
     let (edge, edge_w) = match deck.state {
         DeckState::Playing => (t.on_air, size::ON_AIR_EDGE),
         DeckState::Fading => (t.warn, size::ON_AIR_EDGE),
+        _ if state.next.get(i).copied().flatten() == Some(1) => (t.accent, size::HAIRLINE),
         _ => (t.card_border, size::HAIRLINE),
     };
     let frame = theme::card_frame(t)
@@ -236,11 +262,21 @@ fn deck_body(
         };
         let badge = badge(ui, deck.label, live, focused, t).on_hover_text(hint);
         let (word, colour) = match deck.state {
-            DeckState::Playing => ("▶ ON AIR", t.on_air),
-            DeckState::Fading => ("⤵ FADING", t.warn),
-            DeckState::Paused => ("⏸ PAUSED", t.warn),
+            DeckState::Playing => ("ON AIR", t.on_air),
+            DeckState::Fading => ("FADING", t.warn),
+            DeckState::Paused => ("PAUSED", t.warn),
             DeckState::Ready => ("READY", t.text_muted),
             DeckState::Empty => ("EMPTY", t.text_muted),
+        };
+        let rank = state.next.get(i).copied().flatten();
+        let queued;
+        let (word, colour) = match rank {
+            Some(n) => {
+                queued = format!("NEXT {n}");
+                let colour = if n == 1 { t.accent_ink } else { t.text_muted };
+                (queued.as_str(), colour)
+            }
+            None => (word, colour),
         };
         let word = RichText::new(word).font(theme::text(theme::LABEL)).strong();
         ui.label(word.color(colour));
@@ -336,23 +372,31 @@ fn deck_body(
     let title = ui.add(label.truncate().sense(Sense::click()));
     progress(ui, deck, t);
     let left = deck.len.saturating_sub(deck.elapsed);
-    let times = match deck.state {
-        DeckState::Playing | DeckState::Fading | DeckState::Paused => {
-            format!(
-                "{} / {} · −{}",
-                mmss(deck.elapsed),
-                mmss(deck.len),
-                mmss(left)
-            )
-        }
-        DeckState::Ready => format!("ready · {}", mmss(deck.len)),
-        DeckState::Empty => "no item".to_owned(),
-    };
-    ui.label(
-        RichText::new(times)
+    let muted = |s: String| {
+        RichText::new(s)
             .font(theme::mono(theme::CODE))
-            .color(t.text_muted),
-    );
+            .color(t.text_muted)
+    };
+    match deck.state {
+        DeckState::Playing | DeckState::Fading | DeckState::Paused => {
+            // The time left is the largest number on the card.
+            ui.horizontal(|ui| {
+                let left = RichText::new(format!("−{}", mmss(left)))
+                    .font(theme::mono(theme::SECTION))
+                    .strong();
+                ui.label(left).on_hover_text("Time left on this item");
+                let done = format!("{} / {}", mmss(deck.elapsed), mmss(deck.len));
+                ui.label(muted(done));
+            });
+        }
+        DeckState::Ready => {
+            let at = deck.start.as_ref().map_or_else(|| "—".to_owned(), hms);
+            ui.label(muted(format!("starts {at} · {}", mmss(deck.len))));
+        }
+        DeckState::Empty => {
+            ui.label(muted("no item".to_owned()));
+        }
+    }
     head.inner.union(title)
 }
 
@@ -404,31 +448,240 @@ fn progress(ui: &mut egui::Ui, deck: &DeckView, t: &Tokens) {
     }
 }
 
-fn clock(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
+fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
     ui.vertical(|ui| {
         ui.with_layout(Layout::top_down(Align::Max), |ui| {
-            ui.horizontal(|ui| {
-                egui::Frame::new()
-                    .fill(t.selection)
-                    .stroke(Stroke::new(size::HAIRLINE, t.accent))
-                    .corner_radius(t.radius_lg)
-                    .inner_margin(pad::CHIP)
-                    .show(ui, |ui| {
-                        let mode = RichText::new(&view.mode).font(theme::mono(theme::LABEL));
-                        ui.label(mode.strong().color(t.accent_ink));
-                    });
+            ui.spacing_mut().item_spacing.y = space::XXS;
+            let w = ui.available_width();
+            let row = |h: f32| egui::vec2(w, h);
+            let rtl = Layout::right_to_left(Align::Center);
+            // Left to right: the mode, the LIVE chip and the Out meter.
+            ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
+                ui.spacing_mut().button_padding = egui::vec2(space::XS, space::XXS);
+                out_vu(ui, view, actions, t);
+                live_chip(ui, view, actions, t);
+                mode_control(ui, view, actions, t);
+            });
+            // A narrow window drops the date first.
+            let room = w >= size::CLOCK_W;
+            ui.allocate_ui_with_layout(row(theme::TITLE + space::S), rtl, |ui| {
                 ui.label(
                     RichText::new(hms(&view.now))
                         .font(theme::mono(theme::TITLE))
                         .strong(),
                 );
+                if room {
+                    let date = view.now.strftime("%a %-d %b").to_string();
+                    ui.label(
+                        RichText::new(date)
+                            .font(theme::text(theme::CAPTION))
+                            .color(t.text_muted),
+                    );
+                }
             });
-            let date = view.now.strftime("%a %-d %b %Y").to_string();
-            ui.label(
-                RichText::new(date)
-                    .font(theme::text(theme::CAPTION))
-                    .color(t.text_muted),
-            );
+            ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
+                stop_after(ui, view, actions, t);
+                countdown(ui, view, t);
+            });
         });
+    });
+}
+
+/// "Next: News in 4:12", to the next fixed item. Under a minute it warns, with ⚠ and the colour.
+fn countdown(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
+    let now = view.now.timestamp();
+    let next = view
+        .rows
+        .iter()
+        .find(|r| r.fixed.is_some() && r.start.timestamp() > now);
+    let Some(r) = next else {
+        let none = RichText::new("No fixed item ahead").font(theme::text(theme::LABEL));
+        ui.label(none.color(t.text_muted));
+        return;
+    };
+    let secs = r.start.timestamp().duration_since(now).as_secs().max(0) as u64;
+    let left = mmss(std::time::Duration::from_secs(secs));
+    let (text, colour) = if secs < size::NOW_S {
+        (format!("⚠ {} starts in {left}", r.title), t.on_air)
+    } else if secs < size::SOON_S {
+        (format!("⚠ Next: {} in {left}", r.title), t.warn)
+    } else {
+        (format!("⏱ Next: {} in {left}", r.title), t.text)
+    };
+    let text = RichText::new(text)
+        .font(theme::mono(theme::SECTION))
+        .strong();
+    let at = hms(&r.start);
+    ui.label(text.color(colour))
+        .on_hover_text(format!("{} is fixed at {at}", r.title));
+}
+
+/// The "Stop after current" toggle. Its word changes with its state.
+fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    let stop = view.stop_after_current;
+    let word = if stop {
+        "⏹ Stops after current"
+    } else {
+        "Stop after current"
+    };
+    let fill = if stop { t.warn_fill } else { t.field };
+    let button = egui::Button::new(RichText::new(word).font(theme::text(theme::CAPTION)))
+        .fill(fill)
+        .stroke(Stroke::new(size::HAIRLINE, t.field_border));
+    let hint = "The station stops when the item on air ends · preview: here only";
+    if ui.add(button).on_hover_text(hint).clicked() {
+        actions.push(Action::Edit(Edit::StopAfterCurrent(!stop)));
+    }
+}
+
+/// What the listeners get: LIVE only while Icecast is connected and Out has sound.
+/// The preview never shows LIVE. A word and an icon carry the state, not the colour alone.
+fn live_chip(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    let out = view.meters.iter().find(|m| m.label == "Out");
+    let sound =
+        out.is_some_and(|m| !m.mute && m.level_db[0].max(m.level_db[1]) > size::METER_MIN_DB);
+    let (word, ink, fill, why) = match (&view.output.local, &view.output.icecast) {
+        (Status::Preview, _) => (
+            "◇ PREVIEW",
+            t.text_muted,
+            t.field,
+            "UI preview: no audio goes out".to_owned(),
+        ),
+        (_, Status::Connected) if sound => ("● LIVE", t.on_air, t.on_air_bg, "on air".to_owned()),
+        (_, Status::Connected) => (
+            "○ SILENT",
+            t.warn,
+            t.warn_fill,
+            "connected, but Out is silent".to_owned(),
+        ),
+        (_, Status::Reconnecting { attempt }) => (
+            "↻ RECONNECTING",
+            t.warn,
+            t.warn_fill,
+            format!("reconnecting, try {attempt}"),
+        ),
+        (_, Status::Failed(e)) => ("○ OFF AIR", t.text_muted, t.field, format!("down: {e}")),
+        (_, _) => (
+            "○ OFF AIR",
+            t.text_muted,
+            t.field,
+            "Icecast is not connected".to_owned(),
+        ),
+    };
+    let ice = &view.icecast;
+    let listeners = view
+        .output
+        .listeners
+        .map_or("listeners unknown".to_owned(), |n| format!("{n} listeners"));
+    let hint = format!(
+        "{why}\nMount {} · {listeners} · {} {} kbps\nClick for the Icecast settings",
+        ice.mount,
+        ice.format.label(),
+        ice.kbps
+    );
+    let text = RichText::new(word).font(theme::mono(theme::LABEL)).strong();
+    let chip = egui::Button::new(text.color(ink))
+        .fill(fill)
+        .stroke(Stroke::new(size::HAIRLINE, ink));
+    if ui.add(chip).on_hover_text(hint).clicked() {
+        actions.push(Action::OpenIcecast);
+    }
+}
+
+/// A compact stereo meter of Out: two bars, the zones from the theme and a peak mark.
+fn out_vu(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    let Some(m) = view.meters.iter().find(|m| m.label == "Out") else {
+        return;
+    };
+    let h = size::VU_BAR_H * 2.0 + space::XXS;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size::VU_W, h), Sense::click());
+    let p = ui.painter();
+    for ch in 0..2 {
+        let top = rect.top() + ch as f32 * (size::VU_BAR_H + space::XXS);
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), top),
+            egui::vec2(rect.width(), size::VU_BAR_H),
+        );
+        p.rect_filled(bar, t.radius_sm, t.canvas);
+        let x_of = |v: f32| bar.left() + bar.width() * mixer::frac(v);
+        let level = m.level_db[ch];
+        for (lo, hi, colour) in [
+            (size::METER_MIN_DB, size::METER_AMBER_DB, t.meter_low),
+            (size::METER_AMBER_DB, size::METER_RED_DB, t.meter_mid),
+            (size::METER_RED_DB, size::METER_MAX_DB, t.meter_high),
+        ] {
+            if level > lo {
+                let seg =
+                    egui::Rect::from_x_y_ranges(x_of(lo)..=x_of(level.min(hi)), bar.y_range());
+                p.rect_filled(seg, 0.0, colour);
+            }
+        }
+        let peak = m.peak_db[ch];
+        if peak > size::METER_MIN_DB {
+            p.vline(
+                x_of(peak),
+                bar.y_range(),
+                Stroke::new(size::HAIRLINE * 2.0, t.text),
+            );
+        }
+    }
+    let db = |v: f32| {
+        if v <= size::METER_MIN_DB {
+            "−∞".to_owned()
+        } else {
+            format!("{v:.1}")
+        }
+    };
+    let hint = format!(
+        "Out · peak L {} dB, R {} dB · simulated levels\nClick for the mixer",
+        db(m.peak_db[0]),
+        db(m.peak_db[1])
+    );
+    let resp = resp.on_hover_text(hint);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Out meter"));
+    if resp.clicked() {
+        actions.push(Action::OpenWindow(crate::windows::ToolWindow::Mixer));
+    }
+}
+
+/// Auto, Assist and Manual as a segmented control.
+fn mode_control(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XXS;
+        // The parent lays out right to left, so the reversed list reads AUTO · ASSIST · MANUAL.
+        for mode in PlayMode::ALL.iter().rev() {
+            let on = view.play_mode == *mode;
+            let text = RichText::new(mode.label().to_uppercase()).font(theme::mono(theme::LABEL));
+            let text = if on {
+                text.strong().color(t.accent_ink)
+            } else {
+                text
+            };
+            let fill = if on { t.selection } else { t.field };
+            let edge = if on { t.accent } else { t.field_border };
+            let button = egui::Button::new(text)
+                .fill(fill)
+                .stroke(Stroke::new(size::HAIRLINE, edge));
+            let hint = format!(
+                "{} mode · preview: stored here, the scheduler is not connected",
+                mode.label()
+            );
+            if ui.add(button).on_hover_text(hint).clicked() && !on {
+                let edit = Action::Edit(Edit::SetMode(*mode));
+                // Leaving Auto stops the automation, so it asks first.
+                actions.push(if view.play_mode == PlayMode::Auto {
+                    Action::Confirm {
+                        text: format!(
+                            "Switch to {}? The station stops starting items on its own.",
+                            mode.label()
+                        ),
+                        yes: format!("Switch to {}", mode.label()),
+                        then: Box::new(edit),
+                    }
+                } else {
+                    edit
+                });
+            }
+        }
     });
 }

@@ -50,6 +50,8 @@ pub(crate) enum Action {
     },
     OpenRules(String),
     OpenWindow(ToolWindow),
+    /// Open the mixer with the Icecast settings of Out.
+    OpenIcecast,
     ShowInLibrary(String),
     /// Open the metadata editor for these items.
     Metadata(Vec<MetaTarget>),
@@ -244,6 +246,10 @@ impl RadioApp {
                 if let Some(tab) = tab {
                     self.editor = Some(Editor::new(&tab));
                 }
+            }
+            Action::OpenIcecast => {
+                self.mixer.open_icecast();
+                self.open.set(ToolWindow::Mixer, true);
             }
             Action::OpenWindow(w) => {
                 if w == ToolWindow::Library && self.library.docked {

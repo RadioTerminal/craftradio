@@ -81,7 +81,16 @@ pub mod size {
     pub const DECK_MIN_W: f32 = 180.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
-    pub const CLOCK_W: f32 = 196.0;
+    pub const CLOCK_W: f32 = 340.0;
+    /// The height of one row of the header cluster beside the decks.
+    pub const HEADER_ROW: f32 = 24.0;
+    /// The Out meter in the header: its width and the height of one channel bar.
+    pub const VU_W: f32 = 72.0;
+    pub const VU_BAR_H: f32 = 5.0;
+    /// Below this many seconds, the countdown to a fixed item turns to a warning.
+    pub const SOON_S: u64 = 60;
+    /// Below this many seconds, the countdown says the item starts now.
+    pub const NOW_S: u64 = 10;
     /// The range of a deck fade time, in seconds.
     pub const FADE_MIN_S: f32 = 0.5;
     pub const FADE_MAX_S: f32 = 10.0;

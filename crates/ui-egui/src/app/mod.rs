@@ -78,6 +78,10 @@ pub(crate) struct Linked {
     pub last_file_target: Option<FileTarget>,
     /// The shortcuts of this frame, read once before the panes draw.
     pub keys: shortcuts::Pressed,
+    /// The main pane keeps the row on air near the top. A scroll by hand turns it off.
+    pub follow: bool,
+    /// The row on air that the main pane last scrolled to.
+    pub followed: Option<u64>,
 }
 
 impl Linked {
@@ -182,6 +186,8 @@ impl RadioApp {
             .iter()
             .find(|r| is_on_air(r, view.now.timestamp()));
         let link = Linked {
+            follow: true,
+            followed: None,
             scroll_main: on_air.map(|r| r.id),
             ..Linked::default()
         };
@@ -474,6 +480,9 @@ fn status_line(
                 Status::Connected => ("●", "connected".to_owned(), t.ok),
                 Status::Preview => ("○", "preview (no audio)".to_owned(), t.text_muted),
                 Status::NotConnected => ("○", "not connected".to_owned(), t.text_muted),
+                Status::Reconnecting { attempt } => {
+                    ("↻", format!("reconnecting (try {attempt})"), t.warn)
+                }
                 Status::Failed(e) => ("○", format!("failed: {e}"), t.danger),
             };
             let text = format!("{name} {dot} {word}");

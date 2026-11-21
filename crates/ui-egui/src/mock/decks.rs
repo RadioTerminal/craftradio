@@ -65,6 +65,7 @@ pub(super) fn deck(
             elapsed,
             len: r.len,
             state,
+            start: Some(r.start.clone()),
         },
         None => DeckView {
             label,
@@ -72,6 +73,7 @@ pub(super) fn deck(
             elapsed: Duration::ZERO,
             len: Duration::ZERO,
             state: DeckState::Empty,
+            start: None,
         },
     }
 }
