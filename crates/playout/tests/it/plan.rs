@@ -307,3 +307,36 @@ fn a_stored_mute_holds_after_a_restart() {
         "Out stays muted after the start"
     );
 }
+
+/// A fader drag sends many commands. They change no station data, so they cause no plan.
+#[test]
+fn a_fader_drag_causes_no_plans() {
+    let path = wav("drag", 4.0, Side::Both);
+    let engine = engine_with(vec![file_item(1, "Song", &path, 4.0, 4.0, 0.0)]);
+    let (p, clock) = offline(engine, |_| {});
+    let _ = run(&p, &clock, 0.1);
+    let before = p.snapshot().plans;
+    let steps = 40;
+    for k in 0..steps {
+        let _ = p
+            .send(Command::MixerSetStrip {
+                strip: "Out".into(),
+                gain_db: Some(-(k as f32) / 4.0),
+                mute: None,
+                pfl: None,
+                route: None,
+            })
+            .unwrap();
+        let _ = run(&p, &clock, 0.01);
+    }
+    let after = p.snapshot().plans;
+    eprintln!(
+        "plans during a {steps}-step drag over 0.4 s: {}",
+        after - before
+    );
+    assert!(
+        after - before <= 1,
+        "{} plans for {steps} fader steps",
+        after - before
+    );
+}

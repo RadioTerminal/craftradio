@@ -325,6 +325,8 @@ pub enum EngineEvent {
     AudioIntent(AudioIntent),
     /// The station state changed after a command.
     StateChanged,
+    /// Only mixer or cart settings changed: no new plan is needed.
+    SettingsChanged,
 }
 
 pub struct Engine {
@@ -460,6 +462,13 @@ impl Engine {
         let is_undoable = undoable(&cmd);
         let before = (is_undoable && !merged).then(|| self.save());
         let system = matches!(cmd, Command::StationSystem { .. });
+        // A fader, mute or cart duck changes no station data, so it needs no plan and no
+        // full checkpoint: one settings row goes to disk.
+        let strip_row = match &cmd {
+            Command::MixerSetStrip { strip, .. } => Some(("mixer", strip.clone())),
+            Command::CartSet { page, slot, .. } => Some(("carts", format!("{page}:{slot}"))),
+            _ => None,
+        };
         let outcome = self.apply(cmd)?;
         if let Some(before) = before {
             self.undo.push(before);
@@ -474,11 +483,42 @@ impl Engine {
         if system {
             self.clear_history();
         }
-        if !query {
+        if let Some((part, key)) = strip_row {
+            self.write_row(part, &key);
+            self.emit(EngineEvent::SettingsChanged);
+        } else if !query {
             self.store.snapshot(self.state.clone());
             self.emit(EngineEvent::StateChanged);
         }
         Ok(outcome)
+    }
+
+    /// Writes one row of the strip or cart settings, without a full checkpoint.
+    fn write_row(&self, part: &'static str, key: &str) {
+        let value = match part {
+            "mixer" => self
+                .state
+                .strips
+                .get(key)
+                .and_then(|s| serde_json::to_string(s).ok()),
+            _ => self
+                .state
+                .cart_settings
+                .iter()
+                .find(|c| format!("{}:{}", c.page, c.slot) == key)
+                .and_then(|c| serde_json::to_string(c).ok()),
+        };
+        let (Some(value), Some(writer)) = (value, self.store.writer()) else {
+            return;
+        };
+        let key = key.to_owned();
+        let _ = writer.spawn(move |c| {
+            let _ = c.execute(
+                "INSERT INTO settings_by_part (part, key, value) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (part, key) DO UPDATE SET value = excluded.value",
+                params![part, key, value],
+            );
+        });
     }
 
     /// Forgets the undo and redo steps, for example after the start-up edits of the app.

@@ -374,6 +374,8 @@ pub(crate) struct Core {
     carts_dirty: bool,
     /// The engine state changed since the last publish.
     state_dirty: bool,
+    /// The number of plans so far, for a check of the plan cost.
+    plans: u64,
     pub(crate) dead_air: DeadAir,
     pub(crate) next_bed: usize,
     pub(crate) icecast: Option<IcecastHandle>,
@@ -452,6 +454,7 @@ impl Core {
             alarms_dropped: 0,
             state: Arc::new(engine.state().clone()),
             revision: 0,
+            plans: 0,
         };
         Ok(Core {
             engine,
@@ -482,6 +485,7 @@ impl Core {
             carts,
             carts_dirty: true,
             state_dirty: false,
+            plans: 0,
             dead_air: DeadAir::default(),
             next_bed: 0,
             icecast,
@@ -555,6 +559,8 @@ impl Core {
                     self.carts_dirty = true;
                     self.state_dirty = true;
                 }
+                // Faders and cart settings: the UI sees them, and no plan runs for them.
+                EngineEvent::SettingsChanged => self.state_dirty = true,
                 EngineEvent::AudioIntent(intent) => {
                     let now = self.clock.now();
                     checks.push(self.intent(intent, now));
@@ -799,6 +805,7 @@ impl Core {
     }
 
     fn replan(&mut self, now: Timestamp) {
+        self.plans += 1;
         self.chain(now);
         self.prune_history(now);
         let mut station = self.engine.state().station.clone();
@@ -1256,6 +1263,7 @@ impl Core {
             view.timeline = self.timeline.clone();
             self.timeline_changed = false;
         }
+        view.plans = self.plans;
         if std::mem::take(&mut self.state_dirty) {
             view.state = Arc::new(self.engine.state().clone());
             view.revision += 1;

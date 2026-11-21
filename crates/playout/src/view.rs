@@ -36,6 +36,8 @@ pub struct PlayoutView {
     /// Counts the changes of `state`, so a UI rebuilds what depends on it only when it
     /// changed.
     pub revision: u64,
+    /// The number of plans that playout made so far.
+    pub plans: u64,
 }
 
 /// One deck.
