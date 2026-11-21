@@ -111,6 +111,7 @@ pub(crate) fn show(
         .id(egui::Id::new("meta_editor"))
         .open(&mut open)
         .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .resizable(false)
         .default_width(size::EDITOR_W)
         .frame(theme::card_frame(t).inner_margin(pad::GUTTER))

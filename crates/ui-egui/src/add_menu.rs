@@ -190,6 +190,7 @@ pub(crate) fn dialog(
     egui::Window::new(title)
         .id(egui::Id::new("add_dialog"))
         .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .resizable(false)
         .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
         .show(ctx, |ui| {

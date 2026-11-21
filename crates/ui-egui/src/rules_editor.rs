@@ -76,6 +76,7 @@ pub(crate) fn show(
         .id(egui::Id::new("rules_editor"))
         .open(&mut open)
         .collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .resizable(true)
         .default_size([size::EDITOR_W, size::EDITOR_H])
         .frame(theme::card_frame(t).inner_margin(pad::GUTTER))

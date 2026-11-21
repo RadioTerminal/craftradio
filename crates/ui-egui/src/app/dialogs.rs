@@ -11,6 +11,7 @@ impl RadioApp {
             let mut answer = None;
             egui::Window::new("Confirm")
                 .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .resizable(false)
                 .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
                 .show(ctx, |ui| {
@@ -38,6 +39,7 @@ impl RadioApp {
             let mut answer = None;
             egui::Window::new(format!("Clear {name}"))
                 .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .resizable(false)
                 .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
                 .show(ctx, |ui| {
@@ -78,6 +80,7 @@ impl RadioApp {
             let mut answer = None;
             egui::Window::new(format!("Rename {from}"))
                 .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .resizable(false)
                 .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
                 .show(ctx, |ui| {
