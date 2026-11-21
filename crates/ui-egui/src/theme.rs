@@ -57,6 +57,8 @@ pub mod size {
     pub const DIVIDER_ROW: f32 = 20.0;
     /// The fit line under a fixed row in Upcoming.
     pub const FIT_LINE: f32 = 16.0;
+    /// A row of the Upcoming list. All rows have this height, so the list draws only what shows.
+    pub const UPCOMING_ROW: f32 = 34.0;
 
     /// Table columns.
     pub const COL_TIME: f32 = 84.0;

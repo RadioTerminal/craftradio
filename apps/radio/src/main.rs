@@ -22,11 +22,15 @@ struct Args {
     /// Show tool windows inside the main window, so that drag and drop works between all of them.
     #[arg(long)]
     single_window: bool,
+    /// Show the time of each frame in the status line.
+    #[arg(long)]
+    perf: bool,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
     let single_window = args.single_window;
+    let perf = args.perf;
     let tz = match TimeZone::get(&args.tz) {
         Ok(tz) => tz,
         Err(e) => {
@@ -58,10 +62,9 @@ fn main() -> ExitCode {
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_embed_viewports(single_window);
-            Ok(Box::new(RadioApp::new(
-                Box::new(MockSource::new(tz)),
-                clock,
-            )))
+            Ok(Box::new(
+                RadioApp::new(Box::new(MockSource::new(tz)), clock).with_perf(perf),
+            ))
         }),
     );
     match result {

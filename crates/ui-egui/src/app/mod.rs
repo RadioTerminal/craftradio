@@ -17,6 +17,7 @@ pub(crate) use clipboard::{Clipboard, CutSource};
 
 use crate::add_menu::{self, AddDialog};
 use crate::meta_editor::{self, MetaEditor};
+use crate::prepared::Prepared;
 use crate::rules_editor::{self, Editor};
 
 use crate::theme::{self, Tokens, pad, size, space};
@@ -121,12 +122,17 @@ pub struct RadioApp {
     rename: Option<(String, String)>,
     meta: Option<MetaEditor>,
     add_dialog: Option<AddDialog>,
+    /// Display text and lookups for the current snapshot.
+    prepared: Prepared,
+    /// The frame time readout, when the app runs with `--perf`.
+    perf: Option<Perf>,
     decks: decks::State,
 }
 
 impl RadioApp {
     pub fn new(mut source: Box<dyn ViewSource>, clock: Box<dyn Fn() -> Timestamp>) -> Self {
         let view = source.snapshot(clock());
+        let prepared = Prepared::new(&view, 0);
         let on_air = view
             .rows
             .iter()
@@ -156,8 +162,16 @@ impl RadioApp {
             rename: None,
             meta: None,
             add_dialog: None,
+            prepared,
+            perf: None,
             decks: decks::State::default(),
         }
+    }
+
+    /// Show the time of each frame in the status line.
+    pub fn with_perf(mut self, on: bool) -> Self {
+        self.perf = on.then(Perf::default);
+        self
     }
 
     /// Open or close a tool window.
@@ -170,6 +184,7 @@ impl RadioApp {
         let now = (self.clock)();
         if force || now.as_second() != self.view.now.timestamp().as_second() {
             self.view = self.source.snapshot(now);
+            self.prepared = Prepared::new(&self.view, self.prepared.generation + 1);
         }
     }
 
@@ -251,6 +266,7 @@ impl RadioApp {
 
 impl eframe::App for RadioApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
         if !self.styled {
             theme::apply(&ctx);
@@ -276,7 +292,7 @@ impl eframe::App for RadioApp {
             .resizable(false)
             .frame(theme::bar_frame(&t, pad::BAR))
             .show(ui, |ui| {
-                status_line(ui, &self.view, self.toast.as_ref(), &t)
+                status_line(ui, &self.view, self.toast.as_ref(), self.perf.as_ref(), &t)
             });
 
         if self.library.docked {
@@ -306,6 +322,7 @@ impl eframe::App for RadioApp {
                 scheduled_pane::show(
                     ui,
                     &self.view,
+                    &self.prepared,
                     &mut self.tab,
                     &mut self.link,
                     &mut actions,
@@ -316,7 +333,14 @@ impl eframe::App for RadioApp {
         egui::CentralPanel::default()
             .frame(theme::panel_frame(&t))
             .show(ui, |ui| {
-                main_pane::show(ui, &self.view, &mut self.link, &mut actions, &t)
+                main_pane::show(
+                    ui,
+                    &self.view,
+                    &self.prepared,
+                    &mut self.link,
+                    &mut actions,
+                    &t,
+                )
             });
 
         self.tool_windows(&ctx, &mut actions, &t);
@@ -357,6 +381,11 @@ impl eframe::App for RadioApp {
             self.toast = None;
         }
         self.run(&ctx, actions);
+        if let Some(perf) = self.perf.as_mut() {
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            perf.last_ms = ms;
+            perf.mean_ms += (ms - perf.mean_ms) * PERF_WEIGHT;
+        }
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -364,7 +393,13 @@ impl eframe::App for RadioApp {
     }
 }
 
-fn status_line(ui: &mut egui::Ui, view: &StationView, toast: Option<&(String, f64)>, t: &Tokens) {
+fn status_line(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    toast: Option<&(String, f64)>,
+    perf: Option<&Perf>,
+    t: &Tokens,
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::L;
         let muted = |s: &str| {
@@ -404,6 +439,14 @@ fn status_line(ui: &mut egui::Ui, view: &StationView, toast: Option<&(String, f6
         if let Some((text, _)) = toast {
             ui.label(muted(text));
         }
+        if let Some(p) = perf {
+            let text = format!("frame {:.1} ms · mean {:.1} ms", p.last_ms, p.mean_ms);
+            ui.label(
+                RichText::new(text)
+                    .font(theme::mono(theme::CAPTION))
+                    .color(t.text_muted),
+            );
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let zone = view.now.time_zone().iana_name().unwrap_or("local time");
             ui.label(muted(&format!("UI preview · mock data · {zone}")));
@@ -412,6 +455,24 @@ fn status_line(ui: &mut egui::Ui, view: &StationView, toast: Option<&(String, f6
 }
 
 /// Is `row` on air at `now`?
+/// The end instant of a row.
+pub(crate) fn row_end(row: &Row) -> Timestamp {
+    let start = row.start.timestamp();
+    SignedDuration::try_from(row.len).map_or(start, |d| start + d)
+}
+
+/// The time that the app spent on recent frames, for the `--perf` readout.
+#[derive(Default)]
+pub(crate) struct Perf {
+    /// The time of the last frame, in milliseconds.
+    pub last_ms: f64,
+    /// A running mean, in milliseconds.
+    pub mean_ms: f64,
+}
+
+/// How much of the running mean a new frame takes.
+const PERF_WEIGHT: f64 = 0.1;
+
 pub(crate) fn is_on_air(row: &Row, now: Timestamp) -> bool {
     let start = row.start.timestamp();
     let end = SignedDuration::try_from(row.len).map_or(start, |d| start + d);

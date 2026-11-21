@@ -184,12 +184,15 @@ fn cart(
             .rect_stroke(resp.rect, t.radius, edge, egui::StrokeKind::Outside);
     }
     let colour_name = colour.map_or("no colour", |c| c.0);
-    let hint = format!(
-        "{NO_AUDIO} · {} · {colour_name} · ducking {:.0} dB",
-        slot.mode.label(),
-        slot.duck_db
-    );
-    if resp.on_hover_text(hint).clicked() {
+    // The tooltip text is made only while the tooltip shows.
+    let hint = |ui: &mut egui::Ui| {
+        ui.label(format!(
+            "{NO_AUDIO} · {} · {colour_name} · ducking {:.0} dB",
+            slot.mode.label(),
+            slot.duck_db
+        ));
+    };
+    if resp.on_hover_ui(hint).clicked() {
         state.flash_until[i] = now + size::CART_FLASH_S;
         state.last = Some(i);
     }

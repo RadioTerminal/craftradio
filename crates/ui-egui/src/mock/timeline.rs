@@ -156,7 +156,7 @@ impl MockSource {
             let mut hour = top
                 .checked_sub(PAST_HOURS.hours())
                 .unwrap_or_else(|_| top.clone());
-            for _ in 0..PAST_HOURS + HOURS {
+            for _ in 0..PAST_HOURS + self.hours {
                 let Ok(next) = hour.checked_add(1.hour()) else {
                     break;
                 };

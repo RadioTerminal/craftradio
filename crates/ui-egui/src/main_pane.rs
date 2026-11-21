@@ -5,9 +5,10 @@ use egui::{Align, Layout, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
 
 use crate::add_menu;
-use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, hms, is_on_air, mmss};
+use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo};
 use crate::context_menu;
 use crate::library::LibraryDrag;
+use crate::prepared::Prepared;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{DropTarget, Edit, MetaTarget, MoveTo, Place, Row, StationView, StreamState};
@@ -17,6 +18,7 @@ use crate::windows::ToolWindow;
 pub(crate) fn show(
     ui: &mut egui::Ui,
     view: &StationView,
+    prep: &Prepared,
     link: &mut Linked,
     actions: &mut Vec<Action>,
     t: &Tokens,
@@ -37,11 +39,11 @@ pub(crate) fn show(
         let after = link
             .selected
             .last()
-            .and_then(|id| view.rows.iter().position(|r| r.id == *id))
+            .and_then(|id| prep.index.get(id).copied())
             .map(|i| i + 1);
         add_menu::button(ui, &view.main.name, after, actions);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let n = view.rows.iter().filter(|r| r.is_main).count();
+            let n = prep.main_count;
             let note = if folder { " · estimated lengths" } else { "" };
             let caption = format!("{n} tracks · next 6 hours{note}");
             ui.label(
@@ -53,8 +55,7 @@ pub(crate) fn show(
     });
     ui.add_space(space::S);
 
-    let now = view.now.timestamp();
-    let order: Vec<u64> = view.rows.iter().map(|r| r.id).collect();
+    let order = &prep.ids;
     let files = ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty());
     let pointer = ui.input(|i| i.pointer.latest_pos());
     let pane = ui.max_rect();
@@ -67,7 +68,7 @@ pub(crate) fn show(
         .column(Column::exact(size::COL_TIME))
         .column(Column::remainder().clip(true))
         .column(Column::exact(size::COL_LEN));
-    if let Some(i) = target.and_then(|id| view.rows.iter().position(|r| r.id == id)) {
+    if let Some(i) = target.and_then(|id| prep.index.get(&id).copied()) {
         table = table.scroll_to_row(i, Some(Align::Center));
     }
     let head = |s: &str| {
@@ -92,32 +93,27 @@ pub(crate) fn show(
             });
         })
         .body(|body| {
-            let heights = view.rows.iter().map(|r| {
-                if r.is_main {
-                    size::ROW
-                } else {
-                    size::DIVIDER_ROW
-                }
-            });
-            body.heterogeneous_rows(heights, |mut row| {
-                let Some(r) = view.rows.get(row.index()) else {
+            // One fixed height for every row, so the table lays out only the visible rows.
+            body.rows(size::ROW, view.rows.len(), |mut row| {
+                let i = row.index();
+                let Some(r) = view.rows.get(i) else {
                     return;
                 };
-                let on_air = is_on_air(r, now);
+                let on_air = prep.on_air == Some(i);
                 row.set_selected(link.is_selected(r.id));
                 if r.is_main {
-                    track_row(&mut row, r, on_air, t);
+                    track_row(&mut row, r, i, prep, on_air, t);
                 } else {
-                    divider_row(&mut row, r, on_air, t);
+                    divider_row(&mut row, r, i, prep, on_air, t);
                 }
                 let resp = row.response();
                 last_bottom = Some(resp.rect.bottom());
                 if resp.clicked() {
                     let m = resp.ctx.input(|i| i.modifiers);
-                    link.click(Pane::Main, r.id, m, &order);
+                    link.click(Pane::Main, r.id, m, order);
                 }
                 if resp.secondary_clicked() && !link.is_selected(r.id) {
-                    link.click(Pane::Main, r.id, egui::Modifiers::NONE, &order);
+                    link.click(Pane::Main, r.id, egui::Modifiers::NONE, order);
                 }
                 resp.context_menu(|ui| row_menu(ui, view, r, link, actions, t));
                 // A library item or a file dropped on a row goes in after that row.
@@ -340,21 +336,32 @@ fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
     }
 }
 
-fn track_row(row: &mut egui_extras::TableRow<'_, '_>, r: &Row, on_air: bool, t: &Tokens) {
+fn track_row(
+    row: &mut egui_extras::TableRow<'_, '_>,
+    r: &Row,
+    i: usize,
+    prep: &Prepared,
+    on_air: bool,
+    t: &Tokens,
+) {
     let time_ink = if on_air { t.on_air } else { t.text_muted };
     row.col(|ui| {
         on_air_bg(ui, on_air, true, t);
         ui.add_space(space::S);
         ui.label(
-            RichText::new(hms(&r.start))
+            RichText::new(&prep.start[i])
                 .font(theme::mono(theme::CODE))
                 .color(time_ink),
         );
     });
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);
-        let pin = if r.locked { "📌 " } else { "" };
-        let text = RichText::new(format!("{pin}{}", r.title)).font(theme::text(theme::BODY));
+        let text = if r.locked {
+            RichText::new(format!("📌 {}", r.title))
+        } else {
+            RichText::new(&r.title)
+        };
+        let text = text.font(theme::text(theme::BODY));
         if let Some(state) = r.stream {
             stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), t);
         }
@@ -364,7 +371,7 @@ fn track_row(row: &mut egui_extras::TableRow<'_, '_>, r: &Row, on_air: bool, t: 
         on_air_bg(ui, on_air, false, t);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
-                RichText::new(mmss(r.len))
+                RichText::new(&prep.len[i])
                     .font(theme::mono(theme::CODE))
                     .color(t.text_muted),
             );
@@ -392,7 +399,14 @@ fn stream_badge(ui: &mut egui::Ui, state: StreamState, keep_alive: bool, t: &Tok
 }
 
 /// A row from another playlist: `── HH:MM:SS Name (m:ss) ──` in the playlist colour.
-fn divider_row(row: &mut egui_extras::TableRow<'_, '_>, r: &Row, on_air: bool, t: &Tokens) {
+fn divider_row(
+    row: &mut egui_extras::TableRow<'_, '_>,
+    r: &Row,
+    i: usize,
+    prep: &Prepared,
+    on_air: bool,
+    t: &Tokens,
+) {
     let bg = if on_air { t.on_air_bg } else { t.canvas };
     let ink = t.readable(r.color, bg);
     let line = Stroke::new(size::HAIRLINE, theme::Tokens::playlist(r.color));
@@ -409,23 +423,16 @@ fn divider_row(row: &mut egui_extras::TableRow<'_, '_>, r: &Row, on_air: bool, t
         let lead = egui::Rangef::new(rect.left(), rect.left() + space::S - space::XXS);
         ui.painter().hline(lead, rect.center().y, line);
         ui.add_space(space::S);
-        let mark = if r.fixed.is_some() { "⏱" } else { "" };
-        let time = format!("{mark}{}", hms(&r.start));
         ui.label(
-            RichText::new(time)
+            RichText::new(&prep.start[i])
                 .font(theme::mono(theme::TINY))
                 .color(ink),
         );
     });
     row.col(|ui| {
         on_air_bg(ui, on_air, false, t);
-        let name = if r.title == r.playlist {
-            format!("{} ({})", r.playlist, mmss(r.len))
-        } else {
-            format!("{} · {} ({})", r.playlist, r.title, mmss(r.len))
-        };
         ui.label(
-            RichText::new(name)
+            RichText::new(&prep.divider[i])
                 .font(theme::text(theme::CAPTION))
                 .color(ink),
         );

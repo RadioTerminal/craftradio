@@ -82,9 +82,19 @@ pub struct MockSource {
     folders: Vec<Folder>,
     limits: Limits,
     settings: Settings,
+    /// The timeline covers this many hours from the top of the current hour.
+    hours: i64,
 }
 
 impl MockSource {
+    /// A mock with a longer timeline, for performance checks with many rows.
+    pub fn with_hours(tz: TimeZone, hours: i64) -> Self {
+        Self {
+            hours: hours.max(1),
+            ..Self::new(tz)
+        }
+    }
+
     pub fn new(tz: TimeZone) -> Self {
         let mut tracks = Vec::with_capacity(TRACKS);
         let mut library = Vec::new();
@@ -183,6 +193,7 @@ impl MockSource {
             folders: Vec::new(),
             limits: Limits::DEFAULT,
             settings: Settings::new(),
+            hours: HOURS,
         }
     }
 

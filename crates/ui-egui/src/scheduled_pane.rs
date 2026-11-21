@@ -1,12 +1,12 @@
 //! The scheduled pane: the Upcoming list of woven-in items, and one tab per playlist.
 
-use egui::{Align, Layout, RichText, Sense, Stroke, UiBuilder};
-use jiff::SignedDuration;
+use egui::{Align, Layout, RichText, Sense, Stroke};
 
 use crate::add_menu;
-use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, hms, mmss};
+use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, mmss};
 use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
+use crate::prepared::Prepared;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DropTarget, Edit, MetaTarget, Pick, PlaylistTab, Row, StationView, Timing};
@@ -28,6 +28,7 @@ pub(crate) enum Tab {
 pub(crate) fn show(
     ui: &mut egui::Ui,
     view: &StationView,
+    prep: &Prepared,
     tab: &mut Tab,
     link: &mut Linked,
     actions: &mut Vec<Action>,
@@ -38,7 +39,7 @@ pub(crate) fn show(
     ui.separator();
     ui.add_space(space::XS);
     match *tab {
-        Tab::Upcoming => upcoming(ui, view, link, actions, t),
+        Tab::Upcoming => upcoming(ui, view, prep, link, actions, t),
         Tab::Playlist(i) => match view.tabs.get(i) {
             Some(p) => playlist(ui, p, link, actions, t),
             None => *tab = Tab::Upcoming,
@@ -135,45 +136,42 @@ fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
     }
 }
 
-fn row_end(r: &Row) -> jiff::Timestamp {
-    let start = r.start.timestamp();
-    SignedDuration::try_from(r.len).map_or(start, |d| start + d)
-}
-
 fn upcoming(
     ui: &mut egui::Ui,
     view: &StationView,
+    prep: &Prepared,
     link: &mut Linked,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
     let now = view.now.timestamp();
     let target = link.scroll_scheduled.take();
-    let rows: Vec<&Row> = view
-        .rows
-        .iter()
-        .filter(|r| !r.is_main && row_end(r) > now)
-        .collect();
-    let order: Vec<u64> = rows.iter().map(|r| r.id).collect();
-    egui::ScrollArea::vertical()
+    let order: Vec<u64> = prep.upcoming.iter().map(|i| prep.ids[*i]).collect();
+    let step = size::UPCOMING_ROW + space::XXS;
+    let mut area = egui::ScrollArea::vertical()
         .id_salt("upcoming")
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = space::XXS;
-            for r in rows {
-                let timing = r.timing;
-                let on_air = r.start.timestamp() <= now;
-                let resp = upcoming_row(ui, r, link.is_selected(r.id), on_air, timing, t);
-                if resp.clicked() {
-                    let m = resp.ctx.input(|i| i.modifiers);
-                    link.click(Pane::Scheduled, r.id, m, &order);
-                }
-                resp.context_menu(|ui| upcoming_menu(ui, r, link, actions));
-                if target == Some(r.id) {
-                    resp.scroll_to_me(Some(Align::Center));
-                }
+        .auto_shrink(false);
+    // Scroll to a row that the main pane picked, by its place in the list.
+    if let Some(k) = target.and_then(|id| order.iter().position(|o| *o == id)) {
+        area = area.vertical_scroll_offset((k as f32 * step - step).max(0.0));
+    }
+    // A fixed row height lets the area lay out only the visible rows.
+    area.show_rows(ui, size::UPCOMING_ROW, order.len(), |ui, range| {
+        ui.spacing_mut().item_spacing.y = space::XXS;
+        for k in range {
+            let i = prep.upcoming[k];
+            let Some(r) = view.rows.get(i) else {
+                continue;
+            };
+            let on_air = r.start.timestamp() <= now;
+            let resp = upcoming_row(ui, r, i, prep, link.is_selected(r.id), on_air, t);
+            if resp.clicked() {
+                let m = resp.ctx.input(|i| i.modifiers);
+                link.click(Pane::Scheduled, r.id, m, &order);
             }
-        });
+            resp.context_menu(|ui| upcoming_menu(ui, r, link, actions));
+        }
+    });
 }
 
 fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Vec<Action>) {
@@ -232,88 +230,111 @@ fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Ve
     }
 }
 
+/// One row of Upcoming: a fixed-height card that paints its own text.
 fn upcoming_row(
     ui: &mut egui::Ui,
     r: &Row,
+    i: usize,
+    prep: &Prepared,
     selected: bool,
     on_air: bool,
-    timing: Option<Timing>,
     t: &Tokens,
 ) -> egui::Response {
-    let id = ui.id().with(("upcoming_row", r.id));
-    let hovered = ui.ctx().read_response(id).is_some_and(|h| h.hovered());
-    let fill = match (selected, on_air, hovered) {
+    let width = ui.available_width();
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(width, size::UPCOMING_ROW), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let fill = match (selected, on_air, resp.hovered()) {
         (true, _, _) => t.selection,
         (_, true, _) => t.on_air_bg,
         (_, _, true) => t.hover,
         _ => t.card,
     };
     let edge = if selected { t.accent } else { t.card_border };
-    let res = ui.scope_builder(UiBuilder::new().id(id).sense(Sense::click()), |ui| {
-        egui::Frame::new()
-            .fill(fill)
-            .stroke(Stroke::new(size::HAIRLINE, edge))
-            .corner_radius(t.radius_sm)
-            .inner_margin(pad::ROW)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let ink = t.readable(r.color, fill);
-                    let mark = if r.fixed.is_some() { "⏱" } else { " " };
-                    let time = format!("{mark}{}", hms(&r.start));
-                    let time_ink = if on_air { t.on_air } else { t.text };
-                    let time = RichText::new(time)
-                        .font(theme::mono(theme::CODE))
-                        .color(time_ink);
-                    ui.add_sized([size::COL_TIME, size::CONTROL_SM], egui::Label::new(time));
-                    let (dot, _) = ui
-                        .allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
-                    ui.painter().circle_filled(
-                        dot.center(),
-                        size::DOT_R,
-                        Tokens::playlist(r.color),
-                    );
-                    let name = RichText::new(&r.playlist)
-                        .font(theme::text(theme::LABEL))
-                        .strong();
-                    ui.add_sized(
-                        [size::COL_PLAYLIST, size::CONTROL_SM],
-                        egui::Label::new(name.color(ink)),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let len = RichText::new(mmss(r.len)).font(theme::mono(theme::CODE));
-                        ui.label(len.color(t.text_muted));
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            let title = RichText::new(&r.title).font(theme::text(theme::SMALL));
-                            ui.add(egui::Label::new(title).truncate());
-                        });
-                    });
-                });
-                if let Some(fit) = r.fixed {
-                    ui.horizontal(|ui| {
-                        ui.add_space(size::COL_TIME + size::DOT_R * 2.0 + space::S * 2.0);
-                        let sign = if fit.error_s < 0.0 { "−" } else { "+" };
-                        let (mark, colour) = if fit.ok {
-                            ("✔", t.ok)
-                        } else {
-                            ("✖", t.danger)
-                        };
-                        let mut text = format!("fit: {sign}{:.1} s {mark}", fit.error_s.abs());
-                        if let Some(tm) = timing {
-                            let kind = if tm.hard { "hard" } else { "soft" };
-                            text.push_str(&format!(" · {kind} ±{:.1} s (preview)", tm.tolerance_s));
-                        }
-                        ui.set_min_height(size::FIT_LINE);
-                        ui.label(
-                            RichText::new(text)
-                                .font(theme::mono(theme::CAPTION))
-                                .color(colour),
-                        );
-                    });
-                }
-            });
-    });
-    res.response
+    let p = ui.painter();
+    p.rect(
+        rect,
+        t.radius_sm,
+        fill,
+        Stroke::new(size::HAIRLINE, edge),
+        egui::StrokeKind::Inside,
+    );
+    let inner = rect.shrink2(egui::vec2(f32::from(pad::ROW.left), 0.0));
+    let mid = inner.center().y;
+    let time_ink = if on_air { t.on_air } else { t.text };
+    let left = egui::Align2::LEFT_CENTER;
+    p.text(
+        egui::pos2(inner.left(), mid),
+        left,
+        &prep.start[i],
+        theme::mono(theme::CODE),
+        time_ink,
+    );
+    let dot_x = inner.left() + size::COL_TIME + size::DOT_R;
+    p.circle_filled(
+        egui::pos2(dot_x, mid),
+        size::DOT_R,
+        Tokens::playlist(r.color),
+    );
+    let name_x = dot_x + size::DOT_R + space::S;
+    let ink = t.readable(r.color, fill);
+    p.text(
+        egui::pos2(name_x, mid),
+        left,
+        &r.playlist,
+        theme::text(theme::LABEL),
+        ink,
+    );
+    let right = egui::Align2::RIGHT_CENTER;
+    let len = p.text(
+        egui::pos2(inner.right(), mid),
+        right,
+        &prep.len[i],
+        theme::mono(theme::CODE),
+        t.text_muted,
+    );
+    let mut end = len.left() - space::S;
+    if let Some(fit) = r.fixed {
+        let sign = if fit.error_s < 0.0 { "−" } else { "+" };
+        let (mark, colour) = if fit.ok {
+            ("✔", t.ok)
+        } else {
+            ("✖", t.danger)
+        };
+        let mut text = format!("fit {sign}{:.1} s {mark}", fit.error_s.abs());
+        if let Some(tm) = r.timing {
+            let kind = if tm.hard { "hard" } else { "soft" };
+            text.push_str(&format!(" · {kind} ±{:.1} s", tm.tolerance_s));
+        }
+        let fit_rect = p.text(
+            egui::pos2(end, mid),
+            right,
+            text,
+            theme::mono(theme::CAPTION),
+            colour,
+        );
+        end = fit_rect.left() - space::S;
+    }
+    // The title takes the space that is left, and its painter clips it there.
+    let title_x = name_x + size::COL_PLAYLIST;
+    if end > title_x {
+        let clip = egui::Rect::from_x_y_ranges(title_x..=end, inner.y_range());
+        ui.painter_at(clip).text(
+            egui::pos2(title_x, mid),
+            left,
+            &r.title,
+            theme::text(theme::SMALL),
+            t.text,
+        );
+    }
+    let name = format!(
+        "{} {} {} {}",
+        prep.start[i], r.playlist, r.title, prep.len[i]
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+    resp
 }
 
 /// Show one playlist tab.

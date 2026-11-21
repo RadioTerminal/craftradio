@@ -13,6 +13,7 @@ mod meta_editor;
 mod mixer;
 pub mod mock;
 mod parts;
+mod prepared;
 mod rules_editor;
 pub mod rules_script;
 mod scheduled_pane;
