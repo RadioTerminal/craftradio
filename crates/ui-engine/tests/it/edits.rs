@@ -54,10 +54,17 @@ fn added_files_show_in_the_timeline_and_undo_removes_them() {
 #[test]
 fn a_deck_command_on_a_changed_deck_fails() {
     let d = dir();
-    let songs = vec![
-        track(1, "One", &wav(&d, "one", 5.0), 5.0),
-        track(2, "Two", &wav(&d, "two", 5.0), 5.0),
-    ];
+    // Six songs: the decks hold four, and deck A reloads with a song it did not hold.
+    let songs = (1..=6)
+        .map(|i| {
+            track(
+                i,
+                &format!("Song {i}"),
+                &wav(&d, &format!("s{i}"), 5.0),
+                5.0,
+            )
+        })
+        .collect();
     let (mut source, clock) = source(songs);
     let view = wait_for(&mut source, &clock, |v| {
         v.decks[0].state == DeckState::Playing

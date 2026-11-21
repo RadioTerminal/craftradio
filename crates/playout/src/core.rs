@@ -147,8 +147,9 @@ pub(crate) const HARD_LOCK: Duration = Duration::from_secs(10);
 
 /// Playout plans again at least this often.
 const PLAN_EVERY: Duration = Duration::from_secs(1);
-/// The most planned entries that wait on decks. The other decks stay free for operators.
-const MAX_QUEUED: usize = 2;
+/// The most planned entries that wait on decks: every deck but the one on air holds what
+/// comes next.
+const MAX_QUEUED: usize = 3;
 /// Playout tries a broken item again after this time.
 const RETRY_BROKEN: Duration = Duration::from_secs(300);
 /// The fade of an early end when the item has no fade-out of its own.
@@ -986,7 +987,6 @@ impl Core {
             .filter(|s| s.not_started() && !s.is_hard())
             .count();
         let assigned = self.assigned();
-        let horizon = add(now, self.cfg.preload);
         let next: Vec<Entry> = self
             .timeline
             .entries
@@ -1000,7 +1000,6 @@ impl Core {
                     .any(|b| b.item == e.item && b.start == e.start && now < b.until)
             })
             .filter(|e| last.is_none_or(|l| e.start > l))
-            .take_while(|e| e.start <= horizon)
             .take(MAX_QUEUED.saturating_sub(queued))
             .cloned()
             .collect();

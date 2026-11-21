@@ -113,6 +113,10 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    // The countdowns of the decks count from the snapshot instant.
+    let now_ts = view.now.timestamp();
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(NOW_KEY), now_ts));
     let labels = ['A', 'B', 'C', 'D'];
     for (i, label) in labels.iter().enumerate() {
         state.fade_s[i] = parts::f32(view, parts::DECKS, &fade_key(*label), DEFAULT_FADE_S);
@@ -223,12 +227,12 @@ fn deck_card(
     t: &Tokens,
 ) -> egui::Response {
     let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
-    // The deck on air has a thick edge and the ON AIR word, so the colour is not the only sign.
-    let (edge, edge_w) = match deck.state {
-        DeckState::Playing => (t.on_air, size::ON_AIR_EDGE),
-        DeckState::Fading => (t.warn, size::ON_AIR_EDGE),
-        _ if state.next.get(i).copied().flatten() == Some(1) => (t.accent, size::HAIRLINE),
-        _ => (t.card_border, size::HAIRLINE),
+    // The edge has the colour of the deck. The deck on air has a thick edge, its fill and
+    // the ON AIR word, so the colour is not the only sign.
+    let edge = Tokens::deck(i);
+    let edge_w = match deck.state {
+        DeckState::Playing | DeckState::Fading => size::ON_AIR_EDGE,
+        _ => size::HAIRLINE,
     };
     let frame = theme::card_frame(t)
         .fill(if live { t.on_air_bg } else { t.field })
@@ -263,7 +267,7 @@ fn deck_body(
         } else {
             format!("{keys} focuses this deck for the keys. Right-click for the deck menu.")
         };
-        let badge = badge(ui, deck.label, live, focused, t).on_hover_text(hint);
+        let badge = badge(ui, i, deck.label, focused, t).on_hover_text(hint);
         let (word, colour) = match deck.state {
             DeckState::Playing => ("ON AIR", t.on_air),
             DeckState::Fading => ("FADING", t.warn),
@@ -384,6 +388,24 @@ fn deck_body(
     };
     let label = egui::Label::new(RichText::new(title).font(theme::text(theme::BODY)));
     let title = ui.add(label.truncate().sense(Sense::click()));
+    // The playlist of the item, as a chip: its colour and its name.
+    if deck.state == DeckState::Empty {
+        let empty = RichText::new("Empty: nothing planned").font(theme::text(theme::CAPTION));
+        widgets::truncated_label(ui, empty.color(t.text_muted));
+    } else if !deck.playlist.is_empty() {
+        ui.horizontal(|ui| {
+            let (dot, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+            ui.painter().circle_filled(
+                dot.center(),
+                size::DOT_R,
+                Tokens::playlist(deck.playlist_color),
+            );
+            let ink = t.readable(deck.playlist_color, t.field);
+            let name = RichText::new(&deck.playlist).font(theme::text(theme::CAPTION));
+            widgets::truncated_label(ui, name.color(ink));
+        });
+    }
     progress(ui, deck, t);
     let left = deck.len.saturating_sub(deck.elapsed);
     let muted = |s: String| {
@@ -403,30 +425,19 @@ fn deck_body(
                 widgets::truncated_label(ui, muted(done));
             });
         }
-        DeckState::Ready => {
-            let at = deck.start.as_ref().map_or_else(|| "—".to_owned(), hms);
-            widgets::truncated_label(ui, muted(format!("starts {at} · {}", mmss(deck.len))));
-        }
-        DeckState::Empty => {
-            ui.label(muted("no item".to_owned()));
-        }
+        DeckState::Ready | DeckState::Empty => {}
+    }
+    // When the deck starts, or when it started and ends. The times come from the plan.
+    if let Some(line) = start_line(deck, now_ts(deck, ui)) {
+        widgets::truncated_label(ui, muted(line));
     }
     head.inner.union(title)
 }
 
-fn badge(
-    ui: &mut egui::Ui,
-    label: char,
-    playing: bool,
-    focused: bool,
-    t: &Tokens,
-) -> egui::Response {
+fn badge(ui: &mut egui::Ui, i: usize, label: char, focused: bool, t: &Tokens) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size::BADGE), Sense::click());
-    let (fill, ink) = if playing {
-        (t.on_air, t.canvas)
-    } else {
-        (t.hover, t.text)
-    };
+    // The badge has the identity colour of the deck, the same as its rows in the lists.
+    let (fill, ink) = (Tokens::deck(i), t.deck_ink(i));
     ui.painter().rect_filled(rect, t.radius, fill);
     ui.painter().text(
         rect.center(),
@@ -775,5 +786,43 @@ fn short_mode(mode: PlayMode) -> &'static str {
         PlayMode::Auto => "AU",
         PlayMode::Assist => "AS",
         PlayMode::Manual => "MN",
+    }
+}
+
+/// The instant of the snapshot, from the clock of the UI.
+fn now_ts(_deck: &DeckView, ui: &egui::Ui) -> Option<jiff::Timestamp> {
+    ui.ctx()
+        .data(|d| d.get_temp::<jiff::Timestamp>(egui::Id::new(NOW_KEY)))
+}
+
+/// The key of the snapshot instant in the egui data, for the countdowns of the decks.
+pub(crate) const NOW_KEY: &str = "decks_now";
+
+/// The line under a deck: when it starts, or when it started and ends.
+fn start_line(deck: &DeckView, now: Option<jiff::Timestamp>) -> Option<String> {
+    let start = deck.start.as_ref()?;
+    match deck.state {
+        DeckState::Empty => None,
+        DeckState::Paused => Some("Paused".to_owned()),
+        DeckState::Playing | DeckState::Fading => {
+            let end = jiff::SignedDuration::try_from(deck.len)
+                .ok()
+                .and_then(|d| start.timestamp().checked_add(d).ok())
+                .map(|e| hms(&e.to_zoned(start.time_zone().clone())))
+                .unwrap_or_default();
+            Some(format!("Started {} · ends {end}", hms(start)))
+        }
+        DeckState::Ready if deck.waiting => Some("Waits for Next".to_owned()),
+        DeckState::Ready => {
+            let left = now.map_or(String::new(), |n| {
+                let secs = start.timestamp().duration_since(n).as_secs().max(0) as u64;
+                format!(" · in {}", mmss(std::time::Duration::from_secs(secs)))
+            });
+            if deck.hard {
+                Some(format!("⏱ Starts {} sharp{left}", hms(start)))
+            } else {
+                Some(format!("Starts {}{left}", hms(start)))
+            }
+        }
     }
 }

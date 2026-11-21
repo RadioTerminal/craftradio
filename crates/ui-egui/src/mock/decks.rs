@@ -66,6 +66,11 @@ pub(super) fn deck(
             len: r.len,
             state,
             start: Some(r.start.clone()),
+            playlist: r.playlist.clone(),
+            playlist_color: r.color,
+            hard: r.fixed.is_some() && r.playlist == "News",
+            waiting: false,
+            item: None,
         },
         None => DeckView {
             label,
@@ -74,6 +79,11 @@ pub(super) fn deck(
             len: Duration::ZERO,
             state: DeckState::Empty,
             start: None,
+            playlist: String::new(),
+            playlist_color: [0x80; 3],
+            hard: false,
+            waiting: false,
+            item: None,
         },
     }
 }

@@ -75,7 +75,7 @@ pub mod size {
     pub const UPCOMING_ROW: f32 = 34.0;
 
     /// Table columns.
-    pub const COL_TIME: f32 = 104.0;
+    pub const COL_TIME: f32 = 128.0;
     /// The slot for the ⏱ of a fixed row, before its time.
     pub const GLYPH_SLOT: f32 = 14.0;
     pub const COL_LEN: f32 = 72.0;
@@ -95,6 +95,10 @@ pub mod size {
     pub const DECK_MIN_W: f32 = 180.0;
     /// The narrowest deck card. Below the normal width its text truncates.
     pub const DECK_TINY_W: f32 = 184.0;
+    /// The deck badge on a row of a list.
+    pub const DECK_MARK: f32 = 16.0;
+    /// The bar in the deck colour at the left edge of a row on a deck.
+    pub const DECK_BAR: f32 = 3.0;
     /// The least room in which a deck card shows its state word.
     pub const DECK_WORD_MIN_W: f32 = 40.0;
     pub const PROGRESS_H: f32 = 6.0;
@@ -299,6 +303,22 @@ impl Tokens {
         Color32::from_rgb(rgb[0], rgb[1], rgb[2])
     }
 
+    /// The identity colour of deck `i` (0 is A).
+    pub fn deck(i: usize) -> Color32 {
+        let rgb = DECK_COLOURS[i.min(3)];
+        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+    }
+
+    /// The letter ink on the colour of deck `i`: the canvas or the text, whichever reads.
+    pub fn deck_ink(&self, i: usize) -> Color32 {
+        let bg = Self::deck(i);
+        if contrast(self.canvas, bg) >= contrast(self.text, bg) {
+            self.canvas
+        } else {
+            self.text
+        }
+    }
+
     /// The playlist colour, moved toward `text` until it reads at 4.5:1 on `bg`.
     pub fn readable(&self, rgb: [u8; 3], bg: Color32) -> Color32 {
         let base = Self::playlist(rgb);
@@ -312,6 +332,16 @@ impl Tokens {
 /// Colours that a person can give a playlist or a cart, with their names. The name always
 /// shows too. Red, amber, green and the accent blue mean on air, danger, warning, ok and
 /// selection, so the palette keeps away from them.
+/// The identity colour of each deck, A to D. They are far from each other, from the
+/// playlist palette and from the colours that mean something. The deck letter always comes
+/// with the colour.
+pub const DECK_COLOURS: [[u8; 3]; 4] = [
+    [0x22, 0x44, 0xFF],
+    [0xFF, 0x00, 0xFF],
+    [0x77, 0xFF, 0x33],
+    [0xFF, 0xFF, 0xDD],
+];
+
 pub const PALETTE: [(&str, [u8; 3]); 8] = [
     ("Lime", [0x9C, 0xC0, 0x3A]),
     ("Copper", [0xB8, 0x7A, 0x52]),
@@ -498,6 +528,30 @@ mod tests {
                 let d = delta_e(Tokens::playlist(rgb), s);
                 assert!(d >= MIN_DELTA_E, "{name} is {d:.1} from {s:?}");
             }
+        }
+    }
+
+    #[test]
+    fn deck_colours_stay_clear_of_each_other_the_palette_and_the_meanings() {
+        const MIN_DELTA_E: f32 = 20.0;
+        let t = Tokens::DARK;
+        let mut others: Vec<Color32> =
+            vec![t.on_air, t.danger, t.warn, t.ok, t.accent, t.selection];
+        others.extend(PALETTE.iter().map(|(_, rgb)| Tokens::playlist(*rgb)));
+        for i in 0..4 {
+            let d = Tokens::deck(i);
+            for o in &others {
+                let e = delta_e(d, *o);
+                assert!(e >= MIN_DELTA_E, "deck {i} is {e:.1} from {o:?}");
+            }
+            for j in i + 1..4 {
+                let e = delta_e(d, Tokens::deck(j));
+                assert!(e >= MIN_DELTA_E, "decks {i} and {j} are {e:.1} apart");
+            }
+            assert!(
+                contrast(t.deck_ink(i), d) >= MIN_TEXT_CONTRAST,
+                "the letter on deck {i} reads"
+            );
         }
     }
 

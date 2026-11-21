@@ -25,6 +25,15 @@ pub struct DeckView {
     pub state: DeckState,
     /// The start time of the item, as the timeline plans it. `None` for an empty deck.
     pub start: Option<jiff::Zoned>,
+    /// The playlist of the item, and its colour.
+    pub playlist: String,
+    pub playlist_color: [u8; 3],
+    /// True when the item is a hard fixed event: it starts on its time sharp.
+    pub hard: bool,
+    /// True when the deck waits for Next (Assist mode) before it starts.
+    pub waiting: bool,
+    /// The id of the item, as `PlaylistTab::ids` has it. `None` when it is not known.
+    pub item: Option<u64>,
 }
 
 /// How well a fixed-time item fits its slot.
@@ -55,6 +64,8 @@ pub struct Row {
     pub timing: Option<Timing>,
     /// The state of a stream row. `None` for other rows.
     pub stream: Option<StreamState>,
+    /// The deck that holds the item of this row (0 is deck A), if a deck holds it.
+    pub deck: Option<usize>,
 }
 
 /// How strictly a fixed row keeps its time.

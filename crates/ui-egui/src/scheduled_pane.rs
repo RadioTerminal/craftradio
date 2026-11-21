@@ -45,7 +45,7 @@ pub(crate) fn show(
     match *tab {
         Tab::Upcoming => upcoming(ui, view, prep, link, actions, t),
         Tab::Playlist(i) => match view.tabs.get(i) {
-            Some(p) => playlist(ui, p, link, actions, t),
+            Some(p) => playlist(ui, p, &view.decks, link, actions, t),
             None => *tab = Tab::Upcoming,
         },
     }
@@ -331,8 +331,16 @@ fn upcoming_row(
     let mid = inner.center().y;
     let time_ink = if on_air { t.on_air } else { t.text };
     let left = egui::Align2::LEFT_CENTER;
+    // The deck mark first: the letter and the bar in the colour of the deck that holds the row.
+    let mark = egui::Rect::from_min_size(
+        egui::pos2(inner.left(), mid - size::DECK_MARK / 2.0),
+        egui::Vec2::splat(size::DECK_MARK),
+    );
+    if let Some(d) = r.deck {
+        crate::widgets::paint_deck_mark(p, mark, rect.left(), d, t);
+    }
     p.text(
-        egui::pos2(inner.left(), mid),
+        egui::pos2(mark.right() + space::S, mid),
         left,
         &prep.start[i],
         theme::mono(theme::CODE),
@@ -410,6 +418,7 @@ fn upcoming_row(
 fn playlist(
     ui: &mut egui::Ui,
     p: &PlaylistTab,
+    decks: &[crate::view::DeckView],
     link: &mut Linked,
     actions: &mut Vec<Action>,
     t: &Tokens,
@@ -450,6 +459,13 @@ fn playlist(
                 for (i, (name, len)) in p.items.iter().enumerate() {
                     let row = egui::Frame::new().inner_margin(pad::ROW).show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            // The deck that holds the item, if one does.
+                            let id = p.ids.get(i).copied();
+                            let on = decks.iter().position(|d| id.is_some() && d.item == id);
+                            let hint = on
+                                .and_then(|d| decks[d].start.as_ref().map(|s| (d, s)))
+                                .map_or_else(String::new, |(d, s)| crate::widgets::deck_hint(d, s));
+                            crate::widgets::deck_mark(ui, on, &hint);
                             let weight = p.weights.get(i).copied().unwrap_or(1);
                             let w = if weight == 1 {
                                 String::new()

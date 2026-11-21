@@ -30,6 +30,11 @@ impl RadioApp {
         }
         if let Some(d) = p.focus_deck {
             self.decks.focus(d);
+            // The Main list shows the row of that deck too.
+            if let Some(r) = self.view.rows.iter().find(|r| r.deck == Some(d)) {
+                self.link.follow = false;
+                self.link.scroll_main = Some(r.id);
+            }
         }
         let deck = self.decks.focused();
         let Some(dv) = self.view.decks.get(deck) else {

@@ -340,3 +340,42 @@ fn a_fader_drag_causes_no_plans() {
         after - before
     );
 }
+
+/// The decks stay loaded with what comes next, in deck order from the deck on air. When the
+/// item on air ends, the next deck goes on air, and the freed deck takes the next item.
+#[test]
+fn the_decks_stay_loaded_with_what_comes_next() {
+    let items: Vec<_> = (1..=5)
+        .map(|i| {
+            let path = wav(&format!("dk{i}"), 2.0, Side::Both);
+            file_item(i, &format!("Song {i}"), &path, 2.0, 2.0, 0.0)
+        })
+        .collect();
+    let engine = engine_with(items);
+    let (p, clock) = offline(engine, |cfg| cfg.preload = Duration::from_millis(500));
+    let _ = run(&p, &clock, 0.1);
+    let decks = |p: &Playout| -> Vec<Option<u64>> {
+        p.snapshot()
+            .decks
+            .iter()
+            .map(|d| d.item.map(|i| i.0))
+            .collect()
+    };
+    assert_eq!(
+        decks(&p),
+        [Some(1), Some(2), Some(3), Some(4)],
+        "A plays, B to D hold the next three, long before the preload time"
+    );
+    let _ = run(&p, &clock, 2.2);
+    let view = p.snapshot();
+    assert_eq!(
+        view.decks[1].phase,
+        radio_playout::DeckPhase::Playing,
+        "B is on air after A"
+    );
+    assert_eq!(
+        decks(&p),
+        [Some(5), Some(2), Some(3), Some(4)],
+        "A, freed, takes item 5 as next 3; no item moved"
+    );
+}

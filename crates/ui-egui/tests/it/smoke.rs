@@ -187,3 +187,31 @@ fn the_mixer_window_follows_the_size_of_its_content() {
         "back to its size: {closed} vs {again}"
     );
 }
+
+/// Each deck card names the playlist of its item, and a waiting deck says when it starts.
+/// The rows that the decks hold carry the deck letter.
+#[test]
+fn deck_cards_name_their_playlist_and_start_and_rows_show_their_deck() {
+    let harness = harness();
+    let in_strip = |label: &str| {
+        harness
+            .query_all_by_label(label)
+            .any(|n| n.rect().bottom() < 200.0)
+    };
+    assert!(
+        in_strip("Music"),
+        "a deck card shows the playlist of its item"
+    );
+    assert!(
+        harness
+            .query_all_by_label_contains("Starts 15:")
+            .any(|n| n.rect().bottom() < 200.0),
+        "a NEXT deck says when it starts"
+    );
+    assert!(
+        harness
+            .query_all_by_label("Deck C")
+            .any(|n| n.rect().top() > 200.0),
+        "the row on deck C shows the C badge"
+    );
+}

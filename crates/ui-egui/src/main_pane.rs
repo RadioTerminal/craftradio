@@ -441,6 +441,11 @@ struct Look {
 
 /// The time cell. A played row has a ✔ and the word in its tooltip.
 fn start_cell(ui: &mut egui::Ui, r: &Row, text: &str, font: f32, ink: egui::Color32, played: bool) {
+    // The deck that holds the row: its letter in its colour. The room stays when no deck has it.
+    let hint = r
+        .deck
+        .map_or_else(String::new, |d| crate::widgets::deck_hint(d, &r.start));
+    crate::widgets::deck_mark(ui, r.deck, &hint);
     // ⏱ sits in a slot of its own, so every time starts at the same x.
     let (slot, _) = ui.allocate_exact_size(egui::vec2(size::GLYPH_SLOT, font), Sense::hover());
     if r.fixed.is_some() {

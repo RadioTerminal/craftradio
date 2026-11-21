@@ -284,6 +284,7 @@ impl EngineSource {
             meta: view_meta(item, &meta),
             timing: None,
             stream: None,
+            deck: None,
         }
     }
 
@@ -300,9 +301,14 @@ impl EngineSource {
                 continue;
             };
             let k = seen.entry(e.item).or_insert(0);
+            let first = *k == 0;
             let id = e.item.0 | (*k << REPEAT_SHIFT);
             *k += 1;
             let mut row = self.row_for(id, item, e.playlist, e.start);
+            // The first row of an item that a deck holds shows that deck.
+            if first {
+                row.deck = pv.decks.iter().position(|d| d.item == Some(e.item));
+            }
             row.len = e.len;
             row.locked = e.locked;
             row.origin = match e.origin {
@@ -383,7 +389,36 @@ impl EngineSource {
                 }
                 _ => Duration::ZERO,
             };
+            let (playlist, playlist_color) = d.item.and_then(|id| self.items.get(&id)).map_or(
+                (String::new(), [0x80; 3]),
+                |(p, _)| {
+                    let (name, color, _) = self.playlist_look(*p);
+                    (name, color)
+                },
+            );
+            let hard = d.item.is_some_and(|id| {
+                pv.timeline.entries.iter().any(|e| {
+                    e.item == id
+                        && e.fixed
+                            .as_ref()
+                            .is_some_and(|f| f.mode == radio_model::FixMode::Hard)
+                })
+            });
+            // In Assist mode the first waiting deck waits for Next.
+            let first_ready = pv
+                .decks
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| matches!(x.phase, DeckPhase::Ready | DeckPhase::Cued))
+                .min_by_key(|(_, x)| x.start)
+                .map(|(k, _)| k);
+            let waiting = pv.waiting_for_next && first_ready == Some(i);
             DeckView {
+                playlist,
+                playlist_color,
+                hard,
+                waiting,
+                item: d.item.map(|id| id.0),
                 label: ['A', 'B', 'C', 'D'][i],
                 title: d
                     .item
@@ -451,6 +486,7 @@ impl EngineSource {
             meta: view_meta(&item, &item.meta),
             timing: None,
             stream: None,
+            deck: None,
         }
     }
 

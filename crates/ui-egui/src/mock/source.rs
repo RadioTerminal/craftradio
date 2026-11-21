@@ -41,7 +41,7 @@ impl ViewSource for MockSource {
             .filter(|r| r.start.timestamp() >= since && r.start.timestamp() <= now)
             .cloned()
             .collect();
-        let rows: Vec<Row> = all.into_iter().filter(|r| r.start >= top).collect();
+        let mut rows: Vec<Row> = all.into_iter().filter(|r| r.start >= top).collect();
 
         let on_air = rows
             .iter()
@@ -67,6 +67,12 @@ impl ViewSource for MockSource {
             deck('C', at(2), DeckState::Ready, Duration::ZERO),
             deck('D', at(3), DeckState::Ready, Duration::ZERO),
         ];
+        // The deck of each row: A holds the row on air, B to D the next three.
+        if let Some(i) = on_air {
+            for (k, r) in rows.iter_mut().skip(i).take(4).enumerate() {
+                r.deck = Some(k);
+            }
+        }
         let meters = meters(now, &decks, &self.strips);
         self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
