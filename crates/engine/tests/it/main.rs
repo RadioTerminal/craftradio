@@ -21,6 +21,7 @@ fn item(id: u64, title: &str) -> Item {
         valid_from: None,
         valid_to: None,
         max_per_day: None,
+        meta: Default::default(),
     }
 }
 
