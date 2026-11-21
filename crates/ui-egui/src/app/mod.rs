@@ -237,7 +237,12 @@ impl RadioApp {
             .rows
             .iter()
             .find(|r| is_on_air(r, self.view.now.timestamp()));
-        let streaming = on_air.map_or_else(String::new, |r| self.source.stream_title(r));
+        // Only the mixer shows the stream title, so only an open mixer asks for it.
+        let streaming = if self.open.get(ToolWindow::Mixer) {
+            on_air.map_or_else(String::new, |r| self.source.stream_title(r))
+        } else {
+            String::new()
+        };
         let view = &self.view;
         let open = &mut self.open;
         let link = &mut self.link;

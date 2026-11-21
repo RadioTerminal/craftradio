@@ -84,6 +84,7 @@ pub struct MockSource {
     settings: Settings,
     /// The timeline covers this many hours from the top of the current hour.
     hours: i64,
+    next_item_id: u64,
 }
 
 impl MockSource {
@@ -194,6 +195,7 @@ impl MockSource {
             limits: Limits::DEFAULT,
             settings: Settings::new(),
             hours: HOURS,
+            next_item_id: 1,
         }
     }
 
@@ -252,16 +254,20 @@ impl MockSource {
     fn folder_views(&self) -> Vec<FolderView> {
         self.folders
             .iter()
-            .map(|f| FolderView {
-                path: f.path.clone(),
-                files: self
-                    .library
-                    .iter()
-                    .filter(|l| f.scan.files.contains(&l.path))
-                    .cloned()
-                    .collect(),
-                truncated: f.scan.truncated,
-                errors: f.scan.errors.clone(),
+            .map(|f| {
+                let paths: std::collections::HashSet<&str> =
+                    f.scan.files.iter().map(String::as_str).collect();
+                FolderView {
+                    path: f.path.clone(),
+                    files: self
+                        .library
+                        .iter()
+                        .filter(|l| paths.contains(l.path.as_str()))
+                        .cloned()
+                        .collect(),
+                    truncated: f.scan.truncated,
+                    errors: f.scan.errors.clone(),
+                }
             })
             .collect()
     }

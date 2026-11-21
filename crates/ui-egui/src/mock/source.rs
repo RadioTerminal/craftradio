@@ -14,6 +14,7 @@ impl ViewSource for MockSource {
             .unwrap_or_else(|_| local.clone());
         self.last_top = Some(top.clone());
         self.last_now = now;
+        self.ensure_item_ids();
         if let Some((from, secs)) = self.fade {
             let end = SignedDuration::try_from_secs_f32(secs).map_or(from, |d| from + d);
             if now >= end {
@@ -234,6 +235,7 @@ impl ViewSource for MockSource {
                 .map(|f| (folders::stem_of(f).to_owned(), Duration::ZERO))
                 .collect();
             tab.weights = vec![1; tab.items.len()];
+            tab.ids.clear();
         }
         let Some(slot) = self.tab_mut(&tab.name) else {
             return Err(format!("preview — no playlist {}", tab.name));

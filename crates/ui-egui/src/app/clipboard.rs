@@ -6,7 +6,7 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CutSource {
     Rows(Vec<u64>),
-    PlaylistItem { playlist: String, index: usize },
+    PlaylistItem { playlist: String, id: u64 },
 }
 
 /// The internal clipboard: library item ids that all panes share.
@@ -50,6 +50,7 @@ impl RadioApp {
             return;
         }
         let items = self.clip.items.clone();
+        let to_cart = matches!(to, PasteTo::Cart(_));
         let (place, result) = match to {
             PasteTo::Main(at) => (
                 self.view.main_playlist.clone(),
@@ -74,13 +75,23 @@ impl RadioApp {
         // A cut removes its source only after the paste worked.
         if result.is_ok() && self.clip.cut {
             let removed = match self.clip.source.take() {
+                // A cart takes one item, so the cut removes only the first row.
+                // The other rows stay cut on the clipboard.
+                Some(CutSource::Rows(mut rows)) if to_cart && rows.len() > 1 => {
+                    let first = rows.remove(0);
+                    if !self.clip.items.is_empty() {
+                        self.clip.items.remove(0);
+                    }
+                    self.clip.source = Some(CutSource::Rows(rows));
+                    self.source.edit(Edit::Remove(vec![first]))
+                }
                 Some(CutSource::Rows(rows)) => self.source.edit(Edit::Remove(rows)),
-                Some(CutSource::PlaylistItem { playlist, index }) => self
-                    .source
-                    .edit(Edit::RemovePlaylistItem { playlist, index }),
+                Some(CutSource::PlaylistItem { playlist, id }) => {
+                    self.source.edit(Edit::RemovePlaylistItem { playlist, id })
+                }
                 None => Ok(0),
             };
-            self.clip.cut = false;
+            self.clip.cut = self.clip.source.is_some();
             if let Err(e) = removed {
                 text = format!("{text} · the cut source stays: {e}");
             }

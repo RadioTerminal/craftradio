@@ -17,6 +17,8 @@ const DEFAULT_PLANNED_MIN: u32 = 60;
 const MAX_PLANNED_MIN: u32 = 24 * 60;
 const SECONDS_PER_MINUTE: u32 = 60;
 const MAX_CHANNEL: u32 = 16;
+/// The reason that Add stays off for an empty planned length.
+const NO_LENGTH: &str = "The planned length must be more than 0.";
 /// The label of the keep-alive switch of a stream.
 pub(crate) const KEEP_ALIVE_LABEL: &str =
     "Keep alive — reconnect until the planned end (don't skip)";
@@ -31,6 +33,8 @@ pub(crate) enum AddDialog {
         minutes: u32,
         seconds: u32,
         keep_alive: bool,
+        /// True after the first press of Add. Errors show only from then on.
+        tried: bool,
     },
     Live {
         playlist: String,
@@ -88,11 +92,12 @@ pub(crate) fn items(
         actions.push(Action::AddDialog(AddDialog::Url {
             playlist: playlist.to_owned(),
             at,
-            url: String::new(),
+            url: "https://".to_owned(),
             title: String::new(),
             minutes: DEFAULT_PLANNED_MIN,
             seconds: 0,
             keep_alive: true,
+            tried: false,
         }));
     }
     if menu_item(ui, "Add live input…", None) {
@@ -166,6 +171,7 @@ pub(crate) fn dialog(
                         minutes,
                         seconds,
                         keep_alive,
+                        tried,
                     } => {
                         let label = ui.label(RichText::new("URL").color(t.text_muted));
                         let field = egui::TextEdit::singleline(url).hint_text("https://");
@@ -181,7 +187,11 @@ pub(crate) fn dialog(
                         ui.label("");
                         ui.checkbox(keep_alive, KEEP_ALIVE_LABEL);
                         ui.end_row();
-                        if let Err(e) = check_stream_url(url) {
+                        let length = len_of(*minutes, *seconds);
+                        let problem = check_stream_url(url)
+                            .err()
+                            .or_else(|| length.is_zero().then(|| NO_LENGTH.to_owned()));
+                        if let Some(e) = problem.clone().filter(|_| *tried) {
                             ui.label("");
                             ui.label(
                                 RichText::new(e)
@@ -189,7 +199,8 @@ pub(crate) fn dialog(
                                     .color(t.danger),
                             );
                             ui.end_row();
-                        } else {
+                        }
+                        if problem.is_none() {
                             edit = Some(Edit::AddStream {
                                 playlist: playlist.clone(),
                                 url: url.trim().to_owned(),
@@ -229,23 +240,53 @@ pub(crate) fn dialog(
                         });
                         ui.end_row();
                         planned(ui, minutes, seconds, t);
-                        edit = Some(Edit::AddLive {
-                            playlist: playlist.clone(),
-                            device: device.clone(),
-                            channels: (*left, *right),
-                            planned_len: len_of(*minutes, *seconds),
-                            at: *at,
-                        });
+                        let length = len_of(*minutes, *seconds);
+                        let problem = if view.devices.is_empty() || device.is_empty() {
+                            Some("There is no input device. Connect one, then try again.")
+                        } else if length.is_zero() {
+                            Some(NO_LENGTH)
+                        } else {
+                            None
+                        };
+                        match problem {
+                            Some(why) => {
+                                ui.label("");
+                                ui.label(
+                                    RichText::new(why)
+                                        .font(theme::text(theme::CAPTION))
+                                        .color(t.warn),
+                                );
+                                ui.end_row();
+                            }
+                            None => {
+                                edit = Some(Edit::AddLive {
+                                    playlist: playlist.clone(),
+                                    device: device.clone(),
+                                    channels: (*left, *right),
+                                    planned_len: length,
+                                    at: *at,
+                                });
+                            }
+                        }
                     }
                 });
             ui.add_space(space::S);
             ui.horizontal(|ui| {
                 let add = egui::Button::new(RichText::new("Add").color(t.canvas)).fill(t.accent);
-                if ui.add_enabled(edit.is_some(), add).clicked()
-                    && let Some(e) = edit.take()
-                {
-                    actions.push(Action::Edit(e));
-                    close = true;
+                // A URL dialog keeps Add on, so the first press can show what is wrong.
+                let url_form = matches!(d, AddDialog::Url { .. });
+                if ui.add_enabled(edit.is_some() || url_form, add).clicked() {
+                    match edit.take() {
+                        Some(e) => {
+                            actions.push(Action::Edit(e));
+                            close = true;
+                        }
+                        None => {
+                            if let AddDialog::Url { tried, .. } = d {
+                                *tried = true;
+                            }
+                        }
+                    }
                 }
                 if ui.button("Cancel").clicked() {
                     close = true;

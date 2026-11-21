@@ -40,6 +40,7 @@ pub(super) fn playlist(
         script_by_hand: false,
         enabled: true,
         weights: Vec::new(),
+        ids: Vec::new(),
         source: None,
     };
     tab.weights = vec![1; tab.items.len()];

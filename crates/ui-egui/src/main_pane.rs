@@ -167,6 +167,15 @@ pub(crate) fn show(
     }
 }
 
+/// The ids in the order of the timeline, so the first id matches the first copied title.
+fn ordered(view: &StationView, ids: &[u64]) -> Vec<u64> {
+    view.rows
+        .iter()
+        .filter(|r| ids.contains(&r.id))
+        .map(|r| r.id)
+        .collect()
+}
+
 fn titles(view: &StationView, ids: &[u64]) -> Vec<(String, std::time::Duration)> {
     view.rows
         .iter()
@@ -190,7 +199,7 @@ fn shortcuts(ctx: &egui::Context, view: &StationView, link: &Linked, actions: &m
     if p.copy || p.cut {
         actions.push(Action::CopyTitles {
             titles: titles(view, &sel),
-            cut: p.cut.then(|| CutSource::Rows(sel.clone())),
+            cut: p.cut.then(|| CutSource::Rows(ordered(view, &sel))),
         });
     }
     if p.duplicate
@@ -263,7 +272,7 @@ fn row_menu(
     if menu_item(ui, "Cut", Some(CUT)) {
         actions.push(Action::CopyTitles {
             titles: titles(view, &sel),
-            cut: Some(CutSource::Rows(sel.clone())),
+            cut: Some(CutSource::Rows(ordered(view, &sel))),
         });
     }
     if menu_item(ui, "Copy", Some(COPY)) {

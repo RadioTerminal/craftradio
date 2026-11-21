@@ -136,19 +136,20 @@ fn add_url_puts_a_stream_into_the_playlist() {
     h.get_by_label("    Jingles").click();
     h.run_steps(FRAMES);
     let stream = "https://radio.example.org/live";
-    assert_eq!(count(&h, stream), 0);
+    assert_eq!(count(&h, "radio.example.org"), 0);
     h.get_by_label("+ Add to Jingles").click();
     h.run_steps(FRAMES);
     menu(&mut h, "Add URL…");
     let field = h.get_by_label("URL");
     field.focus();
-    field.type_text(stream);
+    // The field starts with "https://", so the test types the rest of the address.
+    field.type_text(stream.trim_start_matches("https://"));
     h.run_steps(FRAMES);
     h.get_by_label("Add").click();
     h.run_steps(FRAMES);
     assert!(
-        count(&h, stream) > 0,
-        "the stream is an item of Jingles now"
+        count(&h, "radio.example.org") > 0,
+        "the stream is an item of Jingles now, titled by its host"
     );
     assert!(
         h.query_by_label_contains("added 1 stream to Jingles")

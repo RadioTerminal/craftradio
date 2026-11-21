@@ -433,17 +433,18 @@ fn item_menu(
     link: &mut Linked,
     actions: &mut Vec<Action>,
 ) {
+    let id = p.ids.get(i).copied().unwrap_or_default();
     let copy = |cut: bool| Action::CopyTitles {
         titles: vec![(name.to_owned(), len)],
         cut: cut.then(|| CutSource::PlaylistItem {
             playlist: p.name.clone(),
-            index: i,
+            id,
         }),
     };
     let remove = || {
         Action::Edit(Edit::RemovePlaylistItem {
             playlist: p.name.clone(),
-            index: i,
+            id,
         })
     };
     ui.menu_button("+ Add below", |ui| {

@@ -386,6 +386,9 @@ fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, t: &Tokens
             if i < tab.weights.len() {
                 tab.weights.remove(i);
             }
+            if i < tab.ids.len() {
+                tab.ids.remove(i);
+            }
         }
         let hint = "Drop files or a folder from the file manager here to add them";
         caption(ui, hint, t);

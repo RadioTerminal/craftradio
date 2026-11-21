@@ -8,6 +8,7 @@ fn gone(what: &str) -> String {
 
 impl MockSource {
     pub(super) fn apply_edit(&mut self, edit: Edit) -> Result<usize, String> {
+        self.ensure_item_ids();
         match edit {
             Edit::Insert { item, at } => {
                 let Some(lib) = self.library_item(item) else {
@@ -94,14 +95,17 @@ impl MockSource {
                 }
                 Ok(1)
             }
-            Edit::RemovePlaylistItem { playlist, index } => {
+            Edit::RemovePlaylistItem { playlist, id } => {
                 let Some(tab) = self.tab_mut(&playlist) else {
                     return Err(gone(&format!("the playlist {playlist}")));
                 };
-                if index >= tab.items.len() {
+                let Some(index) = tab.ids.iter().position(|i| *i == id) else {
                     return Err(gone("that item"));
+                };
+                tab.ids.remove(index);
+                if index < tab.items.len() {
+                    tab.items.remove(index);
                 }
-                tab.items.remove(index);
                 if index < tab.weights.len() {
                     tab.weights.remove(index);
                 }
@@ -125,6 +129,9 @@ impl MockSource {
                         tab.items.swap(index, o);
                         if o < tab.weights.len() && index < tab.weights.len() {
                             tab.weights.swap(index, o);
+                        }
+                        if o < tab.ids.len() && index < tab.ids.len() {
+                            tab.ids.swap(index, o);
                         }
                         Ok(1)
                     }
@@ -319,9 +326,11 @@ impl MockSource {
                 keep_alive,
                 at,
             } => {
-                crate::view::check_stream_url(&url).map_err(|e| format!("preview — {e}"))?;
+                let host =
+                    crate::view::check_stream_url(&url).map_err(|e| format!("preview — {e}"))?;
+                // The default title is the host, never the full address.
                 let title = if title.trim().is_empty() {
-                    url.clone()
+                    host
                 } else {
                     title.trim().to_owned()
                 };
@@ -357,6 +366,20 @@ impl MockSource {
                 Ok(1)
             }
         }
+    }
+
+    /// Give every playlist item an id and a weight. New items at the end get new ids.
+    pub(super) fn ensure_item_ids(&mut self) {
+        let mut next = self.next_item_id;
+        for tab in self.tabs.iter_mut().chain(std::iter::once(&mut self.main)) {
+            tab.ids.truncate(tab.items.len());
+            while tab.ids.len() < tab.items.len() {
+                tab.ids.push(next);
+                next += 1;
+            }
+            tab.weights.resize(tab.items.len(), 1);
+        }
+        self.next_item_id = next;
     }
 
     /// Add a library item that is not a file, such as a stream. It returns the new id.
@@ -402,16 +425,21 @@ impl MockSource {
             .filter_map(|id| self.library_item(*id))
             .map(|l| (l.title.clone(), l.len))
             .collect();
+        let mut next = self.next_item_id;
         let Some(tab) = self.tab_mut(playlist) else {
             return Err(gone(&format!("the playlist {playlist}")));
         };
         tab.weights.resize(tab.items.len(), 1);
         let at = at.unwrap_or(tab.items.len()).min(tab.items.len());
         let n = entries.len();
+        tab.ids.truncate(tab.items.len());
         for (k, entry) in entries.into_iter().enumerate() {
             tab.items.insert(at + k, entry);
             tab.weights.insert(at + k, 1);
+            tab.ids.insert(at + k, next);
+            next += 1;
         }
+        self.next_item_id = next;
         Ok(n)
     }
 
@@ -444,6 +472,7 @@ impl MockSource {
     }
 
     /// Make each cart page as big as the grid in the cartwall settings.
+    /// Assigned carts keep their order. Carts that do not fit move to the next page.
     fn fit_cart_grid(&mut self) {
         let cols = self.setting_u64(CARTWALL_PART, CART_COLS_KEY);
         let rows = self.setting_u64(CARTWALL_PART, CART_ROWS_KEY);
@@ -454,32 +483,53 @@ impl MockSource {
         if per == self.cartwall.per_page {
             return;
         }
-        let pages = self.cartwall.pages.len();
-        let old = self.cartwall.per_page;
-        let mut carts = Vec::with_capacity(pages * per);
-        let mut slots = Vec::with_capacity(pages * per);
-        for p in 0..pages {
-            for k in 0..per {
-                let from = p * old + k;
-                let keep = k < old;
-                carts.push(if keep {
-                    self.carts.get(from).cloned().unwrap_or_default()
+        let old = self.cartwall.per_page.max(1);
+        // Each old page keeps its carts in order. Overflow goes onto new pages after it.
+        let mut carts = Vec::new();
+        let mut slots = Vec::new();
+        let mut pages = Vec::new();
+        for (p, name) in self.cartwall.pages.iter().enumerate() {
+            let from = (p * old).min(self.carts.len());
+            let to = (from + old).min(self.carts.len());
+            let mut used: Vec<(String, CartSlot)> = (from..to)
+                .filter(|k| !self.carts[*k].is_empty())
+                .map(|k| {
+                    (
+                        self.carts[k].clone(),
+                        self.cartwall.slots.get(k).copied().unwrap_or(DEFAULT_SLOT),
+                    )
+                })
+                .collect();
+            let mut first = true;
+            loop {
+                let take = used.len().min(per);
+                let chunk: Vec<(String, CartSlot)> = used.drain(..take).collect();
+                pages.push(if first {
+                    name.clone()
                 } else {
-                    String::new()
+                    format!("{name} (more)")
                 });
-                slots.push(if keep {
-                    self.cartwall
-                        .slots
-                        .get(from)
-                        .copied()
-                        .unwrap_or(DEFAULT_SLOT)
-                } else {
-                    DEFAULT_SLOT
-                });
+                first = false;
+                for k in 0..per {
+                    match chunk.get(k) {
+                        Some((label, slot)) => {
+                            carts.push(label.clone());
+                            slots.push(*slot);
+                        }
+                        None => {
+                            carts.push(String::new());
+                            slots.push(DEFAULT_SLOT);
+                        }
+                    }
+                }
+                if used.is_empty() {
+                    break;
+                }
             }
         }
         self.carts = carts;
         self.cartwall.slots = slots;
+        self.cartwall.pages = pages;
         self.cartwall.per_page = per;
     }
 }

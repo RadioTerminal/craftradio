@@ -202,6 +202,8 @@ pub struct PlaylistTab {
     pub enabled: bool,
     /// The weight of each item, for the weighted pick order. It has one entry per item.
     pub weights: Vec<u32>,
+    /// A stable id for each item. It has one entry per item.
+    pub ids: Vec<u64>,
 }
 
 /// A folder that backs a playlist.
@@ -711,9 +713,10 @@ pub enum Edit {
     },
     DuplicatePlaylist(String),
     DeletePlaylist(String),
+    /// Remove one item of a playlist, by its id.
     RemovePlaylistItem {
         playlist: String,
-        index: usize,
+        id: u64,
     },
     MovePlaylistItem {
         playlist: String,
@@ -823,17 +826,26 @@ pub enum Edit {
 pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "flac", "wav", "ogg", "m4a", "opus", "aac"];
 
 /// Check a stream address. It returns why the address is not usable.
-pub fn check_stream_url(url: &str) -> Result<(), String> {
+/// It returns the host, which is also the default title of the stream.
+pub fn check_stream_url(url: &str) -> Result<String, String> {
     let url = url.trim();
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
-        .ok_or_else(|| "the address must start with http:// or https://".to_owned())?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    if host.is_empty() || host.contains(char::is_whitespace) {
-        return Err("the address has no host".to_owned());
+        .ok_or_else(|| "The address must start with http:// or https://.".to_owned())?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // A user name or password in the address would show in logs and in the stream list.
+    if authority.contains('@') {
+        return Err(
+            "Remove the user name and password from the address. Put them in the stream settings."
+                .to_owned(),
+        );
     }
-    Ok(())
+    let host = authority.split(':').next().unwrap_or_default();
+    if host.is_empty() || authority.contains(char::is_whitespace) {
+        return Err("The address has no host.".to_owned());
+    }
+    Ok(host.to_owned())
 }
 
 /// Something that can describe the station at a given instant.
@@ -888,3 +900,25 @@ pub trait ViewSource {
 
 /// The error of a source that cannot do a command.
 pub const NOT_SUPPORTED: &str = "preview — this source cannot do that";
+
+#[cfg(test)]
+mod tests {
+    use super::check_stream_url;
+
+    #[test]
+    fn stream_addresses_need_a_scheme_and_a_host_and_no_credentials() {
+        assert_eq!(
+            check_stream_url("https://radio.example.org:8000/live").as_deref(),
+            Ok("radio.example.org")
+        );
+        assert!(check_stream_url("http://radio.example.org").is_ok());
+        assert!(check_stream_url("ftp://radio.example.org/live").is_err());
+        assert!(check_stream_url("https:///live").is_err());
+        let with_user = check_stream_url("https://user:secret@radio.example.org/live");
+        assert!(with_user.is_err(), "credentials in the address are refused");
+        assert!(
+            !with_user.unwrap_err().contains("secret"),
+            "the error does not repeat the password"
+        );
+    }
+}

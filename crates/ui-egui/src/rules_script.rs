@@ -110,6 +110,7 @@ mod tests {
             source: None,
             enabled: true,
             weights: Vec::new(),
+            ids: Vec::new(),
         };
 
         let script = generate(&tab);
