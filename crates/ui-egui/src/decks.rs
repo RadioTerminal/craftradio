@@ -4,6 +4,7 @@ use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::{Action, hms, mmss};
 use crate::context_menu::{self, menu_item};
+use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckCommand, DeckState, DeckView, Edit, StationView};
@@ -12,7 +13,7 @@ use crate::widgets::icon_button;
 /// The fade time of a new deck, in seconds.
 const DEFAULT_FADE_S: f32 = 3.0;
 
-/// The deck settings. They are local to the window.
+/// The deck view state. The fade times come from the view source each frame.
 pub(crate) struct State {
     fade_s: [f32; 4],
     settings: [bool; 4],
@@ -34,6 +35,11 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    let labels = ['A', 'B', 'C', 'D'];
+    for (i, label) in labels.iter().enumerate() {
+        state.fade_s[i] = parts::f32(view, parts::DECKS, &fade_key(*label), DEFAULT_FADE_S);
+    }
+    let old = state.fade_s;
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::M;
         let gaps = space::M * view.decks.len() as f32;
@@ -45,6 +51,16 @@ pub(crate) fn show(
         }
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| clock(ui, view, t));
     });
+    for (i, label) in labels.iter().enumerate() {
+        if state.fade_s[i] != old[i] {
+            let value = f64::from(state.fade_s[i]);
+            actions.push(parts::set(parts::DECKS, &fade_key(*label), value));
+        }
+    }
+}
+
+fn fade_key(deck: char) -> String {
+    format!("{deck}_fade_s")
 }
 
 fn command(deck: usize, command: DeckCommand) -> Action {
@@ -176,7 +192,7 @@ fn deck_body(
                 ui.horizontal(|ui| {
                     let label = ui.label(RichText::new("Fade time").color(t.text_muted));
                     let fade = DragValue::new(&mut state.fade_s[i])
-                        .range(0.5..=10.0)
+                        .range(size::FADE_MIN_S..=size::FADE_MAX_S)
                         .speed(0.1)
                         .suffix(" s");
                     ui.add(fade).labelled_by(label.id);

@@ -1,73 +1,45 @@
 //! The cartwall: pages of carts in a grid, and a button that stops them all.
 //! The preview plays no audio. A pressed cart only flashes, and the caption says so.
+//! Pages, carts, ducking, mode and colour live in the view source.
 
 use egui::{Align, DragValue, Layout, RichText, Stroke};
 
 use crate::app::{Action, PasteTo};
 use crate::context_menu::{self, PASTE, check_item, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
+use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{DropTarget, Edit, StationView};
+use crate::view::{CartChange, CartMode, CartSlot, DropTarget, Edit, StationView};
 use crate::windows::ToolWindow;
 
-/// How a cart plays when somebody presses it again.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    OneShot,
-    Loop,
-    Restart,
-}
-
-const MODES: [(Mode, &str); 3] = [
-    (Mode::OneShot, "One-shot"),
-    (Mode::Loop, "Loop"),
-    (Mode::Restart, "Restart"),
-];
 /// The ducking choices in the menu, in dB. Zero means off.
 const DUCKS: [f32; 4] = [0.0, -6.0, -12.0, -18.0];
+/// The deepest ducking that the settings allow, in dB.
+const MAX_DUCK_DB: f32 = -40.0;
+/// Ducking rows in the settings: carts per row.
+const DUCK_COLS: usize = 2;
+/// The largest grid side in the settings.
+const MAX_GRID: u32 = 8;
 
 const NO_AUDIO: &str = "preview — no audio";
-const DEFAULT_DUCK_DB: f32 = -12.0;
 
-/// The cartwall state. All of it is local to the window.
+/// The view state of the window: the page on show, flashes and draft page names.
+#[derive(Default)]
 pub(crate) struct State {
     page: usize,
-    cols: usize,
-    rows: usize,
-    pages: Vec<String>,
-    /// How much each cart lowers the main output while it plays, in dB.
-    duck_db: Vec<f32>,
     /// The egui time at which each cart stops its flash.
     flash_until: Vec<f64>,
     last: Option<usize>,
     settings: bool,
-    /// The colour of each cart, as an index into the theme cart colours.
-    colour: Vec<Option<usize>>,
-    mode: Vec<Mode>,
+    /// Page names while a person edits them.
+    names: Vec<String>,
+    /// True when the clipboard holds items, for this frame.
+    has_clip: bool,
 }
 
-impl State {
-    pub fn new(carts: usize) -> Self {
-        let per_page = size::CART_COLS * size::CART_COLS;
-        let pages = carts.div_ceil(per_page).max(1);
-        Self {
-            page: 0,
-            cols: size::CART_COLS,
-            rows: size::CART_COLS,
-            pages: (1..=pages).map(|n| format!("Page {n}")).collect(),
-            duck_db: vec![DEFAULT_DUCK_DB; carts],
-            flash_until: vec![f64::NEG_INFINITY; carts],
-            last: None,
-            settings: false,
-            colour: vec![None; carts],
-            mode: vec![Mode::OneShot; carts],
-        }
-    }
-
-    fn per_page(&self) -> usize {
-        (self.cols * self.rows).max(1)
-    }
+fn set_cart(cart: usize, change: CartChange) -> Action {
+    Action::EditQuiet(Edit::SetCart { cart, change })
 }
 
 pub(crate) fn show(
@@ -78,16 +50,13 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    state.colour.resize(view.carts.len(), None);
-    state.mode.resize(view.carts.len(), Mode::OneShot);
+    let wall = &view.cartwall;
+    state.has_clip = has_clip;
     state
         .flash_until
         .resize(view.carts.len(), f64::NEG_INFINITY);
-    state.duck_db.resize(view.carts.len(), DEFAULT_DUCK_DB);
-    if state.pages.is_empty() {
-        state.pages.push("Page 1".to_owned());
-    }
-    state.page = state.page.min(state.pages.len() - 1);
+    state.page = state.page.min(wall.pages.len().saturating_sub(1));
+    let cols = parts::u32(view, parts::CARTWALL, "cols", size::CART_COLS as u32).max(1) as usize;
     let now = ui.input(|i| i.time);
 
     let mut open = state.settings;
@@ -100,9 +69,9 @@ pub(crate) fn show(
         None => NO_AUDIO.to_owned(),
     };
     settings::header(ui, "Cartwall", &mut open, |ui| {
-        for page in (0..state.pages.len()).rev() {
+        for page in (0..wall.pages.len()).rev() {
             if ui
-                .selectable_label(state.page == page, &state.pages[page])
+                .selectable_label(state.page == page, &wall.pages[page])
                 .clicked()
             {
                 state.page = page;
@@ -114,27 +83,28 @@ pub(crate) fn show(
                 .color(t.text_muted),
         );
     });
+    if open && !state.settings {
+        state.names.clone_from(&wall.pages);
+    }
     state.settings = open;
     if state.settings {
-        settings::section(ui, "Cartwall", t, |ui| cart_settings(ui, view, state, t));
+        settings::section(ui, "Cartwall", t, |ui| {
+            cart_settings(ui, view, state, actions, t)
+        });
     }
     ui.add_space(space::S);
 
-    let first = state.page * state.per_page();
+    let first = state.page * wall.per_page;
     egui::Grid::new("cartwall_grid")
         .spacing(egui::vec2(space::S, space::S))
         .show(ui, |ui| {
-            for n in 0..state.per_page() {
+            for n in 0..wall.per_page {
                 let i = first + n;
-                match view.carts.get(i) {
-                    Some(name) => cart(ui, i, name, state, has_clip, actions, t),
-                    None => {
-                        let empty = egui::Button::new(RichText::new("empty").color(t.text_muted))
-                            .min_size(egui::vec2(size::CART_W, size::CART_H));
-                        ui.add_enabled(false, empty);
-                    }
+                if let Some(name) = view.carts.get(i) {
+                    let slot = wall.slots.get(i).copied().unwrap_or(DEFAULT_SLOT);
+                    cart(ui, i, name, slot, state, actions, t);
                 }
-                if (n + 1) % state.cols == 0 {
+                if (n + 1) % cols == 0 {
                     ui.end_row();
                 }
             }
@@ -155,12 +125,19 @@ pub(crate) fn show(
     });
 }
 
+/// The settings of a cart that the source does not know.
+const DEFAULT_SLOT: CartSlot = CartSlot {
+    duck_db: 0.0,
+    mode: CartMode::OneShot,
+    colour: None,
+};
+
 fn cart(
     ui: &mut egui::Ui,
     i: usize,
     name: &str,
+    slot: CartSlot,
     state: &mut State,
-    has_clip: bool,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
@@ -186,13 +163,15 @@ fn cart(
         .stroke(Stroke::new(size::HAIRLINE, edge))
         .min_size(egui::vec2(size::CART_W, size::CART_H));
     let resp = ui.add(button);
-    if let Some(c) = state.colour[i].and_then(|c| theme::CART_COLOURS.get(c)) {
+    let colour = slot.colour.and_then(|c| theme::CART_COLOURS.get(c));
+    if let Some(c) = colour {
         let mut bar = resp.rect;
         bar.set_width(size::CART_BAR);
         ui.painter()
             .rect_filled(bar, t.radius_sm, Tokens::playlist(c.1));
     }
-    resp.context_menu(|ui| cart_menu(ui, i, state, has_clip, actions));
+    let has_clip = state.has_clip;
+    resp.context_menu(|ui| cart_menu(ui, i, slot, has_clip, actions));
     if let Some(drag) = resp.dnd_release_payload::<LibraryDrag>() {
         actions.push(Action::Drop {
             item: drag.0,
@@ -200,23 +179,15 @@ fn cart(
         });
     }
     if resp.dnd_hover_payload::<LibraryDrag>().is_some() {
-        ui.painter().rect_stroke(
-            resp.rect,
-            t.radius,
-            Stroke::new(size::HAIRLINE * 2.0, t.accent),
-            egui::StrokeKind::Outside,
-        );
+        let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
+        ui.painter()
+            .rect_stroke(resp.rect, t.radius, edge, egui::StrokeKind::Outside);
     }
-    let colour = state.colour[i]
-        .and_then(|c| theme::CART_COLOURS.get(c))
-        .map_or("no colour", |c| c.0);
-    let mode = MODES
-        .iter()
-        .find(|(m, _)| *m == state.mode[i])
-        .map_or("", |m| m.1);
+    let colour_name = colour.map_or("no colour", |c| c.0);
     let hint = format!(
-        "{NO_AUDIO} · {mode} · {colour} · ducking {:.0} dB",
-        state.duck_db[i]
+        "{NO_AUDIO} · {} · {colour_name} · ducking {:.0} dB",
+        slot.mode.label(),
+        slot.duck_db
     );
     if resp.on_hover_text(hint).clicked() {
         state.flash_until[i] = now + size::CART_FLASH_S;
@@ -231,7 +202,7 @@ fn cart(
 fn cart_menu(
     ui: &mut egui::Ui,
     i: usize,
-    state: &mut State,
+    slot: CartSlot,
     has_clip: bool,
     actions: &mut Vec<Action>,
 ) {
@@ -257,12 +228,12 @@ fn cart_menu(
     }
     ui.separator();
     ui.menu_button("Colour", |ui| {
-        if check_item(ui, state.colour[i].is_none(), "None") {
-            state.colour[i] = None;
+        if check_item(ui, slot.colour.is_none(), "None") {
+            actions.push(set_cart(i, CartChange::Colour(None)));
         }
         for (k, (name, _)) in theme::CART_COLOURS.iter().enumerate() {
-            if check_item(ui, state.colour[i] == Some(k), name) {
-                state.colour[i] = Some(k);
+            if check_item(ui, slot.colour == Some(k), name) {
+                actions.push(set_cart(i, CartChange::Colour(Some(k))));
             }
         }
     });
@@ -273,62 +244,88 @@ fn cart_menu(
             } else {
                 format!("{db:.0} dB")
             };
-            if check_item(ui, (state.duck_db[i] - db).abs() < f32::EPSILON, &label) {
-                state.duck_db[i] = db;
+            if check_item(ui, (slot.duck_db - db).abs() < f32::EPSILON, &label) {
+                actions.push(set_cart(i, CartChange::Duck(db)));
             }
         }
     });
     ui.menu_button("Mode", |ui| {
-        for (mode, label) in MODES {
-            if check_item(ui, state.mode[i] == mode, label) {
-                state.mode[i] = mode;
+        for mode in CartMode::ALL {
+            if check_item(ui, slot.mode == mode, mode.label()) {
+                actions.push(set_cart(i, CartChange::Mode(mode)));
             }
         }
     });
 }
 
-fn cart_settings(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &Tokens) {
+fn cart_settings(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let wall = &view.cartwall;
+    let default_side = size::CART_COLS as u32;
+    let old_cols = parts::u32(view, parts::CARTWALL, "cols", default_side);
+    let old_rows = parts::u32(view, parts::CARTWALL, "rows", default_side);
+    let (mut cols, mut rows) = (old_cols, old_rows);
+    state.names.resize(wall.pages.len(), String::new());
     egui::Grid::new("cart_settings")
         .spacing(egui::vec2(space::M, space::S))
         .show(ui, |ui| {
             settings::label(ui, "Grid", t);
             ui.horizontal(|ui| {
                 ui.add(
-                    DragValue::new(&mut state.cols)
-                        .range(1..=8)
+                    DragValue::new(&mut cols)
+                        .range(1..=MAX_GRID)
                         .suffix(" columns"),
                 );
-                ui.add(DragValue::new(&mut state.rows).range(1..=8).suffix(" rows"));
+                ui.add(
+                    DragValue::new(&mut rows)
+                        .range(1..=MAX_GRID)
+                        .suffix(" rows"),
+                );
             });
             ui.end_row();
             settings::label(ui, "Pages", t);
             ui.vertical(|ui| {
-                let mut remove = None;
-                for (i, name) in state.pages.iter_mut().enumerate() {
+                for (page, name) in state.names.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(name).desired_width(size::COMBO_W));
+                        let edit =
+                            ui.add(egui::TextEdit::singleline(name).desired_width(size::COMBO_W));
+                        let current = wall.pages.get(page).map_or("", String::as_str);
+                        if edit.lost_focus() && name != current && !name.trim().is_empty() {
+                            actions.push(Action::Edit(Edit::RenameCartPage {
+                                page,
+                                name: name.trim().to_owned(),
+                            }));
+                        }
                         if ui.small_button("Remove").clicked() {
-                            remove = Some(i);
+                            actions.push(Action::Edit(Edit::RemoveCartPage { page }));
                         }
                     });
                 }
-                if let Some(i) = remove.filter(|_| state.pages.len() > 1) {
-                    state.pages.remove(i);
-                }
                 if ui.small_button("+ Add page").clicked() {
-                    let n = state.pages.len() + 1;
-                    state.pages.push(format!("Page {n}"));
+                    let name = format!("Page {}", wall.pages.len() + 1);
+                    state.names.push(name.clone());
+                    actions.push(Action::Edit(Edit::AddCartPage { name }));
                 }
             });
             ui.end_row();
         });
+    // Both sides go together, so the source sees one grid.
+    if cols != old_cols || rows != old_rows {
+        actions.push(parts::set(parts::CARTWALL, "cols", cols));
+        actions.push(parts::set(parts::CARTWALL, "rows", rows));
+    }
     ui.add_space(space::S);
     settings::label(
         ui,
         "Ducking per cart on this page (dB under the main output)",
         t,
     );
-    let first = state.page * state.per_page();
+    let first = state.page * wall.per_page;
     egui::Grid::new("cart_ducking")
         .spacing(egui::vec2(space::M, space::XS))
         .show(ui, |ui| {
@@ -337,16 +334,19 @@ fn cart_settings(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &T
                 .iter()
                 .enumerate()
                 .skip(first)
-                .take(state.per_page());
+                .take(wall.per_page);
             for (n, (i, name)) in carts.enumerate() {
-                ui.label(RichText::new(name).font(theme::text(theme::LABEL)));
-                ui.add(
-                    DragValue::new(&mut state.duck_db[i])
-                        .range(-40.0..=0.0)
-                        .speed(0.5)
-                        .suffix(" dB"),
-                );
-                if (n + 1) % 2 == 0 {
+                let shown = if name.is_empty() { "empty" } else { name };
+                ui.label(RichText::new(shown).font(theme::text(theme::LABEL)));
+                let mut duck = wall.slots.get(i).map_or(0.0, |s| s.duck_db);
+                let field = DragValue::new(&mut duck)
+                    .range(MAX_DUCK_DB..=0.0)
+                    .speed(0.5)
+                    .suffix(" dB");
+                if ui.add(field).changed() {
+                    actions.push(set_cart(i, CartChange::Duck(duck)));
+                }
+                if (n + 1) % DUCK_COLS == 0 {
                     ui.end_row();
                 }
             }

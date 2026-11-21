@@ -63,24 +63,6 @@ pub(crate) fn section(ui: &mut egui::Ui, part: &str, t: &Tokens, add: impl FnOnc
     ui.add_space(space::S);
 }
 
-/// A dropdown that picks one entry of `options` by index.
-pub(crate) fn pick(
-    ui: &mut egui::Ui,
-    id: impl egui::AsIdSalt,
-    value: &mut usize,
-    options: &[String],
-) {
-    let shown = options.get(*value).map_or("—", String::as_str);
-    egui::ComboBox::from_id_salt(id)
-        .width(size::COMBO_W)
-        .selected_text(shown)
-        .show_ui(ui, |ui| {
-            for (i, o) in options.iter().enumerate() {
-                ui.selectable_value(value, i, o);
-            }
-        });
-}
-
 /// A label in the left column of a settings grid.
 pub(crate) fn label(ui: &mut egui::Ui, text: &str, t: &Tokens) {
     ui.label(

@@ -1,100 +1,52 @@
 //! The mixer: one strip per deck, the cart bus, the live input and the output.
 //! Levels come from the view-model. In the preview, the mock simulates them, and nothing plays.
-//! Faders, mute and PFL change only this window.
+//! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
 
 use egui::{DragValue, RichText, Sense, Stroke};
 
+use crate::app::Action;
 use crate::context_menu::{check_item, menu_item};
+use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{MeterView, StationView};
+use crate::view::{
+    DeviceRole, Edit, IcecastView, MeterView, Route, StationView, StreamFormat, StripChange,
+};
 
-const NOTE: &str =
-    "preview — simulated levels, no audio · faders, mute and PFL change this window only";
+const NOTE: &str = "preview — simulated levels, no audio";
 const RATES: [u32; 3] = [44_100, 48_000, 96_000];
-const ROUTES: [&str; 3] = ["Out", "Out + cue", "Cue only"];
-const FORMATS: [&str; 4] = ["MP3", "Ogg Vorbis", "Opus", "AAC"];
+const DEFAULT_RATE: u32 = 48_000;
 const BITRATES: [u32; 6] = [64, 96, 128, 192, 256, 320];
+/// The peak line stays this long by default, in seconds.
+const DEFAULT_PEAK_HOLD_S: f32 = 1.5;
+const MAX_PEAK_HOLD_S: f32 = 10.0;
+const MAX_INPUT_CHANNEL: u32 = 16;
+const HZ_PER_KHZ: f64 = 1000.0;
 
-struct Strip {
-    label: String,
-    gain_db: f32,
-    mute: bool,
-    pfl: bool,
-    route: usize,
-}
-
-/// Icecast mount settings. The preview never connects.
-struct Icecast {
-    open: bool,
-    host: String,
-    port: u16,
-    mount: String,
-    user: String,
-    password: String,
-    format: usize,
-    bitrate: usize,
-}
-
-/// The mixer state. All of it is local to the window.
+/// The view state of the window. The mixer settings live in the view source.
+#[derive(Default)]
 pub(crate) struct State {
-    strips: Vec<Strip>,
     settings: bool,
-    out_device: usize,
-    cue_device: usize,
-    live_device: usize,
-    live_channels: (u32, u32),
-    rate: usize,
-    peak_hold_s: f32,
-    icecast: Icecast,
+    icecast_open: bool,
+    /// The Icecast fields while a person edits them. Apply sends them.
+    icecast: Option<IcecastView>,
 }
 
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            strips: Vec::new(),
-            settings: false,
-            out_device: 0,
-            cue_device: 3,
-            live_device: 1,
-            live_channels: (1, 2),
-            rate: 1,
-            peak_hold_s: 1.5,
-            icecast: Icecast {
-                open: false,
-                host: "stream.example.org".to_owned(),
-                port: 8000,
-                mount: "/live".to_owned(),
-                user: "source".to_owned(),
-                password: String::new(),
-                format: 0,
-                bitrate: 3,
-            },
-        }
-    }
+fn strip_edit(strip: &str, change: StripChange) -> Action {
+    Action::EditQuiet(Edit::SetStrip {
+        strip: strip.to_owned(),
+        change,
+    })
 }
 
-pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &Tokens) {
-    // Keep one local strip per meter, in the order of the view.
-    let same = state.strips.len() == view.meters.len()
-        && state
-            .strips
-            .iter()
-            .zip(&view.meters)
-            .all(|(s, m)| s.label == m.label);
-    if !same {
-        state.strips = view
-            .meters
-            .iter()
-            .map(|m| Strip {
-                label: m.label.clone(),
-                gain_db: m.gain_db,
-                mute: false,
-                pfl: false,
-                route: 0,
-            })
-            .collect();
-    }
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    streaming: &str,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let mut open = state.settings;
     settings::header(ui, "Mixer", &mut open, |_| {});
     state.settings = open;
@@ -108,19 +60,22 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
         .id_salt("mixer_body")
         .show(ui, |ui| {
             if state.settings {
-                settings::section(ui, "Mixer", t, |ui| mixer_settings(ui, view, state, t));
+                settings::section(ui, "Mixer", t, |ui| mixer_settings(ui, view, actions, t));
             }
-            if state.icecast.open {
+            if state.icecast_open {
+                let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
                 settings::section(ui, "Icecast", t, |ui| {
-                    icecast_settings(ui, view, &mut state.icecast, t)
+                    icecast_settings(ui, view, draft, streaming, actions, t);
                 });
+            } else {
+                state.icecast = None;
             }
             let mut open_settings = false;
             ui.horizontal_top(|ui| {
-                for (meter, strip) in view.meters.iter().zip(state.strips.iter_mut()) {
+                for meter in &view.meters {
                     let is_out = meter.label == "Out";
-                    let icecast = &mut state.icecast.open;
-                    open_settings |= strip_ui(ui, meter, strip, is_out, icecast, t);
+                    open_settings |=
+                        strip_ui(ui, meter, is_out, &mut state.icecast_open, actions, t);
                 }
             });
             if open_settings {
@@ -132,12 +87,15 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
 fn strip_ui(
     ui: &mut egui::Ui,
     meter: &MeterView,
-    strip: &mut Strip,
     is_out: bool,
     icecast: &mut bool,
+    actions: &mut Vec<Action>,
     t: &Tokens,
 ) -> bool {
     let mut settings_wanted = false;
+    let mut gain = meter.gain_db;
+    let mut mute = meter.mute;
+    let mut pfl = meter.pfl;
     let fill = if is_out { t.selection } else { t.card };
     egui::Frame::new()
         .fill(fill)
@@ -150,17 +108,17 @@ fn strip_ui(
                 ui.horizontal(|ui| {
                     let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
                     let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
-                    r.context_menu(|ui| settings_wanted |= strip_menu(ui, strip));
+                    r.context_menu(|ui| settings_wanted |= strip_menu(ui, meter, actions));
                     if is_out {
                         settings::settings_button(ui, "Icecast", icecast);
                     }
                 });
                 ui.horizontal(|ui| {
                     meter_bars(ui, meter, t)
-                        .context_menu(|ui| settings_wanted |= strip_menu(ui, strip));
+                        .context_menu(|ui| settings_wanted |= strip_menu(ui, meter, actions));
                     ui.spacing_mut().slider_width = size::METER_H;
                     let range = size::METER_MIN_DB..=size::METER_MAX_DB;
-                    let fader = egui::Slider::new(&mut strip.gain_db, range)
+                    let fader = egui::Slider::new(&mut gain, range)
                         .vertical()
                         .show_value(false);
                     ui.add(fader)
@@ -171,14 +129,23 @@ fn strip_ui(
                 let small = |s: String| RichText::new(s).font(theme::mono(theme::CAPTION));
                 ui.label(RichText::new(db(level)).font(theme::mono(theme::CODE)));
                 ui.label(small(format!("pk {}", db(peak))).color(t.text_muted));
-                ui.label(small(format!("gain {:+.1}", strip.gain_db)).color(t.text_muted));
+                ui.label(small(format!("gain {gain:+.1}")).color(t.text_muted));
                 ui.horizontal(|ui| {
                     let cap = |s: &str| RichText::new(s).font(theme::text(theme::CAPTION));
-                    ui.toggle_value(&mut strip.mute, cap("Mute"));
-                    ui.toggle_value(&mut strip.pfl, cap("PFL"));
+                    ui.toggle_value(&mut mute, cap("Mute"));
+                    ui.toggle_value(&mut pfl, cap("PFL"));
                 });
             });
         });
+    if gain != meter.gain_db {
+        actions.push(strip_edit(&meter.label, StripChange::Gain(gain)));
+    }
+    if mute != meter.mute {
+        actions.push(strip_edit(&meter.label, StripChange::Mute(mute)));
+    }
+    if pfl != meter.pfl {
+        actions.push(strip_edit(&meter.label, StripChange::Pfl(pfl)));
+    }
     settings_wanted
 }
 
@@ -196,22 +163,21 @@ fn frac(v: f32) -> f32 {
     ((v - size::METER_MIN_DB) / (size::METER_MAX_DB - size::METER_MIN_DB)).clamp(0.0, 1.0)
 }
 
-/// Two meter bars (left and right) with green, amber and red zones and a peak line.
 /// The right-click menu of a strip. It returns true when the person asks for the settings.
-fn strip_menu(ui: &mut egui::Ui, strip: &mut Strip) -> bool {
-    if check_item(ui, strip.mute, "Mute") {
-        strip.mute = !strip.mute;
+fn strip_menu(ui: &mut egui::Ui, meter: &MeterView, actions: &mut Vec<Action>) -> bool {
+    if check_item(ui, meter.mute, "Mute") {
+        actions.push(strip_edit(&meter.label, StripChange::Mute(!meter.mute)));
     }
-    if check_item(ui, strip.pfl, "PFL") {
-        strip.pfl = !strip.pfl;
+    if check_item(ui, meter.pfl, "PFL") {
+        actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
     }
     if menu_item(ui, "Reset gain to 0 dB", None) {
-        strip.gain_db = 0.0;
+        actions.push(strip_edit(&meter.label, StripChange::Gain(0.0)));
     }
     ui.menu_button("Route to", |ui| {
-        for (k, route) in ROUTES.iter().enumerate() {
-            if check_item(ui, strip.route == k, route) {
-                strip.route = k;
+        for route in Route::ALL {
+            if check_item(ui, meter.route == route, route.label()) {
+                actions.push(strip_edit(&meter.label, StripChange::Route(route)));
             }
         }
     });
@@ -219,6 +185,7 @@ fn strip_menu(ui: &mut egui::Ui, strip: &mut Strip) -> bool {
     menu_item(ui, "⚙ Settings", None)
 }
 
+/// Two meter bars (left and right) with green, amber and red zones and a peak line.
 fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) -> egui::Response {
     let w = size::METER_BAR_W * 2.0 + space::XXS;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, size::METER_H), Sense::click());
@@ -264,68 +231,129 @@ fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) -> egui::Respons
     resp
 }
 
-fn mixer_settings(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &Tokens) {
-    let rates: Vec<String> = RATES
-        .iter()
-        .map(|r| format!("{} kHz", f64::from(*r) / 1000.0))
-        .collect();
+/// A dropdown of devices by name. It returns the new name when a person picks one.
+fn device_pick(ui: &mut egui::Ui, id: &str, current: &str, devices: &[String]) -> Option<String> {
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(id)
+        .width(size::COMBO_W)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for d in devices {
+                if ui.selectable_label(d == current, d).clicked() && d != current {
+                    picked = Some(d.clone());
+                }
+            }
+        });
+    picked
+}
+
+fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    let roles = &view.device_roles;
+    let rate = parts::u32(view, parts::MIXER, "sample_rate", DEFAULT_RATE);
+    let mut left = parts::u32(view, parts::MIXER, "input_left", 1);
+    let mut right = parts::u32(view, parts::MIXER, "input_right", 2);
+    let mut hold = parts::f32(view, parts::MIXER, "peak_hold_s", DEFAULT_PEAK_HOLD_S);
+    let (old_left, old_right, old_hold) = (left, right, hold);
     egui::Grid::new("mixer_settings")
         .spacing(egui::vec2(space::M, space::S))
         .show(ui, |ui| {
-            settings::label(ui, "Output device (Out)", t);
-            settings::pick(ui, "out_device", &mut state.out_device, &view.devices);
-            ui.end_row();
-            settings::label(ui, "Cue device (PFL)", t);
-            settings::pick(ui, "cue_device", &mut state.cue_device, &view.devices);
-            ui.end_row();
-            settings::label(ui, "Live input device", t);
-            settings::pick(ui, "live_device", &mut state.live_device, &view.devices);
-            ui.end_row();
+            for (label, id, role, current) in [
+                (
+                    "Output device (Out)",
+                    "out_device",
+                    DeviceRole::Out,
+                    &roles.out,
+                ),
+                (
+                    "Cue device (PFL)",
+                    "cue_device",
+                    DeviceRole::Pfl,
+                    &roles.pfl,
+                ),
+                (
+                    "Live input device",
+                    "live_device",
+                    DeviceRole::Input,
+                    &roles.input,
+                ),
+            ] {
+                settings::label(ui, label, t);
+                if let Some(device) = device_pick(ui, id, current, &view.devices) {
+                    actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
+                }
+                ui.end_row();
+            }
             settings::label(ui, "Live input channels", t);
             ui.horizontal(|ui| {
-                ui.add(
-                    DragValue::new(&mut state.live_channels.0)
-                        .range(1..=16)
-                        .prefix("L "),
-                );
-                ui.add(
-                    DragValue::new(&mut state.live_channels.1)
-                        .range(1..=16)
-                        .prefix("R "),
-                );
+                let chans = 1..=MAX_INPUT_CHANNEL;
+                ui.add(DragValue::new(&mut left).range(chans.clone()).prefix("L "));
+                ui.add(DragValue::new(&mut right).range(chans).prefix("R "));
             });
             ui.end_row();
             settings::label(ui, "Sample rate", t);
-            settings::pick(ui, "sample_rate", &mut state.rate, &rates);
+            egui::ComboBox::from_id_salt("sample_rate")
+                .width(size::COMBO_W)
+                .selected_text(format!("{} kHz", f64::from(rate) / HZ_PER_KHZ))
+                .show_ui(ui, |ui| {
+                    for r in RATES {
+                        let label = format!("{} kHz", f64::from(r) / HZ_PER_KHZ);
+                        if ui.selectable_label(r == rate, label).clicked() && r != rate {
+                            actions.push(parts::set(parts::MIXER, "sample_rate", r));
+                        }
+                    }
+                });
             ui.end_row();
             settings::label(ui, "Peak hold", t);
-            let hold = DragValue::new(&mut state.peak_hold_s)
-                .range(0.0..=10.0)
+            let field = DragValue::new(&mut hold)
+                .range(0.0..=MAX_PEAK_HOLD_S)
                 .speed(0.1);
-            ui.add(hold.suffix(" s"));
+            ui.add(field.suffix(" s"));
             ui.end_row();
         });
+    if left != old_left {
+        actions.push(parts::set(parts::MIXER, "input_left", left));
+    }
+    if right != old_right {
+        actions.push(parts::set(parts::MIXER, "input_right", right));
+    }
+    if hold != old_hold {
+        actions.push(parts::set(parts::MIXER, "peak_hold_s", f64::from(hold)));
+    }
     ui.add_space(space::S);
     settings::label(ui, "Routing per strip", t);
-    let routes: Vec<String> = ROUTES.iter().map(|r| (*r).to_owned()).collect();
     egui::Grid::new("mixer_routing")
         .spacing(egui::vec2(space::M, space::XS))
         .show(ui, |ui| {
-            for strip in &mut state.strips {
-                ui.label(RichText::new(&strip.label).font(theme::mono(theme::CODE)));
-                settings::pick(ui, ("route", &strip.label), &mut strip.route, &routes);
+            for m in &view.meters {
+                ui.label(RichText::new(&m.label).font(theme::mono(theme::CODE)));
+                egui::ComboBox::from_id_salt(("route", &m.label))
+                    .width(size::COMBO_W)
+                    .selected_text(m.route.label())
+                    .show_ui(ui, |ui| {
+                        for r in Route::ALL {
+                            if ui.selectable_label(r == m.route, r.label()).clicked() {
+                                actions.push(strip_edit(&m.label, StripChange::Route(r)));
+                            }
+                        }
+                    });
                 ui.end_row();
             }
         });
 }
 
-fn icecast_settings(ui: &mut egui::Ui, view: &StationView, ice: &mut Icecast, t: &Tokens) {
+fn icecast_settings(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    ice: &mut IcecastView,
+    streaming: &str,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let status = RichText::new("Icecast ○ not connected — preview").font(theme::text(theme::LABEL));
     ui.label(status.color(t.text_muted));
-    let now = crate::meta::streaming_before(view.history.iter(), None, &view.station);
     ui.horizontal(|ui| {
         ui.label(RichText::new("Now streaming:").color(t.text_muted));
-        let text = RichText::new(format!("“{now}”")).font(theme::mono(theme::CODE));
+        let text = RichText::new(format!("“{streaming}”")).font(theme::mono(theme::CODE));
         ui.label(text.color(t.accent_ink));
     });
     let note = "The stream would carry this text. The preview sends nothing.";
@@ -335,8 +363,6 @@ fn icecast_settings(ui: &mut egui::Ui, view: &StationView, ice: &mut Icecast, t:
             .color(t.text_muted),
     );
     ui.add_space(space::S);
-    let formats: Vec<String> = FORMATS.iter().map(|f| (*f).to_owned()).collect();
-    let rates: Vec<String> = BITRATES.iter().map(|b| format!("{b} kbit/s")).collect();
     let field = |ui: &mut egui::Ui, text: &mut String, secret: bool| {
         let edit = egui::TextEdit::singleline(text).password(secret);
         ui.add(edit.desired_width(size::FIELD_W));
@@ -348,7 +374,7 @@ fn icecast_settings(ui: &mut egui::Ui, view: &StationView, ice: &mut Icecast, t:
             field(ui, &mut ice.host, false);
             ui.end_row();
             settings::label(ui, "Port", t);
-            ui.add(DragValue::new(&mut ice.port).range(1..=65_535));
+            ui.add(DragValue::new(&mut ice.port).range(1..=u16::MAX));
             ui.end_row();
             settings::label(ui, "Mount", t);
             field(ui, &mut ice.mount, false);
@@ -360,10 +386,38 @@ fn icecast_settings(ui: &mut egui::Ui, view: &StationView, ice: &mut Icecast, t:
             field(ui, &mut ice.password, true);
             ui.end_row();
             settings::label(ui, "Format", t);
-            settings::pick(ui, "ice_format", &mut ice.format, &formats);
+            ui.horizontal(|ui| {
+                for f in StreamFormat::ALL {
+                    if ui.selectable_label(ice.format == f, f.label()).clicked() {
+                        ice.format = f;
+                    }
+                }
+            });
             ui.end_row();
             settings::label(ui, "Bitrate", t);
-            settings::pick(ui, "ice_bitrate", &mut ice.bitrate, &rates);
+            egui::ComboBox::from_id_salt("ice_kbps")
+                .width(size::COMBO_W)
+                .selected_text(format!("{} kbit/s", ice.kbps))
+                .show_ui(ui, |ui| {
+                    for b in BITRATES {
+                        ui.selectable_value(&mut ice.kbps, b, format!("{b} kbit/s"));
+                    }
+                });
             ui.end_row();
         });
+    ui.horizontal(|ui| {
+        let changed = *ice != view.icecast;
+        if ui
+            .add_enabled(changed, egui::Button::new("Apply"))
+            .clicked()
+        {
+            actions.push(Action::Edit(Edit::SetIcecast(ice.clone())));
+        }
+        if ui
+            .add_enabled(changed, egui::Button::new("Revert"))
+            .clicked()
+        {
+            *ice = view.icecast.clone();
+        }
+    });
 }

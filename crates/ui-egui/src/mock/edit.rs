@@ -1,0 +1,361 @@
+//! The edit commands of the mock. Each returns the number of items that changed.
+
+use super::*;
+
+fn gone(what: &str) -> String {
+    format!("preview — {what} is gone")
+}
+
+impl MockSource {
+    pub(super) fn apply_edit(&mut self, edit: Edit) -> Result<usize, String> {
+        match edit {
+            Edit::Insert { item, at } => {
+                let Some(lib) = self.library_item(item) else {
+                    return Err(gone("that library item"));
+                };
+                let title = match &lib.artist {
+                    Some(a) => format!("{a} – {}", lib.title),
+                    None => lib.title.clone(),
+                };
+                let len = if lib.len.is_zero() {
+                    estimated_len(&title)
+                } else {
+                    lib.len
+                };
+                let id = self.next_manual;
+                self.next_manual += 1;
+                self.try_op(Op::Insert { at, id, title, len })
+            }
+            Edit::Remove(ids) => {
+                let n = ids.len();
+                let Some(top) = self.last_top.clone() else {
+                    return Err("preview — no timeline yet".to_owned());
+                };
+                let mut ops = self.ops.clone();
+                ops.extend(ids.into_iter().map(Op::Remove));
+                let mut rows = self.rows_from(&top).to_vec();
+                if self.apply_ops(&mut rows, &ops) {
+                    self.ops = ops;
+                    Ok(n)
+                } else {
+                    Err(
+                        "preview — nothing is left to fill the gap before the next fixed item"
+                            .to_owned(),
+                    )
+                }
+            }
+            Edit::Move { id, to } => self.move_row(id, to),
+            Edit::ToggleLock(id) => self.try_op(Op::Lock(id)),
+            Edit::RenamePlaylist { from, to } => {
+                let to = to.trim().replace(['\n', '\r'], " ");
+                if to.is_empty() || self.unique_name(&to) != to {
+                    return Err(format!("preview — the name {to:?} is empty or taken"));
+                }
+                let Some(tab) = self.tab_mut(&from) else {
+                    return Err(gone(&format!("the playlist {from}")));
+                };
+                tab.name = to;
+                rules_script::refresh(tab);
+                self.cache = None;
+                Ok(1)
+            }
+            Edit::DuplicatePlaylist(name) => {
+                let Some(tab) = self
+                    .tabs
+                    .iter()
+                    .chain([&self.main])
+                    .find(|t| t.name == name)
+                else {
+                    return Err(gone(&format!("the playlist {name}")));
+                };
+                let mut copy = tab.clone();
+                copy.name = self.unique_name(&format!("{name} copy"));
+                rules_script::refresh(&mut copy);
+                self.tabs.push(copy);
+                Ok(1)
+            }
+            Edit::DeletePlaylist(name) => {
+                if self.main.name == name {
+                    return Err(
+                        "preview — the main playlist cannot go; make another one main first"
+                            .to_owned(),
+                    );
+                }
+                let before = self.tabs.len();
+                self.tabs.retain(|t| t.name != name);
+                if self.tabs.len() == before {
+                    return Err(gone(&format!("the playlist {name}")));
+                }
+                Ok(1)
+            }
+            Edit::RemovePlaylistItem { playlist, index } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                if index >= tab.items.len() {
+                    return Err(gone("that item"));
+                }
+                tab.items.remove(index);
+                if index < tab.weights.len() {
+                    tab.weights.remove(index);
+                }
+                Ok(1)
+            }
+            Edit::MovePlaylistItem {
+                playlist,
+                index,
+                up,
+            } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                let other = if up {
+                    index.checked_sub(1)
+                } else {
+                    Some(index + 1)
+                };
+                match other.filter(|o| *o < tab.items.len() && index < tab.items.len()) {
+                    Some(o) => {
+                        tab.items.swap(index, o);
+                        if o < tab.weights.len() && index < tab.weights.len() {
+                            tab.weights.swap(index, o);
+                        }
+                        Ok(1)
+                    }
+                    None => Err("preview — the item is already at the end".to_owned()),
+                }
+            }
+            Edit::SetMeta(list) => {
+                let mut n = 0;
+                for (target, m) in list {
+                    match target {
+                        MetaTarget::Row(id) => {
+                            self.row_meta.insert(id, m);
+                            n += 1;
+                        }
+                        MetaTarget::Library(id) => {
+                            if let Some(l) = self.library.iter_mut().find(|l| l.id == id) {
+                                l.meta = m;
+                                n += 1;
+                            }
+                        }
+                    }
+                }
+                Ok(n)
+            }
+            Edit::Deck { deck, command } => self.deck_command(deck, command),
+            Edit::AssignCart { cart, item } => {
+                let label = match item {
+                    Some(id) => match self.library_item(id) {
+                        Some(l) => l.title.clone(),
+                        None => return Err(gone("that library item")),
+                    },
+                    None => String::new(),
+                };
+                let Some(slot) = self.carts.get_mut(cart) else {
+                    return Err(gone("that cart"));
+                };
+                *slot = label;
+                Ok(1)
+            }
+            Edit::SetTiming { row, timing } => {
+                match timing {
+                    Some(t) => self.row_timing.insert(row, t),
+                    None => self.row_timing.remove(&row),
+                };
+                Ok(1)
+            }
+            Edit::SetPlaylistEnabled { playlist, enabled } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                tab.enabled = enabled;
+                Ok(1)
+            }
+            Edit::SetWeight {
+                playlist,
+                index,
+                weight,
+            } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                tab.weights.resize(tab.items.len(), 1);
+                let Some(w) = tab.weights.get_mut(index) else {
+                    return Err(gone("that item"));
+                };
+                *w = weight;
+                Ok(1)
+            }
+            Edit::SetStrip { strip, change } => {
+                let st = self.strips.entry(strip).or_default();
+                match change {
+                    StripChange::Gain(g) => st.gain_db = g,
+                    StripChange::Mute(m) => st.mute = m,
+                    StripChange::Pfl(p) => st.pfl = p,
+                    StripChange::Route(r) => st.route = r,
+                }
+                Ok(1)
+            }
+            Edit::SetIcecast(ice) => {
+                self.icecast = ice;
+                Ok(1)
+            }
+            Edit::SetDevice { role, device } => {
+                if !DEVICES.contains(&device.as_str()) {
+                    return Err(format!("preview — no device {device}"));
+                }
+                match role {
+                    DeviceRole::Out => self.device_roles.out = device,
+                    DeviceRole::Pfl => self.device_roles.pfl = device,
+                    DeviceRole::Input => self.device_roles.input = device,
+                }
+                Ok(1)
+            }
+            Edit::AddCartPage { name } => {
+                self.cartwall.pages.push(name);
+                let n = self.cartwall.per_page;
+                self.carts.extend(std::iter::repeat_n(String::new(), n));
+                self.cartwall
+                    .slots
+                    .extend(std::iter::repeat_n(DEFAULT_SLOT, n));
+                Ok(1)
+            }
+            Edit::RenameCartPage { page, name } => {
+                let Some(p) = self.cartwall.pages.get_mut(page) else {
+                    return Err(gone("that page"));
+                };
+                *p = name;
+                Ok(1)
+            }
+            Edit::RemoveCartPage { page } => {
+                if self.cartwall.pages.len() <= 1 {
+                    return Err("preview — the cartwall keeps at least one page".to_owned());
+                }
+                if page >= self.cartwall.pages.len() {
+                    return Err(gone("that page"));
+                }
+                self.cartwall.pages.remove(page);
+                let per = self.cartwall.per_page;
+                let from = (page * per).min(self.carts.len());
+                let to = (from + per).min(self.carts.len());
+                self.carts.drain(from..to);
+                self.cartwall
+                    .slots
+                    .drain(from..to.min(self.cartwall.slots.len()));
+                Ok(1)
+            }
+            Edit::SetCart { cart, change } => {
+                self.cartwall.slots.resize(self.carts.len(), DEFAULT_SLOT);
+                let Some(slot) = self.cartwall.slots.get_mut(cart) else {
+                    return Err(gone("that cart"));
+                };
+                match change {
+                    CartChange::Duck(db) => slot.duck_db = db,
+                    CartChange::Mode(m) => slot.mode = m,
+                    CartChange::Colour(c) => slot.colour = c,
+                }
+                Ok(1)
+            }
+            Edit::AddFolder { path } => {
+                let path = path.trim().to_owned();
+                if path.is_empty() {
+                    return Err("preview — the folder path is empty".to_owned());
+                }
+                Ok(self.scan_folder(&path))
+            }
+            Edit::RemoveFolder { path } => {
+                let before = self.folders.len();
+                self.folders.retain(|f| f.path != path);
+                if self.folders.len() == before {
+                    return Err(gone(&format!("the folder {path}")));
+                }
+                Ok(1)
+            }
+            Edit::Rescan { folder } => {
+                if !self.folders.iter().any(|f| f.path == folder) {
+                    return Err(gone(&format!("the folder {folder}")));
+                }
+                Ok(self.scan_folder(&folder))
+            }
+            Edit::SetPartSetting { part, key, value } => {
+                self.settings
+                    .entry(part.clone())
+                    .or_default()
+                    .insert(key, value);
+                if part == CARTWALL_PART {
+                    self.fit_cart_grid();
+                }
+                Ok(1)
+            }
+        }
+    }
+
+    fn move_row(&mut self, id: u64, to: MoveTo) -> Result<usize, String> {
+        let rows = self.current();
+        let Some(i) = rows.iter().position(|r| r.id == id) else {
+            return Err(gone("that row"));
+        };
+        let at = match to {
+            MoveTo::Next => {
+                let now = self.last_now;
+                match rows
+                    .iter()
+                    .find(|r| r.start.timestamp() <= now && now < end_of(r))
+                {
+                    Some(r) => Place::After(r.id),
+                    None => return Err("preview — nothing is on air".to_owned()),
+                }
+            }
+            MoveTo::Top => match rows[..i].iter().rev().find(|r| r.fixed.is_some()) {
+                Some(r) => Place::After(r.id),
+                None => Place::Before(rows[0].id),
+            },
+            MoveTo::Bottom => match rows[i + 1..].iter().find(|r| r.fixed.is_some()) {
+                Some(r) => Place::Before(r.id),
+                None => Place::End,
+            },
+        };
+        self.try_op(Op::Move { id, at })
+    }
+
+    /// Make each cart page as big as the grid in the cartwall settings.
+    fn fit_cart_grid(&mut self) {
+        let cols = self.setting_u64(CARTWALL_PART, CART_COLS_KEY);
+        let rows = self.setting_u64(CARTWALL_PART, CART_ROWS_KEY);
+        let (Some(c), Some(r)) = (cols, rows) else {
+            return;
+        };
+        let per = usize::try_from(c * r).unwrap_or(CARTS_PER_PAGE).max(1);
+        if per == self.cartwall.per_page {
+            return;
+        }
+        let pages = self.cartwall.pages.len();
+        let old = self.cartwall.per_page;
+        let mut carts = Vec::with_capacity(pages * per);
+        let mut slots = Vec::with_capacity(pages * per);
+        for p in 0..pages {
+            for k in 0..per {
+                let from = p * old + k;
+                let keep = k < old;
+                carts.push(if keep {
+                    self.carts.get(from).cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                });
+                slots.push(if keep {
+                    self.cartwall
+                        .slots
+                        .get(from)
+                        .copied()
+                        .unwrap_or(DEFAULT_SLOT)
+                } else {
+                    DEFAULT_SLOT
+                });
+            }
+        }
+        self.carts = carts;
+        self.cartwall.slots = slots;
+        self.cartwall.per_page = per;
+    }
+}

@@ -49,6 +49,15 @@ pub struct Row {
     pub locked: bool,
     /// The tags and the stream title of the item.
     pub meta: ItemMeta,
+    /// A timing that a person set for a fixed row.
+    pub timing: Option<Timing>,
+}
+
+/// How strictly a fixed row keeps its time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timing {
+    pub hard: bool,
+    pub tolerance_s: f32,
 }
 
 /// What Icecast gets as the stream title for an item.
@@ -172,6 +181,10 @@ pub struct PlaylistTab {
     pub script_by_hand: bool,
     /// The folder that this playlist comes from, if a folder backs it.
     pub source: Option<FolderSource>,
+    /// False when a person switched the playlist off.
+    pub enabled: bool,
+    /// The weight of each item, for the weighted pick order. It has one entry per item.
+    pub weights: Vec<u32>,
 }
 
 /// A folder that backs a playlist.
@@ -423,9 +436,23 @@ pub struct StationView {
     pub library: Vec<LibraryItem>,
     /// Audio devices that the mixer can pick.
     pub devices: Vec<String>,
+    /// The device for each job.
+    pub device_roles: DeviceRoles,
     pub carts: Vec<String>,
+    /// Pages and settings of the carts in `carts`.
+    pub cartwall: CartwallView,
+    pub icecast: IcecastView,
+    pub output: OutputStatus,
+    /// Folders in the library.
+    pub folders: Vec<FolderView>,
+    /// Settings of each part of the app, by part and key.
+    pub settings: Settings,
     pub warnings: usize,
 }
+
+/// Settings by part of the app, then by key.
+pub type Settings =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>;
 
 /// One meter of the mixer, in dBFS, left and right.
 #[derive(Clone, Debug, PartialEq)]
@@ -434,7 +461,196 @@ pub struct MeterView {
     pub level_db: [f32; 2],
     pub peak_db: [f32; 2],
     pub gain_db: f32,
+    pub mute: bool,
+    pub pfl: bool,
+    pub route: Route,
 }
+
+/// Where a mixer strip sends its sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Route {
+    #[default]
+    Out,
+    OutAndCue,
+    CueOnly,
+}
+
+impl Route {
+    pub const ALL: [Self; 3] = [Self::Out, Self::OutAndCue, Self::CueOnly];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Out => "Out",
+            Self::OutAndCue => "Out + cue",
+            Self::CueOnly => "Cue only",
+        }
+    }
+}
+
+/// A change to one mixer strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StripChange {
+    Gain(f32),
+    Mute(bool),
+    Pfl(bool),
+    Route(Route),
+}
+
+/// The codec of the Icecast stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StreamFormat {
+    #[default]
+    Opus,
+    Mp3,
+}
+
+impl StreamFormat {
+    pub const ALL: [Self; 2] = [Self::Opus, Self::Mp3];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Opus => "Opus",
+            Self::Mp3 => "MP3",
+        }
+    }
+}
+
+/// The Icecast mount settings.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct IcecastView {
+    pub host: String,
+    pub port: u16,
+    pub mount: String,
+    pub user: String,
+    pub password: String,
+    pub format: StreamFormat,
+    pub kbps: u32,
+}
+
+// The password never shows in a debug print.
+impl std::fmt::Debug for IcecastView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IcecastView")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("mount", &self.mount)
+            .field("user", &self.user)
+            .field("password", &"…")
+            .field("format", &self.format)
+            .field("kbps", &self.kbps)
+            .finish()
+    }
+}
+
+/// The state of an output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// The preview shows the output, but no sound goes out.
+    Preview,
+    NotConnected,
+    Connected,
+    Failed(String),
+}
+
+/// The state of the local output and of Icecast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputStatus {
+    pub local: Status,
+    pub icecast: Status,
+}
+
+/// The job of an audio device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceRole {
+    Out,
+    Pfl,
+    Input,
+}
+
+/// The device for each job, by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceRoles {
+    pub out: String,
+    pub pfl: String,
+    pub input: String,
+}
+
+/// How a cart plays when somebody presses it again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CartMode {
+    #[default]
+    OneShot,
+    Loop,
+    Restart,
+}
+
+impl CartMode {
+    pub const ALL: [Self; 3] = [Self::OneShot, Self::Loop, Self::Restart];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OneShot => "One-shot",
+            Self::Loop => "Loop",
+            Self::Restart => "Restart",
+        }
+    }
+}
+
+/// The settings of one cart. The label is in `StationView::carts`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CartSlot {
+    /// How much the cart lowers the main output while it plays, in dB. Zero means off.
+    pub duck_db: f32,
+    pub mode: CartMode,
+    /// An index into the cart colours of the theme.
+    pub colour: Option<usize>,
+}
+
+/// The pages of the cartwall. Page `p` holds the carts from `p * per_page`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CartwallView {
+    pub pages: Vec<String>,
+    pub per_page: usize,
+    /// One entry per cart.
+    pub slots: Vec<CartSlot>,
+}
+
+/// A change to one cart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CartChange {
+    Duck(f32),
+    Mode(CartMode),
+    Colour(Option<usize>),
+}
+
+/// A folder in the library, as the source read it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FolderView {
+    pub path: String,
+    pub files: Vec<LibraryItem>,
+    /// True when the folder holds more files than the source lists.
+    pub truncated: bool,
+    /// Problems while reading the folder. They do not stop the reading.
+    pub errors: Vec<String>,
+}
+
+/// The result of adding files.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Imported {
+    pub ids: Vec<u64>,
+    /// Files that are not audio, or that the source could not read.
+    pub skipped: usize,
+}
+
+/// The placeholders that a custom stream title can use.
+pub const PLACEHOLDERS: [&str; 6] = [
+    "{artist}",
+    "{title}",
+    "{album}",
+    "{year}",
+    "{genre}",
+    "{comment}",
+];
 
 /// A place in the main timeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -499,41 +715,94 @@ pub enum Edit {
         deck: usize,
         command: DeckCommand,
     },
+    /// Set or clear the timing of a fixed row.
+    SetTiming {
+        row: u64,
+        timing: Option<Timing>,
+    },
+    SetPlaylistEnabled {
+        playlist: String,
+        enabled: bool,
+    },
+    SetWeight {
+        playlist: String,
+        index: usize,
+        weight: u32,
+    },
+    SetStrip {
+        strip: String,
+        change: StripChange,
+    },
+    SetIcecast(IcecastView),
+    SetDevice {
+        role: DeviceRole,
+        device: String,
+    },
+    AddCartPage {
+        name: String,
+    },
+    RenameCartPage {
+        page: usize,
+        name: String,
+    },
+    RemoveCartPage {
+        page: usize,
+    },
+    SetCart {
+        cart: usize,
+        change: CartChange,
+    },
+    /// Add a folder to the library. The source reads it.
+    AddFolder {
+        path: String,
+    },
+    RemoveFolder {
+        path: String,
+    },
+    /// Read a folder of the library again.
+    Rescan {
+        folder: String,
+    },
+    /// Set one setting of one part of the app.
+    SetPartSetting {
+        part: String,
+        key: String,
+        value: serde_json::Value,
+    },
 }
 
 /// Something that can describe the station at a given instant.
 pub trait ViewSource {
     fn snapshot(&mut self, now: jiff::Timestamp) -> StationView;
 
-    /// Store edited rules for the playlist `tab.name`. It returns true if the source kept them.
-    /// No source applies them to a scheduler yet.
-    fn apply_rules(&mut self, tab: PlaylistTab) -> bool {
+    /// Store edited rules for the playlist `tab.name`. No source applies them to a scheduler yet.
+    fn apply_rules(&mut self, tab: PlaylistTab) -> Result<(), String> {
         let _ = tab;
-        false
+        Err(NOT_SUPPORTED.to_owned())
     }
 
-    /// Put library item `item` at `target`. It returns true if the source kept the change.
-    fn drop_item(&mut self, item: u64, target: DropTarget) -> bool {
+    /// Put library item `item` at `target`. It returns the number of items that it placed.
+    fn drop_item(&mut self, item: u64, target: DropTarget) -> Result<usize, String> {
         let _ = (item, target);
-        false
+        Err(NOT_SUPPORTED.to_owned())
     }
 
-    /// Add files to the library under `category`, by path. It returns the new item ids.
-    fn import_files(&mut self, paths: Vec<String>, category: &str) -> Vec<u64> {
+    /// Add files and folders to the library under `category`. A folder gives its audio files.
+    fn import_files(&mut self, paths: Vec<String>, category: &str) -> Result<Imported, String> {
         let _ = (paths, category);
-        Vec::new()
+        Err(NOT_SUPPORTED.to_owned())
     }
 
     /// Make a playlist from the audio files of a folder. It returns the playlist name.
-    fn playlist_from_folder(&mut self, folder: FolderSource, files: Vec<String>) -> Option<String> {
-        let _ = (folder, files);
-        None
+    fn playlist_from_folder(&mut self, folder: FolderSource) -> Result<String, String> {
+        let _ = folder;
+        Err(NOT_SUPPORTED.to_owned())
     }
 
-    /// Apply one edit. It returns the message for the person, or why the edit failed.
-    fn edit(&mut self, edit: Edit) -> Result<String, String> {
+    /// Apply one edit. It returns the number of items that changed, or why the edit failed.
+    fn edit(&mut self, edit: Edit) -> Result<usize, String> {
         let _ = edit;
-        Err("preview — this source cannot change".to_owned())
+        Err(NOT_SUPPORTED.to_owned())
     }
 
     /// The library item for a title, made when the library does not have one.
@@ -542,9 +811,15 @@ pub trait ViewSource {
         None
     }
 
-    /// Make the playlist `name` the main playlist. It returns true on success.
-    fn use_as_main(&mut self, name: &str) -> bool {
+    /// Make the playlist `name` the main playlist.
+    fn use_as_main(&mut self, name: &str) -> Result<(), String> {
         let _ = name;
-        false
+        Err(NOT_SUPPORTED.to_owned())
     }
+
+    /// The exact stream title that Icecast gets for `row`, at its place in the timeline.
+    fn stream_title(&self, row: &Row) -> String;
 }
+
+/// The error of a source that cannot do a command.
+pub const NOT_SUPPORTED: &str = "preview — this source cannot do that";

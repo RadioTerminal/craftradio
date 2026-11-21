@@ -1,6 +1,7 @@
 //! The media library: folders and categories, a search box and a table of files.
 //! A person drags a title onto the main pane, a playlist tab or a cart.
 //! A folder can become a playlist, and that playlist can become the main playlist.
+//! The view source reads folders. The library only asks for a scan and shows the result.
 
 use std::path::Path;
 
@@ -9,25 +10,24 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::app::{Action, FileTarget, Linked, mmss};
 use crate::context_menu::{self, COPY, menu_item};
-use crate::folders;
+use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DropTarget, Edit, LibraryItem, MetaTarget, Place, StationView};
+use crate::view::{DropTarget, Edit, FolderView, LibraryItem, MetaTarget, Place, StationView};
+
+/// The categories of a new library.
+const DEFAULT_CATEGORIES: [&str; 5] = ["Music", "Jingles", "Ads", "Beds", "Shows"];
 
 /// The drag payload: the id of a library item.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LibraryDrag(pub u64);
 
-/// A folder that a person added, with the result of reading it.
-struct Folder {
-    path: String,
-    files: Result<Vec<String>, String>,
-}
-
-impl Folder {
-    fn name(&self) -> &str {
-        folders::name_of(&self.path)
-    }
+/// The last part of a path, for a folder name. This reads no files.
+fn folder_name(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
 }
 
 /// What the tree selects.
@@ -38,15 +38,13 @@ enum Pick {
     Folder(String),
 }
 
-/// The library state. It is local to the window.
+/// The view state of the window: docking, search, tree selection and draft fields.
 pub(crate) struct State {
     pub docked: bool,
     search: String,
     pick: Pick,
     settings: bool,
-    folders: Vec<Folder>,
     new_folder: String,
-    categories: Vec<String>,
     new_category: String,
 }
 
@@ -57,12 +55,7 @@ impl Default for State {
             search: String::new(),
             pick: Pick::All,
             settings: false,
-            folders: Vec::new(),
             new_folder: String::new(),
-            categories: ["Music", "Jingles", "Ads", "Beds", "Shows"]
-                .iter()
-                .map(|c| (*c).to_owned())
-                .collect(),
             new_category: String::new(),
         }
     }
@@ -75,54 +68,31 @@ impl State {
         self.pick = Pick::All;
     }
 
-    pub fn remove_folder(&mut self, path: &str) {
-        self.folders.retain(|f| f.path != path);
-        if self.pick == Pick::Folder(path.to_owned()) {
-            self.pick = Pick::All;
-        }
-    }
-
-    /// Read a folder and add it. A failure shows next to the folder.
+    /// Ask the source to read a folder, and show that folder.
     fn add_folder(&mut self, path: &str, actions: &mut Vec<Action>) {
         let path = path.trim().to_owned();
-        if path.is_empty() || self.folders.iter().any(|f| f.path == path) {
+        if path.is_empty() {
             return;
         }
-        let files = folders::list_audio(Path::new(&path), false);
-        let folder = Folder { path, files };
-        if let Ok(files) = &folder.files {
-            actions.push(Action::FolderFiles {
-                name: folder.name().to_owned(),
-                files: files.clone(),
-            });
-        }
-        self.pick = Pick::Folder(folder.path.clone());
-        self.folders.push(folder);
-    }
-
-    fn rescan(&mut self, path: &str, actions: &mut Vec<Action>) {
-        if let Some(f) = self.folders.iter_mut().find(|f| f.path == path) {
-            f.files = folders::list_audio(Path::new(&f.path), false);
-            if let Ok(files) = &f.files {
-                actions.push(Action::FolderFiles {
-                    name: f.name().to_owned(),
-                    files: files.clone(),
-                });
-            }
-        }
+        self.pick = Pick::Folder(path.clone());
+        actions.push(Action::Edit(Edit::AddFolder { path }));
     }
 }
 
 /// The items that pass the tree and the search filter.
 fn visible<'a>(view: &'a StationView, state: &State) -> Vec<&'a LibraryItem> {
     let needle = state.search.to_lowercase();
-    view.library
-        .iter()
-        .filter(|i| match &state.pick {
-            Pick::All => true,
-            Pick::Category(c) => *c == i.category,
-            Pick::Folder(p) => Path::new(&i.path).parent() == Some(Path::new(p)),
-        })
+    let folder = match &state.pick {
+        Pick::Folder(p) => view.folders.iter().find(|f| f.path == *p),
+        _ => None,
+    };
+    let pool: Vec<&LibraryItem> = match (&state.pick, folder) {
+        (Pick::Folder(_), Some(f)) => f.files.iter().collect(),
+        (Pick::Folder(_), None) => Vec::new(),
+        (Pick::Category(c), _) => view.library.iter().filter(|i| i.category == *c).collect(),
+        (Pick::All, _) => view.library.iter().collect(),
+    };
+    pool.into_iter()
         .filter(|i| {
             needle.is_empty()
                 || i.title.to_lowercase().contains(&needle)
@@ -151,16 +121,15 @@ pub(crate) fn show(
                 .is_some_and(|p| ui.max_rect().contains(p))
     });
     if own_window {
-        let dropped: Vec<std::path::PathBuf> = ui.input(|i| {
+        let dropped: Vec<String> = ui.input(|i| {
             i.raw
                 .dropped_files
                 .iter()
-                .map(|f| f.path().to_path_buf())
+                .map(|f| f.path().display().to_string())
                 .collect()
         });
         if !dropped.is_empty() {
-            let (audio, _) = folders::expand_dropped(&dropped);
-            actions.push(Action::Import(audio));
+            actions.push(Action::Import(dropped));
         }
     } else if files {
         link.hover_files(FileTarget::Library);
@@ -189,7 +158,7 @@ pub(crate) fn show(
     }
     if state.settings {
         settings::section(ui, "Library", t, |ui| {
-            library_settings(ui, state, actions, t)
+            library_settings(ui, view, state, actions, t)
         });
     }
     ui.horizontal(|ui| {
@@ -209,8 +178,10 @@ pub(crate) fn show(
                 .color(t.text_muted),
         );
     });
-    if let Pick::Folder(path) = state.pick.clone() {
-        folder_header(ui, state, &path, actions, t);
+    if let Pick::Folder(path) = &state.pick
+        && let Some(folder) = view.folders.iter().find(|f| f.path == *path)
+    {
+        folder_header(ui, folder, actions, t);
     }
     ui.add_space(space::S);
     ui.horizontal_top(|ui| {
@@ -223,11 +194,18 @@ pub(crate) fn show(
     });
 }
 
+/// The file count of a folder. A scan that a limit stopped says so.
+fn count_text(folder: &FolderView) -> String {
+    let n = folder.files.len();
+    if folder.truncated {
+        format!("{n} of more — truncated")
+    } else {
+        format!("{n} audio files")
+    }
+}
+
 /// The two folder actions, as menu rows.
-fn folder_actions(ui: &mut egui::Ui, folder: &Folder, actions: &mut Vec<Action>) {
-    let Ok(files) = &folder.files else {
-        return;
-    };
+fn folder_actions(ui: &mut egui::Ui, folder: &FolderView, actions: &mut Vec<Action>) {
     for (label, main) in [
         ("Create playlist from folder", false),
         ("Use as main playlist", true),
@@ -235,27 +213,17 @@ fn folder_actions(ui: &mut egui::Ui, folder: &Folder, actions: &mut Vec<Action>)
         if menu_item(ui, label, None) {
             actions.push(Action::FolderPlaylist {
                 path: folder.path.clone(),
-                files: files.clone(),
                 main,
             });
         }
     }
 }
 
-fn folder_header(
-    ui: &mut egui::Ui,
-    state: &State,
-    path: &str,
-    actions: &mut Vec<Action>,
-    t: &Tokens,
-) {
-    let Some(folder) = state.folders.iter().find(|f| f.path == path) else {
-        return;
-    };
-    ui.horizontal(|ui| match &folder.files {
-        Ok(files) => {
-            let text = format!("📁 {} · {} audio files", folder.path, files.len());
-            ui.label(RichText::new(text).font(theme::text(theme::LABEL)));
+fn folder_header(ui: &mut egui::Ui, folder: &FolderView, actions: &mut Vec<Action>, t: &Tokens) {
+    ui.horizontal(|ui| {
+        let text = format!("📁 {} · {}", folder.path, count_text(folder));
+        ui.label(RichText::new(text).font(theme::text(theme::LABEL)));
+        if !folder.files.is_empty() {
             for (label, main) in [
                 ("Create playlist from folder", false),
                 ("Use as main playlist", true),
@@ -263,21 +231,19 @@ fn folder_header(
                 if ui.button(label).clicked() {
                     actions.push(Action::FolderPlaylist {
                         path: folder.path.clone(),
-                        files: files.clone(),
                         main,
                     });
                 }
             }
         }
-        Err(e) => {
-            let text = format!("📁 {} · {e}", folder.path);
-            ui.label(
-                RichText::new(text)
-                    .font(theme::text(theme::LABEL))
-                    .color(t.danger),
-            );
-        }
     });
+    for e in &folder.errors {
+        ui.label(
+            RichText::new(e)
+                .font(theme::text(theme::CAPTION))
+                .color(t.danger),
+        );
+    }
 }
 
 fn tree(
@@ -296,11 +262,12 @@ fn tree(
             {
                 state.pick = Pick::All;
             }
-            let folder_names: Vec<String> =
-                state.folders.iter().map(|f| f.name().to_owned()).collect();
-            let mut cats = state.categories.clone();
+            let folder_names: Vec<&str> =
+                view.folders.iter().map(|f| folder_name(&f.path)).collect();
+            let mut cats = parts::strings(view, parts::LIBRARY, "categories", &DEFAULT_CATEGORIES);
             for item in &view.library {
-                if !cats.contains(&item.category) && !folder_names.contains(&item.category) {
+                if !cats.contains(&item.category) && !folder_names.contains(&item.category.as_str())
+                {
                     cats.push(item.category.clone());
                 }
             }
@@ -311,14 +278,14 @@ fn tree(
                     state.pick = Pick::Category(c);
                 }
             }
-            let mut rescan = None;
-            let mut remove = None;
-            for folder in &state.folders {
+            for folder in &view.folders {
                 let on = state.pick == Pick::Folder(folder.path.clone());
-                let (text, colour) = match &folder.files {
-                    Ok(files) => (format!("📁 {} ({})", folder.name(), files.len()), t.text),
-                    Err(_) => (format!("📁 {} (cannot read)", folder.name()), t.danger),
+                let colour = if folder.errors.is_empty() {
+                    t.text
+                } else {
+                    t.danger
                 };
+                let text = format!("📁 {} ({})", folder_name(&folder.path), count_text(folder));
                 let r = ui.selectable_label(on, RichText::new(text).color(colour));
                 if r.clicked() {
                     state.pick = Pick::Folder(folder.path.clone());
@@ -326,22 +293,21 @@ fn tree(
                 r.context_menu(|ui| {
                     folder_actions(ui, folder, actions);
                     if menu_item(ui, "Rescan", None) {
-                        rescan = Some(folder.path.clone());
+                        actions.push(Action::Edit(Edit::Rescan {
+                            folder: folder.path.clone(),
+                        }));
                     }
                     if context_menu::danger_item(ui, "Remove folder…", t) {
-                        remove = Some(folder.path.clone());
+                        actions.push(Action::Confirm {
+                            text: format!(
+                                "Remove the folder {} from the Library? The files stay on disk.",
+                                folder.path
+                            ),
+                            then: Box::new(Action::Edit(Edit::RemoveFolder {
+                                path: folder.path.clone(),
+                            })),
+                        });
                     }
-                });
-            }
-            if let Some(p) = rescan {
-                state.rescan(&p, actions);
-            }
-            if let Some(p) = remove {
-                actions.push(Action::Confirm {
-                    text: format!(
-                        "Remove the folder {p} from the Library? The files stay on disk."
-                    ),
-                    then: Box::new(Action::RemoveFolder(p)),
                 });
             }
         });
@@ -478,26 +444,35 @@ fn item_menu(ui: &mut egui::Ui, view: &StationView, item: &LibraryItem, actions:
     }
 }
 
-fn library_settings(ui: &mut egui::Ui, state: &mut State, actions: &mut Vec<Action>, t: &Tokens) {
-    settings::label(ui, "Folders (the preview reads only file names)", t);
-    let mut remove = None;
-    for f in &state.folders {
+fn library_settings(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    settings::label(ui, "Folders (the source reads only file names)", t);
+    for f in &view.folders {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&f.path).font(theme::mono(theme::CODE)));
-            if let Err(e) = &f.files {
-                ui.label(
-                    RichText::new(e)
-                        .font(theme::text(theme::CAPTION))
-                        .color(t.danger),
-                );
-            }
+            ui.label(
+                RichText::new(count_text(f))
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.text_muted),
+            );
             if ui.small_button("Remove folder").clicked() {
-                remove = Some(f.path.clone());
+                actions.push(Action::Edit(Edit::RemoveFolder {
+                    path: f.path.clone(),
+                }));
             }
         });
-    }
-    if let Some(p) = remove {
-        state.remove_folder(&p);
+        for e in &f.errors {
+            ui.label(
+                RichText::new(e)
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.danger),
+            );
+        }
     }
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut state.new_folder).desired_width(size::FIELD_W));
@@ -508,24 +483,24 @@ fn library_settings(ui: &mut egui::Ui, state: &mut State, actions: &mut Vec<Acti
     });
     ui.add_space(space::S);
     settings::label(ui, "Categories", t);
-    let mut remove = None;
-    for (i, c) in state.categories.iter().enumerate() {
+    let cats = parts::strings(view, parts::LIBRARY, "categories", &DEFAULT_CATEGORIES);
+    let mut next = cats.clone();
+    for (i, c) in cats.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.label(RichText::new(c).font(theme::mono(theme::CODE)));
             if ui.small_button("Remove category").clicked() {
-                remove = Some(i);
+                next.remove(i);
             }
         });
-    }
-    if let Some(i) = remove {
-        state.categories.remove(i);
     }
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut state.new_category).desired_width(size::FIELD_W));
         if ui.button("+ Add category").clicked() && !state.new_category.trim().is_empty() {
-            let c = state.new_category.trim().to_owned();
-            state.categories.push(c);
+            next.push(state.new_category.trim().to_owned());
             state.new_category.clear();
         }
     });
+    if next != cats {
+        actions.push(parts::set(parts::LIBRARY, "categories", next));
+    }
 }

@@ -7,6 +7,7 @@ use jiff::SignedDuration;
 
 use crate::app::{Action, hms, mmss};
 use crate::context_menu::{COPY, menu_item};
+use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::MetaTarget;
@@ -21,35 +22,23 @@ enum Col {
     Origin,
 }
 
-const COLS: [(Col, &str); 5] = [
-    (Col::Aired, "AIRED AT"),
-    (Col::Playlist, "PLAYLIST"),
-    (Col::Title, "TITLE"),
-    (Col::Length, "LENGTH"),
-    (Col::Origin, "ORIGIN"),
+const COLS: [(Col, &str, &str); 5] = [
+    (Col::Aired, "AIRED AT", "col_aired"),
+    (Col::Playlist, "PLAYLIST", "col_playlist"),
+    (Col::Title, "TITLE", "col_title"),
+    (Col::Length, "LENGTH", "col_length"),
+    (Col::Origin, "ORIGIN", "col_origin"),
 ];
+/// The log covers at most this many hours.
+const MAX_HOURS_BACK: u32 = 3;
 
-/// The history state. It is local to the window.
+/// The view state of the window: filters and selection. The settings live in the view source.
+#[derive(Default)]
 pub(crate) struct State {
     filter: String,
     playlist: Option<String>,
     settings: bool,
-    shown: [bool; COLS.len()],
-    hours_back: u32,
     selected: Vec<u64>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            filter: String::new(),
-            playlist: None,
-            settings: false,
-            shown: [true; COLS.len()],
-            hours_back: 3,
-            selected: Vec::new(),
-        }
-    }
 }
 
 pub(crate) fn show(
@@ -59,6 +48,10 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    let old_shown = COLS.map(|(_, _, key)| parts::bool(view, parts::HISTORY, key, true));
+    let old_hours = parts::u32(view, parts::HISTORY, "hours_back", MAX_HOURS_BACK);
+    let mut shown = old_shown;
+    let mut hours_back = old_hours;
     let mut open = state.settings;
     settings::header(ui, "History", &mut open, |_| {});
     state.settings = open;
@@ -66,19 +59,27 @@ pub(crate) fn show(
         settings::section(ui, "History", t, |ui| {
             ui.horizontal_wrapped(|ui| {
                 settings::label(ui, "Columns", t);
-                for (i, (_, name)) in COLS.iter().enumerate() {
-                    ui.checkbox(&mut state.shown[i], *name);
+                for (i, (_, name, _)) in COLS.iter().enumerate() {
+                    ui.checkbox(&mut shown[i], *name);
                 }
             });
             ui.horizontal(|ui| {
                 settings::label(ui, "Show the last", t);
                 ui.add(
-                    DragValue::new(&mut state.hours_back)
-                        .range(1..=3)
+                    DragValue::new(&mut hours_back)
+                        .range(1..=MAX_HOURS_BACK)
                         .suffix(" h"),
                 );
             });
         });
+    }
+    for (i, (_, _, key)) in COLS.iter().enumerate() {
+        if shown[i] != old_shown[i] {
+            actions.push(parts::set(parts::HISTORY, key, shown[i]));
+        }
+    }
+    if hours_back != old_hours {
+        actions.push(parts::set(parts::HISTORY, "hours_back", hours_back));
     }
     ui.horizontal(|ui| {
         let hint = "Filter by title or playlist";
@@ -106,7 +107,7 @@ pub(crate) fn show(
     let since = view
         .now
         .timestamp()
-        .checked_sub(SignedDuration::from_hours(i64::from(state.hours_back)))
+        .checked_sub(SignedDuration::from_hours(i64::from(hours_back)))
         .unwrap_or(view.now.timestamp());
     let rows: Vec<&Row> = view
         .history
@@ -122,9 +123,9 @@ pub(crate) fn show(
         .collect();
     let cols: Vec<Col> = COLS
         .iter()
-        .zip(state.shown)
+        .zip(shown)
         .filter(|(_, on)| *on)
-        .map(|((c, _), _)| *c)
+        .map(|((c, _, _), _)| *c)
         .collect();
     let mut table = TableBuilder::new(ui)
         .id_salt("history_table")
@@ -149,7 +150,10 @@ pub(crate) fn show(
     table
         .header(size::DIVIDER_ROW, |mut h| {
             for c in &cols {
-                let name = COLS.iter().find(|(k, _)| k == c).map_or("", |(_, n)| n);
+                let name = COLS
+                    .iter()
+                    .find(|(k, _, _)| k == c)
+                    .map_or("", |(_, n, _)| n);
                 h.col(|ui| {
                     ui.label(head(name));
                 });

@@ -94,6 +94,24 @@ pub(super) const AD_NAMES: [&str; 6] = [
     "Riverside Market",
     "Tamsin Travel",
 ];
+/// Carts on one page of the cartwall.
+pub(super) const CARTS_PER_PAGE: usize = 16;
+/// A new cart: ducking at -12 dB, one-shot, no colour.
+pub(super) const DEFAULT_SLOT: CartSlot = CartSlot {
+    duck_db: -12.0,
+    mode: crate::view::CartMode::OneShot,
+    colour: None,
+};
+pub(super) const ICECAST_PORT: u16 = 8000;
+/// The stream title before a row that is not in the timeline.
+pub(super) const UNKNOWN_PREVIOUS: &str = "(the stream title before it)";
+/// The part name of the cartwall settings.
+pub(super) const CARTWALL_PART: &str = "cartwall";
+pub(super) const ICECAST_KBPS: u32 = 128;
+/// The cartwall part settings for the grid.
+pub(super) const CART_COLS_KEY: &str = "cols";
+pub(super) const CART_ROWS_KEY: &str = "rows";
+
 pub(super) const CARTS: [&str; 32] = [
     "Station ID 1",
     "Station ID 2",

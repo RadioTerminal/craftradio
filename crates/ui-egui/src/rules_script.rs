@@ -8,7 +8,9 @@ use crate::view::{Placement, PlaylistTab, RuleView, Trigger};
 
 /// The rules of `tab` as JavaScript: one `pick(..)` call, then one `rule(..)` call per rule.
 pub fn generate(tab: &PlaylistTab) -> String {
-    let mut out = format!("// {} — rules\npick(\"{}\");\n", tab.name, tab.order.key());
+    // A name with a line break would end the comment early.
+    let name = tab.name.replace(['\n', '\r'], " ");
+    let mut out = format!("// {name} — rules\npick(\"{}\");\n", tab.order.key());
     for rule in &tab.visual {
         out.push_str(&rule_call(rule));
     }
@@ -106,6 +108,8 @@ mod tests {
             script: String::new(),
             script_by_hand: false,
             source: None,
+            enabled: true,
+            weights: Vec::new(),
         };
 
         let script = generate(&tab);

@@ -6,14 +6,22 @@ use std::time::Duration;
 use egui::{Align2, RichText, Sense};
 use jiff::SignedDuration;
 
+use crate::app::Action;
 use crate::context_menu::check_item;
+use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{DeckState, StationView};
 
-/// The clock settings. They are local to the window.
+/// Which view of the clock settings is open. The settings themselves live in the view source.
+#[derive(Default)]
 pub(crate) struct State {
     settings: bool,
+}
+
+/// The clock settings, read from the view source for one frame.
+#[derive(Clone, Copy, PartialEq)]
+struct Prefs {
     h24: bool,
     show_date: bool,
     show_ring: bool,
@@ -21,15 +29,31 @@ pub(crate) struct State {
     show_item_end: bool,
 }
 
-impl Default for State {
-    fn default() -> Self {
+impl Prefs {
+    fn read(view: &StationView) -> Self {
+        let get = |key| parts::bool(view, parts::CLOCK, key, true);
         Self {
-            settings: false,
-            h24: true,
-            show_date: true,
-            show_ring: true,
-            show_next_fixed: true,
-            show_item_end: true,
+            h24: get("h24"),
+            show_date: get("show_date"),
+            show_ring: get("show_ring"),
+            show_next_fixed: get("show_next_fixed"),
+            show_item_end: get("show_item_end"),
+        }
+    }
+
+    /// The actions that store each setting that differs from `old`.
+    fn write(self, old: Self, actions: &mut Vec<Action>) {
+        let pairs = [
+            ("h24", self.h24, old.h24),
+            ("show_date", self.show_date, old.show_date),
+            ("show_ring", self.show_ring, old.show_ring),
+            ("show_next_fixed", self.show_next_fixed, old.show_next_fixed),
+            ("show_item_end", self.show_item_end, old.show_item_end),
+        ];
+        for (key, new, was) in pairs {
+            if new != was {
+                actions.push(parts::set(parts::CLOCK, key, new));
+            }
         }
     }
 }
@@ -44,21 +68,34 @@ fn countdown(d: Duration) -> String {
     }
 }
 
-pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &Tokens) {
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let old = Prefs::read(view);
+    let mut p = old;
+    body(ui, view, state, &mut p, t);
+    p.write(old, actions);
+}
+
+fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Prefs, t: &Tokens) {
     let mut open = state.settings;
     settings::header(ui, "Clock", &mut open, |_| {});
     state.settings = open;
     if state.settings {
         settings::section(ui, "Clock", t, |ui| {
-            ui.checkbox(&mut state.h24, "24-hour time");
-            ui.checkbox(&mut state.show_date, "Show the date");
-            ui.checkbox(&mut state.show_ring, "Show the seconds ring");
+            ui.checkbox(&mut prefs.h24, "24-hour time");
+            ui.checkbox(&mut prefs.show_date, "Show the date");
+            ui.checkbox(&mut prefs.show_ring, "Show the seconds ring");
             ui.checkbox(
-                &mut state.show_next_fixed,
+                &mut prefs.show_next_fixed,
                 "Countdown to the next fixed event",
             );
             ui.checkbox(
-                &mut state.show_item_end,
+                &mut prefs.show_item_end,
                 "Countdown to the end of the current item",
             );
         });
@@ -66,7 +103,7 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
 
     let now = &view.now;
     let avail = ui.available_size();
-    let lines = [state.show_next_fixed, state.show_item_end]
+    let lines = [prefs.show_next_fixed, prefs.show_item_end]
         .iter()
         .filter(|b| **b)
         .count();
@@ -76,45 +113,49 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
         .max(size::CONTROL_LG);
     let (rect, ring) = ui.allocate_exact_size(egui::vec2(avail.x, side), Sense::click());
     ring.context_menu(|ui| {
-        if check_item(ui, state.h24, "24-hour time") {
-            state.h24 = !state.h24;
+        if check_item(ui, prefs.h24, "24-hour time") {
+            prefs.h24 = !prefs.h24;
         }
-        if check_item(ui, state.show_date, "Show date") {
-            state.show_date = !state.show_date;
+        if check_item(ui, prefs.show_date, "Show date") {
+            prefs.show_date = !prefs.show_date;
         }
-        if check_item(ui, state.show_ring, "Show seconds ring") {
-            state.show_ring = !state.show_ring;
+        if check_item(ui, prefs.show_ring, "Show seconds ring") {
+            prefs.show_ring = !prefs.show_ring;
         }
     });
     let c = rect.center();
     let r = side / 2.0 - size::CLOCK_TICK_R * 2.0;
     let p = ui.painter();
-    if state.show_ring {
+    if prefs.show_ring {
         let sec = now.second();
         for i in 0..60i8 {
             let a = std::f32::consts::TAU * f32::from(i) / 60.0 - std::f32::consts::FRAC_PI_2;
             let pos = c + egui::vec2(a.cos(), a.sin()) * r;
             let lit = i <= sec;
             let colour = if lit { t.on_air } else { t.field };
-            let big = if i % 5 == 0 { 1.5 } else { 1.0 };
+            let big = if i % size::CLOCK_MAJOR_EVERY == 0 {
+                size::CLOCK_MAJOR_TICK
+            } else {
+                1.0
+            };
             p.circle_filled(pos, size::CLOCK_TICK_R * big, colour);
         }
     }
-    let time = if state.h24 {
+    let time = if prefs.h24 {
         now.strftime("%H:%M:%S").to_string()
     } else {
         now.strftime("%-I:%M:%S %p").to_string()
     };
     let digits = side * size::CLOCK_DIGITS_PER_RING;
     p.text(c, Align2::CENTER_CENTER, time, theme::mono(digits), t.text);
-    if state.show_date {
+    if prefs.show_date {
         let date = now.strftime("%A %-d %B %Y").to_string();
         let below = c + egui::vec2(0.0, digits);
         p.text(
             below,
             Align2::CENTER_CENTER,
             date,
-            theme::text(digits * 0.3),
+            theme::text(digits * size::CLOCK_DATE_PER_DIGITS),
             t.text_muted,
         );
     }
@@ -125,7 +166,7 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
     let line = (side * size::CLOCK_LINE_PER_RING).max(theme::BODY);
     let nowt = now.timestamp();
     ui.vertical_centered(|ui| {
-        if state.show_next_fixed {
+        if prefs.show_next_fixed {
             let next = view
                 .rows
                 .iter()
@@ -144,7 +185,7 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
                     .color(t.accent_ink),
             );
         }
-        if state.show_item_end {
+        if prefs.show_item_end {
             let text = match view.decks.iter().find(|d| d.state == DeckState::Playing) {
                 Some(d) => {
                     let left = d.len.saturating_sub(d.elapsed);

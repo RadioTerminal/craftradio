@@ -28,7 +28,9 @@ impl ViewSource for MockSource {
             if let Some(m) = self.row_meta.get(&r.id) {
                 r.meta = m.clone();
             }
+            r.timing = self.row_timing.get(&r.id).copied();
         }
+        self.last_all.clone_from(&all);
         let since = now
             .checked_sub(SignedDuration::from_hours(PAST_HOURS))
             .unwrap_or(now);
@@ -39,11 +41,9 @@ impl ViewSource for MockSource {
             .collect();
         let rows: Vec<Row> = all.into_iter().filter(|r| r.start >= top).collect();
 
-        let on_air = rows.iter().position(|r| {
-            let start = r.start.timestamp();
-            let end = SignedDuration::try_from(r.len).map_or(start, |d| start + d);
-            start <= now && now < end
-        });
+        let on_air = rows
+            .iter()
+            .position(|r| r.start.timestamp() <= now && now < end_of(r));
         let elapsed = on_air.map_or(Duration::ZERO, |i| {
             remaining(rows[i].start.timestamp(), now)
         });
@@ -65,7 +65,7 @@ impl ViewSource for MockSource {
             deck('C', at(2), DeckState::Ready, Duration::ZERO),
             deck('D', at(3), DeckState::Ready, Duration::ZERO),
         ];
-        let meters = meters(now, &decks);
+        let meters = meters(now, &decks, &self.strips);
 
         StationView {
             now: local,
@@ -79,235 +79,68 @@ impl ViewSource for MockSource {
             meters,
             history,
             library: self.library.clone(),
-            carts: self.carts.clone(),
             devices: DEVICES.iter().map(|d| (*d).to_owned()).collect(),
+            device_roles: self.device_roles.clone(),
+            carts: self.carts.clone(),
+            cartwall: self.cartwall.clone(),
+            icecast: self.icecast.clone(),
+            output: OutputStatus {
+                local: Status::Preview,
+                icecast: Status::NotConnected,
+            },
+            folders: self.folder_views(),
+            settings: self.settings.clone(),
             warnings: 0,
         }
     }
 
-    fn drop_item(&mut self, item: u64, target: DropTarget) -> bool {
-        let Some(lib) = self.library.iter().find(|l| l.id == item) else {
-            return false;
+    fn drop_item(&mut self, item: u64, target: DropTarget) -> Result<usize, String> {
+        let Some(lib) = self.library_item(item) else {
+            return Err("preview — that library item is gone".to_owned());
         };
         let entry = (lib.title.clone(), lib.len);
         match target {
-            DropTarget::Main { after } => self
-                .edit(Edit::Insert {
-                    item,
-                    at: Place::After(after),
-                })
-                .is_ok(),
+            DropTarget::Main { after } => self.edit(Edit::Insert {
+                item,
+                at: Place::After(after),
+            }),
             DropTarget::Playlist(name) => {
-                let tab = if self.main.name == name {
-                    Some(&mut self.main)
-                } else {
-                    self.tabs.iter_mut().find(|t| t.name == name)
+                let Some(tab) = self.tab_mut(&name) else {
+                    return Err(format!("preview — no playlist {name}"));
                 };
-                tab.map(|t| t.items.push(entry)).is_some()
+                tab.items.push(entry);
+                tab.weights.push(1);
+                Ok(1)
             }
-            DropTarget::Cart(i) => self.carts.get_mut(i).map(|c| *c = entry.0).is_some(),
+            DropTarget::Cart(cart) => self.edit(Edit::AssignCart {
+                cart,
+                item: Some(item),
+            }),
         }
     }
 
-    fn import_files(&mut self, paths: Vec<String>, category: &str) -> Vec<u64> {
-        let mut ids = Vec::new();
-        for path in paths {
-            let name = folders::stem_of(&path).to_owned();
-            let id = self.library.iter().map(|l| l.id).max().unwrap_or(0) + 1;
-            self.library.push(LibraryItem {
-                id,
-                meta: meta::from_title(&name, PublishMode::FromTags),
-                title: name,
-                artist: None,
-                len: Duration::ZERO,
-                category: category.to_owned(),
-                path,
-            });
-            ids.push(id);
+    fn import_files(&mut self, paths: Vec<String>, category: &str) -> Result<Imported, String> {
+        let mut audio = Vec::new();
+        let mut skipped = 0;
+        for p in &paths {
+            let path = std::path::Path::new(p);
+            if path.is_dir() {
+                let scan = folders::scan(path, false, self.limits);
+                skipped += scan.errors.len();
+                audio.extend(scan.files);
+            } else if folders::is_audio(path) {
+                audio.push(p.clone());
+            } else {
+                skipped += 1;
+            }
         }
-        ids
+        audio.truncate(self.limits.max_files);
+        let ids = self.add_library_files(&audio, category);
+        Ok(Imported { ids, skipped })
     }
 
-    fn edit(&mut self, edit: Edit) -> Result<String, String> {
-        let not_saved = |what: String| format!("preview — {what} (not saved)");
-        match edit {
-            Edit::Insert { item, at } => {
-                let Some(lib) = self.library_item(item) else {
-                    return Err("preview — that library item is gone".to_owned());
-                };
-                let title = match &lib.artist {
-                    Some(a) => format!("{a} – {}", lib.title),
-                    None => lib.title.clone(),
-                };
-                let len = if lib.len.is_zero() {
-                    estimated_len(&title)
-                } else {
-                    lib.len
-                };
-                let id = self.next_manual;
-                self.next_manual += 1;
-                let done = not_saved(format!("added {title} to {}", self.main.name));
-                self.try_op(Op::Insert { at, id, title, len }, done)
-            }
-            Edit::Remove(ids) => {
-                let n = ids.len();
-                let mut ops = self.ops.clone();
-                ops.extend(ids.into_iter().map(Op::Remove));
-                let Some(top) = self.last_top.clone() else {
-                    return Err("preview — no timeline yet".to_owned());
-                };
-                let mut rows = self.rows_from(&top).to_vec();
-                if self.apply_ops(&mut rows, &ops) {
-                    self.ops = ops;
-                    Ok(not_saved(format!("removed {n} rows")))
-                } else {
-                    Err(
-                        "preview — nothing left to fill the gap before the next fixed item"
-                            .to_owned(),
-                    )
-                }
-            }
-            Edit::Move { id, to } => {
-                let rows = self.current();
-                let Some(i) = rows.iter().position(|r| r.id == id) else {
-                    return Err("preview — that row is gone".to_owned());
-                };
-                let at = match to {
-                    MoveTo::Next => {
-                        let now = self.last_now;
-                        match rows
-                            .iter()
-                            .find(|r| r.start.timestamp() <= now && now < end_of(r))
-                        {
-                            Some(r) => Place::After(r.id),
-                            None => return Err("preview — nothing is on air".to_owned()),
-                        }
-                    }
-                    MoveTo::Top => match rows[..i].iter().rev().find(|r| r.fixed.is_some()) {
-                        Some(r) => Place::After(r.id),
-                        None => Place::Before(rows[0].id),
-                    },
-                    MoveTo::Bottom => match rows[i + 1..].iter().find(|r| r.fixed.is_some()) {
-                        Some(r) => Place::Before(r.id),
-                        None => Place::End,
-                    },
-                };
-                self.try_op(Op::Move { id, at }, not_saved("moved the row".to_owned()))
-            }
-            Edit::ToggleLock(id) => {
-                self.try_op(Op::Lock(id), not_saved("changed the lock".to_owned()))
-            }
-            Edit::RenamePlaylist { from, to } => {
-                let to = to.trim().to_owned();
-                if to.is_empty() || self.unique_name(&to) != to {
-                    return Err(format!("preview — the name {to:?} is empty or taken"));
-                }
-                let Some(tab) = self.tab_mut(&from) else {
-                    return Err(format!("preview — no playlist {from}"));
-                };
-                tab.name.clone_from(&to);
-                rules_script::refresh(tab);
-                self.cache = None;
-                Ok(not_saved(format!("renamed {from} to {to}")))
-            }
-            Edit::DuplicatePlaylist(name) => {
-                let Some(tab) = self
-                    .tabs
-                    .iter()
-                    .chain([&self.main])
-                    .find(|t| t.name == name)
-                else {
-                    return Err(format!("preview — no playlist {name}"));
-                };
-                let mut copy = tab.clone();
-                copy.name = self.unique_name(&format!("{name} copy"));
-                rules_script::refresh(&mut copy);
-                let msg = not_saved(format!("made {}", copy.name));
-                self.tabs.push(copy);
-                Ok(msg)
-            }
-            Edit::DeletePlaylist(name) => {
-                if self.main.name == name {
-                    return Err(
-                        "preview — the main playlist cannot go; make another one main first"
-                            .to_owned(),
-                    );
-                }
-                let before = self.tabs.len();
-                self.tabs.retain(|t| t.name != name);
-                if self.tabs.len() == before {
-                    return Err(format!("preview — no playlist {name}"));
-                }
-                Ok(not_saved(format!("deleted {name}")))
-            }
-            Edit::RemovePlaylistItem { playlist, index } => {
-                let Some(tab) = self.tab_mut(&playlist) else {
-                    return Err(format!("preview — no playlist {playlist}"));
-                };
-                if index >= tab.items.len() {
-                    return Err("preview — that item is gone".to_owned());
-                }
-                let (title, _) = tab.items.remove(index);
-                Ok(not_saved(format!("removed {title} from {playlist}")))
-            }
-            Edit::MovePlaylistItem {
-                playlist,
-                index,
-                up,
-            } => {
-                let Some(tab) = self.tab_mut(&playlist) else {
-                    return Err(format!("preview — no playlist {playlist}"));
-                };
-                let other = if up {
-                    index.checked_sub(1)
-                } else {
-                    Some(index + 1)
-                };
-                match other.filter(|o| *o < tab.items.len() && index < tab.items.len()) {
-                    Some(o) => {
-                        tab.items.swap(index, o);
-                        Ok(not_saved("moved the item".to_owned()))
-                    }
-                    None => Err("preview — the item is already at the end".to_owned()),
-                }
-            }
-            Edit::SetMeta(list) => {
-                let n = list.len();
-                for (target, m) in list {
-                    match target {
-                        MetaTarget::Row(id) => {
-                            self.row_meta.insert(id, m);
-                        }
-                        MetaTarget::Library(id) => {
-                            if let Some(l) = self.library.iter_mut().find(|l| l.id == id) {
-                                l.meta = m;
-                            }
-                        }
-                    }
-                }
-                Ok(not_saved(format!("changed the tags of {n} items")))
-            }
-            Edit::Deck { deck, command } => self.deck_command(deck, command),
-            Edit::AssignCart { cart, item } => {
-                let label = match item {
-                    Some(id) => match self.library_item(id) {
-                        Some(l) => l.title.clone(),
-                        None => return Err("preview — that library item is gone".to_owned()),
-                    },
-                    None => String::new(),
-                };
-                let Some(slot) = self.carts.get_mut(cart) else {
-                    return Err("preview — no such cart".to_owned());
-                };
-                let msg = if label.is_empty() {
-                    format!("cleared cart {}", cart + 1)
-                } else {
-                    format!("assigned {label} to cart {}", cart + 1)
-                };
-                *slot = label;
-                Ok(not_saved(msg))
-            }
-        }
+    fn edit(&mut self, edit: Edit) -> Result<usize, String> {
+        self.apply_edit(edit)
     }
 
     fn library_ref(&mut self, title: &str, len: Duration) -> Option<u64> {
@@ -320,7 +153,7 @@ impl ViewSource for MockSource {
         if let Some(l) = found {
             return Some(l.id);
         }
-        let id = self.library.iter().map(|l| l.id).max().unwrap_or(0) + 1;
+        let id = self.next_library_id();
         self.library.push(LibraryItem {
             id,
             title: title.to_owned(),
@@ -328,15 +161,25 @@ impl ViewSource for MockSource {
             len,
             category: "Unsorted".to_owned(),
             path: "—".to_owned(),
-            meta: meta::from_title(title, PublishMode::FromTags),
+            meta: from_title(title, PublishMode::FromTags),
         });
         Some(id)
     }
 
-    fn playlist_from_folder(&mut self, folder: FolderSource, files: Vec<String>) -> Option<String> {
+    fn playlist_from_folder(&mut self, folder: FolderSource) -> Result<String, String> {
+        let scan = folders::scan(
+            std::path::Path::new(&folder.path),
+            folder.recursive,
+            self.limits,
+        );
+        if scan.files.is_empty() {
+            let why = scan.errors.first().cloned().unwrap_or_default();
+            return Err(format!("preview — no audio files in {} {why}", folder.path));
+        }
         let name = self.unique_name(folders::name_of(&folder.path));
         let colour = FOLDER_COLOURS[self.tabs.len() % FOLDER_COLOURS.len()];
-        let items = files
+        let items = scan
+            .files
             .iter()
             .map(|f| (folders::stem_of(f).to_owned(), Duration::ZERO))
             .collect();
@@ -344,16 +187,16 @@ impl ViewSource for MockSource {
         tab.source = Some(folder);
         rules_script::refresh(&mut tab);
         self.tabs.push(tab);
-        Some(name)
+        Ok(name)
     }
 
-    fn use_as_main(&mut self, name: &str) -> bool {
+    fn use_as_main(&mut self, name: &str) -> Result<(), String> {
         let Some(i) = self.tabs.iter().position(|t| t.name == name) else {
-            return false;
+            return Err(format!("preview — no playlist {name}"));
         };
         let sample = self.tabs[i].name == SAMPLE;
         if self.tabs[i].items.is_empty() && !sample {
-            return false;
+            return Err(format!("preview — {name} has no items to play"));
         }
         let tab = self.tabs.remove(i);
         let mut old = std::mem::replace(&mut self.main, tab);
@@ -374,20 +217,39 @@ impl ViewSource for MockSource {
         };
         self.cache = None;
         self.ops.clear();
-        true
+        Ok(())
     }
 
-    fn apply_rules(&mut self, tab: PlaylistTab) -> bool {
-        if self.main.name == tab.name {
-            self.main = tab;
-            return true;
-        }
-        match self.tabs.iter_mut().find(|t| t.name == tab.name) {
-            Some(slot) => {
-                *slot = tab;
-                true
+    fn apply_rules(&mut self, mut tab: PlaylistTab) -> Result<(), String> {
+        // A folder playlist reads its folder again, with the subfolder setting of the copy.
+        if let Some(src) = &tab.source {
+            let scan = folders::scan(std::path::Path::new(&src.path), src.recursive, self.limits);
+            if let Some(e) = scan.errors.first() {
+                return Err(format!("preview — {e}"));
             }
-            None => false,
+            tab.items = scan
+                .files
+                .iter()
+                .map(|f| (folders::stem_of(f).to_owned(), Duration::ZERO))
+                .collect();
+            tab.weights = vec![1; tab.items.len()];
         }
+        let Some(slot) = self.tab_mut(&tab.name) else {
+            return Err(format!("preview — no playlist {}", tab.name));
+        };
+        *slot = tab;
+        Ok(())
+    }
+
+    fn stream_title(&self, row: &Row) -> String {
+        let mut previous = STATION.to_owned();
+        for r in &self.last_all {
+            if r.id == row.id {
+                return stream::title_for(&row.meta, &previous, STATION);
+            }
+            previous = stream::title_for(&r.meta, &previous, STATION);
+        }
+        // The row is not in the timeline, so the item before it is not known.
+        stream::title_for(&row.meta, UNKNOWN_PREVIOUS, STATION)
     }
 }

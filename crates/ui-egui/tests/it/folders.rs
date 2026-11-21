@@ -1,5 +1,4 @@
-use radio_ui_egui::folders::list_audio;
-use radio_ui_egui::view::FolderSource;
+use radio_ui_egui::view::{Edit, FolderSource};
 use radio_ui_egui::{MockSource, ViewSource};
 
 #[test]
@@ -9,18 +8,27 @@ fn a_playlist_from_a_folder_of_three_audio_files_has_three_items() {
     for name in ["a.mp3", "b.flac", "c.wav", "notes.txt"] {
         std::fs::write(dir.join(name), b"").expect("temp file");
     }
-    let files = list_audio(&dir, false).expect("the folder can be read");
+    let path = dir.display().to_string();
     let tz = jiff::tz::TimeZone::get("Europe/Ljubljana").expect("tz");
     let mut source = MockSource::new(tz);
+    let now = "2026-11-21T13:58:00Z".parse().expect("ts");
+    source.snapshot(now);
+    let read = source.edit(Edit::AddFolder { path: path.clone() });
+    assert_eq!(read, Ok(3), "the source reads only the audio files");
     let folder = FolderSource {
-        path: dir.display().to_string(),
+        path: path.clone(),
         recursive: false,
         watch: false,
     };
-    let name = source
-        .playlist_from_folder(folder, files)
-        .expect("a playlist");
-    let view = source.snapshot("2026-11-21T13:58:00Z".parse().expect("ts"));
+    let name = source.playlist_from_folder(folder).expect("a playlist");
+    let view = source.snapshot(now);
+    let listed = view
+        .folders
+        .iter()
+        .find(|f| f.path == path)
+        .expect("the folder shows");
+    assert_eq!(listed.files.len(), 3);
+    assert!(!listed.truncated);
     let tab = view
         .tabs
         .iter()

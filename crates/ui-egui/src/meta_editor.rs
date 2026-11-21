@@ -5,9 +5,8 @@
 
 use egui::{RichText, TextEdit};
 
-use crate::meta::{PLACEHOLDERS, stream_title};
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{ItemMeta, MetaTarget, PublishMode};
+use crate::view::{ItemMeta, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource};
 
 const NOT_WRITTEN: &str = "preview — not written";
 const FIELDS: [&str; 6] = ["Title", "Artist", "Album", "Year", "Genre", "Comment"];
@@ -32,14 +31,13 @@ pub(crate) struct MetaEditor {
     touched: [bool; 6],
     publish_touched: bool,
     custom_touched: bool,
-    /// The stream title of the item before the first item.
-    previous: String,
-    station: String,
+    /// The row whose place in the timeline gives the preview line its context.
+    base: Row,
     note: bool,
 }
 
 impl MetaEditor {
-    pub fn new(targets: Vec<(MetaTarget, ItemMeta)>, previous: String, station: String) -> Self {
+    pub fn new(targets: Vec<(MetaTarget, ItemMeta)>, base: Row) -> Self {
         let mut draft = targets.first().map(|(_, m)| m.clone()).unwrap_or_default();
         let mut mixed = [false; 6];
         for (i, m) in mixed.iter_mut().enumerate() {
@@ -58,8 +56,7 @@ impl MetaEditor {
             touched: [false; 6],
             publish_touched: false,
             custom_touched: false,
-            previous,
-            station,
+            base,
             note: false,
         }
     }
@@ -94,6 +91,7 @@ impl MetaEditor {
 pub(crate) fn show(
     ctx: &egui::Context,
     slot: &mut Option<MetaEditor>,
+    source: &dyn ViewSource,
     t: &Tokens,
 ) -> Option<Vec<(MetaTarget, ItemMeta)>> {
     let ed = slot.as_mut()?;
@@ -165,7 +163,12 @@ pub(crate) fn show(
                 .first()
                 .map(|(_, m)| ed.merged(m))
                 .unwrap_or_default();
-            let text = stream_title(&first, &ed.previous, &ed.station);
+            // The source makes the stream title, so the preview and the stream always agree.
+            let row = Row {
+                meta: first,
+                ..ed.base.clone()
+            };
+            let text = source.stream_title(&row);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Icecast gets:").color(t.text_muted));
                 let shown = RichText::new(format!("“{text}”")).font(theme::mono(theme::CODE));

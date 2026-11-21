@@ -3,17 +3,19 @@
 use egui::{Align, Layout, RichText, Sense, Stroke, UiBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Action, FileTarget, Linked, Pane, PasteTo, Timing, hms, mmss};
+use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, hms, mmss};
 use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DropTarget, Edit, MetaTarget, Pick, PlaylistTab, Row, StationView};
+use crate::view::{DropTarget, Edit, MetaTarget, Pick, PlaylistTab, Row, StationView, Timing};
 
 /// The tolerances that the Edit timing menu offers, in seconds.
 const TOLERANCES: [f32; 3] = [0.5, 1.0, 2.0];
 /// The weights that the Set weight menu offers.
 const WEIGHTS: [u32; 5] = [1, 2, 3, 4, 5];
+/// The tolerance of a fixed row that nobody set yet, in seconds.
+const DEFAULT_TOLERANCE_S: f32 = 1.0;
 
 /// The tab that the pane shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,11 +74,7 @@ fn tab_bar(
             let selected = *tab == Tab::Playlist(i);
             // The playlist colour always comes with its name.
             let folder = if p.source.is_some() { " 📁" } else { "" };
-            let off = if link.disabled.contains(&p.name) {
-                " (off)"
-            } else {
-                ""
-            };
+            let off = if !p.enabled { " (off)" } else { "" };
             let text = label(&format!("    {}{folder}{off}", p.name));
             let r = ui.selectable_label(selected, text);
             let dot = egui::pos2(r.rect.left() + space::S + size::DOT_R, r.rect.center().y);
@@ -98,20 +96,14 @@ fn tab_bar(
             if r.clicked() {
                 *tab = Tab::Playlist(i);
             }
-            r.context_menu(|ui| tab_menu(ui, p, link, actions, t));
+            r.context_menu(|ui| tab_menu(ui, p, actions, t));
         }
         ui.add_enabled(false, egui::Button::new(label("+")))
             .on_disabled_hover_text("coming soon");
     });
 }
 
-fn tab_menu(
-    ui: &mut egui::Ui,
-    p: &PlaylistTab,
-    link: &mut Linked,
-    actions: &mut Vec<Action>,
-    t: &Tokens,
-) {
+fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &Tokens) {
     if menu_item(ui, "Rename…", None) {
         actions.push(Action::Rename(p.name.clone()));
     }
@@ -124,15 +116,11 @@ fn tab_menu(
     if menu_item(ui, "Make main", None) {
         actions.push(Action::UseAsMain(p.name.clone()));
     }
-    let off = link.disabled.contains(&p.name);
-    if menu_item(ui, if off { "Enable" } else { "Disable" }, None) {
-        if off {
-            link.disabled.remove(&p.name);
-        } else {
-            link.disabled.insert(p.name.clone());
-        }
-        let text = "preview — changed here only; the scheduler is not connected".to_owned();
-        actions.push(Action::Toast(text));
+    if menu_item(ui, if p.enabled { "Disable" } else { "Enable" }, None) {
+        actions.push(Action::Edit(Edit::SetPlaylistEnabled {
+            playlist: p.name.clone(),
+            enabled: !p.enabled,
+        }));
     }
     ui.separator();
     if context_menu::danger_item(ui, "Delete playlist…", t) {
@@ -172,7 +160,7 @@ fn upcoming(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = space::XXS;
             for r in rows {
-                let timing = link.timing.get(&r.id).copied();
+                let timing = r.timing;
                 let on_air = r.start.timestamp() <= now;
                 let resp = upcoming_row(ui, r, link.is_selected(r.id), on_air, timing, t);
                 if resp.clicked() {
@@ -189,19 +177,16 @@ fn upcoming(
 
 fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Vec<Action>) {
     ui.menu_button("Edit timing", |ui| {
-        let now = link.timing.get(&r.id).copied().unwrap_or(Timing {
+        let now = r.timing.unwrap_or(Timing {
             hard: true,
-            tolerance_s: 1.0,
+            tolerance_s: DEFAULT_TOLERANCE_S,
         });
         let mut set = |ui: &mut egui::Ui, label: &str, next: Timing, on: bool| {
             if context_menu::check_item(ui, on, label) {
-                link.timing.insert(r.id, next);
-                let kind = if next.hard { "hard" } else { "soft" };
-                let text = format!(
-                    "preview — timing {kind} ±{:.1} s here only; the scheduler is not connected",
-                    next.tolerance_s
-                );
-                actions.push(Action::Toast(text));
+                actions.push(Action::Edit(Edit::SetTiming {
+                    row: r.id,
+                    timing: Some(next),
+                }));
             }
         };
         set(ui, "Hard", Timing { hard: true, ..now }, now.hard);
@@ -234,8 +219,7 @@ fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Ve
     if menu_item(ui, "Copy", Some(COPY)) {
         actions.push(Action::CopyTitles {
             titles: vec![(r.title.clone(), r.len)],
-            rows: Vec::new(),
-            cut: false,
+            cut: None,
         });
     }
     ui.separator();
@@ -374,8 +358,12 @@ fn playlist(
                 for (i, (name, len)) in p.items.iter().enumerate() {
                     let row = egui::Frame::new().inner_margin(pad::ROW).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let weight = link.weights.get(&(p.name.clone(), i));
-                            let w = weight.map_or(String::new(), |w| format!("  ×{w}"));
+                            let weight = p.weights.get(i).copied().unwrap_or(1);
+                            let w = if weight == 1 {
+                                String::new()
+                            } else {
+                                format!("  ×{weight}")
+                            };
                             ui.label(
                                 RichText::new(format!("{name}{w}")).font(theme::text(theme::SMALL)),
                             );
@@ -419,10 +407,12 @@ fn item_menu(
     link: &mut Linked,
     actions: &mut Vec<Action>,
 ) {
-    let copy = |cut| Action::CopyTitles {
+    let copy = |cut: bool| Action::CopyTitles {
         titles: vec![(name.to_owned(), len)],
-        rows: Vec::new(),
-        cut,
+        cut: cut.then(|| CutSource::PlaylistItem {
+            playlist: p.name.clone(),
+            index: i,
+        }),
     };
     let remove = || {
         Action::Edit(Edit::RemovePlaylistItem {
@@ -430,9 +420,9 @@ fn item_menu(
             index: i,
         })
     };
+    // A cut removes the item only after a successful paste.
     if menu_item(ui, "Cut", Some(CUT)) {
-        actions.push(copy(false));
-        actions.push(remove());
+        actions.push(copy(true));
     }
     if menu_item(ui, "Copy", Some(COPY)) {
         actions.push(copy(false));
@@ -458,10 +448,11 @@ fn item_menu(
         ui.menu_button("Set weight", |ui| {
             for w in WEIGHTS {
                 if menu_item(ui, &format!("×{w}"), None) {
-                    link.weights.insert((p.name.clone(), i), w);
-                    actions.push(Action::Toast(format!(
-                        "preview — weight ×{w} here only (not saved)"
-                    )));
+                    actions.push(Action::Edit(Edit::SetWeight {
+                        playlist: p.name.clone(),
+                        index: i,
+                        weight: w,
+                    }));
                 }
             }
         })

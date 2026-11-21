@@ -1,32 +1,30 @@
 //! The main window: decks on top, the main and scheduled panes in the middle, a status line below.
 //! Tool windows (cartwall, mixer, clock, history, library) open from the deck strip.
 
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use egui::RichText;
 use jiff::{SignedDuration, Timestamp};
 
-use crate::meta_editor::{self, MetaEditor};
-use crate::rules_editor::{self, Editor};
 mod action;
 mod clipboard;
 mod dialogs;
 mod drops;
 
 pub(crate) use action::{Action, FileTarget, PasteTo};
-pub(crate) use clipboard::Clipboard;
+pub(crate) use clipboard::{Clipboard, CutSource};
+
+use crate::meta_editor::{self, MetaEditor};
+use crate::rules_editor::{self, Editor};
 
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
-    DropTarget, Edit, FolderSource, MetaTarget, Place, Row, StationView, ViewSource,
+    DeckCommand, DropTarget, Edit, FolderSource, MetaTarget, Place, Row, StationView, Status,
+    ViewSource,
 };
 use crate::windows::{self, ToolWindow};
-use crate::{
-    cartwall, clock_window, decks, folders, history, library, main_pane, meta, mixer,
-    scheduled_pane,
-};
+use crate::{cartwall, clock_window, decks, history, library, main_pane, mixer, scheduled_pane};
 
 /// The pane that has the keyboard, for the edit shortcuts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,13 +32,6 @@ pub(crate) enum Pane {
     #[default]
     Main,
     Scheduled,
-}
-
-/// A timing change that a person made in the preview.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Timing {
-    pub hard: bool,
-    pub tolerance_s: f32,
 }
 
 /// State that the panes share: the selection, scroll requests and local preview changes.
@@ -54,9 +45,6 @@ pub(crate) struct Linked {
     /// The scheduled pane scrolls to this row once, then clears it.
     pub scroll_scheduled: Option<u64>,
     pub has_clip: bool,
-    pub timing: HashMap<u64, Timing>,
-    pub disabled: HashSet<String>,
-    pub weights: HashMap<(String, usize), u32>,
     /// The drop target under the pointer in this frame, while files hover.
     pub file_target: Option<FileTarget>,
     /// The last drop target that the pointer was over.
@@ -145,7 +133,7 @@ impl RadioApp {
             scroll_main: on_air.map(|r| r.id),
             ..Linked::default()
         };
-        let carts = cartwall::State::new(view.carts.len());
+        let carts = cartwall::State::default();
         Self {
             source,
             clock,
@@ -187,14 +175,7 @@ impl RadioApp {
         self.toast = Some((text, until));
     }
 
-    pub(super) fn report(&mut self, ctx: &egui::Context, result: Result<String, String>) {
-        let text = match result {
-            Ok(t) | Err(t) => t,
-        };
-        self.toast(ctx, text);
-    }
-
-    /// Put library items at a place in the main timeline, in their order.
+    /// Open the metadata editor for items of the timeline or the library.
     pub(super) fn open_meta(&mut self, targets: Vec<MetaTarget>) {
         let rows = self.view.history.iter().chain(&self.view.rows);
         let mut list = Vec::new();
@@ -215,17 +196,16 @@ impl RadioApp {
         if list.is_empty() {
             return;
         }
-        let station = self.view.station.clone();
-        let stop = match targets.first() {
-            Some(MetaTarget::Row(id)) => Some(*id),
-            _ => None,
+        // The preview line asks the source for the stream title of a row.
+        // A library item is not in the timeline, so it borrows a row with an id that no row has.
+        let base = match targets.first() {
+            Some(MetaTarget::Row(id)) => rows.clone().find(|r| r.id == *id).cloned(),
+            _ => self.view.rows.first().cloned().map(|mut r| {
+                r.id = u64::MAX;
+                r
+            }),
         };
-        let previous = if stop.is_some() {
-            meta::streaming_before(rows, stop, &station)
-        } else {
-            "(the stream title before it)".to_owned()
-        };
-        self.meta = Some(MetaEditor::new(list, previous, station));
+        self.meta = base.map(|b| MetaEditor::new(list, b));
     }
 
     pub(super) fn tool_windows(
@@ -234,6 +214,12 @@ impl RadioApp {
         actions: &mut Vec<Action>,
         t: &Tokens,
     ) {
+        let on_air = self
+            .view
+            .rows
+            .iter()
+            .find(|r| is_on_air(r, self.view.now.timestamp()));
+        let streaming = on_air.map_or_else(String::new, |r| self.source.stream_title(r));
         let view = &self.view;
         let open = &mut self.open;
         let link = &mut self.link;
@@ -241,10 +227,10 @@ impl RadioApp {
             cartwall::show(ui, view, &mut self.carts, link.has_clip, actions, t);
         });
         windows::show(ctx, ToolWindow::Mixer, open, t, |ui| {
-            mixer::show(ui, view, &mut self.mixer, t);
+            mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
         });
         windows::show(ctx, ToolWindow::Clock, open, t, |ui| {
-            clock_window::show(ui, view, &mut self.clock_state, t);
+            clock_window::show(ui, view, &mut self.clock_state, actions, t);
         });
         windows::show(ctx, ToolWindow::History, open, t, |ui| {
             history::show(ui, view, &mut self.history, actions, t);
@@ -333,28 +319,19 @@ impl eframe::App for RadioApp {
         self.tool_windows(&ctx, &mut actions, &t);
         self.dialogs(&ctx, &mut actions, &t);
 
-        if let Some(mut tab) = rules_editor::show(&ctx, &mut self.editor, &mut self.link, &t) {
-            if let Some(src) = &tab.source {
-                match folders::list_audio(std::path::Path::new(&src.path), src.recursive) {
-                    Ok(files) => {
-                        tab.items = files
-                            .iter()
-                            .map(|f| (folders::stem_of(f).to_owned(), Duration::ZERO))
-                            .collect();
-                    }
-                    Err(e) => self.toast(&ctx, format!("preview — {e}")),
+        if let Some(tab) = rules_editor::show(&ctx, &mut self.editor, &mut self.link, &t) {
+            let text = match self.source.apply_rules(tab) {
+                Ok(()) => {
+                    "preview — rules stored; they are not applied to the scheduler yet".to_owned()
                 }
-            }
-            self.source.apply_rules(tab);
+                Err(e) => e,
+            };
+            self.toast(&ctx, text);
             self.refresh(true);
         }
 
-        if let Some(list) = meta_editor::show(&ctx, &mut self.meta, &t) {
-            let result = self.source.edit(Edit::SetMeta(list));
-            self.report(
-                &ctx,
-                result.map(|m| format!("{m} · tags are not written to files")),
-            );
+        if let Some(list) = meta_editor::show(&ctx, &mut self.meta, self.source.as_ref(), &t) {
+            self.run_edit(&ctx, Edit::SetMeta(list), true);
             self.refresh(true);
         }
 
@@ -392,9 +369,24 @@ fn status_line(ui: &mut egui::Ui, view: &StationView, toast: Option<&(String, f6
                 .font(theme::text(theme::LABEL))
                 .color(t.text_muted)
         };
-        // Neither output works in the preview, so both show a hollow dot in a muted colour.
-        ui.label(muted("Local ○ preview (no audio)"));
-        ui.label(muted("Icecast ○ not connected"));
+        // Only a connected output shows a filled green dot. Every other state is hollow and muted.
+        for (name, status) in [
+            ("Local", &view.output.local),
+            ("Icecast", &view.output.icecast),
+        ] {
+            let (dot, word, colour) = match status {
+                Status::Connected => ("●", "connected".to_owned(), t.ok),
+                Status::Preview => ("○", "preview (no audio)".to_owned(), t.text_muted),
+                Status::NotConnected => ("○", "not connected".to_owned(), t.text_muted),
+                Status::Failed(e) => ("○", format!("failed: {e}"), t.danger),
+            };
+            let text = format!("{name} {dot} {word}");
+            ui.label(
+                RichText::new(text)
+                    .font(theme::text(theme::LABEL))
+                    .color(colour),
+            );
+        }
         let warn = format!("· {} warnings", view.warnings);
         let colour = if view.warnings > 0 {
             t.warn

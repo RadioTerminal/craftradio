@@ -4,7 +4,7 @@
 use egui::{Align, Layout, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{Action, FileTarget, Linked, Pane, PasteTo, hms, is_on_air, mmss};
+use crate::app::{Action, CutSource, FileTarget, Linked, Pane, PasteTo, hms, is_on_air, mmss};
 use crate::context_menu;
 use crate::library::LibraryDrag;
 use crate::rules_editor;
@@ -186,8 +186,7 @@ fn shortcuts(ctx: &egui::Context, view: &StationView, link: &Linked, actions: &m
     if p.copy || p.cut {
         actions.push(Action::CopyTitles {
             titles: titles(view, &sel),
-            rows: sel.clone(),
-            cut: p.cut,
+            cut: p.cut.then(|| CutSource::Rows(sel.clone())),
         });
     }
     if p.duplicate
@@ -250,15 +249,13 @@ fn row_menu(
     if menu_item(ui, "Cut", Some(CUT)) {
         actions.push(Action::CopyTitles {
             titles: titles(view, &sel),
-            rows: sel.clone(),
-            cut: true,
+            cut: Some(CutSource::Rows(sel.clone())),
         });
     }
     if menu_item(ui, "Copy", Some(COPY)) {
         actions.push(Action::CopyTitles {
             titles: titles(view, &sel),
-            rows: sel.clone(),
-            cut: false,
+            cut: None,
         });
     }
     if menu_item_if(ui, link.has_clip, "Paste above", None) {

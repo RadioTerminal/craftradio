@@ -1,4 +1,6 @@
 //! The actions that panels ask for, and how the app runs them.
+//!
+//! Every message shows the count that the source returned, or the error of the source.
 
 use super::*;
 
@@ -19,27 +21,29 @@ pub(crate) enum FileTarget {
     Library,
 }
 
-/// A change that a panel asks for. The app passes it to the view source or keeps it locally.
+/// A change that a panel asks for. The app passes it to the view source.
 pub(crate) enum Action {
     /// A library item dropped on a target.
     Drop {
         item: u64,
         target: DropTarget,
     },
-    /// Files dropped from the file manager onto the library.
+    /// Files dropped from the file manager onto the library window.
     Import(Vec<String>),
+    /// An edit with a message after it.
     Edit(Edit),
+    /// An edit that shows a message only when it fails, for faders and settings.
+    EditQuiet(Edit),
     Toast(String),
     /// Copy library items.
     CopyItems(Vec<u64>),
-    /// Copy timeline rows or playlist items by title. With `cut`, a paste removes `rows`.
+    /// Copy timeline rows or playlist items by title. With `cut`, a paste removes the source.
     CopyTitles {
         titles: Vec<(String, Duration)>,
-        rows: Vec<u64>,
-        cut: bool,
+        cut: Option<CutSource>,
     },
     Paste(PasteTo),
-    /// Insert copies of these titles after the row `after`.
+    /// Insert copies of these titles at `after`.
     Duplicate {
         titles: Vec<(String, Duration)>,
         after: Place,
@@ -57,16 +61,65 @@ pub(crate) enum Action {
     },
     Rename(String),
     UseAsMain(String),
+    /// Make a playlist from a folder of the library, and maybe make it main.
     FolderPlaylist {
         path: String,
-        files: Vec<String>,
         main: bool,
     },
-    FolderFiles {
-        name: String,
-        files: Vec<String>,
-    },
-    RemoveFolder(String),
+}
+
+/// The message after a successful edit that changed `n` items.
+fn describe(edit: &Edit, n: usize) -> String {
+    let what = match edit {
+        Edit::Insert { .. } => format!("added {n} items"),
+        Edit::Remove(_) => format!("removed {n} rows"),
+        Edit::Move { .. } => format!("moved {n} rows"),
+        Edit::ToggleLock(_) => format!("changed the lock of {n} rows"),
+        Edit::RenamePlaylist { from, to } => format!("renamed {from} to {to}"),
+        Edit::DuplicatePlaylist(name) => format!("made a copy of {name}"),
+        Edit::DeletePlaylist(name) => format!("deleted {name}"),
+        Edit::RemovePlaylistItem { playlist, .. } => format!("removed {n} items from {playlist}"),
+        Edit::MovePlaylistItem { .. } => format!("moved {n} items"),
+        Edit::SetMeta(_) => format!("changed the tags of {n} items; tags are not written to files"),
+        Edit::Deck { deck, command } => {
+            let name = ['A', 'B', 'C', 'D'].get(*deck).copied().unwrap_or('?');
+            match command {
+                DeckCommand::PlayPause => {
+                    format!("deck {name} paused or plays again here only; the timeline keeps time")
+                }
+                DeckCommand::Fade(s) => {
+                    format!("deck {name} fades out over {s:.1} s, then the next item starts")
+                }
+                DeckCommand::Skip => format!("deck {name} skipped to the next item"),
+            }
+        }
+        Edit::AssignCart {
+            cart,
+            item: Some(_),
+        } => format!("assigned cart {}", cart + 1),
+        Edit::AssignCart { cart, item: None } => format!("cleared cart {}", cart + 1),
+        Edit::SetTiming { .. } => "changed the timing; the scheduler is not connected".to_owned(),
+        Edit::SetPlaylistEnabled { playlist, enabled } => {
+            let state = if *enabled { "on" } else { "off" };
+            format!("{playlist} is {state}; the scheduler is not connected")
+        }
+        Edit::SetWeight { weight, .. } => format!("set the weight to ×{weight}"),
+        Edit::SetStrip { strip, .. } => format!("changed strip {strip}"),
+        Edit::SetIcecast(ice) => format!(
+            "saved the mount {}:{}{} · Icecast stays not connected",
+            ice.host, ice.port, ice.mount
+        ),
+        Edit::SetDevice { device, .. } => format!("picked {device}"),
+        Edit::AddCartPage { name } => format!("added the page {name}"),
+        Edit::RenameCartPage { name, .. } => format!("renamed the page to {name}"),
+        Edit::RemoveCartPage { .. } => "removed the page".to_owned(),
+        Edit::SetCart { cart, .. } => format!("changed cart {}", cart + 1),
+        Edit::AddFolder { path } => format!("read {n} audio files from {path}"),
+        Edit::RemoveFolder { path } => format!("removed {path} from the Library"),
+        Edit::Rescan { folder } => format!("read {n} audio files from {folder}"),
+        Edit::SetPartSetting { part, key, .. } => format!("changed {part} {key}"),
+    };
+    format!("preview — {what} (not saved)")
 }
 
 impl RadioApp {
@@ -81,57 +134,64 @@ impl RadioApp {
         self.refresh(true);
     }
 
+    /// Run an edit. A loud edit shows its message; a quiet edit shows only an error.
+    pub(super) fn run_edit(&mut self, ctx: &egui::Context, edit: Edit, loud: bool) {
+        match self.source.edit(edit.clone()) {
+            Ok(n) if loud => self.toast(ctx, describe(&edit, n)),
+            Ok(_) => {}
+            Err(e) => self.toast(ctx, e),
+        }
+    }
+
     pub(super) fn act(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::Drop { item, target } => {
-                let title = self
-                    .view
-                    .library
-                    .iter()
-                    .find(|l| l.id == item)
-                    .map_or_else(|| "item".to_owned(), |l| l.title.clone());
                 let place = match &target {
                     DropTarget::Main { .. } => self.view.main_playlist.clone(),
                     DropTarget::Playlist(name) => name.clone(),
                     DropTarget::Cart(i) => format!("cart {}", i + 1),
                 };
-                let text = if self.source.drop_item(item, target) {
-                    format!("preview — added {title} to {place} (not saved)")
-                } else {
-                    format!("preview — {title} does not fit in {place}")
+                let text = match self.source.drop_item(item, target) {
+                    Ok(n) => format!("preview — added {n} items to {place} (not saved)"),
+                    Err(e) => e,
                 };
                 self.toast(ctx, text);
             }
             Action::Import(paths) => {
-                let n = paths.len();
-                self.source.import_files(paths, "Unsorted");
-                self.toast(
-                    ctx,
-                    format!("preview — added {n} files to Unsorted (not saved)"),
-                );
+                let text = match self.source.import_files(paths, "Unsorted") {
+                    Ok(i) => format!(
+                        "preview — added {} files to Unsorted (not saved){}",
+                        i.ids.len(),
+                        drops::skipped_note(i.skipped)
+                    ),
+                    Err(e) => e,
+                };
+                self.toast(ctx, text);
             }
-            Action::Edit(edit) => {
-                let result = self.source.edit(edit);
-                self.report(ctx, result);
-            }
+            Action::Edit(edit) => self.run_edit(ctx, edit, true),
+            Action::EditQuiet(edit) => self.run_edit(ctx, edit, false),
             Action::Toast(text) => self.toast(ctx, text),
             Action::CopyItems(items) => {
                 let n = items.len();
                 self.clip = Clipboard {
                     items,
                     cut: false,
-                    rows: Vec::new(),
+                    source: None,
                 };
                 self.toast(ctx, format!("copied {n} items"));
             }
-            Action::CopyTitles { titles, rows, cut } => {
+            Action::CopyTitles { titles, cut } => {
                 let items: Vec<u64> = titles
                     .iter()
                     .filter_map(|(t, l)| self.source.library_ref(t, *l))
                     .collect();
                 let n = items.len();
-                self.clip = Clipboard { items, cut, rows };
-                let verb = if cut { "cut" } else { "copied" };
+                let verb = if cut.is_some() { "cut" } else { "copied" };
+                self.clip = Clipboard {
+                    items,
+                    cut: cut.is_some(),
+                    source: cut,
+                };
                 self.toast(ctx, format!("{verb} {n} items"));
             }
             Action::Paste(to) => self.paste(ctx, to),
@@ -140,8 +200,11 @@ impl RadioApp {
                     .iter()
                     .filter_map(|(t, l)| self.source.library_ref(t, *l))
                     .collect();
-                let result = self.insert_items(&items, after);
-                self.report(ctx, result);
+                let text = match self.insert_items(&items, after) {
+                    Ok(n) => format!("preview — added {n} copies (not saved)"),
+                    Err(e) => e,
+                };
+                self.toast(ctx, text);
             }
             Action::OpenRules(name) => {
                 let tab = if self.view.main.name == name {
@@ -176,41 +239,35 @@ impl RadioApp {
             Action::Confirm { text, then } => self.confirm = Some((text, *then)),
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
             Action::UseAsMain(name) => {
-                let text = if self.source.use_as_main(&name) {
-                    format!("preview — {name} is the main playlist now (not saved)")
-                } else {
-                    format!("preview — {name} has no items to play")
+                let text = match self.source.use_as_main(&name) {
+                    Ok(()) => format!("preview — {name} is the main playlist now (not saved)"),
+                    Err(e) => e,
                 };
                 self.toast(ctx, text);
             }
-            Action::FolderPlaylist { path, files, main } => {
-                let n = files.len();
+            Action::FolderPlaylist { path, main } => {
                 let folder = FolderSource {
                     path,
                     recursive: false,
                     watch: false,
                 };
-                match self.source.playlist_from_folder(folder, files) {
-                    Some(name) if main => self.act(ctx, Action::UseAsMain(name)),
-                    Some(name) => self.toast(
-                        ctx,
-                        format!("preview — made playlist {name} from {n} files (not saved)"),
-                    ),
-                    None => self.toast(
-                        ctx,
-                        "preview — this source cannot make playlists".to_owned(),
-                    ),
+                match self.source.playlist_from_folder(folder) {
+                    Ok(name) if main => self.act(ctx, Action::UseAsMain(name)),
+                    Ok(name) => {
+                        self.refresh(true);
+                        let n = self
+                            .view
+                            .tabs
+                            .iter()
+                            .find(|t| t.name == name)
+                            .map_or(0, |t| t.items.len());
+                        self.toast(
+                            ctx,
+                            format!("preview — made playlist {name} from {n} files (not saved)"),
+                        );
+                    }
+                    Err(e) => self.toast(ctx, e),
                 }
-            }
-            Action::FolderFiles { name, files } => {
-                self.source.import_files(files, &name);
-            }
-            Action::RemoveFolder(path) => {
-                self.library.remove_folder(&path);
-                self.toast(
-                    ctx,
-                    format!("preview — removed {path} from the Library (not saved)"),
-                );
             }
         }
     }

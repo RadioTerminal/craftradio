@@ -44,6 +44,17 @@ impl ToolWindow {
         }
     }
 
+    /// The smallest size at which the window content still fits.
+    fn min_size(self) -> [f32; 2] {
+        match self {
+            Self::Cartwall => [size::CARTWALL_MIN_W, size::CARTWALL_MIN_H],
+            Self::Mixer => [size::MIXER_MIN_W, size::MIXER_MIN_H],
+            Self::Clock => [size::CLOCK_MIN_W, size::CLOCK_MIN_H],
+            Self::History => [size::HISTORY_MIN_W, size::HISTORY_MIN_H],
+            Self::Library => [size::LIBRARY_MIN_W, size::LIBRARY_MIN_H],
+        }
+    }
+
     fn index(self) -> usize {
         self as usize
     }
@@ -96,7 +107,7 @@ pub(crate) fn show(
     let builder = ViewportBuilder::default()
         .with_title(w.title())
         .with_inner_size(w.size())
-        .with_min_inner_size([size::CARTWALL_W, size::CARTWALL_H]);
+        .with_min_inner_size(w.min_size());
     let closed = ctx.show_viewport_immediate(
         ViewportId::from_hash_of(("tool_window", w.title())),
         builder,

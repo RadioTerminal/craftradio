@@ -4,29 +4,50 @@
 
 mod data;
 mod decks;
+mod edit;
+mod folders;
 mod source;
+mod stream;
 mod tabs;
 mod timeline;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, ToSpan, Zoned};
 
 use crate::context_menu::NEEDS_ENGINE;
-use crate::folders;
-use crate::meta;
 use crate::rules_script;
 use crate::view::{
-    Constraint, ConstraintKind, DeckCommand, DeckState, DeckView, DropTarget, Edit, FitView,
-    FolderSource, ItemMeta, LibraryItem, MetaTarget, MeterView, MoveTo, Origin, Pick, Place,
-    Placement, PlaylistTab, PublishMode, Row, RuleView, StationView, Trigger, ViewSource,
+    CartChange, CartSlot, CartwallView, Constraint, ConstraintKind, DeckCommand, DeckState,
+    DeckView, DeviceRole, DeviceRoles, DropTarget, Edit, FitView, FolderSource, FolderView,
+    IcecastView, Imported, ItemMeta, LibraryItem, MetaTarget, MeterView, MoveTo, Origin,
+    OutputStatus, Pick, Place, Placement, PlaylistTab, PublishMode, Route, Row, RuleView, Settings,
+    StationView, Status, StreamFormat, StripChange, Timing, Trigger, ViewSource,
 };
 
 use data::*;
 use decks::*;
+use folders::{Limits, Scan};
+use stream::from_title;
 use tabs::*;
 use timeline::*;
+
+/// The state of one mixer strip.
+#[derive(Clone, Copy, Debug, Default)]
+struct Strip {
+    gain_db: f32,
+    mute: bool,
+    pfl: bool,
+    route: Route,
+}
+
+/// A folder in the library and the result of its last scan.
+struct Folder {
+    path: String,
+    scan: Scan,
+}
 
 /// The mock source. It builds about six hours of rows from the top of the current hour.
 pub struct MockSource {
@@ -37,6 +58,7 @@ pub struct MockSource {
     main: PlaylistTab,
     library: Vec<LibraryItem>,
     carts: Vec<String>,
+    cartwall: CartwallView,
     /// Edits to the timeline, in order. The mock applies them to each new snapshot.
     ops: Vec<Op>,
     next_manual: u64,
@@ -44,12 +66,22 @@ pub struct MockSource {
     main_tracks: Option<Vec<(String, Duration)>>,
     last_top: Option<Zoned>,
     last_now: Timestamp,
+    /// History and timeline of the last snapshot, in time order.
+    last_all: Vec<Row>,
     /// Tags that a person changed, by row id.
-    row_meta: std::collections::HashMap<u64, ItemMeta>,
+    row_meta: HashMap<u64, ItemMeta>,
+    /// Timings that a person set, by row id.
+    row_timing: HashMap<u64, Timing>,
     /// Deck A stopped at this instant.
     paused_at: Option<Timestamp>,
     /// Deck A fades out from this instant over this many seconds.
     fade: Option<(Timestamp, f32)>,
+    strips: HashMap<String, Strip>,
+    icecast: IcecastView,
+    device_roles: DeviceRoles,
+    folders: Vec<Folder>,
+    limits: Limits,
+    settings: Settings,
 }
 
 impl MockSource {
@@ -88,7 +120,7 @@ impl MockSource {
             library.push(LibraryItem {
                 id: 0,
                 path: format!("{folder}/{file}.wav"),
-                meta: meta::from_title(&title, publish_for(category)),
+                meta: from_title(&title, publish_for(category)),
                 title,
                 artist: None,
                 len,
@@ -108,6 +140,8 @@ impl MockSource {
         for (i, item) in library.iter_mut().enumerate() {
             item.id = i as u64 + 1;
         }
+        let carts: Vec<String> = CARTS.iter().map(|c| (*c).to_owned()).collect();
+        let pages = carts.len().div_ceil(CARTS_PER_PAGE);
         Self {
             tz,
             tracks,
@@ -115,15 +149,40 @@ impl MockSource {
             tabs: tabs(),
             main: main_tab(),
             library,
-            carts: CARTS.iter().map(|c| (*c).to_owned()).collect(),
+            cartwall: CartwallView {
+                pages: (1..=pages).map(|n| format!("Page {n}")).collect(),
+                per_page: CARTS_PER_PAGE,
+                slots: vec![DEFAULT_SLOT; carts.len()],
+            },
+            carts,
             ops: Vec::new(),
             next_manual: MANUAL_ID,
             main_tracks: None,
             last_top: None,
             last_now: Timestamp::UNIX_EPOCH,
-            row_meta: std::collections::HashMap::new(),
+            last_all: Vec::new(),
+            row_meta: HashMap::new(),
+            row_timing: HashMap::new(),
             paused_at: None,
             fade: None,
+            strips: HashMap::new(),
+            icecast: IcecastView {
+                host: "stream.example.org".to_owned(),
+                port: ICECAST_PORT,
+                mount: "/live".to_owned(),
+                user: "source".to_owned(),
+                password: String::new(),
+                format: StreamFormat::Opus,
+                kbps: ICECAST_KBPS,
+            },
+            device_roles: DeviceRoles {
+                out: DEVICES[0].to_owned(),
+                pfl: DEVICES[3].to_owned(),
+                input: DEVICES[1].to_owned(),
+            },
+            folders: Vec::new(),
+            limits: Limits::DEFAULT,
+            settings: Settings::new(),
         }
     }
 
@@ -148,6 +207,74 @@ impl MockSource {
             .map(|k| format!("{base} {k}"))
             .find(|n| !taken(n))
             .unwrap_or_else(|| base.to_owned())
+    }
+
+    fn next_library_id(&self) -> u64 {
+        self.library.iter().map(|l| l.id).max().unwrap_or(0) + 1
+    }
+
+    /// Add audio files to the library under `category`. It returns the ids of the new items.
+    fn add_library_files(&mut self, files: &[String], category: &str) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for path in files {
+            if let Some(found) = self.library.iter().find(|l| l.path == *path) {
+                ids.push(found.id);
+                continue;
+            }
+            let name = folders::stem_of(path).to_owned();
+            let id = self.next_library_id();
+            self.library.push(LibraryItem {
+                id,
+                meta: from_title(&name, PublishMode::FromTags),
+                title: name,
+                artist: None,
+                len: Duration::ZERO,
+                category: category.to_owned(),
+                path: path.clone(),
+            });
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// The folders of the library, for the snapshot.
+    fn folder_views(&self) -> Vec<FolderView> {
+        self.folders
+            .iter()
+            .map(|f| FolderView {
+                path: f.path.clone(),
+                files: self
+                    .library
+                    .iter()
+                    .filter(|l| f.scan.files.contains(&l.path))
+                    .cloned()
+                    .collect(),
+                truncated: f.scan.truncated,
+                errors: f.scan.errors.clone(),
+            })
+            .collect()
+    }
+
+    /// Scan a folder and add its audio files to the library. It returns the number of files.
+    fn scan_folder(&mut self, path: &str) -> usize {
+        let scan = folders::scan(std::path::Path::new(path), false, self.limits);
+        let name = folders::name_of(path).to_owned();
+        let files = scan.files.clone();
+        self.add_library_files(&files, &name);
+        let n = files.len();
+        match self.folders.iter_mut().find(|f| f.path == path) {
+            Some(f) => f.scan = scan,
+            None => self.folders.push(Folder {
+                path: path.to_owned(),
+                scan,
+            }),
+        }
+        n
+    }
+
+    /// Read a part setting as an unsigned number.
+    fn setting_u64(&self, part: &str, key: &str) -> Option<u64> {
+        self.settings.get(part)?.get(key)?.as_u64()
     }
 }
 
@@ -179,5 +306,62 @@ mod tests {
                 row.title
             );
         }
+    }
+
+    #[test]
+    fn a_scan_stops_at_its_limit_and_keeps_the_first_files_in_name_order() {
+        let dir = std::env::temp_dir().join(format!("radio-scan-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        for name in ["e.mp3", "c.mp3", "a.mp3", "d.mp3", "b.mp3", "notes.txt"] {
+            std::fs::write(dir.join(name), b"").expect("temp file");
+        }
+        let limits = Limits {
+            max_files: 3,
+            ..Limits::DEFAULT
+        };
+        let scan = folders::scan(&dir, false, limits);
+        let names: Vec<&str> = scan.files.iter().map(|f| folders::name_of(f)).collect();
+        assert!(
+            scan.truncated,
+            "a limit that the folder passes marks the scan"
+        );
+        assert_eq!(
+            names,
+            ["a.mp3", "b.mp3", "c.mp3"],
+            "the first files by name stay"
+        );
+        let all = folders::scan(&dir, false, Limits::DEFAULT);
+        assert!(!all.truncated);
+        assert_eq!(all.files.len(), 5, "only audio files count");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_custom_stream_title_fills_its_placeholders() {
+        let meta = ItemMeta {
+            title: "Lanterns of Kelmora".to_owned(),
+            artist: "Mira Solenne".to_owned(),
+            year: "2024".to_owned(),
+            publish: PublishMode::Custom,
+            custom: "{artist} – {title} ({year}) on air".to_owned(),
+            ..ItemMeta::default()
+        };
+        let text = stream::title_for(&meta, "before", "Station");
+        assert_eq!(text, "Mira Solenne – Lanterns of Kelmora (2024) on air");
+        assert!(
+            !text.contains('{'),
+            "no placeholder stays in the stream title"
+        );
+    }
+
+    #[test]
+    fn a_value_with_a_placeholder_is_not_filled_again() {
+        let meta = ItemMeta {
+            title: "Real Title".to_owned(),
+            artist: "The {title} Band".to_owned(),
+            ..ItemMeta::default()
+        };
+        let text = stream::render("{artist} – {title}", &meta);
+        assert_eq!(text, "The {title} Band – Real Title");
     }
 }

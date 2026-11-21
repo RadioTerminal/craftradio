@@ -48,7 +48,8 @@ impl MockSource {
                             fixed: None,
                             origin: Origin::Manual,
                             locked: false,
-                            meta: meta::from_title(title, PublishMode::FromTags),
+                            meta: from_title(title, PublishMode::FromTags),
+                            timing: None,
                             ..base
                         },
                     );
@@ -91,7 +92,8 @@ impl MockSource {
                             let mut filler = rows[i].clone();
                             filler.id = id.wrapping_add(1) | MANUAL_ID;
                             filler.title.clone_from(title);
-                            filler.meta = meta::from_title(title, PublishMode::FromTags);
+                            filler.meta = from_title(title, PublishMode::FromTags);
+                            filler.timing = None;
                             filler.len = Duration::ZERO;
                             filler.origin = Origin::Main;
                             filler.is_main = true;
@@ -119,7 +121,7 @@ impl MockSource {
     }
 
     /// Keep `op` when the rows still fit with it.
-    pub(super) fn try_op(&mut self, op: Op, done: String) -> Result<String, String> {
+    pub(super) fn try_op(&mut self, op: Op) -> Result<usize, String> {
         let Some(top) = self.last_top.clone() else {
             return Err("preview — no timeline yet".to_owned());
         };
@@ -128,7 +130,7 @@ impl MockSource {
         ops.push(op);
         if self.apply_ops(&mut rows, &ops) {
             self.ops = ops;
-            Ok(done)
+            Ok(1)
         } else {
             Err("preview — that does not fit before the next fixed item".to_owned())
         }
@@ -179,7 +181,8 @@ impl MockSource {
                 fixed: item.fixed,
                 origin: if main { Origin::Main } else { Origin::Rule },
                 locked: false,
-                meta: meta::from_title(&item.title, publish_for(item.playlist)),
+                meta: from_title(&item.title, publish_for(item.playlist)),
+                timing: None,
                 title: item.title,
             });
         };

@@ -72,6 +72,9 @@ pub mod size {
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
     pub const CLOCK_W: f32 = 196.0;
+    /// The range of a deck fade time, in seconds.
+    pub const FADE_MIN_S: f32 = 0.5;
+    pub const FADE_MAX_S: f32 = 10.0;
 
     /// The on-air marker at the left edge of a row.
     pub const ON_AIR_BAR: f32 = 3.0;
@@ -97,6 +100,17 @@ pub mod size {
     pub const CLOCK_WIN_H: f32 = 520.0;
     pub const HISTORY_W: f32 = 820.0;
     pub const HISTORY_H: f32 = 540.0;
+    /// The smallest size of each tool window.
+    pub const CARTWALL_MIN_W: f32 = 560.0;
+    pub const CARTWALL_MIN_H: f32 = 260.0;
+    pub const MIXER_MIN_W: f32 = 420.0;
+    pub const MIXER_MIN_H: f32 = 380.0;
+    pub const CLOCK_MIN_W: f32 = 240.0;
+    pub const CLOCK_MIN_H: f32 = 240.0;
+    pub const HISTORY_MIN_W: f32 = 520.0;
+    pub const HISTORY_MIN_H: f32 = 300.0;
+    pub const LIBRARY_MIN_W: f32 = 640.0;
+    pub const LIBRARY_MIN_H: f32 = 320.0;
 
     /// Library window.
     pub const LIBRARY_W: f32 = 900.0;
@@ -132,6 +146,11 @@ pub mod size {
     pub const CLOCK_RING_SHARE: f32 = 0.62;
     pub const CLOCK_DIGITS_PER_RING: f32 = 0.16;
     pub const CLOCK_TICK_R: f32 = 3.0;
+    /// Every fifth tick of the ring is bigger, by this factor.
+    pub const CLOCK_MAJOR_EVERY: i8 = 5;
+    pub const CLOCK_MAJOR_TICK: f32 = 1.5;
+    /// The date text size as a part of the digit size.
+    pub const CLOCK_DATE_PER_DIGITS: f32 = 0.3;
     pub const CLOCK_LINE_PER_RING: f32 = 0.06;
 
     /// The rules editor window.

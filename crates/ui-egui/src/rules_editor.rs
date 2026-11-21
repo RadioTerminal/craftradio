@@ -7,7 +7,6 @@
 use egui::{Align, ComboBox, DragValue, Layout, RichText, Stroke, TextEdit};
 
 use crate::app::{FileTarget, Linked, mmss};
-use crate::folders;
 use crate::rules_script;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{Constraint, ConstraintKind, Pick, Placement, PlaylistTab, RuleView, Trigger};
@@ -15,6 +14,8 @@ use crate::view::{Constraint, ConstraintKind, Pick, Placement, PlaylistTab, Rule
 const NOT_APPLIED: &str = "preview — rules are not applied to the scheduler yet";
 const SCRIPT_NOTE: &str = "Script edits take effect when the script engine lands. \
 Visual view shows the last generated rules.";
+/// The largest fit tolerance of a fixed rule, in seconds.
+const MAX_TOLERANCE_S: f32 = 10.0;
 const WATCH_NOTE: &str = "watching starts with the library engine";
 const BY_HAND: &str = "edited by hand — visual editing would overwrite it";
 
@@ -46,10 +47,11 @@ impl Editor {
     }
 
     /// Add dropped files to the working copy. Their length is not known yet.
-    pub fn add_files(&mut self, paths: &[String]) {
-        let items = paths
-            .iter()
-            .map(|p| (folders::stem_of(p).to_owned(), std::time::Duration::ZERO));
+    /// Add items to the working copy. The source has read them already.
+    pub fn add_items(&mut self, items: Vec<(String, std::time::Duration)>) {
+        self.draft
+            .weights
+            .extend(std::iter::repeat_n(1, items.len()));
         self.draft.items.extend(items);
         self.mode = Mode::Items;
     }
@@ -270,7 +272,7 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
             });
         if rule.place.is_fixed() {
             let tol = DragValue::new(&mut rule.tolerance_s)
-                .range(0.0..=10.0)
+                .range(0.0..=MAX_TOLERANCE_S)
                 .speed(0.1)
                 .prefix("± ")
                 .suffix(" s");
@@ -381,6 +383,9 @@ fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, t: &Tokens
             });
         if let Some(i) = remove {
             tab.items.remove(i);
+            if i < tab.weights.len() {
+                tab.weights.remove(i);
+            }
         }
         let hint = "Drop files or a folder from the file manager here to add them";
         caption(ui, hint, t);

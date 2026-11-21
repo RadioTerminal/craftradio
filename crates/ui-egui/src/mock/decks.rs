@@ -14,14 +14,14 @@ impl MockSource {
         };
         let op = Op::Skip { id: r.id, at };
         self.paused_at = None;
-        self.try_op(op, String::new()).is_ok()
+        self.try_op(op).is_ok()
     }
 
     pub(super) fn deck_command(
         &mut self,
         deck: usize,
         command: DeckCommand,
-    ) -> Result<String, String> {
+    ) -> Result<usize, String> {
         let name = ['A', 'B', 'C', 'D'].get(deck).copied().unwrap_or('?');
         if deck != 0 {
             return Err(format!(
@@ -31,23 +31,19 @@ impl MockSource {
         let now = self.last_now;
         match command {
             DeckCommand::PlayPause => {
-                if self.paused_at.take().is_some() {
-                    Ok("preview — deck A plays again; the timeline kept time".to_owned())
-                } else {
+                if self.paused_at.take().is_none() {
                     self.paused_at = Some(now);
-                    Ok("preview — deck A paused here only; the timeline keeps time".to_owned())
                 }
+                Ok(1)
             }
             DeckCommand::Fade(secs) => {
                 self.fade = Some((now, secs));
-                Ok(format!(
-                    "preview — deck A fades out over {secs:.1} s, then the next item starts"
-                ))
+                Ok(1)
             }
             DeckCommand::Skip => {
                 self.fade = None;
                 if self.skip_on_air(now) {
-                    Ok("preview — skipped to the next item (not saved)".to_owned())
+                    Ok(1)
                 } else {
                     Err("preview — nothing to skip".to_owned())
                 }
@@ -81,7 +77,11 @@ pub(super) fn deck(
 }
 
 /// Simulated meter levels. Only the playing deck and the output move.
-pub(super) fn meters(now: Timestamp, decks: &[DeckView; 4]) -> Vec<MeterView> {
+pub(super) fn meters(
+    now: Timestamp,
+    decks: &[DeckView; 4],
+    strips: &HashMap<String, Strip>,
+) -> Vec<MeterView> {
     let t = now.as_millisecond() as f64 / 1000.0;
     let wave = |ch: f64| {
         let l = -14.0 + 5.0 * (t * 1.3 + ch * 0.7).sin() + 3.0 * (t * 3.1 + ch).sin();
@@ -93,6 +93,9 @@ pub(super) fn meters(now: Timestamp, decks: &[DeckView; 4]) -> Vec<MeterView> {
         level_db: [SILENCE_DB; 2],
         peak_db: [SILENCE_DB; 2],
         gain_db: 0.0,
+        mute: false,
+        pfl: false,
+        route: Route::Out,
     };
     let live = |label: String, offset: f64| {
         let (l0, p0) = wave(offset);
@@ -102,13 +105,16 @@ pub(super) fn meters(now: Timestamp, decks: &[DeckView; 4]) -> Vec<MeterView> {
             level_db: [l0, l1],
             peak_db: [p0, p1],
             gain_db: 0.0,
+            mute: false,
+            pfl: false,
+            route: Route::Out,
         }
     };
     let mut out: Vec<MeterView> = decks
         .iter()
         .map(|d| {
             let label = d.label.to_string();
-            if d.state == DeckState::Playing {
+            if matches!(d.state, DeckState::Playing | DeckState::Fading) {
                 live(label, 0.0)
             } else {
                 silent(label)
@@ -123,5 +129,16 @@ pub(super) fn meters(now: Timestamp, decks: &[DeckView; 4]) -> Vec<MeterView> {
     } else {
         silent("Out".to_owned())
     });
+    for m in &mut out {
+        let st = strips.get(&m.label).copied().unwrap_or_default();
+        m.gain_db = st.gain_db;
+        m.mute = st.mute;
+        m.pfl = st.pfl;
+        m.route = st.route;
+        if st.mute {
+            m.level_db = [SILENCE_DB; 2];
+            m.peak_db = [SILENCE_DB; 2];
+        }
+    }
     out
 }
