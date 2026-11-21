@@ -21,6 +21,15 @@ const LIBRARY_MATCHES: usize = 50;
 /// The default start is at least this far ahead.
 const MIN_LEAD_MINUTES: i64 = 1;
 const MAX_CHANNEL: u32 = 16;
+/// The memory key that says the dialog was open in the last frame.
+const OPEN: &str = "one_off_dialog_open";
+
+/// True when the dialog was open in the last frame. Then Escape closes the dialog and does
+/// not stop the carts. The call clears the mark.
+pub(crate) fn escape_claimed(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new(OPEN)))
+        .unwrap_or(false)
+}
 
 /// The kinds of source, in the order of the dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,6 +419,7 @@ pub(crate) fn show(
     let Some(d) = slot.as_mut() else {
         return;
     };
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(OPEN), true));
     let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let new = d.id == 0;
     let title = if new { "Add one-off" } else { "Edit one-off" };

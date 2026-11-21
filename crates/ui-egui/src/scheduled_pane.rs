@@ -349,12 +349,12 @@ fn fit_detail(r: &Row, fit: FitView) -> String {
 }
 
 /// The menu of a one-off row: edit it, remove it, or copy its time.
-fn one_off_menu(
+pub(crate) fn one_off_menu(
     ui: &mut egui::Ui,
     r: &Row,
     o: &OneOffView,
     view: &StationView,
-    link: &mut Linked,
+    link: &Linked,
     actions: &mut Vec<Action>,
 ) {
     if menu_item(ui, "Edit one-off…", None) {

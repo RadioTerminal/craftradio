@@ -233,3 +233,18 @@ fn a_one_off_time_in_the_past_keeps_the_dialog_open_with_the_reason() {
     );
     assert_eq!(one_off_rows(&h, "early"), 0);
 }
+
+#[test]
+fn escape_closes_the_one_off_dialog() {
+    let mut h = harness();
+    h.get_by_label("Add one-off").click();
+    h.run_steps(FRAMES);
+    h.get_by_label("Hard — cuts in at the time").focus();
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("Local time in").is_none(),
+        "Escape closes the dialog"
+    );
+}

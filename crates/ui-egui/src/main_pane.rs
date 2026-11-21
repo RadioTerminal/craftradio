@@ -183,7 +183,11 @@ pub(crate) fn show(
                 if resp.secondary_clicked() && !link.is_selected(r.id) {
                     link.click(Pane::Main, r.id, egui::Modifiers::NONE, order);
                 }
-                resp.context_menu(|ui| row_menu(ui, view, prep, r, link, actions, t));
+                // A one-off has the menu of Upcoming here too.
+                resp.context_menu(|ui| match &r.one_off {
+                    Some(o) => crate::scheduled_pane::one_off_menu(ui, r, o, view, link, actions),
+                    None => row_menu(ui, view, prep, r, link, actions, t),
+                });
                 // A library item or a file dropped on a row goes in after that row.
                 let over = files && pointer.is_some_and(|p| resp.rect.contains(p));
                 if over {
