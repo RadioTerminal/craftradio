@@ -15,7 +15,7 @@ use radio_audio::{
     AudioEvent, CHANNELS, Command as Cmd, CommandKind, DeckId, DeckState, LiveInput, LoadOptions,
     MeterReader, Mixer, MixerConfig, MixerHandle, SAMPLE_RATE, render_offline,
 };
-use radio_audio_device::{NullOutput, Output, SampleClock};
+use radio_audio_device::{NullOutput, SampleClock};
 use radio_engine::{Command, Engine, EngineEvent, LogEntry, LogHandle, LogStatus, RowId};
 use radio_model::{FixMode, Item, ItemId, Source};
 use radio_scheduler::{Entry, Origin, PlanInput, PlayHistory, Played, Timeline, plan};
@@ -51,18 +51,30 @@ fn same_occurrence(a: &Entry, b: &Entry) -> bool {
 
 /// The previous plan without what the fresh plan no longer has: fixed events and their
 /// fits, and the entries of rules that are gone.
-fn still_planned(prev: &Timeline, fresh: &Timeline) -> Timeline {
+fn still_planned(
+    prev: &Timeline,
+    old: Option<&radio_model::Station>,
+    new: &radio_model::Station,
+) -> Timeline {
     let mut kept = prev.clone();
-    kept.entries.retain(|e| match (&e.fixed, &e.origin) {
-        (Some(_), _) => fresh.entries.iter().any(|f| same_event(f, e)),
-        (None, Origin::Rule { .. }) => fresh.entries.iter().any(|f| f.origin == e.origin),
+    let unchanged = |e: &Entry| match e.origin {
+        Origin::Rule { playlist, rule } => old
+            .and_then(|s| rules_of(s, playlist))
+            .zip(rules_of(new, playlist))
+            .is_some_and(|(a, b)| a.get(rule) == b.get(rule) && b.get(rule).is_some()),
         _ => true,
+    };
+    kept.entries.retain(|e| {
+        unchanged(e)
+            && new
+                .playlists
+                .iter()
+                .any(|p| p.enabled && p.items.iter().any(|i| i.id == e.item))
     });
     kept.fits.retain(|fit| {
-        fresh
-            .fits
-            .iter()
-            .any(|f| f.playlist == fit.playlist && f.target == fit.target)
+        kept.entries.iter().any(|e| {
+            e.playlist == fit.playlist && e.fixed.as_ref().is_some_and(|f| f.target == fit.target)
+        })
     });
     kept
 }
@@ -247,7 +259,7 @@ enum Driver {
         _out: NullOutput,
     },
     Device {
-        _out: Output,
+        out: crate::device::Device,
     },
 }
 
@@ -297,27 +309,18 @@ fn open_output(
         }
         OutputChoice::Device { name } => {
             let source = Box::new(ProgramSource::new(mixer, tap_tx));
-            match Output::open(name.as_deref(), SAMPLE_RATE, source) {
-                Ok(out) if out.sample_rate() == SAMPLE_RATE => {
-                    let local = LocalOutput::Device {
-                        name: out.device_name().to_string(),
-                    };
+            match crate::device::Device::open(name.clone(), source) {
+                Ok((out, name, clock)) => {
+                    let local = LocalOutput::Device { name };
                     return Ok(OpenedOutput {
-                        clock: Some(out.clock()),
-                        driver: Driver::Device { _out: out },
+                        clock: Some(clock),
+                        driver: Driver::Device { out },
                         handle,
                         live,
                         local,
                         tap: tap_rx,
                         fallback,
                     });
-                }
-                Ok(out) => {
-                    fallback = Some(format!(
-                        "{} runs at {} Hz, not {SAMPLE_RATE} Hz",
-                        out.device_name(),
-                        out.sample_rate()
-                    ));
                 }
                 Err(e) => fallback = Some(e.to_string()),
             }
@@ -353,6 +356,7 @@ pub(crate) struct Core {
     pub(crate) cfg: PlayoutConfig,
     pub(crate) timeline: Timeline,
     planned: bool,
+    tick_overruns: u64,
     timeline_changed: bool,
     last_plan: Option<Timestamp>,
     pub(crate) dirty: bool,
@@ -399,6 +403,7 @@ pub(crate) struct Core {
     last_station: Option<radio_model::Station>,
     /// Hard events that an operator cancelled. Playout keeps them for a day.
     cancelled: Vec<Entry>,
+    pub(crate) aired_fixed: Vec<Entry>,
     /// Occurrences that a late edit moved a locked hard event to. The locked event airs at
     /// its old time instead, so these do not air. Kept until their target passes.
     superseded: Vec<Superseded>,
@@ -456,6 +461,7 @@ impl Core {
             state: Arc::new(engine.state().clone()),
             revision: 0,
             plans: 0,
+            tick_overruns: 0,
         };
         Ok(Core {
             engine,
@@ -487,6 +493,7 @@ impl Core {
             carts_dirty: true,
             state_dirty: false,
             plans: 0,
+            tick_overruns: 0,
             dead_air: DeadAir::default(),
             next_bed: 0,
             icecast,
@@ -502,6 +509,7 @@ impl Core {
             blocked: Vec::new(),
             last_station: None,
             cancelled: Vec::new(),
+            aired_fixed: Vec::new(),
             superseded: Vec::new(),
             planned_rules: Vec::new(),
             out_clock: opened.clock,
@@ -539,6 +547,64 @@ impl Core {
     }
 
     pub(crate) fn dispatch(&mut self, cmd: Command, reply: Reply) {
+        fn has_script(c: &Command) -> bool {
+            match c {
+                Command::PlaylistSetRulesScript { .. } => true,
+                Command::StationBatch { commands } | Command::StationSystem { commands } => {
+                    commands.iter().any(has_script)
+                }
+                _ => false,
+            }
+        }
+        if has_script(&cmd) {
+            let names = self
+                .engine
+                .state()
+                .station
+                .playlists
+                .iter()
+                .map(|p| (p.name.clone(), p.id))
+                .collect::<Vec<_>>();
+            self.work.run_slow(move || {
+                Done::Prepared(radio_engine::prepare_scripts(cmd, &names), reply)
+            });
+            return;
+        }
+        match cmd {
+            Command::HistoryList { since, limit } => {
+                let log = self.log.clone();
+                self.work.run_query(move || {
+                    let result = log
+                        .history(since, limit)
+                        .and_then(|rows| {
+                            serde_json::to_value(rows)
+                                .map_err(|e| radio_engine::EngineError::BadArgument(e.to_string()))
+                        })
+                        .map(|data| radio_engine::Outcome {
+                            data: Some(data),
+                            ..Default::default()
+                        });
+                    let _ = reply.send(result);
+                    Done::Query
+                });
+                return;
+            }
+            Command::HistoryExportCsv { since, until } => {
+                let log = self.log.clone();
+                self.work.run_query(move || {
+                    let result = log
+                        .export_csv(since, until)
+                        .map(|csv| radio_engine::Outcome {
+                            data: Some(serde_json::Value::String(csv)),
+                            ..Default::default()
+                        });
+                    let _ = reply.send(result);
+                    Done::Query
+                });
+                return;
+            }
+            _ => {}
+        }
         match self.engine.dispatch(cmd) {
             Ok(outcome) => {
                 let checks = self.drain_engine();
@@ -573,14 +639,40 @@ impl Core {
         checks
     }
 
+    fn output_event(&mut self, event: crate::device::State, now: Timestamp) {
+        match event {
+            crate::device::State::Lost(name) => {
+                self.local = LocalOutput::Lost { name: name.clone() };
+                self.alarms.raise(now, Alarm::DeviceLost { name });
+            }
+            crate::device::State::Running(name, clock) => {
+                self.local = LocalOutput::Device { name };
+                self.out_clock = Some(clock);
+                self.alarms
+                    .clear(now, |a| matches!(a, Alarm::DeviceLost { .. }));
+            }
+            crate::device::State::Paced(clock) => self.out_clock = Some(clock),
+        }
+    }
+
     /// One pass of the control loop.
     pub(crate) fn tick(&mut self) {
+        let tick_start = std::time::Instant::now();
         let now = self.clock.now();
+        let device_events: Vec<_> = match &self.driver {
+            Driver::Device { out } => out.events.try_iter().collect(),
+            _ => Vec::new(),
+        };
+        for event in device_events {
+            self.output_event(event, now);
+        }
+
         if let Some(c) = &self.out_clock {
             self.map.latency = c.latency();
         }
         if let Some(step) = self.map.observe(now, self.mixer.now())
             && self.ticks > 0
+            && !matches!(self.local, LocalOutput::Lost { .. })
         {
             let by_ms = i64::try_from(step.as_millis()).unwrap_or(i64::MAX);
             self.alarms.raise(now, Alarm::ClockStep { by_ms });
@@ -616,6 +708,10 @@ impl Core {
         self.stop_took_effect();
         self.sync_engine_decks();
         self.expire_ended(now);
+        if tick_start.elapsed() > self.cfg.command_lead / 2 {
+            self.tick_overruns += 1;
+            self.alarms.raise_once(now, Alarm::ControlOverrun);
+        }
         self.publish(now);
         self.heartbeat(now);
         self.save_state(now);
@@ -678,6 +774,22 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
+        if let Some(fixed) = &s.entry.fixed {
+            let by = since(fixed.target, wall);
+            if wall > fixed.target && by > fixed.tolerance {
+                self.alarms.raise(
+                    wall,
+                    Alarm::FixedLate {
+                        item: s.item.id,
+                        target: fixed.target,
+                        by,
+                    },
+                );
+            }
+        }
+        if s.entry.fixed.is_some() {
+            self.aired_fixed.push(s.entry.clone());
+        }
         let id = s.item.id;
         // A hard event keeps its target as its start, so later plans still know it.
         if !s.is_hard() {
@@ -855,21 +967,40 @@ impl Core {
         let edited = self.last_station.as_ref() != Some(&self.engine.state().station);
         // After a station edit, the previous plan keeps only the events and rules that the
         // station still has, so no stale fixed event survives. Its frozen windows stay.
-        let filtered = (self.planned && edited).then(|| {
-            let fresh = plan(&input, &opts, None);
-            still_planned(&self.timeline, &fresh)
-        });
+        let filtered = (self.planned && edited)
+            .then(|| still_planned(&self.timeline, self.last_station.as_ref(), &station));
         let prev = match &filtered {
             Some(f) => Some(f),
             None => self.planned.then_some(&self.timeline),
         };
         let mut tl = plan(&input, &opts, prev);
+        self.aired_fixed.retain(|e| {
+            e.fixed.as_ref().is_some_and(|f| {
+                now < f.target || since(f.target, now) < Duration::from_secs(86400)
+            })
+        });
+        let aired: Vec<_> = self
+            .aired_fixed
+            .iter()
+            .filter(|e| {
+                !self
+                    .slots
+                    .iter()
+                    .flatten()
+                    .any(|s| same_occurrence(&s.entry, e))
+            })
+            .map(|e| Superseded {
+                entry: e.clone(),
+                stand_in: e.clone(),
+            })
+            .collect();
+        drop_superseded(&mut tl, &aired);
         self.expire_superseded(now);
         drop_superseded(&mut tl, &self.superseded);
         let old = std::mem::replace(&mut self.timeline, tl);
         if edited {
             if self.planned {
-                self.warn_locked_hard(&station, &pinned, &old, now);
+                self.warn_locked_hard(&station, &old, now);
                 let superseded = std::mem::take(&mut self.superseded);
                 drop_superseded(&mut self.timeline, &superseded);
                 self.superseded = superseded;
@@ -1287,6 +1418,7 @@ impl Core {
             self.timeline_changed = false;
         }
         view.plans = self.plans;
+        view.tick_overruns = self.tick_overruns;
         if std::mem::take(&mut self.state_dirty) {
             view.state = Arc::new(self.engine.state().clone());
             view.revision += 1;
@@ -1333,6 +1465,13 @@ impl Core {
     pub(crate) fn take_done(&mut self, now: Timestamp) {
         while let Ok(done) = self.work.done_rx.try_recv() {
             match done {
+                Done::Query => {}
+                Done::Prepared(result, reply) => match result {
+                    Ok(cmd) => self.dispatch(cmd, reply),
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                    }
+                },
                 Done::Opened { tag, result } => self.on_opened(tag, result, now),
                 Done::Row { tag, result } => match result {
                     Ok(row) => {
@@ -1481,13 +1620,7 @@ impl Core {
     /// change moves or deletes. Such an event still airs, and the change applies after it:
     /// the occurrence it moved to does not air (see `superseded`). If the operator removed
     /// the event's item, the event is cancelled instead.
-    fn warn_locked_hard(
-        &mut self,
-        station: &radio_model::Station,
-        pinned: &[Entry],
-        old: &Timeline,
-        now: Timestamp,
-    ) {
+    fn warn_locked_hard(&mut self, station: &radio_model::Station, old: &Timeline, now: Timestamp) {
         let lock = add(now, HARD_LOCK);
         let in_window = |e: &Entry| e.start > now && e.start <= lock;
         let mut near: Vec<Entry> = self
@@ -1505,24 +1638,22 @@ impl Core {
         if near.is_empty() {
             return;
         }
-        // Plan once more without these events, to see if the station still has them.
-        let others: Vec<Entry> = pinned
-            .iter()
-            .filter(|p| !near.iter().any(|n| same_event(n, p)))
-            .cloned()
-            .collect();
-        let input = PlanInput {
-            station,
-            history: &self.history,
-            now,
-            horizon: self.cfg.horizon,
-            pinned: &others,
-        };
-        let mut opts = self.cfg.plan;
-        opts.resume_rotation = true;
-        let check = plan(&input, &opts, None);
+        let check = self.timeline.clone();
         for n in near {
-            if check.entries.iter().any(|e| same_event(e, &n)) {
+            let unchanged = match n.origin {
+                Origin::Rule { playlist, rule } => self
+                    .last_station
+                    .as_ref()
+                    .and_then(|s| rules_of(s, playlist))
+                    .zip(rules_of(station, playlist))
+                    .is_some_and(|(a, b)| a.get(rule) == b.get(rule) && b.get(rule).is_some()),
+                _ => true,
+            };
+            let present = station
+                .playlists
+                .iter()
+                .any(|p| p.enabled && p.items.iter().any(|i| i.id == n.item));
+            if unchanged && present {
                 continue;
             }
             // Removing the item is an operator cancel: `prune_hard` takes it off its deck.
@@ -1673,8 +1804,10 @@ impl Core {
             .flatten()
             .map(|s| s.entry.clone())
             .collect();
-        self.hard_seen
-            .retain(|h| !on_deck.iter().any(|e| same_event(e, h)));
+        self.hard_seen.retain(|h| {
+            !on_deck.iter().any(|e| same_event(e, h))
+                && !self.aired_fixed.iter().any(|e| same_occurrence(e, h))
+        });
         self.blocked.retain(|b| now < b.until);
         self.cancelled
             .retain(|c| since(c.start, now) < Duration::from_secs(24 * 3600));
@@ -1697,6 +1830,9 @@ impl Core {
             self.alarms.raise(now, alarm);
         }
         for entry in due {
+            if self.aired_fixed.iter().any(|e| same_occurrence(e, &entry)) {
+                continue;
+            }
             let Some(item) = self.items.get(&entry.item).cloned() else {
                 continue;
             };
@@ -1749,5 +1885,77 @@ impl Core {
         }
         self.dirty = true;
         true
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn lost_output_is_visible_until_recovery() {
+        let now: Timestamp = "2026-11-21T13:00:00Z".parse().unwrap();
+        let cfg = PlayoutConfig::new(
+            std::sync::Arc::new(crate::ManualClock::new(now)),
+            OutputChoice::Offline,
+        );
+        let mut core = Core::new(Engine::open_in_memory().unwrap(), cfg).unwrap();
+        core.output_event(crate::device::State::Lost("Test card".into()), now);
+        core.publish(now);
+        let view = core.view.lock().unwrap();
+        assert!(matches!(view.outputs.local, LocalOutput::Lost { .. }));
+        assert!(
+            view.alarms
+                .iter()
+                .any(|a| matches!(a.alarm, Alarm::DeviceLost { .. }) && a.cleared.is_none())
+        );
+        drop(view);
+        core.output_event(
+            crate::device::State::Running("Default card".into(), SampleClock::new()),
+            now,
+        );
+        assert!(matches!(core.local, LocalOutput::Device { .. }));
+        assert!(core.alarms.recent.iter().all(|a| a.cleared.is_some()));
+    }
+
+    #[test]
+    fn actual_fixed_start_checks_tolerance() {
+        for (delay, expected) in [(0, false), (2, true)] {
+            let now: Timestamp = "2026-11-21T13:00:00Z".parse().unwrap();
+            let cfg = PlayoutConfig::new(
+                std::sync::Arc::new(crate::ManualClock::new(now)),
+                OutputChoice::Offline,
+            );
+            let mut core = Core::new(Engine::open_in_memory().unwrap(), cfg).unwrap();
+            core.map.observe(now, 0);
+            let item = radio_testkit::track(10, "Signal", "Test artist", 1);
+            let entry = Entry {
+                playlist: radio_model::PlaylistId(1),
+                item: item.id,
+                start: now,
+                len: Duration::from_secs(1),
+                origin: Origin::Manual,
+                locked: true,
+                fixed: Some(radio_scheduler::Fixed {
+                    target: now,
+                    mode: FixMode::Hard,
+                    priority: 0,
+                    frozen: false,
+                    tolerance: Duration::from_secs(1),
+                }),
+                trim: Duration::ZERO,
+            };
+            let tag = core
+                .load(0, entry, item, DeckRole::Plan, Duration::ZERO)
+                .unwrap();
+            core.on_started(DeckId::A, delay * u64::from(SAMPLE_RATE), Some(tag));
+            assert_eq!(
+                core.alarms
+                    .recent
+                    .iter()
+                    .any(|a| matches!(a.alarm, Alarm::FixedLate { .. })),
+                expected
+            );
+        }
     }
 }

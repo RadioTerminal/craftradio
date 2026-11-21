@@ -568,8 +568,8 @@ impl Route {
     pub fn label(self) -> &'static str {
         match self {
             Self::Out => "Out",
-            Self::OutAndCue => "Out + cue",
-            Self::CueOnly => "Cue only",
+            Self::OutAndCue => "Out (cue unavailable)",
+            Self::CueOnly => "Cue only (no cue output)",
         }
     }
 }

@@ -109,6 +109,15 @@ pub enum Command {
         playlist: PlaylistId,
         script: String,
     },
+    /// A rules script evaluated away from the playout control thread.
+    #[serde(rename = "playlist.set_rules")]
+    PlaylistSetRules {
+        playlist: PlaylistId,
+        pick: radio_model::PickOrder,
+        rules: Vec<radio_model::Rule>,
+        constraints: Vec<radio_model::Constraint>,
+        script: String,
+    },
     #[serde(rename = "playlist.set_source")]
     PlaylistSetSource { playlist: PlaylistId, source: Value },
     #[serde(rename = "item.lock")]
@@ -272,6 +281,7 @@ impl Command {
             Self::PlaylistRemoveItems { .. } => "playlist.remove_items",
             Self::PlaylistClear { .. } => "playlist.clear",
             Self::PlaylistMoveItems { .. } => "playlist.move_items",
+            Self::PlaylistSetRules { .. } => "playlist.set_rules",
             Self::PlaylistSetRulesScript { .. } => "playlist.set_rules_script",
             Self::PlaylistSetSource { .. } => "playlist.set_source",
             Self::ItemLock { .. } => "item.lock",
@@ -331,6 +341,7 @@ impl Command {
             | Self::PlaylistRemoveItems { .. }
             | Self::PlaylistClear { .. }
             | Self::PlaylistMoveItems { .. }
+            | Self::PlaylistSetRules { .. }
             | Self::PlaylistSetRulesScript { .. }
             | Self::PlaylistSetSource { .. }
             | Self::ItemLock { .. }
@@ -500,6 +511,18 @@ pub fn registry() -> Vec<CommandSpec> {
             "Move items (locked) to a position",
             A,
             &[p, ("items", "array"), ("to", "integer")],
+        ),
+        spec(
+            "playlist.set_rules",
+            "Apply rules evaluated on a worker",
+            A,
+            &[
+                p,
+                ("pick", "object"),
+                ("rules", "array"),
+                ("constraints", "array"),
+                ("script", "string"),
+            ],
         ),
         spec(
             "playlist.set_rules_script",

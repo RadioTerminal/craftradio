@@ -19,6 +19,7 @@ pub struct NullOutput {
     stop: Arc<AtomicBool>,
     events_rx: Receiver<DeviceEvent>,
     thread: Option<JoinHandle<()>>,
+    source_rx: Receiver<Box<dyn AudioSource>>,
 }
 
 impl NullOutput {
@@ -34,6 +35,7 @@ impl NullOutput {
         let stop = Arc::new(AtomicBool::new(false));
         let (thread_clock, thread_stop) = (clock.clone(), stop.clone());
         let (events_tx, events_rx): (Sender<DeviceEvent>, _) = channel();
+        let (source_tx, source_rx) = channel();
         let thread = std::thread::Builder::new()
             .name("null-output".into())
             .spawn(move || {
@@ -68,6 +70,7 @@ impl NullOutput {
                     rendered += block_frames;
                     thread_clock.advance(block_frames as usize);
                 }
+                let _ = source_tx.send(source);
             })
             .map_err(|e| DeviceError::Stream(format!("null output thread: {e}")))?;
         Ok(NullOutput {
@@ -77,7 +80,19 @@ impl NullOutput {
             stop,
             events_rx,
             thread: Some(thread),
+            source_rx,
         })
+    }
+
+    /// Stop the timer and return the source for a replacement output.
+    pub fn into_source(mut self) -> Result<Box<dyn AudioSource>, DeviceError> {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.source_rx
+            .try_recv()
+            .map_err(|_| DeviceError::SourceLost)
     }
 
     /// The master audio clock: frames rendered so far.

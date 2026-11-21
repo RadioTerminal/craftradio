@@ -123,14 +123,6 @@ impl Store {
         }
     }
 
-    /// Run `f` on the writer thread and wait for its result.
-    pub(crate) fn call<R: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut Connection) -> Result<R, rusqlite::Error> + Send + 'static,
-    ) -> Result<R, EngineError> {
-        self.writer().ok_or_else(gone)?.call(f)
-    }
-
     /// A handle that sends jobs to the writer thread from any thread.
     pub(crate) fn writer(&self) -> Option<Writer> {
         self.tx.clone().map(|tx| Writer {

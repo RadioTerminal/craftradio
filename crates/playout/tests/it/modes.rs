@@ -769,3 +769,136 @@ fn playing_a_deck_ends_a_paused_item_on_air() {
         "the station plays on after song 2: {titles:?}"
     );
 }
+
+#[test]
+fn transport_waits_for_hard_target_and_manual_play_covers_it() {
+    for manual in [false, true] {
+        let mut engine = engine_with(vec![]);
+        engine
+            .dispatch(Command::ModeSet { mode: Mode::Assist })
+            .unwrap();
+        let item = file_item(
+            90,
+            "Signal",
+            &wav("fixed-transport", 0.5, Side::Right),
+            0.5,
+            0.5,
+            0.0,
+        );
+        add_playlist(&mut engine, "Signals", vec![item], &news_at("13:00:05"));
+        let (p, clock) = offline(engine, |_| {});
+        run(&p, &clock, 1.0);
+        let deck = p
+            .snapshot()
+            .decks
+            .iter()
+            .position(|d| d.item == Some(radio_model::ItemId(90)))
+            .unwrap() as u8;
+        if manual {
+            let _ = p
+                .send(Command::DeckLoad {
+                    deck,
+                    item: radio_model::ItemId(90),
+                })
+                .unwrap();
+        }
+        let _ = p
+            .send(Command::DeckPlay {
+                deck,
+                expect_item: Some(radio_model::ItemId(90)),
+                fade_in: Duration::ZERO,
+            })
+            .unwrap();
+        let _ = p.send(Command::PlayoutNext).unwrap();
+        let early = run(&p, &clock, 2.0);
+        assert_eq!(first_audible(&early, 1, 0).is_some(), manual);
+        let target = run(&p, &clock, 4.0);
+        assert_eq!(first_audible(&target, 1, 0).is_some(), !manual);
+        let rows = p.history(t0(), 20).unwrap();
+        assert_eq!(rows.iter().filter(|r| r.entry.title == "Signal").count(), 1);
+    }
+}
+
+#[test]
+fn cue_only_removes_strip_from_program_and_gain_edits_keep_it_off_air() {
+    let song = file_item(
+        91,
+        "Routing test",
+        &wav("cue-route", 10.0, Side::Left),
+        10.0,
+        10.0,
+        0.0,
+    );
+    let (p, clock) = offline(engine_with(vec![song]), |_| {});
+    assert!(first_audible(&run(&p, &clock, 0.5), 0, 0).is_some());
+    let deck = p
+        .snapshot()
+        .decks
+        .iter()
+        .position(|d| d.item == Some(radio_model::ItemId(91)))
+        .unwrap();
+    let strip = ["A", "B", "C", "D"][deck].to_owned();
+    for (route, gain_db) in [
+        (Some(radio_engine::Route::CueOnly), None),
+        (None, Some(3.0)),
+    ] {
+        let _ = p
+            .send(Command::MixerSetStrip {
+                strip: strip.clone(),
+                gain_db,
+                mute: None,
+                pfl: None,
+                route,
+            })
+            .unwrap();
+        let audio = run(&p, &clock, 0.2);
+        assert!(peak(&audio, 0, SR / 20, audio.len() / 2) < 0.01);
+    }
+    let _ = p
+        .send(Command::MixerSetStrip {
+            strip,
+            gain_db: None,
+            mute: None,
+            pfl: None,
+            route: Some(radio_engine::Route::Out),
+        })
+        .unwrap();
+    assert!(first_audible(&run(&p, &clock, 0.2), 0, 0).is_some());
+}
+
+#[test]
+fn slow_rules_script_does_not_block_scheduled_play() {
+    let mut engine = engine_with(vec![]);
+    let signal = file_item(
+        92,
+        "Worker signal",
+        &wav("worker-signal", 1.0, Side::Right),
+        1.0,
+        1.0,
+        0.0,
+    );
+    add_playlist(&mut engine, "Signals", vec![signal], &news_at("13:00:05"));
+    let (p, clock) = offline(engine, |_| {});
+    run(&p, &clock, 4.7);
+    // The script consumes its 200 ms execution budget. Play must still be sent at
+    // the 300 ms lead, on a control tick while this worker is busy.
+    let reply = p
+        .send(Command::PlaylistSetRulesScript {
+            playlist: radio_model::PlaylistId(1),
+            script: "while (true) {}".into(),
+        })
+        .unwrap();
+    let before = std::time::Instant::now();
+    let mut program = p.render(STEP).unwrap();
+    assert!(
+        before.elapsed() < Duration::from_millis(150),
+        "script stalled the control thread at the command lead"
+    );
+    clock.advance(Duration::from_millis(10));
+    program.extend(run(&p, &clock, 0.69));
+    let start = first_audible(&program, 1, 0).unwrap();
+    assert!(start.abs_diff(SR * 30 / 100) < SR / 100);
+    std::thread::sleep(Duration::from_millis(220));
+    run(&p, &clock, 0.01);
+    assert!(reply.recv_timeout(Duration::from_secs(1)).unwrap().is_err());
+}

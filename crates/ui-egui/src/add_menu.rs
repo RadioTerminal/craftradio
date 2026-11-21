@@ -122,17 +122,21 @@ pub(crate) fn items(
             tried: false,
         }));
     }
-    if menu_item(ui, "Add live input…", None) {
-        actions.push(Action::AddDialog(AddDialog::Live {
-            playlist: playlist.to_owned(),
-            at,
-            device: String::new(),
-            left: 1,
-            right: 2,
-            minutes: DEFAULT_PLANNED_MIN,
-            seconds: 0,
-        }));
-    }
+    ui.add_enabled_ui(false, |ui| {
+        if menu_item(ui, "Add live input…", None) {
+            actions.push(Action::AddDialog(AddDialog::Live {
+                playlist: playlist.to_owned(),
+                at,
+                device: String::new(),
+                left: 1,
+                right: 2,
+                minutes: DEFAULT_PLANNED_MIN,
+                seconds: 0,
+            }));
+        }
+    })
+    .response
+    .on_disabled_hover_text("Live input playback is not available in this build");
     if menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
     }

@@ -98,6 +98,26 @@ impl Output {
         self.start()
     }
 
+    /// Stop the stream and recover its source without blocking. A backend can return it
+    /// later; call again on the device worker until it is available.
+    pub fn take_source(&mut self) -> Option<Box<dyn AudioSource>> {
+        self.stream = None;
+        if self.parked.is_none() {
+            self.parked = self.give_back_rx.try_recv().ok();
+        }
+        self.parked.take()
+    }
+
+    /// Return a source after a software output has paced it during device loss.
+    pub fn park_source(&mut self, source: Box<dyn AudioSource>) {
+        self.parked = Some(source);
+    }
+
+    /// Select the original name or the system default for the next reopen attempt.
+    pub fn request_device(&mut self, name: Option<&str>) {
+        self.requested = name.map(str::to_owned);
+    }
+
     /// The master audio clock: frames rendered so far.
     pub fn clock(&self) -> SampleClock {
         self.clock.clone()

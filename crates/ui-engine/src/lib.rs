@@ -291,7 +291,11 @@ impl EngineSource {
             start: self.zoned(start),
             playlist: name,
             color,
-            title: display_title(item),
+            title: if matches!(item.source, Source::LiveInput { .. }) {
+                format!("{} · Live input unavailable", display_title(item))
+            } else {
+                display_title(item)
+            },
             len: item_len(item),
             is_main,
             fixed: None,
@@ -596,6 +600,7 @@ impl EngineSource {
     fn output(pv: &PlayoutView) -> OutputStatus {
         let local = match &pv.outputs.local {
             LocalOutput::Device { .. } => Status::Connected,
+            LocalOutput::Lost { name } => Status::Failed(format!("Output device lost: {name}")),
             LocalOutput::Null => Status::Failed("No sound card: nothing plays the sound".into()),
             LocalOutput::Offline => Status::Preview,
         };
@@ -632,7 +637,7 @@ impl EngineSource {
                     peak_db: m.peak_hold_db,
                     gain_db: self.strip_gain.get(label).copied().unwrap_or(st.gain_db),
                     mute: st.mute,
-                    pfl: st.pfl,
+                    pfl: false,
                     route: match st.route {
                         radio_engine::Route::Out => Route::Out,
                         radio_engine::Route::OutAndCue => Route::OutAndCue,

@@ -9,6 +9,7 @@ mod alarm;
 mod clock;
 mod core;
 mod deadair;
+mod device;
 mod ops;
 mod output;
 mod resume;

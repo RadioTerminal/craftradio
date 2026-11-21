@@ -1,8 +1,8 @@
 //! Worker threads for file I/O, so the control thread never waits on a disk. Workers
 //! post each result back on one channel, and the control thread takes the results on
-//! every tick. There are two lanes. The fast lane opens files, lists the fallback folder
-//! and decodes carts. The slow lane analyses files, so a long analysis never delays an
-//! open.
+//! every tick. The log query lane handles store reads. The fast lane opens files, lists
+//! the fallback folder and decodes carts. The slow lane analyses files and evaluates
+//! rules scripts, so this work never delays an open.
 
 use radio_audio::{Clip, Decoder};
 use radio_engine::RowId;
@@ -21,6 +21,11 @@ type Job = Box<dyn FnOnce() + Send>;
 
 /// A result from a worker thread or from the log writer.
 pub(crate) enum Done {
+    Query,
+    Prepared(
+        Result<radio_engine::Command, radio_engine::EngineError>,
+        crate::Reply,
+    ),
     /// A decoder for the load with this tag, or the reason it failed.
     Opened {
         tag: u64,
@@ -92,6 +97,7 @@ impl Drop for Lane {
 pub(crate) struct Workers {
     fast: Lane,
     slow: Lane,
+    queries: Lane,
     pub(crate) done_tx: Sender<Done>,
     pub(crate) done_rx: Receiver<Done>,
 }
@@ -102,6 +108,7 @@ impl Workers {
         Self {
             fast: Lane::new("io", FAST_WORKERS),
             slow: Lane::new("analyse", SLOW_WORKERS),
+            queries: Lane::new("queries", 1),
             done_tx,
             done_rx,
         }
@@ -117,6 +124,11 @@ impl Workers {
     /// Runs `f` on the fast lane (opens, listings, carts) and posts what it returns.
     pub(crate) fn run(&self, f: impl FnOnce() -> Done + Send + 'static) {
         self.fast.send(self.job(f));
+    }
+
+    /// Reads logs without holding up file opens or analysis.
+    pub(crate) fn run_query(&self, f: impl FnOnce() -> Done + Send + 'static) {
+        self.queries.send(self.job(f));
     }
 
     /// Runs `f` on the slow lane (analysis) and posts what it returns.

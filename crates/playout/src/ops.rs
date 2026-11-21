@@ -235,7 +235,28 @@ impl Core {
             return Check::Now(false);
         };
         self.unload(i);
-        let entry = Entry {
+        let fixed_entry = self
+            .timeline
+            .entries
+            .iter()
+            .find(|e| e.item == id && e.fixed.as_ref().is_some_and(|f| f.target >= now))
+            .cloned();
+        if let Some(entry) = &fixed_entry {
+            let duplicates: Vec<_> = (0..4)
+                .filter(|&k| k != i)
+                .filter(|&k| {
+                    self.slots[k].as_ref().is_some_and(|s| {
+                        s.not_started()
+                            && s.entry.item == entry.item
+                            && s.entry.fixed == entry.fixed
+                    })
+                })
+                .collect();
+            for k in duplicates {
+                self.unload(k);
+            }
+        }
+        let entry = fixed_entry.unwrap_or(Entry {
             playlist,
             item: item.id,
             start: now,
@@ -244,7 +265,7 @@ impl Core {
             locked: true,
             fixed: None,
             trim: Duration::ZERO,
-        };
+        });
         match self.load(i, entry, item.clone(), DeckRole::Operator, Duration::ZERO) {
             Ok(tag) => Check::Loaded { deck: i, tag },
             Err(reason) => {
@@ -266,6 +287,18 @@ impl Core {
         let Some(s) = &self.slots[i] else {
             return Check::Now(false);
         };
+        if s.role == DeckRole::Plan
+            && s.is_hard()
+            && s.entry.fixed.as_ref().is_some_and(|f| now < f.target)
+        {
+            self.alarms.raise_once(
+                now,
+                Alarm::Unsupported {
+                    what: "This hard event waits for its target time".into(),
+                },
+            );
+            return Check::Now(false);
+        }
         let tag = s.tag;
         match s.phase {
             Phase::Opening | Phase::Loading | Phase::Ready => {
@@ -406,13 +439,28 @@ impl Core {
     /// Starts the earliest queued plan entry now, and fades out what plays. `except` is
     /// a deck that ends already.
     pub(crate) fn start_next(&mut self, except: Option<usize>) -> Check {
+        let now = self.clock.now();
         let next = (0..4)
             .filter(|&i| Some(i) != except)
             .filter_map(|i| self.slots[i].as_ref().map(|s| (i, s)))
             .filter(|(_, s)| s.role == DeckRole::Plan && s.not_started())
+            .filter(|(_, s)| !s.is_hard() || s.entry.fixed.as_ref().is_none_or(|f| now >= f.target))
             .min_by_key(|(_, s)| s.entry.start)
             .map(|(i, s)| (i, s.tag));
         let Some((j, tag)) = next else {
+            if self
+                .slots
+                .iter()
+                .flatten()
+                .any(|s| s.is_hard() && s.not_started())
+            {
+                self.alarms.raise_once(
+                    now,
+                    Alarm::Unsupported {
+                        what: "The next hard event waits for its target time".into(),
+                    },
+                );
+            }
             return Check::Now(false);
         };
         let at = self.mixer.now();
@@ -485,7 +533,13 @@ impl Core {
             .state()
             .strips
             .iter()
-            .map(|(k, s)| (k.clone(), s.gain_db, s.mute))
+            .map(|(k, s)| {
+                (
+                    k.clone(),
+                    s.gain_db,
+                    s.mute || s.route == radio_engine::Route::CueOnly,
+                )
+            })
             .collect();
         for (name, gain, mute) in strips {
             if let Some(strip) = strip_of(&name) {

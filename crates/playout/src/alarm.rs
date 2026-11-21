@@ -19,6 +19,10 @@ pub enum Alarm {
     },
     /// Program went silent; playout skipped to the next item.
     DeadAir,
+    /// A control tick exceeded half of the command lead.
+    ControlOverrun,
+    /// The local sound card was lost; software pacing keeps Icecast running.
+    DeviceLost { name: String },
     /// Skipping did not help: the emergency fallback folder is playing.
     EmergencyFallback { reason: String },
     /// A keep-alive stream on air has no audio and reconnects. A bed plays under it.
@@ -32,6 +36,12 @@ pub enum Alarm {
     /// A hard event is near, and each deck holds an item on air, so playout could not
     /// load the event.
     HardEventNotLoaded { item: ItemId },
+    /// A fixed item started after its allowed tolerance.
+    FixedLate {
+        item: ItemId,
+        target: Timestamp,
+        by: Duration,
+    },
     /// A hard event passed its target and its tolerance without a deck, so it did not air.
     HardEventMissed { item: ItemId, target: Timestamp },
     /// Playout took an operator's loaded item off its deck to make room for a hard event.

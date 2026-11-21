@@ -38,6 +38,8 @@ pub struct PlayoutView {
     pub revision: u64,
     /// The number of plans that playout made so far.
     pub plans: u64,
+    /// Control ticks that exceeded half of the command lead.
+    pub tick_overruns: u64,
 }
 
 /// One deck.
@@ -88,6 +90,10 @@ pub struct OutputStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalOutput {
+    /// The device is lost; Icecast continues with software pacing.
+    Lost {
+        name: String,
+    },
     Device {
         name: String,
     },

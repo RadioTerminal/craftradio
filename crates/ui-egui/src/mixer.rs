@@ -122,7 +122,7 @@ fn strip_ui(
     let mut settings_wanted = false;
     let mut gain = meter.gain_db;
     let mut mute = meter.mute;
-    let mut pfl = meter.pfl;
+
     let fill = if is_out { t.selection } else { t.card };
     egui::Frame::new()
         .fill(fill)
@@ -167,11 +167,8 @@ fn strip_ui(
                     if toggle(ui, word, fill, t).clicked() {
                         mute = !mute;
                     }
-                    let word = if pfl { "PFL ON" } else { "PFL" };
-                    let fill = if pfl { t.warn_fill } else { t.field };
-                    if toggle(ui, word, fill, t).clicked() {
-                        pfl = !pfl;
-                    }
+                    ui.add_enabled(false, egui::Button::new("PFL unavailable"))
+                        .on_disabled_hover_text("Cue output is not available in this build");
                 });
             });
         });
@@ -181,9 +178,7 @@ fn strip_ui(
     if mute != meter.mute {
         actions.push(mute_action(meter, is_out, mute));
     }
-    if pfl != meter.pfl {
-        actions.push(strip_edit(&meter.label, StripChange::Pfl(pfl)));
-    }
+
     settings_wanted
 }
 
@@ -236,15 +231,13 @@ fn strip_menu(
     if check_item(ui, meter.mute, "Mute") {
         actions.push(mute_action(meter, is_out, !meter.mute));
     }
-    if check_item(ui, meter.pfl, "PFL") {
-        actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
-    }
+    ui.add_enabled(false, egui::Button::new("PFL unavailable"));
     if menu_item(ui, "Reset gain to 0 dB", None) {
         actions.push(strip_edit(&meter.label, StripChange::Gain(0.0)));
     }
     ui.menu_button("Route to", |ui| {
         for route in Route::ALL {
-            if check_item(ui, meter.route == route, route.label()) {
+            if route != Route::OutAndCue && check_item(ui, meter.route == route, route.label()) {
                 actions.push(strip_edit(&meter.label, StripChange::Route(route)));
             }
         }
@@ -351,7 +344,13 @@ fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Actio
                 ),
             ] {
                 settings::label(ui, label, t);
-                if let Some(device) = device_pick(ui, id, current, &view.devices) {
+                let picker = ui.add_enabled_ui(role != DeviceRole::Pfl, |ui| {
+                    device_pick(ui, id, current, &view.devices)
+                });
+                picker
+                    .response
+                    .on_disabled_hover_text("Cue output is not available in this build");
+                if let Some(device) = picker.inner {
                     actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
                 }
                 ui.end_row();
@@ -404,7 +403,9 @@ fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Actio
                     .selected_text(m.route.label())
                     .show_ui(ui, |ui| {
                         for r in Route::ALL {
-                            if ui.selectable_label(r == m.route, r.label()).clicked() {
+                            if r != Route::OutAndCue
+                                && ui.selectable_label(r == m.route, r.label()).clicked()
+                            {
                                 actions.push(strip_edit(&m.label, StripChange::Route(r)));
                             }
                         }

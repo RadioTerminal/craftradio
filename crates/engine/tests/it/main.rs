@@ -566,3 +566,45 @@ fn checkpoint_failure_and_recovery_are_evented() {
             .any(|e| matches!(e, EngineEvent::PersistenceFailed { reason: None }))
     );
 }
+
+#[test]
+fn live_input_cannot_be_scheduled() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let mut live = item(500, "Studio");
+    live.source = Source::LiveInput {
+        device: "Test input".into(),
+        channels: [1, 2],
+    };
+    let result = e.dispatch(Command::PlaylistAddItems {
+        playlist: MAIN,
+        items: vec![live],
+        at: None,
+        lock: true,
+    });
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Live input playback is not available")
+    );
+    assert!(ids(&e).is_empty());
+}
+
+#[test]
+fn unavailable_cue_output_is_rejected_without_showing_pfl_on() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let result = e.dispatch(Command::MixerSetStrip {
+        strip: "A".into(),
+        gain_db: None,
+        mute: None,
+        pfl: Some(true),
+        route: None,
+    });
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Cue output is not available")
+    );
+    assert!(!e.state().strips.get("A").is_some_and(|s| s.pfl));
+}

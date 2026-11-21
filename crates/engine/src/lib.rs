@@ -372,6 +372,7 @@ fn undoable(cmd: &Command) -> bool {
         | C::PlaylistRemoveItems { .. }
         | C::PlaylistClear { .. }
         | C::PlaylistMoveItems { .. }
+        | C::PlaylistSetRules { .. }
         | C::PlaylistSetRulesScript { .. }
         | C::PlaylistSetSource { .. }
         | C::PlaylistSetColor { .. }
@@ -642,6 +643,16 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut next = self.state.station.clone();
         f(&mut next)?;
+        if next
+            .playlists
+            .iter()
+            .flat_map(|p| &p.items)
+            .any(|i| matches!(i.source, radio_model::Source::LiveInput { .. }))
+        {
+            return Err(EngineError::BadArgument(
+                "Live input playback is not available in this build".into(),
+            ));
+        }
         next.validate()?;
         self.state.station = next;
         Ok(())
@@ -854,11 +865,43 @@ impl Engine {
                 }
                 let set =
                     radio_script::eval_rules(&script, &names, &radio_script::Limits::default())?;
+                self.apply(C::PlaylistSetRules {
+                    playlist,
+                    pick: set.pick,
+                    rules: set.rules,
+                    constraints: set.constraints,
+                    script,
+                })
+            }
+            C::PlaylistSetRules {
+                playlist,
+                pick,
+                rules,
+                constraints,
+                script,
+            } => {
+                for rule in &rules {
+                    let invalid = rule.take == 0
+                        || match &rule.trigger {
+                            radio_model::Trigger::EveryNTracks(n)
+                            | radio_model::Trigger::EveryNMinutes(n) => *n == 0,
+                            radio_model::Trigger::AtMinutes(minutes) => {
+                                minutes.is_empty() || minutes.iter().any(|m| *m > 59)
+                            }
+                            _ => false,
+                        };
+                    if invalid {
+                        return Err(EngineError::BadArgument(
+                            "Rules need a positive interval and take count, and valid minutes"
+                                .into(),
+                        ));
+                    }
+                }
                 self.edit_station(|s| {
                     let p = playlist_mut(s, playlist)?;
-                    p.pick = set.pick;
-                    p.rules = set.rules;
-                    p.constraints = set.constraints;
+                    p.pick = pick;
+                    p.rules = rules;
+                    p.constraints = constraints;
                     Ok(())
                 })?;
                 self.state.scripts.insert(playlist, script);
@@ -1060,6 +1103,16 @@ impl Engine {
             }
             C::StationBatch { commands } | C::StationSystem { commands } => self.batch(commands),
             C::StationImport { station } => {
+                if station
+                    .playlists
+                    .iter()
+                    .flat_map(|p| &p.items)
+                    .any(|i| matches!(i.source, radio_model::Source::LiveInput { .. }))
+                {
+                    return Err(EngineError::BadArgument(
+                        "Live input playback is not available in this build".into(),
+                    ));
+                }
                 station.validate()?;
                 self.state.station = station;
                 self.state.scripts.clear();
@@ -1154,6 +1207,11 @@ impl Engine {
                 if !STRIPS.contains(&strip.as_str()) {
                     return Err(EngineError::BadArgument(format!("no mixer strip {strip}")));
                 }
+                if pfl == Some(true) || route == Some(Route::OutAndCue) {
+                    return Err(EngineError::BadArgument(
+                        "Cue output is not available in this build".into(),
+                    ));
+                }
                 // A fader all the way down is a mute; the stored gain stays finite.
                 let (gain_db, mute) = match gain_db {
                     Some(g) if g == f32::NEG_INFINITY => (None, Some(true)),
@@ -1177,7 +1235,7 @@ impl Engine {
                 if let Some(r) = route {
                     st.route = r;
                 }
-                let (gain_db, mute) = (st.gain_db, st.mute);
+                let (gain_db, mute) = (st.gain_db, st.mute || st.route == Route::CueOnly);
                 let cue = pfl.is_some() || route.is_some();
                 let mut out = self.audio(AudioIntent::SetStrip {
                     strip,
@@ -1186,7 +1244,7 @@ impl Engine {
                 });
                 if cue {
                     out.note = Some(
-                        "stored; the mixer of this build has no cue bus, so PFL and routing do not change the sound"
+                        "Cue output is unavailable; Cue only removes this strip from Program"
                             .into(),
                     );
                 }
@@ -1348,24 +1406,7 @@ impl Engine {
     /// CSV of the rows that started in `[since, until)`:
     /// `start,end,playlist,title,artist,origin,rule,status`. Times are UTC, RFC 3339.
     pub fn export_csv(&self, since: Timestamp, until: Timestamp) -> Result<String, EngineError> {
-        let mut out = String::from("start,end,playlist,title,artist,origin,rule,status\n");
-        for r in self.log_handle()?.rows(since, until, None)? {
-            let status = r.status.map_or("onair", LogStatus::as_str);
-            let fields = [
-                r.entry.start.to_string(),
-                r.end.map(|t| t.to_string()).unwrap_or_default(),
-                r.entry.playlist,
-                r.entry.title,
-                r.entry.artist.unwrap_or_default(),
-                r.entry.origin,
-                r.entry.rule.unwrap_or_default(),
-                status.to_string(),
-            ];
-            let line: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
-            out.push_str(&line.join(","));
-            out.push('\n');
-        }
-        Ok(out)
+        self.log_handle()?.export_csv(since, until)
     }
 
     /// Counts for one playlist on one civil day in the station's time zone.
@@ -1381,30 +1422,12 @@ impl Engine {
             .iter()
             .find(|p| p.id == playlist)
             .ok_or(EngineError::UnknownPlaylist(playlist))?;
-        let tz = jiff::tz::TimeZone::get(&self.state.station.tz)
-            .map_err(|e| EngineError::BadArgument(e.to_string()))?;
-        let bad = |e: jiff::Error| EngineError::BadArgument(e.to_string());
-        let from = tz.to_zoned(day.at(0, 0, 0, 0)).map_err(bad)?.timestamp();
-        let next = day.tomorrow().map_err(bad)?;
-        let to = tz.to_zoned(next.at(0, 0, 0, 0)).map_err(bad)?.timestamp();
-        let name = p.name.clone();
-        let scheduled = u32::try_from(p.items.len()).unwrap_or(u32::MAX);
-        let (aired, interrupted) = self.store.call(move |c| {
-            let n = |status: &str| {
-                c.query_row(
-                    "SELECT COUNT(*) FROM as_played
-                     WHERE playlist = ?1 AND start_ms >= ?2 AND start_ms < ?3 AND status = ?4",
-                    params![name, from.as_millisecond(), to.as_millisecond(), status],
-                    |r| r.get::<_, u32>(0),
-                )
-            };
-            Ok((n("aired")?, n("interrupted")?))
-        })?;
-        Ok(Report {
-            scheduled,
-            aired,
-            interrupted,
-        })
+        self.log_handle()?.aired_vs_scheduled(
+            &p.name,
+            &self.state.station.tz,
+            u32::try_from(p.items.len()).unwrap_or(u32::MAX),
+            day,
+        )
     }
 }
 
@@ -1527,6 +1550,61 @@ impl LogHandle {
         self.rows(since, Timestamp::MAX, Some(limit))
     }
 
+    /// Counts through the store handle. Call from a worker thread.
+    pub fn aired_vs_scheduled(
+        &self,
+        name: &str,
+        zone: &str,
+        scheduled: u32,
+        day: civil::Date,
+    ) -> Result<Report, EngineError> {
+        let tz =
+            jiff::tz::TimeZone::get(zone).map_err(|e| EngineError::BadArgument(e.to_string()))?;
+        let bad = |e: jiff::Error| EngineError::BadArgument(e.to_string());
+        let from = tz.to_zoned(day.at(0, 0, 0, 0)).map_err(bad)?.timestamp();
+        let next = day.tomorrow().map_err(bad)?;
+        let to = tz.to_zoned(next.at(0, 0, 0, 0)).map_err(bad)?.timestamp();
+        let name = name.to_owned();
+        let (aired, interrupted) = self.writer.call(move |c| {
+            let n = |status: &str| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM as_played
+                     WHERE playlist = ?1 AND start_ms >= ?2 AND start_ms < ?3 AND status = ?4",
+                    params![name, from.as_millisecond(), to.as_millisecond(), status],
+                    |r| r.get::<_, u32>(0),
+                )
+            };
+            Ok((n("aired")?, n("interrupted")?))
+        })?;
+        Ok(Report {
+            scheduled,
+            aired,
+            interrupted,
+        })
+    }
+
+    /// CSV export through the store handle. Call from a worker thread.
+    pub fn export_csv(&self, since: Timestamp, until: Timestamp) -> Result<String, EngineError> {
+        let mut out = String::from("start,end,playlist,title,artist,origin,rule,status\n");
+        for r in self.rows(since, until, None)? {
+            let status = r.status.map_or("onair", LogStatus::as_str);
+            let fields = [
+                r.entry.start.to_string(),
+                r.end.map(|t| t.to_string()).unwrap_or_default(),
+                r.entry.playlist,
+                r.entry.title,
+                r.entry.artist.unwrap_or_default(),
+                r.entry.origin,
+                r.entry.rule.unwrap_or_default(),
+                status.to_string(),
+            ];
+            let line: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
+            out.push_str(&line.join(","));
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
     /// Like [`LogHandle::log_start`], but returns at once. `done` gets the row id on the
     /// writer thread.
     pub fn log_start_later(
@@ -1603,4 +1681,36 @@ impl LogHandle {
             rows.collect()
         })
     }
+}
+
+/// Evaluate script commands on an I/O worker before dispatch to playout.
+pub fn prepare_scripts(
+    cmd: Command,
+    names: &[(String, PlaylistId)],
+) -> Result<Command, EngineError> {
+    Ok(match cmd {
+        Command::PlaylistSetRulesScript { playlist, script } => {
+            let set = radio_script::eval_rules(&script, names, &radio_script::Limits::default())?;
+            Command::PlaylistSetRules {
+                playlist,
+                script,
+                pick: set.pick,
+                rules: set.rules,
+                constraints: set.constraints,
+            }
+        }
+        Command::StationBatch { commands } => Command::StationBatch {
+            commands: commands
+                .into_iter()
+                .map(|c| prepare_scripts(c, names))
+                .collect::<Result<_, _>>()?,
+        },
+        Command::StationSystem { commands } => Command::StationSystem {
+            commands: commands
+                .into_iter()
+                .map(|c| prepare_scripts(c, names))
+                .collect::<Result<_, _>>()?,
+        },
+        other => other,
+    })
 }
