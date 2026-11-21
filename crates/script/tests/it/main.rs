@@ -55,6 +55,7 @@ fn bad_call_reports_reason() {
 fn isolation() {
     for src in [
         "Date.now()",
+        "performance.now()",
         "new Date()",
         "Math.random()",
         "fs.readFile('x')",
@@ -229,4 +230,81 @@ fn invalid_helpers_report_call_line_and_field() {
             result => panic!("unexpected result: {result:?}"),
         }
     }
+}
+
+#[test]
+fn deep_recursion_returns_error() {
+    assert!(
+        eval_rules(
+            "function recurse() { return recurse() + 1; } recurse();",
+            &[],
+            &Limits::default()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn collection_limits() {
+    for call in ["rule({on:'pulse'})", "constraint(notAdjacentToSelf())"] {
+        let boundary = format!("for(let i=0;i<1000;i++) {{ {call}; }}");
+        assert!(eval_rules(&boundary, &[], &Limits::default()).is_ok());
+        let over = format!("{boundary} try {{ {call}; }} catch(e) {{}}");
+        assert!(matches!(
+            eval_rules(&over, &[], &Limits::default()),
+            Err(ScriptError::MemoryLimit)
+        ));
+    }
+    assert!(matches!(
+        eval_rules(
+            "rule({on:'pulse',constraints:Array(1001).fill(notAdjacentToSelf())})",
+            &[],
+            &Limits::default()
+        ),
+        Err(ScriptError::MemoryLimit)
+    ));
+}
+
+#[test]
+fn string_argument_limits() {
+    let name = "é".repeat(128);
+    let playlists = vec![(name.clone(), PlaylistId(1))];
+    assert!(
+        eval_rules(
+            &format!(
+                "rule({{on:{}}}); constraint(notAdjacentTo({}));",
+                serde_json::json!(name),
+                serde_json::json!(name)
+            ),
+            &playlists,
+            &Limits::default()
+        )
+        .is_ok()
+    );
+    for src in [
+        "rule({on:'x'.repeat(257)})",
+        "notAdjacentTo('x'.repeat(257))",
+        "daypart('x'.repeat(257),'12:00')",
+        "pick('x'.repeat(257))",
+    ] {
+        assert!(matches!(eval_rules(src, &[], &Limits::default()),
+            Err(ScriptError::Invalid { reason, .. }) if reason.contains("256 bytes")));
+    }
+}
+
+#[test]
+fn json_bytes_have_a_running_budget() {
+    let limits = Limits {
+        memory_bytes: 1024 * 1024,
+        time: Duration::from_secs(2),
+    };
+    // Each argument is small, and only the last pick is retained.
+    assert!(matches!(
+        eval_rules(
+            "const data = Array(100).fill('x'.repeat(200)); for(let i=0;i<100;i++) { try { pick('in_order',data); } catch(e) {} }",
+            &[],
+            &limits
+        ),
+        Err(ScriptError::MemoryLimit)
+    ));
 }

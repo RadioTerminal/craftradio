@@ -2,7 +2,7 @@
 use radio_model::{
     Constraint, FixMode, ItemId, PickOrder, Placement, PlaylistId, Repeat, Rule, Trigger,
 };
-use rquickjs::{Context, Function, Runtime, Value, function::Rest};
+use rquickjs::{Context, Function, Runtime, Value, context::intrinsic, function::Rest};
 use serde_json::{Value as Json, json};
 use std::{
     cell::RefCell,
@@ -83,12 +83,41 @@ fn time(v: &Json, call: &str, field: &str) -> Result<jiff::civil::Time, ScriptEr
         .parse()
         .map_err(|e| invalid(call, field, e))
 }
+// Constraint helper results are internal JSON strings. Check their decoded arguments
+// separately so the transport encoding does not reduce the 256-byte name limit.
+fn check_strings(v: &Json, call: &str, field: &str) -> Result<(), ScriptError> {
+    match v {
+        Json::String(s) if s.len() > 256 => {
+            return Err(invalid(call, field, "string argument exceeds 256 bytes"));
+        }
+        Json::Array(values) => {
+            for value in values {
+                check_strings(value, call, field)?;
+            }
+        }
+        Json::Object(values) => {
+            for (key, value) in values {
+                if key.len() > 256 {
+                    return Err(invalid(call, field, "string argument exceeds 256 bytes"));
+                }
+                if call == "rule" && key == "constraints" {
+                    // constraint() validates each decoded helper argument.
+                    continue;
+                }
+                check_strings(value, call, key)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 fn constraint(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Constraint, ScriptError> {
     let encoded = v
         .as_str()
         .ok_or_else(|| invalid("constraint", "argument", "use a constraint helper"))?;
     let (name, args): (String, Vec<Json>) =
         serde_json::from_str(encoded).map_err(|e| invalid("constraint", "argument", e))?;
+    check_strings(&json!(args), &name, "argument")?;
     let a = args.first().unwrap_or(&Json::Null);
     Ok(match name.as_str() {
         "notAdjacentToSelf" => Constraint::NotAdjacentToSelf,
@@ -332,6 +361,7 @@ pub fn eval_rules(
 ) -> Result<RuleSet, ScriptError> {
     let runtime = Runtime::new().map_err(|_| ScriptError::MemoryLimit)?;
     runtime.set_memory_limit(limits.memory_bytes);
+    runtime.set_max_stack_size(512 * 1024);
     let start = Instant::now();
     let expired = Arc::new(AtomicBool::new(false));
     let flag = expired.clone();
@@ -343,13 +373,16 @@ pub fn eval_rules(
         }
         hit
     })));
-    let context = Context::full(&runtime).map_err(|_| ScriptError::MemoryLimit)?;
+    let context = Context::custom::<(intrinsic::Eval, intrinsic::Json)>(&runtime)
+        .map_err(|_| ScriptError::MemoryLimit)?;
     let set = Rc::new(RefCell::new(RuleSet {
         pick: PickOrder::InOrder,
         rules: vec![],
         constraints: vec![],
     }));
     let failure = Rc::new(RefCell::new(None));
+    let json_bytes = Rc::new(RefCell::new(0usize));
+    let constraint_count = Rc::new(RefCell::new(0usize));
     context.with(|ctx| -> Result<(), ScriptError> {
         for name in [
             "pick",
@@ -366,10 +399,19 @@ pub fn eval_rules(
         ] {
             let set = set.clone();
             let failure = failure.clone();
+            let json_bytes = json_bytes.clone();
+            let constraint_count = constraint_count.clone();
+            let memory_bytes = limits.memory_bytes;
             let playlists = playlists.to_vec();
             let f = Function::new(
                 ctx.clone(),
                 move |ctx: rquickjs::Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<String> {
+                    if failure.borrow().is_some() {
+                        return Err(rquickjs::Exception::throw_message(
+                            &ctx,
+                            "script already failed",
+                        ));
+                    }
                     let line = ctx
                         .eval::<String, _>("new Error().stack")
                         .ok()
@@ -391,6 +433,15 @@ pub fn eval_rules(
                             "an argument is required",
                         ));
                     }
+                    if (name == "rule" && set.borrow().rules.len() >= 1000)
+                        || (name == "constraint" && *constraint_count.borrow() >= 1000)
+                    {
+                        failure.borrow_mut().get_or_insert(ScriptError::MemoryLimit);
+                        return Err(rquickjs::Exception::throw_message(
+                            &ctx,
+                            "collection limit exceeded",
+                        ));
+                    }
                     let mut values = Vec::new();
                     for v in args.0 {
                         let s = v
@@ -401,37 +452,80 @@ pub fn eval_rules(
                                 rquickjs::Exception::throw_message(&ctx, "argument is not JSON")
                             })?
                             .to_string()?;
+                        let mut used = json_bytes.borrow_mut();
+                        let Some(total) = used.checked_add(s.len()).filter(|n| *n <= memory_bytes)
+                        else {
+                            failure.borrow_mut().get_or_insert(ScriptError::MemoryLimit);
+                            return Err(rquickjs::Exception::throw_message(
+                                &ctx,
+                                "JSON byte budget exceeded",
+                            ));
+                        };
+                        *used = total;
                         values.push(serde_json::from_str::<Json>(&s).map_err(|_| {
                             rquickjs::Exception::throw_message(&ctx, "invalid JSON")
                         })?);
                     }
-                    let result = match name {
-                        "pick" => pick(&values).map(|p| set.borrow_mut().pick = p),
-                        "rule" => rule(values.first().unwrap_or(&Json::Null), &playlists)
-                            .map(|r| set.borrow_mut().rules.push(r)),
-                        "constraint" => {
-                            constraint(values.first().unwrap_or(&Json::Null), &playlists)
-                                .map(|c| set.borrow_mut().constraints.push(c))
-                        }
-                        _ => {
-                            let s = json!([name, values]).to_string();
-                            match constraint(&Json::String(s.clone()), &playlists) {
-                                Ok(_) => return Ok(s),
-                                Err(e) => Err(e),
+                    let result =
+                        (|| {
+                            if name != "constraint" {
+                                for value in &values {
+                                    check_strings(value, name, "argument")?;
+                                }
                             }
+                            let added = match name {
+                                "constraint" => 1,
+                                "rule" => values
+                                    .first()
+                                    .and_then(|v| v.get("constraints"))
+                                    .and_then(Json::as_array)
+                                    .map_or(0, Vec::len),
+                                _ => 0,
+                            };
+                            if added > 1000 - *constraint_count.borrow() {
+                                return Err(ScriptError::MemoryLimit);
+                            }
+                            *constraint_count.borrow_mut() += added;
+                            match name {
+                                "pick" => pick(&values).map(|p| {
+                                    set.borrow_mut().pick = p;
+                                    String::new()
+                                }),
+                                "rule" => rule(values.first().unwrap_or(&Json::Null), &playlists)
+                                    .map(|r| {
+                                        set.borrow_mut().rules.push(r);
+                                        String::new()
+                                    }),
+                                "constraint" => {
+                                    constraint(values.first().unwrap_or(&Json::Null), &playlists)
+                                        .map(|c| {
+                                            set.borrow_mut().constraints.push(c);
+                                            String::new()
+                                        })
+                                }
+                                _ => {
+                                    let s = json!([name, values]).to_string();
+                                    match constraint(&Json::String(s.clone()), &playlists) {
+                                        Ok(_) => Ok(s),
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                            }
+                        })();
+                    let output = match result {
+                        Ok(output) => output,
+                        Err(mut e) => {
+                            if let ScriptError::Invalid { line: at, .. } = &mut e {
+                                *at = line;
+                            }
+                            failure.borrow_mut().get_or_insert(e);
+                            return Err(rquickjs::Exception::throw_message(
+                                &ctx,
+                                "invalid script call",
+                            ));
                         }
                     };
-                    if let Err(mut e) = result {
-                        if let ScriptError::Invalid { line: at, .. } = &mut e {
-                            *at = line;
-                        }
-                        failure.borrow_mut().get_or_insert(e);
-                        return Err(rquickjs::Exception::throw_message(
-                            &ctx,
-                            "invalid script call",
-                        ));
-                    }
-                    Ok(String::new())
+                    Ok(output)
                 },
             )
             .map_err(|e| ScriptError::Runtime {
@@ -445,8 +539,8 @@ pub fn eval_rules(
                     message: e.to_string(),
                 })?;
         }
-        // Remove all clock and random entry points, including constructor access through prototypes.
-        ctx.eval::<(), _>("delete globalThis.Date; delete Math.random;")
+        // Only base objects, evaluation and JSON are enabled; clocks are never installed.
+        ctx.eval::<(), _>("delete Math.random;")
             .map_err(|e| ScriptError::Runtime {
                 line: 1,
                 message: e.to_string(),
