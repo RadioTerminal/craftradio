@@ -48,12 +48,12 @@ fn play_next_cuts_the_item_on_air_only_on_the_second_press() {
         "the first press only arms Play next"
     );
     assert!(
-        h.query_all_by_label_contains("press again")
+        h.query_all_by_label_contains("Confirm: play deck")
             .next()
             .is_some(),
         "the armed button asks for a second press"
     );
-    h.get_by_label("Play next — press again").click();
+    h.get_by_label_contains("Confirm: play deck").click();
     h.run_steps(FRAMES);
     assert!(
         count(&h, ON_AIR) < before,
@@ -68,7 +68,8 @@ fn play_on_a_waiting_deck_cuts_the_item_on_air_only_on_the_second_press() {
     h.get_by_label("Play deck C").click();
     h.run_steps(FRAMES);
     assert_eq!(count(&h, ON_AIR), before, "the first press only arms Play");
-    h.get_by_label("Play deck C — press again").click();
+    h.get_by_label("Confirm: play deck C now (cuts the item on air)")
+        .click();
     h.run_steps(FRAMES);
     assert!(count(&h, ON_AIR) < before, "the second press plays deck C");
 }

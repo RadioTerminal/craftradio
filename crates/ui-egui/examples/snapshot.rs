@@ -249,6 +249,11 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
             Scene::WindowMenu(ToolWindow::Library, lib),
         ));
         scenes.push((
+            "deck-armed".into(),
+            wide,
+            Scene::Click(vec!["Play deck B".into()]),
+        ));
+        scenes.push((
             "toast".into(),
             QA_WIDTHS[0],
             Scene::Click(vec!["Stop after current".into()]),

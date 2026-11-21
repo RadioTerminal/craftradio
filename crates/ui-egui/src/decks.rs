@@ -11,7 +11,7 @@ use crate::settings;
 use crate::shortcuts;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckCommand, DeckState, DeckView, Edit, StationView, Status};
-use crate::widgets::{self, Look, guard_button_sized, icon_button_sized, transport_button};
+use crate::widgets::{self, Armed, Look, guard_button_sized, icon_button_sized, transport_button};
 
 /// The part setting that switches the second press on the deck on air.
 const CONFIRM_KEY: &str = "confirm_on_air";
@@ -113,6 +113,12 @@ impl State {
 
     pub(crate) fn focused(&self) -> usize {
         self.focused
+    }
+
+    /// True while any button of deck `deck` waits for its second press.
+    fn deck_armed(&self, deck: usize, now: f64) -> bool {
+        self.armed
+            .is_some_and(|(d, _, at)| d == deck && now - at < size::ARM_S)
     }
 
     /// The part of the arm time that is left for this button, while it is armed.
@@ -336,7 +342,14 @@ fn deck_card(
     let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
     // The edge has the colour of the deck. The deck on air has a thick edge, its fill and
     // the ON AIR word, so the colour is not the only sign.
-    let edge = Tokens::deck(i);
+    // An armed button turns the edge to the danger colour. Its width stays, so the card
+    // never changes size.
+    let now = ui.input(|i| i.time);
+    let edge = if state.deck_armed(i, now) {
+        t.danger
+    } else {
+        Tokens::deck(i)
+    };
     let edge_w = match deck.state {
         DeckState::Playing | DeckState::Fading => size::ON_AIR_EDGE,
         _ => size::HAIRLINE,
@@ -434,7 +447,15 @@ fn deck_body(
                          out. The plan goes on from this deck ({keys} on the focused deck)",
                         state.fade_in(i)
                     );
-                    let armed = state.armed_left(i, Guarded::Play, now);
+                    let confirm = format!("Confirm: play deck {name} now (cuts the item on air)");
+                    let note = format!(
+                        "Play deck {name} now cuts the item on air: press again to confirm"
+                    );
+                    let armed = state.armed_left(i, Guarded::Play, now).map(|left| Armed {
+                        left,
+                        name: &confirm,
+                        note: &note,
+                    });
                     let play =
                         guard_button_sized(ui, icon, &accessible, &hint, armed, size::CONTROL_MD);
                     let cut = cuts_on_air(decks, i, state.fade_in(i));
@@ -455,20 +476,6 @@ fn deck_body(
         });
         badge
     });
-    if let Some((d, kind, _)) = state.armed
-        && d == i
-    {
-        let what = match kind {
-            Guarded::Fade => "Fade out cuts the item on air",
-            Guarded::Play => "Play cuts the item on air",
-            Guarded::PlayNext => "Play next cuts the item on air",
-        };
-        let note = format!("{what}: press again to confirm");
-        let note = RichText::new(note)
-            .font(theme::text(theme::CAPTION))
-            .strong();
-        ui.label(note.color(t.danger));
-    }
     if state.settings[i] {
         egui::Frame::new()
             .fill(t.card)
@@ -743,7 +750,18 @@ fn transport(
         let hint = format!(
             "Play next: start the NEXT 1 deck now. It fades in and the item on air fades out ({keys})"
         );
-        let armed = next.and_then(|d| state.armed_left(d, Guarded::PlayNext, now));
+        let letter = view.decks.get(deck).map_or('?', |d| d.label);
+        let confirm = format!("Confirm: play deck {letter} now (cuts the item on air)");
+        let note = format!(
+            "Play next starts deck {letter} now and cuts the item on air: press again to confirm"
+        );
+        let armed = next
+            .and_then(|d| state.armed_left(d, Guarded::PlayNext, now))
+            .map(|left| Armed {
+                left,
+                name: &confirm,
+                note: &note,
+            });
         let play = transport_button(
             ui,
             Icon::SkipForward,
@@ -764,7 +782,18 @@ fn transport(
         let deck = air.unwrap_or(0);
         let keys = shortcuts::label(ui.ctx(), &shortcuts::FADE);
         let hint = format!("Fade out the item on air ({keys})");
-        let armed = air.and_then(|d| state.armed_left(d, Guarded::Fade, now));
+        let letter = view.decks.get(deck).map_or('?', |d| d.label);
+        let confirm = format!("Confirm: fade out deck {letter} now (cuts the item on air)");
+        let note = format!(
+            "Fade out ends the item on deck {letter} before its end: press again to confirm"
+        );
+        let armed = air
+            .and_then(|d| state.armed_left(d, Guarded::Fade, now))
+            .map(|left| Armed {
+                left,
+                name: &confirm,
+                note: &note,
+            });
         let fade = transport_button(
             ui,
             Icon::TrendingDown,

@@ -58,25 +58,36 @@ pub(crate) fn icon_button_sized(
     resp.on_hover_text(hint)
 }
 
-/// An icon button for a guarded action. While armed, it shows the danger colour and a ring.
-/// The ring shrinks as the time to press again runs out. `armed` is the part of the time left.
+/// The armed state of a guarded button: how much of the time to confirm is left, the
+/// accessible name the button takes ("Confirm: ..."), and the full sentence for its tooltip.
+/// The sentence is never drawn as text in the layout: it opens as the tooltip at once.
+#[derive(Clone, Copy)]
+pub(crate) struct Armed<'a> {
+    /// The part of the arm time that is left, from 1 down to 0.
+    pub left: f32,
+    pub name: &'a str,
+    pub note: &'a str,
+}
+
+/// An icon button for a guarded action. While armed, it shows the danger colour and a ring,
+/// and its tooltip opens with the full sentence. Its size never changes.
+/// The ring shrinks as the time to press again runs out.
 // The `side` is a control size from the theme.
 pub(crate) fn guard_button_sized(
     ui: &mut egui::Ui,
     icon: Icon,
     name: &str,
     hint: &str,
-    armed: Option<f32>,
+    armed: Option<Armed<'_>>,
     side: f32,
 ) -> egui::Response {
-    let Some(left) = armed else {
+    let Some(Armed { left, name, note }) = armed else {
         return icon_button_sized(ui, icon, false, name, hint, side);
     };
     let t = Tokens::get(ui.ctx());
     let side = egui::Vec2::splat(side);
     let (rect, resp) = ui.allocate_exact_size(side, Sense::click());
-    let armed_name = format!("{name} — press again");
-    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, true, &armed_name));
+    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, true, name));
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         let stroke = Stroke::new(size::HAIRLINE, t.danger);
@@ -104,7 +115,8 @@ pub(crate) fn guard_button_sized(
             Stroke::new(size::HAIRLINE * 2.0, t.danger),
         ));
     }
-    resp.on_hover_text(format!("{hint} — press again to confirm"))
+    resp.show_tooltip_text(note);
+    resp
 }
 
 /// A label on one line. A long text ends with "…", and the tooltip then shows all of it.
@@ -206,19 +218,20 @@ pub(crate) enum Look {
 
 /// A button of the global transport: an icon and a word, at the hero height. When `compact` is
 /// set it is the icon alone in a square, with the name and the tooltip unchanged. While
-/// `armed` it turns to the danger colour, says "Press again" and shows the countdown ring.
+/// `armed` it turns to the danger colour, says "Confirm" in the room of its own word, shows the
+/// countdown bar and opens its tooltip with the full sentence. Its size never changes.
 pub(crate) fn transport_button(
     ui: &mut egui::Ui,
     icon: Icon,
     word: &str,
     look: Look,
     compact: bool,
-    armed: Option<f32>,
+    armed: Option<Armed<'_>>,
     hint: &str,
 ) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let h = size::CONTROL_HERO;
-    let shown = if armed.is_some() { "Press again" } else { word };
+    let shown = if armed.is_some() { "Confirm" } else { word };
     let font = theme::text(theme::BODY);
     let icon_font = icons::font(theme::ICON_LG);
     let ink_probe = t.text;
@@ -232,7 +245,7 @@ pub(crate) fn transport_button(
                 .layout_no_wrap(s.to_owned(), font.clone(), ink_probe);
             galley.size().x
         };
-        width(word).max(width("Press again"))
+        width(word).max(width("Confirm"))
     };
     let gap = if compact { 0.0 } else { space::S };
     let icon_w = theme::ICON_LG;
@@ -242,13 +255,9 @@ pub(crate) fn transport_button(
         icon_w + gap + label_w + space::L * 2.0
     };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), Sense::click());
-    let name = if armed.is_some() {
-        format!("{word} — press again")
-    } else {
-        word.to_owned()
-    };
+    let name = armed.map_or(word, |a| a.name);
     let enabled = ui.is_enabled();
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &name));
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
     if ui.is_rect_visible(rect) {
         let (fill, edge, ink) = if armed.is_some() {
             (t.danger_fill, t.danger, t.text)
@@ -305,7 +314,7 @@ pub(crate) fn transport_button(
             let at = egui::pos2(left + icon_w + gap, cy);
             p.text(at, Align2::LEFT_CENTER, shown, font, ink);
         }
-        if let Some(left) = armed {
+        if let Some(Armed { left, .. }) = armed {
             // The time left to press again: a bar along the bottom edge that runs out.
             let y = rect.bottom() - size::ON_AIR_EDGE;
             let x1 = rect.left() + rect.width() * left.clamp(0.0, 1.0);
@@ -313,10 +322,10 @@ pub(crate) fn transport_button(
             p.line_segment(bar, Stroke::new(size::ON_AIR_EDGE, t.danger));
         }
     }
-    let hint = if armed.is_some() {
-        format!("{hint} — press again to confirm")
+    if let Some(a) = armed {
+        resp.show_tooltip_text(a.note);
+        resp
     } else {
-        hint.to_owned()
-    };
-    resp.on_hover_text(hint)
+        resp.on_hover_text(hint)
+    }
 }

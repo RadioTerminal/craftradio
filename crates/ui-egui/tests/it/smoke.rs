@@ -148,7 +148,8 @@ fn play_next_starts_the_next_item() {
     let before = harness.query_all_by_label(on_air).count();
     // Deck A is on air: the first press arms Play next, the second fires it.
     click(&mut harness, "Play next");
-    click(&mut harness, "Play next — press again");
+    harness.get_by_label_contains("Confirm: play deck").click();
+    harness.run_steps(FRAMES);
     let after = harness.query_all_by_label(on_air).count();
     assert!(
         after < before,
@@ -308,6 +309,55 @@ fn deck_cards_have_equal_height_whatever_their_state() {
         assert!(
             (r.height() - rects[0].height()).abs() < 0.5,
             "deck cards differ in height: {rects:?}"
+        );
+    }
+}
+
+/// Arming a button never changes a card: the cards stay as tall as each other and as tall as
+/// before, the header buttons keep their rects, and the sentence is a tooltip, not text.
+#[test]
+fn arming_a_transport_button_changes_no_layout() {
+    let mut harness = harness();
+    let card = |h: &Harness<'_, RadioApp>| -> Vec<egui::Rect> {
+        (0..4)
+            .map(|i| radio_ui_egui::deck_card_rect(&h.ctx, i).expect("deck card drawn"))
+            .collect()
+    };
+    let before = card(&harness);
+    let header = |h: &Harness<'_, RadioApp>| {
+        ["Play next", "Fade out", "Stop after current"].map(|n| h.get_by_label(n).rect())
+    };
+    let header_before = header(&harness);
+    harness.get_by_label("Play deck C").click();
+    harness.run_steps(FRAMES);
+    assert!(
+        shows(&harness, "Confirm: play deck C now"),
+        "the button is armed"
+    );
+    let armed = card(&harness);
+    for (a, b) in armed.iter().zip(&before) {
+        assert!(
+            (a.size() - b.size()).abs().max_elem() < 0.5,
+            "armed card resized"
+        );
+        assert!((a.min - b.min).abs().max_elem() < 0.5, "armed card moved");
+    }
+    harness.get_by_label("Play next").click();
+    harness.run_steps(FRAMES);
+    assert!(shows(&harness, "Confirm: play deck"), "Play next is armed");
+    let header_armed = [
+        harness.get_by_label_contains("Confirm: play deck").rect(),
+        harness.get_by_label("Fade out").rect(),
+        harness.get_by_label("Stop after current").rect(),
+    ];
+    for (a, b) in header_armed.iter().zip(&header_before) {
+        assert!(
+            (a.size() - b.size()).abs().max_elem() < 0.5,
+            "header button resized"
+        );
+        assert!(
+            (a.min - b.min).abs().max_elem() < 0.5,
+            "header button moved"
         );
     }
 }
