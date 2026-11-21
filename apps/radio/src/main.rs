@@ -129,7 +129,10 @@ fn real(args: &Args) -> Result<(), String> {
             .ok_or("the platform has no data folder; pass --data-dir")?
             .join(APP_DIR),
     };
-    let (engine, seeded) = station::open(&dir, args.station.as_deref())?;
+    let (mut engine, seeded) = station::open(&dir, args.station.as_deref())?;
+    for line in station::reconcile(&mut engine) {
+        println!("radio: {line}");
+    }
     match &seeded {
         station::Seeded::No if args.station.is_some() => {
             eprintln!("radio: the station exists already; --station applies to a first run only");

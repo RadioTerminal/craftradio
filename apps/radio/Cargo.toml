@@ -11,6 +11,7 @@ radio-ui-engine.workspace = true
 radio-engine.workspace = true
 radio-playout.workspace = true
 radio-model.workspace = true
+radio-library.workspace = true
 eframe.workspace = true
 jiff.workspace = true
 clap.workspace = true

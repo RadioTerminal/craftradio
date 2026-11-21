@@ -1065,7 +1065,7 @@ impl EngineSource {
 
 /// A file item with the length and the tags of its header. A file that the probe cannot
 /// read gives `None`; playout finds the cue points later.
-pub(crate) fn file_item(path: &str) -> Option<Item> {
+pub fn file_item(path: &str) -> Option<Item> {
     let (len, meta) = radio_library::probe(path).ok()?;
     let stem = Path::new(path)
         .file_stem()

@@ -139,3 +139,79 @@ fn seed_example(engine: &mut Engine, dir: &Path) -> Result<Seeded, String> {
         .map_err(|e| e.to_string())?;
     Ok(Seeded::Example { music, kept })
 }
+
+/// Brings each watched folder playlist up to date with its folder: new audio files join it,
+/// and items whose file is gone leave it. It returns one line per changed playlist.
+pub fn reconcile(engine: &mut Engine) -> Vec<String> {
+    let mut lines = Vec::new();
+    let playlists: Vec<(radio_model::PlaylistId, String, FolderSource)> = engine
+        .state()
+        .station
+        .playlists
+        .iter()
+        .filter_map(|p| {
+            let src = p.source.clone().or_else(|| {
+                engine
+                    .state()
+                    .source(p.id)
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+            })?;
+            src.watch.then(|| (p.id, p.name.clone(), src))
+        })
+        .collect();
+    for (playlist, name, src) in playlists {
+        let list = radio_library::list_audio(
+            Path::new(&src.path),
+            src.recursive,
+            radio_library::Limits::DEFAULT,
+        );
+        let station = &engine.state().station;
+        let Some(p) = station.playlists.iter().find(|p| p.id == playlist) else {
+            continue;
+        };
+        let has = |f: &str| {
+            p.items
+                .iter()
+                .any(|i| matches!(&i.source, Source::File { path } if path == f))
+        };
+        let gone: Vec<radio_model::ItemId> = p
+            .items
+            .iter()
+            .filter(|i| matches!(&i.source, Source::File { path } if !Path::new(path).is_file()))
+            .map(|i| i.id)
+            .collect();
+        let mut next = station
+            .playlists
+            .iter()
+            .flat_map(|p| p.items.iter().map(|i| i.id.0))
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let mut items = Vec::new();
+        for f in list.files.iter().filter(|f| !has(f)) {
+            if let Some(mut item) = radio_ui_engine::file_item(f) {
+                item.id = radio_model::ItemId(next);
+                next += 1;
+                items.push(item);
+            }
+        }
+        let (added, removed) = (items.len(), gone.len());
+        if added > 0 {
+            let _ = engine.dispatch(Command::PlaylistAddItems {
+                playlist,
+                items,
+                at: None,
+            });
+        }
+        if removed > 0 {
+            let _ = engine.dispatch(Command::PlaylistRemoveItems {
+                playlist,
+                items: gone,
+            });
+        }
+        if added + removed > 0 {
+            lines.push(format!("{name}: {added} new files, {removed} gone"));
+        }
+    }
+    lines
+}

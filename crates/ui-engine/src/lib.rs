@@ -2,7 +2,7 @@
 
 mod edit;
 
-pub use edit::AUDIO_PART;
+pub use edit::{AUDIO_PART, file_item};
 mod fader;
 mod folders;
 mod icecast;
