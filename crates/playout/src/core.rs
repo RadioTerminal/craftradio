@@ -1297,6 +1297,7 @@ impl Core {
                 Duration::ZERO
             },
             item_tag: Some(tag),
+            gain_db: 0.0,
         };
         let mut stream = None;
         let mut phase = Phase::Loading;

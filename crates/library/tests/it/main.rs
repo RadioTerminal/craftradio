@@ -250,7 +250,10 @@ fn analysis_keeps_the_true_peak_and_silence_has_no_loudness() {
     tone_for(&path, 0.5, 2);
     let peak = analyse(&path).unwrap().loudness.unwrap().peak_db.unwrap();
     let sample_peak = 20.0 * 0.5f32.log10();
-    assert!(peak >= sample_peak - 0.1 && peak < sample_peak + 1.0, "{peak}");
+    assert!(
+        peak >= sample_peak - 0.1 && peak < sample_peak + 1.0,
+        "{peak}"
+    );
     let silent = dir.path().join("silent.wav");
     tone_for(&silent, 0.0, 2);
     assert!(analyse(&silent).unwrap().loudness.is_none());
@@ -267,7 +270,10 @@ fn replaygain_tags_give_a_loudness() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tagged.wav");
     tone_for(&path, 0.2, 1);
-    assert!(radio_library::read_loudness_tags(&path).is_none(), "no tag yet");
+    assert!(
+        radio_library::read_loudness_tags(&path).is_none(),
+        "no tag yet"
+    );
     let mut tag = Tag::new(TagType::Id3v2);
     tag.insert_text(ItemKey::ReplayGainTrackGain, "-4.50 dB".into());
     tag.insert_text(ItemKey::ReplayGainTrackPeak, "0.891251".into());

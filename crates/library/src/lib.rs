@@ -357,7 +357,10 @@ pub fn read_loudness_tags(path: impl AsRef<Path>) -> Option<Loudness> {
         text.trim().parse::<f32>().ok().filter(|v| v.is_finite())
     };
     for tag in file.tags() {
-        if let Some(gain) = tag.get_string(&ItemKey::ReplayGainTrackGain).and_then(number) {
+        if let Some(gain) = tag
+            .get_string(&ItemKey::ReplayGainTrackGain)
+            .and_then(number)
+        {
             let peak_db = tag
                 .get_string(&ItemKey::ReplayGainTrackPeak)
                 .and_then(number)
