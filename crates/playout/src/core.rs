@@ -437,7 +437,7 @@ pub(crate) struct Core {
     planned_rules: Vec<(Entry, Vec<radio_model::Rule>)>,
     out_clock: Option<SampleClock>,
     /// One-offs that ended on air. The next sweep removes them from the schedule.
-    pub(crate) aired_one_offs: std::collections::BTreeSet<ItemId>,
+    pub(crate) aired_one_offs: std::collections::BTreeSet<(ItemId, jiff::civil::DateTime)>,
 }
 
 fn empty_timeline() -> Timeline {

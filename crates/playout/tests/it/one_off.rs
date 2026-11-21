@@ -161,3 +161,92 @@ fn a_daily_one_off_stays_after_it_aired() {
     );
     assert_eq!(one_offs(&p), 1, "a repeating one-off airs again tomorrow");
 }
+
+fn update(p: &Playout, id: u64, item: Item, start: DateTime, repeat: Repeat) {
+    p.dispatch(Command::ScheduleUpdate {
+        id: radio_model::ItemId(id),
+        one_off: Box::new(item),
+        start,
+        fix: FixMode::Hard,
+        tolerance: Duration::from_secs(1),
+        repeat,
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_daily_one_off_that_aired_and_then_became_a_later_once_stays_scheduled() {
+    let mut engine = songs("oo5");
+    let id = schedule(
+        &mut engine,
+        promo("oo5-promo", "Daily"),
+        at(13, 0, 3),
+        Repeat::Daily,
+    );
+    let (p, clock) = offline(engine, |_| {});
+    run(&p, &clock, 6.0);
+    assert!(
+        p.history(t0(), 20)
+            .unwrap()
+            .iter()
+            .any(|r| r.entry.title == "Daily")
+    );
+    update(
+        &p,
+        id,
+        promo("oo5-later", "Later"),
+        at(14, 0, 0),
+        Repeat::Once,
+    );
+    run(&p, &clock, 2.0);
+    let ones = p.snapshot().state.one_offs();
+    assert_eq!(
+        ones.len(),
+        1,
+        "the later one-off has not aired, so it stays"
+    );
+    assert_eq!(ones[0].item.title, "Later");
+}
+
+#[test]
+fn an_update_just_before_air_keeps_both_hard_one_offs_on_time() {
+    let mut engine = songs("oo6");
+    let a = schedule(
+        &mut engine,
+        promo("oo6-a", "First"),
+        at(13, 0, 5),
+        Repeat::Once,
+    );
+    schedule(
+        &mut engine,
+        promo("oo6-b", "Second"),
+        at(13, 0, 8),
+        Repeat::Once,
+    );
+    let (p, clock) = offline(engine, |_| {});
+    let alarms = p.alarms().unwrap();
+    let before = run(&p, &clock, 2.0);
+    update(
+        &p,
+        a,
+        promo("oo6-a2", "First, new cut"),
+        at(13, 0, 5),
+        Repeat::Once,
+    );
+    let after = run(&p, &clock, 8.0);
+    let program = [before, after].concat();
+    let first = first_audible(&program, 1, 0).expect("the first one-off sounds");
+    assert!(first.abs_diff(5 * SR) <= SR / 200, "first at {first}");
+    let second = first_audible(&program, 1, first + SR + SR / 10).expect("the second sounds");
+    assert!(second.abs_diff(8 * SR) <= SR / 200, "second at {second}");
+    let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
+    assert!(
+        !raised.iter().any(|a| matches!(
+            a,
+            Alarm::HardEventCancelled { .. }
+                | Alarm::HardEventMissed { .. }
+                | Alarm::OneOffMissed { .. }
+        )),
+        "{raised:?}"
+    );
+}

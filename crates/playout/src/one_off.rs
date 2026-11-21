@@ -14,11 +14,16 @@ use crate::core::{Core, HARD_LOCK, add, sub};
 const MISS_GRACE: Duration = Duration::from_secs(5);
 
 impl Core {
-    /// Notes that a one-off ended on air, so the next sweep removes it.
+    /// Notes that a one-off with no repeat ended on air, so the next sweep removes it.
+    /// The note keeps the start, so a later edit of the time keeps the one-off.
     pub(crate) fn note_aired_one_off(&mut self, item: ItemId) {
         let state = self.engine.state();
-        if state.one_offs().iter().any(|o| o.item.id == item) {
-            self.aired_one_offs.insert(item);
+        let aired = state
+            .one_offs()
+            .into_iter()
+            .find(|o| o.item.id == item && o.repeat == Repeat::Once);
+        if let Some(o) = aired {
+            self.aired_one_offs.insert((item, o.start));
         }
     }
 
@@ -54,12 +59,14 @@ impl Core {
                 continue;
             }
             let id = o.item.id;
-            if self.aired_one_offs.contains(&id) {
+            if self.aired_one_offs.contains(&(id, o.start)) {
                 aired.push(id);
                 continue;
             }
             let target = radio_timing::resolve_local(&tz, o.start);
-            if now <= add(target, o.tolerance + MISS_GRACE) {
+            // The plan may still place it late, so it is not missed yet.
+            let planned = self.timeline.entries.iter().any(|e| e.item == id);
+            if planned || now <= add(target, o.tolerance + MISS_GRACE) {
                 continue;
             }
             let early = sub(target, o.tolerance + MISS_GRACE);
@@ -70,7 +77,6 @@ impl Core {
             }
         }
         for id in aired {
-            self.aired_one_offs.remove(&id);
             let _ = self.engine.expire_one_off(id);
         }
         for (item, title, target) in missed {
@@ -84,12 +90,8 @@ impl Core {
             );
             let _ = self.engine.expire_one_off(item);
         }
-        self.aired_one_offs.retain(|id| {
-            self.engine
-                .state()
-                .one_offs()
-                .iter()
-                .any(|o| o.item.id == *id)
-        });
+        let left = self.engine.state().one_offs();
+        self.aired_one_offs
+            .retain(|(id, start)| left.iter().any(|o| o.item.id == *id && o.start == *start));
     }
 }
