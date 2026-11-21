@@ -19,8 +19,13 @@ const MIN_STEP: Duration = Duration::from_millis(1);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Origin {
     Main,
-    Rule { playlist: PlaylistId, rule: usize },
+    Rule {
+        playlist: PlaylistId,
+        rule: usize,
+    },
     Manual,
+    /// Added from a fill pool by the fitter to close a gap before a fixed event.
+    Fill,
 }
 
 /// A fixed-time event's wish: where it should start and how far it may miss.
@@ -62,6 +67,15 @@ pub enum Warning {
     OutsideTolerance {
         playlist: PlaylistId,
         error: SignedDuration,
+    },
+    /// A locked entry could not keep its start: a non-trimmable item ran into it.
+    LockedMoved {
+        item: ItemId,
+        by: Duration,
+    },
+    /// The station's time zone is unknown; local-time rules were checked in UTC.
+    UnknownTimeZone {
+        tz: String,
     },
 }
 
