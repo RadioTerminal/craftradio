@@ -106,6 +106,8 @@ struct Fit {
     user: Option<egui::Vec2>,
     /// True after the saved size was read.
     loaded: bool,
+    /// True while a size request waits for the window system.
+    pending: bool,
 }
 
 /// Which tool windows are open, and their sizes.
@@ -270,19 +272,22 @@ fn floating(
         .frame(theme::panel_frame(t))
         .min_size(min)
         .max_size(max);
-    let window = match user {
-        Some(s) => window.resizable(true).default_size(s),
-        None => window.auto_sized(),
-    };
-    let height = if w.is_list() {
-        list_height(min, max)
-    } else {
-        max.y
+    // A list scrolls by itself, so its window starts at about LIST_ROWS rows and the person
+    // can resize it.
+    let list = egui::vec2(w.size()[0], list_height(min, max));
+    let window = match (user, w.is_list()) {
+        (Some(s), _) => window.resizable(true).default_size(s),
+        (None, true) => window.resizable(true).default_size(list),
+        (None, false) => window.auto_sized(),
     };
     window.show(ctx, |ui| {
-        egui::ScrollArea::both()
-            .max_height(height)
-            .show(ui, |ui| add(ui));
+        if w.is_list() {
+            add(ui);
+        } else {
+            egui::ScrollArea::both()
+                .max_height(max.y)
+                .show(ui, |ui| add(ui));
+        }
     });
     is_open
 }
@@ -317,24 +322,36 @@ fn native(
                 return ui.input(|i| i.viewport().close_requested());
             }
             let out = egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-                egui::ScrollArea::both().show(ui, |ui| add(ui)).content_size
+                if w.is_list() {
+                    // A list scrolls by itself: its width counts, and its height is fixed.
+                    add(ui);
+                    egui::vec2(ui.min_rect().width(), list_height(min, max))
+                } else {
+                    egui::ScrollArea::both().show(ui, |ui| add(ui)).content_size
+                }
             });
             let margin = frame.total_margin().sum();
             let want = desired(w, out.inner, margin, min, max);
             if let Some(now) = ui.input(|i| i.viewport().inner_rect.map(|r| r.size())) {
                 // A size that changes by itself to another size than the asked size is a
                 // resize by hand.
+                // While a request waits, the first change is its answer, even when the
+                // window system clamps it.
                 let moved = fit.seen.is_some_and(|s| differs(s, now));
-                let asked = fit.applied.is_none_or(|a| !differs(a, now));
-                if moved && !asked {
+                if moved && fit.pending {
+                    fit.pending = false;
+                } else if moved && fit.applied.is_some_and(|a| differs(a, now)) {
                     fit.user = Some(now);
                     change = Some(SizeChange::Manual([now.x, now.y]));
                 }
                 fit.seen = Some(now);
             }
             if fit.user.is_none() && fit.applied.is_none_or(|a| differs(a, want)) {
+                let same = fit.seen.is_some_and(|s| !differs(s, want));
                 ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(want));
                 fit.applied = Some(want);
+                // A request for the size that the window has already brings no change.
+                fit.pending = !same;
             }
             ui.input(|i| i.viewport().close_requested())
         },
