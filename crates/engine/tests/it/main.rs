@@ -4,6 +4,7 @@ use radio_model::{Item, ItemId, PlaylistId, Source};
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 mod dynamics;
+mod loudness;
 
 const MAIN: PlaylistId = PlaylistId(1);
 
@@ -611,7 +612,7 @@ fn unavailable_cue_output_is_rejected_without_showing_pfl_on() {
 #[test]
 fn every_registered_command_deserializes_and_has_typed_arguments() {
     let e = Engine::open_in_memory().unwrap();
-    let values = serde_json::json!({
+    let mut values = serde_json::json!({
         "playlist": 1, "item": 1, "deck": 0, "name": "Test playlist",
         "enabled": true, "fill_pool": false, "on_interrupt": "Resume",
         "items": [], "at": 0, "lock": true, "expect_count": 0, "remove_locked": true,
@@ -624,6 +625,9 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
         "until": "2026-11-22T00:00:00Z", "limit": 10,
         "id": 1, "ids": [1]
     });
+    // The loudness commands: a measurement and an item trim.
+    values["lufs"] = serde_json::json!(-18.0);
+    values["db"] = serde_json::json!(-1.5);
     let specs = registry();
     let command_schema = schemars::schema_for!(Command).to_value();
     assert_eq!(

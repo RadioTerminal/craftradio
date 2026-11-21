@@ -184,6 +184,8 @@ impl Core {
                     Err(_) => Check::Now(false),
                 }
             }
+            // Playout does not apply item gains yet: the audio did not change.
+            AudioIntent::SetLoudness(_) => Check::Now(false),
             AudioIntent::Next => {
                 self.leave_emergency(now);
                 self.hold = false;
