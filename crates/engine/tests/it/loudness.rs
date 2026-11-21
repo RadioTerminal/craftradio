@@ -171,3 +171,35 @@ fn the_loudness_commands_parse_from_json() {
     let cmd: Command = serde_json::from_value(json).unwrap();
     assert_eq!(cmd.id(), "item.set_gain_trim");
 }
+
+/// A copy of a playlist keeps the trims and the measured loudness of its items.
+#[test]
+fn a_duplicated_playlist_keeps_trims_and_loudness() {
+    let mut e = Engine::open_in_memory().unwrap();
+    engine_with_item(&mut e);
+    e.dispatch(measure(1, "abc", -12.0)).unwrap();
+    e.dispatch(Command::ItemSetGainTrim {
+        item: ItemId(1),
+        db: 1.5,
+    })
+    .unwrap();
+    let made = e
+        .dispatch(Command::PlaylistDuplicate {
+            playlist: PlaylistId(1),
+            name: "Copy".into(),
+        })
+        .unwrap();
+    let copy = PlaylistId(made.data.and_then(|v| v.as_u64()).unwrap());
+    let state = e.state();
+    let first = state
+        .station
+        .playlists
+        .iter()
+        .find(|p| p.id == copy)
+        .and_then(|p| p.items.first())
+        .map(|i| i.id)
+        .unwrap();
+    assert_ne!(first, ItemId(1));
+    assert_eq!(state.trim_of(first), 1.5);
+    assert!(state.loudness_of(first).is_some(), "no second measurement");
+}

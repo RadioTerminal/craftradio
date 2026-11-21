@@ -1461,6 +1461,16 @@ impl Engine {
         if let Some(script) = self.state.scripts.get(&playlist).cloned() {
             self.state.scripts.insert(id, script);
         }
+        // The copies play the same files: they keep the trim and the file hash, so the
+        // measured loudness applies to them too.
+        for (old, new) in &map {
+            if let Some(t) = self.state.trims.get(old).copied() {
+                self.state.trims.insert(*new, t);
+            }
+            if let Some(h) = self.state.hashes.get(old).cloned() {
+                self.state.hashes.insert(*new, h);
+            }
+        }
         Ok(Outcome {
             data: Some(id.0.into()),
             ..Outcome::default()
