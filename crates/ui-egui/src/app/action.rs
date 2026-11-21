@@ -67,6 +67,8 @@ pub(crate) enum Action {
     UseAsMain(String),
     /// Open a dialog that adds a stream or the live input.
     AddDialog(AddDialog),
+    /// Open the dialog that adds or changes a one-off of Upcoming.
+    OneOff(Box<crate::one_off::OneOffDialog>),
     /// Select every row of the Main list.
     SelectAllRows,
     /// Ask before removing every item of a playlist.
@@ -166,6 +168,9 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             format!("Acknowledged {n} alarms; they no longer count as new")
         }
         Edit::ExportAlarms { path, ids } => format!("Writing {} alarms to {path}…", ids.len()),
+        Edit::ScheduleOneOff(o) if o.id == 0 => format!("Added a one-off at {}", o.start),
+        Edit::ScheduleOneOff(o) => format!("Changed the one-off at {}", o.start),
+        Edit::RemoveOneOff(_) => "Removed the one-off; Undo brings it back".to_owned(),
     }
 }
 
@@ -248,6 +253,8 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         Edit::AddLive { playlist, .. } => format!("added {n} live input to {playlist}"),
         Edit::AckAlarm(_) | Edit::AckAlarms(_) => format!("acknowledged {n} alarms"),
         Edit::ExportAlarms { path, .. } => format!("wrote {n} alarms to {path}"),
+        Edit::ScheduleOneOff(o) => format!("put a one-off at {}; nothing plays here", o.start),
+        Edit::RemoveOneOff(_) => "removed the one-off".to_owned(),
     };
     format!("preview — {what} (not saved)")
 }
@@ -408,6 +415,7 @@ impl RadioApp {
             }
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
             Action::AddDialog(d) => self.add_dialog = Some(d),
+            Action::OneOff(d) => self.one_off = Some(*d),
             Action::ClearPlaylist(name) => {
                 let tab = self
                     .view

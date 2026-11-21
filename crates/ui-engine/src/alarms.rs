@@ -220,6 +220,11 @@ pub(crate) fn alarm_text(n: &Names<'_>, a: &Alarm) -> String {
             n.item(*item),
             n.clock(*target)
         ),
+        Alarm::OneOffMissed { title, target, .. } => format!(
+            "The one-off \"{title}\" at {} did not air, so it left Upcoming. Add it again if it \
+             should still air",
+            n.clock(*target)
+        ),
         Alarm::OperatorItemEvicted { deck, item } => format!(
             "Deck {} gave up \"{}\" to make room for a hard event",
             deck_name(*deck),
@@ -251,6 +256,7 @@ fn alarm_severity(a: &Alarm) -> Severity {
         | Alarm::StreamDown { .. }
         | Alarm::HardEventNotLoaded { .. }
         | Alarm::HardEventMissed { .. }
+        | Alarm::OneOffMissed { .. }
         | Alarm::LogFailed { .. } => Severity::Alarm,
         Alarm::ItemSkipped { .. }
         | Alarm::ControlOverrun
@@ -284,6 +290,7 @@ fn alarm_item(a: &Alarm) -> Option<ItemId> {
         | Alarm::HardEventNotLoaded { item }
         | Alarm::FixedLate { item, .. }
         | Alarm::HardEventMissed { item, .. }
+        | Alarm::OneOffMissed { item, .. }
         | Alarm::OperatorItemEvicted { item, .. }
         | Alarm::HardEventLocked { item, .. }
         | Alarm::HardEventCancelled { item, .. } => Some(*item),

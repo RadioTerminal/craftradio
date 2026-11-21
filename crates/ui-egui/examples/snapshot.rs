@@ -15,7 +15,9 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::mock::StressSource;
 use radio_ui_egui::theme::size;
-use radio_ui_egui::view::{DeckState, Edit, Row, StationView};
+use radio_ui_egui::view::{
+    DeckState, Edit, OneOffRepeat, OneOffSource, OneOffView, Row, StationView,
+};
 use radio_ui_egui::{MockSource, RadioApp, ToolWindow, ViewSource};
 
 /// Render at twice the point size, as a Retina display does.
@@ -44,7 +46,26 @@ enum Scene {
     Menu(String, String),
     /// Open a window, then right-click a node in it.
     WindowMenu(ToolWindow, String),
+    /// With a one-off in Upcoming, do the scene.
+    WithOneOff(Box<Scene>),
 }
+
+/// The one-off of the check set: a soft file at 15:12 local time.
+fn one_off_seed() -> Edit {
+    Edit::ScheduleOneOff(OneOffView {
+        id: 0,
+        source: OneOffSource::File {
+            path: "/music/station-promo.wav".to_owned(),
+        },
+        start: jiff::civil::date(2026, 11, 21).at(15, 12, 0, 0),
+        hard: false,
+        tolerance_s: 2.0,
+        repeat: OneOffRepeat::Once,
+    })
+}
+
+/// The label of the Upcoming row of the seeded one-off.
+const ONE_OFF_ROW: &str = "One-off station-promo";
 
 const ROW: &str = "Juniper Vale – Satellites of Ulvenik";
 
@@ -54,10 +75,18 @@ struct Qa {
     min: Option<ToolWindow>,
     /// A deck to show on air in place of the deck that the source plays.
     on_air: Option<usize>,
+    /// An edit that the source gets after its first snapshot, such as a one-off.
+    seed: Option<Edit>,
 }
 
 impl ViewSource for Qa {
     fn snapshot(&mut self, now: Timestamp) -> StationView {
+        if let Some(edit) = self.seed.take() {
+            let _ = self.inner.snapshot(now);
+            if let Err(e) = self.inner.edit(edit) {
+                eprintln!("snapshot: the seed edit failed: {e}");
+            }
+        }
         let mut v = self.inner.snapshot(now);
         if let Some(w) = self.min {
             let [x, y] = w.min_size();
@@ -310,6 +339,40 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
         for (k, deck) in ['b', 'c', 'd'].into_iter().enumerate() {
             scenes.push((format!("deck-{deck}-on-air"), wide, Scene::OnAir(k + 1)));
         }
+        let one = |s: Scene| Scene::WithOneOff(Box::new(s));
+        for w in QA_WIDTHS {
+            scenes.push(("one-off-upcoming".into(), w, one(Scene::Main)));
+        }
+        scenes.push((
+            "one-off-add".into(),
+            wide,
+            Scene::Click(vec!["Add one-off".into()]),
+        ));
+        scenes.push((
+            "one-off-add-narrow".into(),
+            QA_WIDTHS[0],
+            Scene::Click(vec!["Add one-off".into()]),
+        ));
+        scenes.push((
+            "one-off-add-library".into(),
+            wide,
+            Scene::Click(vec!["Add one-off".into(), "Library source".into()]),
+        ));
+        scenes.push((
+            "one-off-add-url".into(),
+            wide,
+            Scene::Click(vec!["Add one-off".into(), "URL source".into()]),
+        ));
+        scenes.push((
+            "one-off-menu".into(),
+            wide,
+            one(Scene::Menu(ONE_OFF_ROW.into(), String::new())),
+        ));
+        scenes.push((
+            "one-off-edit".into(),
+            wide,
+            one(Scene::Menu(ONE_OFF_ROW.into(), "Edit one-off".into())),
+        ));
         scenes.push((
             "toast".into(),
             QA_WIDTHS[0],
@@ -373,10 +436,15 @@ fn render(
         Scene::OnAir(k) => Some(*k),
         _ => None,
     };
+    let (scene, seed) = match scene {
+        Scene::WithOneOff(inner) => (inner.as_ref(), Some(one_off_seed())),
+        other => (other, None),
+    };
     let source = Qa {
         inner: src,
         min,
         on_air,
+        seed,
     };
     let mut harness = Harness::builder()
         .with_size(size)
@@ -385,7 +453,7 @@ fn render(
         .build_eframe(move |_cc| RadioApp::new(Box::new(source), Box::new(move || now)));
     harness.run_steps(FRAMES);
     match scene {
-        Scene::Main | Scene::OnAir(_) => {}
+        Scene::Main | Scene::OnAir(_) | Scene::WithOneOff(_) => {}
         Scene::Window(w) | Scene::WindowMin(w) => harness.state_mut().set_window(*w, true),
         Scene::WindowClick(w, labels) | Scene::WindowMinClick(w, labels) => {
             harness.state_mut().set_window(*w, true);

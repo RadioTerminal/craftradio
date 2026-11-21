@@ -66,6 +66,80 @@ pub struct Row {
     pub stream: Option<StreamState>,
     /// The deck that holds the item of this row (0 is deck A), if a deck holds it.
     pub deck: Option<usize>,
+    /// The one-off of Upcoming that this row airs. `None` for other rows.
+    pub one_off: Option<OneOffView>,
+}
+
+/// A one-off item of Upcoming: a source at a local time of the station.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OneOffView {
+    /// The id of the one-off, or 0 for a new one in [`Edit::ScheduleOneOff`].
+    pub id: u64,
+    pub source: OneOffSource,
+    /// The start as a local date and time in the station time zone.
+    pub start: jiff::civil::DateTime,
+    /// True when it cuts in at its time sharp. A soft one-off may move by its tolerance.
+    pub hard: bool,
+    pub tolerance_s: f32,
+    pub repeat: OneOffRepeat,
+}
+
+/// What a one-off plays.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OneOffSource {
+    /// An audio file. The source reads its length.
+    File { path: String },
+    /// A library item, by its id in [`StationView::library`].
+    Library { item: u64, title: String },
+    /// An internet stream. It has no length of its own, so it has a planned length.
+    Url {
+        url: String,
+        title: String,
+        keep_alive: bool,
+        len: Duration,
+    },
+    /// The live input for a planned length.
+    Live {
+        device: String,
+        channels: (u32, u32),
+        len: Duration,
+    },
+}
+
+impl OneOffSource {
+    /// The name of the kind of source, as the dialog shows it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::File { .. } => "File",
+            Self::Library { .. } => "Library",
+            Self::Url { .. } => "URL",
+            Self::Live { .. } => "Live input",
+        }
+    }
+}
+
+/// How often a one-off airs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OneOffRepeat {
+    /// One time. After it airs, it leaves the schedule.
+    #[default]
+    Once,
+    Daily,
+    Weekdays,
+    Weekly,
+}
+
+impl OneOffRepeat {
+    pub const ALL: [Self; 4] = [Self::Once, Self::Daily, Self::Weekdays, Self::Weekly];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Once => "Once",
+            Self::Daily => "Every day",
+            Self::Weekdays => "Monday to Friday",
+            Self::Weekly => "Every week",
+        }
+    }
 }
 
 /// How strictly a fixed row keeps its time.
@@ -1114,6 +1188,10 @@ pub enum Edit {
         path: String,
         ids: Vec<u64>,
     },
+    /// Add a one-off to Upcoming. With an id other than 0, change that one-off.
+    ScheduleOneOff(OneOffView),
+    /// Remove the one-off with this id from Upcoming.
+    RemoveOneOff(u64),
 }
 
 /// The file extensions that count as audio.

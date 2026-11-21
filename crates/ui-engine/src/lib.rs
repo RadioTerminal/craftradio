@@ -17,6 +17,7 @@ pub use icecast::{
     icecast_view,
 };
 mod map;
+mod one_off;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -84,6 +85,8 @@ pub struct EngineSource {
     tabs: Vec<PlaylistTab>,
     main: Option<PlaylistTab>,
     library: Vec<LibraryItem>,
+    /// The one-offs of Upcoming, by their item.
+    one_offs: HashMap<ItemId, radio_ui_egui::view::OneOffView>,
     /// What each row id of the last snapshot stands for.
     rows: HashMap<u64, RowRef>,
     /// The row ids of the last snapshot, in order.
@@ -197,6 +200,7 @@ impl EngineSource {
             tabs: Vec::new(),
             main: None,
             library: Vec::new(),
+            one_offs: HashMap::new(),
             rows: HashMap::new(),
             row_order: Vec::new(),
             previous: HashMap::new(),
@@ -262,10 +266,11 @@ impl EngineSource {
             .iter()
             .flat_map(|p| p.items.iter().map(|i| (i.id, (p.id, i.clone()))))
             .collect();
+        // The system playlist One-off has no tab: Upcoming shows its items.
         self.tabs = station
             .playlists
             .iter()
-            .filter(|p| !p.is_main)
+            .filter(|p| !p.is_main && p.role != radio_model::PlaylistRole::OneOff)
             .map(|p| map::tab(p, state))
             .collect();
         self.main = station
@@ -274,6 +279,11 @@ impl EngineSource {
             .find(|p| p.is_main)
             .map(|p| map::tab(p, state));
         self.library = self.library_items();
+        self.one_offs = state
+            .one_offs()
+            .iter()
+            .map(|o| (o.item.id, one_off::view_of(o)))
+            .collect();
         self.sync_folders();
         self.sync_watches();
     }
@@ -282,7 +292,14 @@ impl EngineSource {
     fn library_items(&self) -> Vec<LibraryItem> {
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
-        for p in &self.state.station.playlists {
+        // A one-off is a copy for Upcoming, not a file of the library.
+        let playlists = self
+            .state
+            .station
+            .playlists
+            .iter()
+            .filter(|p| p.role != radio_model::PlaylistRole::OneOff);
+        for p in playlists {
             for item in &p.items {
                 let path = source_text(&item.source);
                 if !seen.insert(path.clone()) {
@@ -346,6 +363,7 @@ impl EngineSource {
             timing: None,
             stream: None,
             deck: None,
+            one_off: None,
         }
     }
 
@@ -388,6 +406,13 @@ impl EngineSource {
                     ok: fit.is_none_or(|x| x.within_tolerance),
                 }
             });
+            if let Some(o) = self.one_offs.get(&e.item) {
+                row.timing = Some(radio_ui_egui::view::Timing {
+                    hard: o.hard,
+                    tolerance_s: o.tolerance_s,
+                });
+                row.one_off = Some(o.clone());
+            }
             row.stream = pv
                 .stream_states
                 .iter()
@@ -560,6 +585,7 @@ impl EngineSource {
             timing: None,
             stream: None,
             deck: None,
+            one_off: None,
         }
     }
 

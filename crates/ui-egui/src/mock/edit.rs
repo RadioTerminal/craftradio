@@ -147,6 +147,83 @@ impl MockSource {
             .collect()
     }
 
+    fn is_one_off(&self, id: u64) -> bool {
+        self.ops
+            .iter()
+            .any(|op| matches!(op, Op::OneOff { view, .. } if view.id == id))
+    }
+
+    /// Takes the one-offs with these ids out of the edits.
+    fn remove_one_offs(&mut self, ids: &[u64]) -> Result<usize, String> {
+        let before = self.ops.len();
+        let mut ops = self.ops.clone();
+        ops.retain(|op| !matches!(op, Op::OneOff { view, .. } if ids.contains(&view.id)));
+        let n = before - ops.len();
+        if n == 0 {
+            return Err(gone("that one-off"));
+        }
+        let Some(top) = self.last_top.clone() else {
+            return Err("preview — no timeline yet".to_owned());
+        };
+        let mut rows = self.rows_from(&top).to_vec();
+        self.apply_ops(&mut rows, &ops);
+        self.ops = ops;
+        Ok(n)
+    }
+
+    /// Adds a one-off, or changes the one-off with the id of `view`.
+    fn schedule_one_off(&mut self, mut view: crate::view::OneOffView) -> Result<usize, String> {
+        use crate::view::OneOffSource;
+        let (title, len) = match &view.source {
+            OneOffSource::File { path } => {
+                let name = folders::stem_of(path).to_owned();
+                let len = estimated_len(&name);
+                (name, len)
+            }
+            OneOffSource::Library { item, title } => {
+                let len = self.library_item(*item).map(|l| l.len);
+                let Some(len) = len else {
+                    return Err(gone(&format!("the library item {title}")));
+                };
+                (title.clone(), len)
+            }
+            OneOffSource::Url {
+                url, title, len, ..
+            } => {
+                let name = if title.trim().is_empty() {
+                    crate::view::check_stream_url(url).unwrap_or_else(|_| url.clone())
+                } else {
+                    title.clone()
+                };
+                (name, *len)
+            }
+            OneOffSource::Live { len, .. } => ("Live input".to_owned(), *len),
+        };
+        if len.is_zero() {
+            return Err("preview — a one-off needs a length".to_owned());
+        }
+        if view.id == 0 {
+            view.id = self.next_manual;
+            self.next_manual += 1;
+        } else if !self.is_one_off(view.id) {
+            return Err(gone("that one-off"));
+        }
+        let id = view.id;
+        let Some(top) = self.last_top.clone() else {
+            return Err("preview — no timeline yet".to_owned());
+        };
+        let mut ops = self.ops.clone();
+        ops.retain(|op| !matches!(op, Op::OneOff { view, .. } if view.id == id));
+        ops.push(Op::OneOff { view, title, len });
+        let mut rows = self.rows_from(&top).to_vec();
+        if self.apply_ops(&mut rows, &ops) {
+            self.ops = ops;
+            Ok(1)
+        } else {
+            Err("preview — the one-off does not fit with the fixed items there".to_owned())
+        }
+    }
+
     fn apply_edit_inner(&mut self, edit: Edit) -> Result<usize, String> {
         self.ensure_item_ids();
         match edit {
@@ -230,6 +307,18 @@ impl MockSource {
                     title,
                     len,
                 })
+            }
+            Edit::ScheduleOneOff(view) => self.schedule_one_off(view),
+            Edit::RemoveOneOff(id) => self.remove_one_offs(&[id]),
+            Edit::Remove(ids) if ids.iter().any(|id| self.is_one_off(*id)) => {
+                let (ones, rest): (Vec<u64>, Vec<u64>) =
+                    ids.into_iter().partition(|id| self.is_one_off(*id));
+                let n = self.remove_one_offs(&ones)?;
+                if rest.is_empty() {
+                    Ok(n)
+                } else {
+                    self.apply_edit_inner(Edit::Remove(rest)).map(|k| k + n)
+                }
             }
             Edit::Remove(ids) => {
                 let protected = self.protected_rows();

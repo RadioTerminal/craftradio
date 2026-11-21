@@ -12,6 +12,11 @@ pub(super) const ADS: [u8; 3] = palette(2);
 pub(super) const NEWS: [u8; 3] = palette(3);
 pub(super) const SHOWS: [u8; 3] = palette(4);
 pub(super) const BEDS: [u8; 3] = palette(5);
+pub(super) const ONE_OFF: [u8; 3] = palette(6);
+/// The name of the playlist of one-off rows.
+pub(super) const ONE_OFF_NAME: &str = "One-off";
+/// How early a soft one-off of the preview starts, in seconds.
+pub(super) const SOFT_EARLY_S: f32 = -0.4;
 /// Colours for playlists made from folders, in turn.
 pub(super) const FOLDER_COLOURS: [[u8; 3]; 3] = [palette(6), palette(7), palette(5)];
 /// The station name. A hidden stream title shows it.
