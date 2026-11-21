@@ -2,6 +2,7 @@ use crate::StreamError;
 use base64::Engine;
 use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use std::{
+    cell::Cell,
     io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},
     sync::{Arc, Mutex, OnceLock, mpsc},
@@ -147,6 +148,7 @@ pub fn default_tls(host: &str) -> bool {
 struct SourceConfig {
     settings: IcecastConfig,
     extra_roots: Vec<Vec<u8>>,
+    dropped_system_roots: Cell<usize>,
 }
 impl std::ops::Deref for SourceConfig {
     type Target = IcecastConfig;
@@ -159,31 +161,56 @@ trait Transport: Read + Write {}
 impl<T: Read + Write> Transport for T {}
 type SourceStream = Box<dyn Transport>;
 
-static SYSTEM_ROOTS: OnceLock<rustls::RootCertStore> = OnceLock::new();
-static SYSTEM_TLS: OnceLock<Result<Arc<rustls::ClientConfig>, &'static str>> = OnceLock::new();
-
-fn tls_config(extra_roots: &[Vec<u8>]) -> Result<Arc<rustls::ClientConfig>, &'static str> {
-    if extra_roots.is_empty() {
-        return SYSTEM_TLS.get_or_init(|| build_tls_config(&[])).clone();
-    }
-    build_tls_config(extra_roots)
+struct SystemRoots {
+    store: rustls::RootCertStore,
+    dropped: usize,
 }
 
-fn build_tls_config(extra_roots: &[Vec<u8>]) -> Result<Arc<rustls::ClientConfig>, &'static str> {
-    let mut roots = SYSTEM_ROOTS
-        .get_or_init(|| {
-            let mut roots = rustls::RootCertStore::empty();
-            roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
-            roots
-        })
-        .clone();
-    for der in extra_roots {
+static SYSTEM_ROOTS: OnceLock<SystemRoots> = OnceLock::new();
+static SYSTEM_TLS: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+
+fn tls_config(cfg: &SourceConfig) -> Result<Arc<rustls::ClientConfig>, String> {
+    if cfg.extra_roots.is_empty() {
+        if let Some(config) = SYSTEM_TLS.get() {
+            cfg.dropped_system_roots
+                .set(SYSTEM_ROOTS.get().map_or(0, |roots| roots.dropped));
+            return Ok(config.clone());
+        }
+        let config = build_tls_config(cfg)?;
+        let _ = SYSTEM_TLS.set(config.clone());
+        return Ok(config);
+    }
+    build_tls_config(cfg)
+}
+
+fn build_tls_config(cfg: &SourceConfig) -> Result<Arc<rustls::ClientConfig>, String> {
+    let loaded;
+    let system = if let Some(system) = SYSTEM_ROOTS.get() {
+        system
+    } else {
+        let mut store = rustls::RootCertStore::empty();
+        let (_, dropped) =
+            store.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+        loaded = SystemRoots { store, dropped };
+        if !loaded.store.is_empty() {
+            let _ = SYSTEM_ROOTS.set(loaded);
+            SYSTEM_ROOTS.get().ok_or("trust root cache unavailable")?
+        } else {
+            &loaded
+        }
+    };
+    cfg.dropped_system_roots.set(system.dropped);
+    let mut roots = system.store.clone();
+    for der in &cfg.extra_roots {
         roots
             .add(der.clone().into())
             .map_err(|_| "invalid extra root")?;
     }
     if roots.is_empty() {
-        return Err("no usable trust roots");
+        return Err(format!(
+            "no usable trust roots ({} dropped system roots)",
+            system.dropped
+        ));
     }
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -245,7 +272,7 @@ fn open_transport(cfg: &SourceConfig) -> Result<SourceStream, StreamError> {
         // Do not include peer-supplied text or credentials in errors.
         StreamError::Invalid(format!("TLS: {message} for {}", cfg.host))
     };
-    let config = tls_config(&cfg.extra_roots).map_err(tls_error)?;
+    let config = tls_config(cfg).map_err(|error| tls_error(&error))?;
     let name = rustls::pki_types::ServerName::try_from(cfg.host.clone())
         .map_err(|_| tls_error("invalid server name"))?;
     let mut connection = rustls::ClientConnection::new(config, name)
@@ -256,7 +283,9 @@ fn open_transport(cfg: &SourceConfig) -> Result<SourceStream, StreamError> {
     };
     while connection.is_handshaking() {
         connection.complete_io(&mut io).map_err(|error| {
-            if matches!(
+            if Instant::now() >= io.deadline {
+                tls_error("handshake timed out")
+            } else if matches!(
                 error
                     .get_ref()
                     .and_then(|inner| inner.downcast_ref::<rustls::Error>()),
@@ -279,6 +308,8 @@ pub enum StreamStatus {
     Connected {
         since: jiff::Timestamp,
         last_metadata_error: Option<String>,
+        /// System certificates rejected while loading the trust store.
+        dropped_system_roots: usize,
     },
     Retrying {
         in_secs: u64,
@@ -338,6 +369,7 @@ impl IcecastClient {
         let cfg = SourceConfig {
             settings: cfg,
             extra_roots,
+            dropped_system_roots: Cell::new(0),
         };
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Mutex::new(StreamStatus::Connecting));
@@ -468,6 +500,7 @@ fn send(
         StreamStatus::Connected {
             since: jiff::Timestamp::now(),
             last_metadata_error: None,
+            dropped_system_roots: cfg.dropped_system_roots.get(),
         },
     );
     #[cfg(feature = "mp3")]

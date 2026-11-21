@@ -200,10 +200,24 @@ fn slow_tls_handshake_has_total_deadline_and_stop_finishes() {
         }
     });
     let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+    let started = std::time::Instant::now();
     let handle = IcecastClient::start(cfg, consumer);
-    std::thread::sleep(Duration::from_millis(500));
+    loop {
+        if let StreamStatus::Retrying { last_error, .. } = handle.status() {
+            assert!(last_error.contains("handshake timed out"), "{last_error}");
+            assert!(
+                (Duration::from_millis(4500)..=Duration::from_secs(6)).contains(&started.elapsed())
+            );
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "handshake did not time out"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     handle.stop();
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
     while handle.status() != StreamStatus::Stopped {
         assert!(
             std::time::Instant::now() < deadline,
