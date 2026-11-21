@@ -32,7 +32,7 @@ and MAY are used as in RFC 2119.
    use colour as the only signal (a playlist's colour always comes with its name).
 11. Keep secrets and personal details out of code, logs and fixtures. Fixture names, titles and
     artists are invented, never real songs.
-12. A new dependency MUST be MIT, Apache-2.0, BSD, ISC, Zlib, Unicode or MPL-2.0 licensed. No
+12. A new dependency MUST be MIT, Apache-2.0, BSD, ISC, Zlib, Unicode or MPL-2.0 licensed (fonts may also be OFL-1.1 or the Ubuntu Font Licence, as egui's default fonts and the template's own fonts are). No
     GPL/LGPL/AGPL crates.
 13. Dates and times use `jiff`. This departs from the template's `chrono` rule, because
     DST-correct local time zones are core to scheduling. Never hand-roll calendar or UTC math.
