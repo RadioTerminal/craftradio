@@ -1,5 +1,5 @@
 use jiff::{SignedDuration, Timestamp};
-use radio_model::{FixMode, Item, ItemId, Station};
+use radio_model::{Constraint, FixMode, Item, ItemId, Station};
 use radio_scheduler::{
     Entry, FitResult, FitStep, Fixed, MAX_GAP, Origin, PlayHistory, Timeline, Warning, fit_all,
     select_before,
@@ -291,4 +291,144 @@ fn select_before_search_is_bounded_on_huge_gap() {
         "leftover is the real remainder"
     );
     assert!(leftover >= SignedDuration::try_from(bound).unwrap());
+}
+
+#[test]
+fn soft_never_starts_earlier_than_tolerance() {
+    // One track cannot reach a soft event ten minutes out, and there is no fill.
+    let st = make_station(tracks(1, 1, 180), vec![(jingle(100, 60), 0)], Vec::new());
+    let target = at(600);
+    let mut tl = timeline(&st, &[(target, FixMode::Soft)]);
+    fit(&st, &mut tl);
+    let ev = event_index(&tl, 100);
+    let start = tl.entries[ev].start;
+    assert!(
+        start >= target - TOL,
+        "starts no earlier than target − tolerance"
+    );
+    let result = fit_for(&tl, target);
+    assert!(!result.within_tolerance);
+    let early = result.steps.iter().find_map(|s| match s {
+        FitStep::EarlyStart { by } => Some(*by),
+        _ => None,
+    });
+    assert!(early.is_some_and(|by| by <= TOL));
+    let prev = &tl.entries[ev - 1];
+    let item = find(&st, prev.item).0;
+    let handover = prev.start + radio_timing::advance(item, Some(item)) - prev.trim;
+    let silence = start.duration_since(handover).unsigned_abs();
+    assert!(
+        tl.warnings
+            .iter()
+            .any(|w| matches!(w, Warning::DeadAir { gap, .. } if *gap == silence)),
+        "{:?}",
+        tl.warnings
+    );
+}
+
+#[test]
+fn reorder_respects_artist_separation() {
+    // t1, t2, t5 run 80 s late. The exact fit swaps t5 for t3 (artist "a", like t1);
+    // the separation rule leaves t4 (10 s late, then trimmed) instead.
+    let mut main = vec![
+        track(1, "t1", "a", 180),
+        track(2, "t2", "b", 180),
+        track(5, "t5", "d", 180),
+        track(3, "t3", "a", 100),
+        track(4, "t4", "c", 110),
+    ];
+    main.extend(tracks(6, 7, 180));
+    let mut st = make_station(main, vec![(jingle(100, 60), 0)], Vec::new());
+    let separation = Duration::from_secs(3600);
+    st.playlists[0].constraints = vec![Constraint::ArtistSeparation(separation)];
+    let target = at(178 + 178 + 98);
+    let mut tl = timeline(&st, &[(target, FixMode::Soft)]);
+    fit(&st, &mut tl);
+    let ev = event_index(&tl, 100);
+    let before = &tl.entries[..ev];
+    for (i, a) in before.iter().enumerate() {
+        for b in &before[i + 1..] {
+            let (x, y) = (find(&st, a.item).0, find(&st, b.item).0);
+            assert!(
+                x.artist != y.artist
+                    || b.start.duration_since(a.start).unsigned_abs() >= separation,
+                "{} and {} share an artist within the separation",
+                x.title,
+                y.title
+            );
+        }
+    }
+}
+
+#[test]
+fn locked_entry_keeps_its_start() {
+    // Track 3 is locked 244 s after it would naturally start; a hard event follows later.
+    let st = make_station(tracks(1, 12, 180), vec![(jingle(100, 60), 0)], Vec::new());
+    let mut tl = timeline(&st, &[(at(1400), FixMode::Hard)]);
+    let shift = Duration::from_secs(244);
+    for e in tl.entries.iter_mut().filter(|e| e.fixed.is_none()) {
+        if e.item.0 >= 3 {
+            e.start += shift;
+        }
+        e.locked = e.item == ItemId(3);
+    }
+    let locked_at = tl.entries.iter().find(|e| e.locked).unwrap().start;
+    fit(&st, &mut tl);
+    let locked = tl.entries.iter().position(|e| e.locked).unwrap();
+    assert_eq!(tl.entries[locked].start, locked_at);
+    let prev = &tl.entries[locked - 1];
+    let item = find(&st, prev.item).0;
+    let handover = prev.start + radio_timing::advance(item, Some(item)) - prev.trim;
+    assert!(
+        tl.warnings.iter().any(|w| matches!(
+            w,
+            Warning::DeadAir { at, gap } if *at == handover && *at + *gap == locked_at
+        )),
+        "the silence before the locked entry is reported: {:?}",
+        tl.warnings
+    );
+}
+
+#[test]
+fn hard_late_fades_on_air_item_to_end_at_target() {
+    // Ten-minute tracks: the first runs 50 s past a hard event, more than the soft cap.
+    let st = make_station(tracks(1, 6, 600), vec![(jingle(100, 60), 0)], Vec::new());
+    let target = at(550);
+    let mut tl = timeline(&st, &[(target, FixMode::Hard)]);
+    fit(&st, &mut tl);
+    let ev = event_index(&tl, 100);
+    assert_eq!(tl.entries[ev].start, target);
+    let prev = &tl.entries[ev - 1];
+    assert!(prev.trim > Duration::from_secs(30));
+    assert_eq!(
+        sound_end(&st, prev),
+        target,
+        "the fade finishes at the target"
+    );
+    assert!(fit_for(&tl, target).within_tolerance);
+}
+
+#[test]
+fn first_event_keeps_its_floor_when_everything_before_it_is_dropped() {
+    for mode in [FixMode::Soft, FixMode::Hard] {
+        // 30 s early with nothing before the event beats a 180 s track running 150 s over.
+        let st = make_station(tracks(1, 6, 180), vec![(jingle(100, 60), 0)], Vec::new());
+        let target = at(30);
+        let mut tl = timeline(&st, &[(target, mode)]);
+        fit(&st, &mut tl);
+        let start = tl.entries[event_index(&tl, 100)].start;
+        match mode {
+            FixMode::Hard => assert_eq!(start, target),
+            FixMode::Soft => assert!(start >= target - TOL),
+        }
+        assert_eq!(
+            tl.entries[0].item,
+            ItemId(100),
+            "the track went after the event"
+        );
+        assert!(tl.warnings.iter().any(|w| matches!(
+            w,
+            Warning::DeadAir { at, gap } if *at == t0() && *at + *gap == start
+        )));
+    }
 }

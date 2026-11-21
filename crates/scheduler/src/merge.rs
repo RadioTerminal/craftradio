@@ -68,6 +68,10 @@ pub enum Warning {
         playlist: PlaylistId,
         error: SignedDuration,
     },
+    /// The station's time zone is unknown; local-time rules were checked in UTC.
+    UnknownTimeZone {
+        tz: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

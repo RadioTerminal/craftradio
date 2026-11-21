@@ -1,5 +1,5 @@
 use crate::constraints::item_ok;
-use crate::{Entry, Origin, PlayHistory, Timeline, Warning, allowed};
+use crate::{Entry, Origin, PlayHistory, Played, Timeline, Warning, allowed};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use radio_model::{FixMode, Item, ItemId, Playlist, PlaylistId, Station};
@@ -142,11 +142,15 @@ pub struct FitResult {
     pub steps: Vec<FitStep>,
 }
 
-/// The most a track is faded early to bring a fixed event onto its time.
+/// The most a track is faded early before a `Soft` event. Before a `Hard` event the
+/// on-air track is faded to finish at the target however long that takes.
 const MAX_TRIM: Duration = Duration::from_secs(30);
 
 /// How many entries after a fixed event the reorder step may pull in front of it.
 const LOOKAHEAD: usize = 10;
+
+/// How often the reorder and fill steps re-run after a rotation rule rejects their choice.
+const RETRIES: usize = 3;
 
 fn later(t: Timestamp, d: Duration) -> Timestamp {
     t.checked_add(d).unwrap_or(Timestamp::MAX)
@@ -156,9 +160,23 @@ fn is_hard(e: &Entry) -> bool {
     e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard)
 }
 
+/// `|a − b|` as an unsigned duration.
+fn apart(a: Timestamp, b: Timestamp) -> Duration {
+    a.duration_since(b).unsigned_abs()
+}
+
+fn mask(len: usize, picked: &[usize]) -> Vec<bool> {
+    let mut keep = vec![false; len];
+    for &j in picked {
+        if let Some(k) = keep.get_mut(j) {
+            *k = true;
+        }
+    }
+    keep
+}
+
 struct Fitter<'a> {
     station: &'a Station,
-    hist: &'a PlayHistory,
     tz: TimeZone,
     items: BTreeMap<ItemId, &'a Item>,
 }
@@ -166,6 +184,11 @@ struct Fitter<'a> {
 impl<'a> Fitter<'a> {
     fn item(&self, e: &Entry) -> Option<&'a Item> {
         self.items.get(&e.item).copied()
+    }
+
+    fn playlist(&self, id: PlaylistId) -> Option<&'a Playlist> {
+        let station: &'a Station = self.station;
+        station.playlists.iter().find(|p| p.id == id)
     }
 
     /// Time from `e` starting to the entry after it starting, less `e`'s early fade.
@@ -196,34 +219,97 @@ impl<'a> Fitter<'a> {
     }
 
     fn priority(&self, e: &Entry) -> i32 {
-        self.station
-            .playlists
-            .iter()
-            .find(|p| p.id == e.playlist)
-            .map_or_else(
-                || e.fixed.as_ref().map_or(0, |f| f.priority),
-                |p| p.priority,
-            )
+        self.playlist(e.playlist).map_or_else(
+            || e.fixed.as_ref().map_or(0, |f| f.priority),
+            |p| p.priority,
+        )
     }
 
-    /// When `then` would start if it followed `seq` played back to back, `seq[0]` starting at `t`.
-    fn arrival(&self, t: Timestamp, seq: &[Entry], then: &Entry) -> Timestamp {
-        seq.iter().enumerate().fold(t, |t, (i, e)| {
-            later(t, self.step(e, Some(seq.get(i + 1).unwrap_or(then))))
-        })
-    }
-
-    /// Sets the start of every entry, the first at `t`. Hard fixed entries never start
-    /// before their target; everything else starts when the entry before it hands over.
-    fn reflow(&self, entries: &mut [Entry], mut t: Timestamp) {
-        for i in 0..entries.len() {
-            let start = match &entries[i].fixed {
-                Some(f) if f.mode == FixMode::Hard => t.max(f.target),
-                _ => t,
-            };
-            entries[i].start = start;
-            t = later(start, self.step(&entries[i], entries.get(i + 1)));
+    /// Where `e` starts when the material before it hands over at `t`. Anchors never start
+    /// early: a `Hard` entry waits for its target, a `Soft` one for its target less its
+    /// tolerance, a locked one for its own start.
+    fn anchor(&self, e: &Entry, t: Timestamp) -> Timestamp {
+        match &e.fixed {
+            Some(f) if f.mode == FixMode::Hard => t.max(f.target),
+            Some(f) => t.max(f.target.checked_sub(f.tolerance).unwrap_or(Timestamp::MIN)),
+            None if e.locked => t.max(e.start),
+            None => t,
         }
+    }
+
+    /// The starts of `seq` with the material handing over to `seq[0]` at `base`, and when it
+    /// hands over to `then`. Already placed anchors keep their start.
+    fn times(
+        &self,
+        base: Timestamp,
+        seq: &[Entry],
+        then: Option<&Entry>,
+    ) -> (Vec<Timestamp>, Timestamp) {
+        let mut starts = Vec::with_capacity(seq.len());
+        let mut t = base;
+        for (i, e) in seq.iter().enumerate() {
+            let start = self.anchor(e, t);
+            starts.push(start);
+            t = later(start, self.step(e, seq.get(i + 1).or(then)));
+        }
+        (starts, t)
+    }
+
+    /// When the material `seq`, starting at `base`, hands over to `then`.
+    fn arrival(&self, base: Timestamp, seq: &[Entry], then: &Entry) -> Timestamp {
+        self.times(base, seq, Some(then)).1
+    }
+
+    /// Sets the start of every entry, the first at `base`, using the anchor rules.
+    fn reflow(&self, entries: &mut [Entry], base: Timestamp) {
+        let (starts, _) = self.times(base, entries, None);
+        for (e, start) in entries.iter_mut().zip(starts) {
+            e.start = start;
+        }
+    }
+
+    fn record(&self, sim: &mut PlayHistory, e: &Entry, at: Timestamp) {
+        if let Some(item) = self.item(e) {
+            sim.push(Played {
+                item: item.id,
+                playlist: e.playlist,
+                at,
+                artist: item.artist.clone(),
+                title: item.title.clone(),
+            });
+        }
+    }
+
+    /// The first entry of `seq` marked in `check` that breaks item validity or its playlist's
+    /// constraints at its start, given the entry before it (`prev` for `seq[0]`) and `sim`
+    /// plus the plays of `seq` before it.
+    fn first_violation(
+        &self,
+        sim: &PlayHistory,
+        prev: Option<&Entry>,
+        seq: &[Entry],
+        starts: &[Timestamp],
+        check: &[bool],
+    ) -> Option<usize> {
+        let mut sim = sim.clone();
+        for (i, (e, &at)) in seq.iter().zip(starts).enumerate() {
+            let before = if i == 0 { prev } else { seq.get(i - 1) };
+            if check.get(i).copied().unwrap_or(false)
+                && let Some(item) = self.item(e)
+            {
+                let ok = item_ok(item, at, &sim, &self.tz)
+                    && self.playlist(e.playlist).is_none_or(|p| {
+                        p.constraints
+                            .iter()
+                            .all(|c| allowed(c, item, p.id, at, before, &sim, &self.tz))
+                    });
+                if !ok {
+                    return Some(i);
+                }
+            }
+            self.record(&mut sim, e, at);
+        }
+        None
     }
 
     /// The start slot of each fixed entry. Higher priority is placed first, then the earlier
@@ -258,7 +344,12 @@ impl<'a> Fitter<'a> {
     }
 
     /// Fill-pool items that may play at `at` after `prev`.
-    fn fill_pool(&self, at: Timestamp, prev: Option<&Entry>) -> Vec<(&'a Item, &'a Playlist)> {
+    fn fill_pool(
+        &self,
+        sim: &PlayHistory,
+        at: Timestamp,
+        prev: Option<&Entry>,
+    ) -> Vec<(&'a Item, &'a Playlist)> {
         let station: &'a Station = self.station;
         station
             .playlists
@@ -266,45 +357,238 @@ impl<'a> Fitter<'a> {
             .filter(|p| p.enabled && p.is_fill_pool)
             .flat_map(|p| p.items.iter().map(move |i| (i, p)))
             .filter(|(item, p)| {
-                item_ok(item, at, self.hist, &self.tz)
+                item_ok(item, at, sim, &self.tz)
                     && p.constraints
                         .iter()
-                        .all(|c| allowed(c, item, p.id, at, prev, self.hist, &self.tz))
+                        .all(|c| allowed(c, item, p.id, at, prev, sim, &self.tz))
             })
             .collect()
     }
 }
 
+/// One fixed event being fitted: the material before it is `seg`, starting at `base`.
+struct Fit<'f, 'a> {
+    f: &'f Fitter<'a>,
+    /// Plays already placed before `seg[head]`.
+    sim: &'f PlayHistory,
+    base: Timestamp,
+    /// `seg[..head]` is already recorded in `sim`.
+    head: usize,
+    ev: &'f Entry,
+    target: Timestamp,
+}
+
+impl Fit<'_, '_> {
+    /// When the event would be reached with `seg` followed by the kept `window` entries.
+    fn reach(&self, seg: &[Entry], window: &[(Entry, bool)], keep: &[bool]) -> Timestamp {
+        let mut full = seg.to_vec();
+        full.extend(
+            window
+                .iter()
+                .zip(keep)
+                .filter(|(_, k)| **k)
+                .map(|((e, _), _)| e.clone()),
+        );
+        self.f.arrival(self.base, &full, self.ev)
+    }
+
+    /// `select_before`, then once more with the gap corrected by how far the real arrival
+    /// (order-dependent lengths: the last entry before a `Hard` event plays to its end)
+    /// missed the plan. Keeps the plan whose real arrival is nearer the target.
+    fn two_pass(
+        &self,
+        seg: &[Entry],
+        window: &[(Entry, bool)],
+        cands: &[(Duration, bool, bool)],
+        cursor: Timestamp,
+        gap: Duration,
+    ) -> Vec<bool> {
+        let (picked, leftover) = select_before(gap, cands);
+        let first = mask(window.len(), &picked);
+        let real = self.reach(seg, window, &first);
+        let plan = later(cursor, gap)
+            .checked_sub(leftover)
+            .unwrap_or(Timestamp::MIN);
+        let drift = real.duration_since(plan);
+        if drift.unsigned_abs() <= RESOLUTION {
+            return first;
+        }
+        let corrected = SignedDuration::try_from(gap)
+            .ok()
+            .and_then(|g| g.checked_sub(drift))
+            .filter(|g| g.is_positive())
+            .map_or(Duration::ZERO, |g| g.unsigned_abs());
+        let (picked, _) = select_before(corrected, cands);
+        let second = mask(window.len(), &picked);
+        let real2 = self.reach(seg, window, &second);
+        if apart(real2, self.target) < apart(real, self.target) {
+            second
+        } else {
+            first
+        }
+    }
+
+    /// Chooses which `window` entries play before the event. A choice that breaks a rotation
+    /// rule (checked for every pulled-forward entry and every new neighbour pair) bans the
+    /// offending entry and searches again, at most `RETRIES` times; then the original order.
+    fn choose(&self, seg: &[Entry], window: &[(Entry, bool)], gap: Duration) -> Vec<bool> {
+        let f = self.f;
+        let cursor = f.arrival(self.base, seg, window.first().map_or(self.ev, |(e, _)| e));
+        let mut banned = vec![false; window.len()];
+        for _ in 0..=RETRIES {
+            let cands: Vec<_> = window
+                .iter()
+                .zip(&banned)
+                .map(|((e, before), &ban)| {
+                    // A banned entry looks like an unmovable later one: never selected.
+                    let (movable, before) = if ban {
+                        (false, false)
+                    } else {
+                        (f.movable(e), *before)
+                    };
+                    (f.natural(e), movable, before)
+                })
+                .collect();
+            let keep = self.two_pass(seg, window, &cands, cursor, gap);
+            let kept: Vec<usize> = (0..window.len()).filter(|&j| keep[j]).collect();
+            let mut full = seg.to_vec();
+            full.extend(kept.iter().map(|&j| window[j].0.clone()));
+            let (starts, _) = f.times(self.base, &full, Some(self.ev));
+            let mut check = vec![false; full.len()];
+            for (pos, &j) in kept.iter().enumerate() {
+                let moved_prev = j.checked_sub(1) != pos.checked_sub(1).map(|q| kept[q]);
+                check[seg.len() + pos] = !window[j].1 || moved_prev;
+            }
+            let h = self.head.min(full.len());
+            let Some(bad) = f.first_violation(
+                self.sim,
+                full[..h].last(),
+                &full[h..],
+                &starts[h..],
+                &check[h..],
+            ) else {
+                return keep;
+            };
+            let Some(pos) = (bad + h).checked_sub(seg.len()) else {
+                break;
+            };
+            let j = kept[pos];
+            if f.movable(&window[j].0) {
+                banned[j] = true;
+            } else if let Some(&p) = pos.checked_sub(1).and_then(|q| kept.get(q))
+                && f.movable(&window[p].0)
+            {
+                banned[p] = true;
+            } else {
+                break;
+            }
+        }
+        window.iter().map(|(_, before)| *before).collect()
+    }
+
+    /// Fill entries for the gap before the event, checked against the rotation rules after
+    /// `seg` and after each other. A rejected item is banned and the search re-run.
+    fn fill(&self, seg: &[Entry]) -> Option<Vec<Entry>> {
+        let f = self.f;
+        let arr = f.arrival(self.base, seg, self.ev);
+        if arr >= self.target {
+            return None;
+        }
+        let leftover = apart(self.target, arr);
+        let pool = f.fill_pool(self.sim, arr, seg.last());
+        let mut banned = vec![false; pool.len()];
+        for _ in 0..=RETRIES {
+            let cands: Vec<_> = pool
+                .iter()
+                .zip(&banned)
+                .map(|((item, _), &ban)| (advance(item, Some(item)), !ban, false))
+                .collect();
+            let (picked, _) = select_before(leftover, &cands);
+            if picked.is_empty() {
+                return None;
+            }
+            let fills: Vec<Entry> = picked
+                .iter()
+                .map(|&j| {
+                    let (item, pl) = pool[j];
+                    Entry {
+                        playlist: pl.id,
+                        item: item.id,
+                        start: arr,
+                        len: radio_timing::item_len(item),
+                        origin: Origin::Fill,
+                        locked: false,
+                        fixed: None,
+                        trim: Duration::ZERO,
+                    }
+                })
+                .collect();
+            let mut with = seg.to_vec();
+            with.extend(fills.iter().cloned());
+            let (starts, reached) = f.times(self.base, &with, Some(self.ev));
+            let h = self.head.min(with.len());
+            let check: Vec<bool> = (h..with.len()).map(|i| i >= seg.len()).collect();
+            match f.first_violation(self.sim, with[..h].last(), &with[h..], &starts[h..], &check) {
+                Some(bad) => match (bad + h).checked_sub(seg.len()) {
+                    Some(k) if k < picked.len() => banned[picked[k]] = true,
+                    _ => return None,
+                },
+                None => {
+                    // A hard event must not be made late by an item that cannot be faded.
+                    let overshoots = is_hard(self.ev)
+                        && reached > self.target
+                        && fills.last().is_some_and(|e| !f.trimmable(e));
+                    match picked.last() {
+                        Some(&last) if overshoots => banned[last] = true,
+                        // Keep the fill only if it brings the event closer to its time.
+                        _ => return (apart(reached, self.target) < leftover).then_some(fills),
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
 /// Fits every fixed entry of `tl` onto its target, in this order (spec §6.3):
 ///
-/// 1. **Reorder** the entries between the previous fixed entry (or at most [`MAX_GAP`]
-///    before) and this one, plus up to ten after it, with [`select_before`]. Locked and
-///    non-movable entries stay where they are.
+/// 1. **Reorder** the entries between the previous fixed or locked entry (or at most
+///    [`MAX_GAP`] before) and this one, plus up to ten after it, with [`select_before`].
+///    Locked and non-movable entries stay where they are. Pulled-forward entries and new
+///    neighbours are checked against their playlists' rotation rules.
 /// 2. **Fill** a remaining gap from the enabled fill-pool playlists, checked with the
 ///    playlists' constraints and item validity.
-/// 3. **Trim**: when late, fade the last entry early (at most 30 s; never a locked or
-///    non-trimmable item such as an ad). Before a `Hard` event the fade finishes at the
-///    target. A `Soft` event late within its tolerance starts late instead of trimming.
-/// 4. **Alarm**: outside tolerance gives `Warning::OutsideTolerance`, and a `Hard` event
-///    with silence before it also gives `Warning::DeadAir` with the length of the silence.
+/// 3. **Trim**: before a `Hard` event the entry on air is faded to finish at the target.
+///    Before a `Soft` event it is faded early by at most 30 s, and only when the event
+///    would be later than its tolerance. Locked and non-trimmable items (ads) never are.
+/// 4. **Alarm**: outside tolerance gives `Warning::OutsideTolerance`. Silence before any
+///    entry gives `Warning::DeadAir`.
 ///
 /// Overlapping fixed entries: the higher playlist priority keeps its time (then the
 /// earlier target, then the earlier listed); the other starts right after it and gets
 /// `Warning::FixedConflict`. It is not fitted itself.
 ///
-/// Afterwards every start is recomputed, so nothing overlaps a fixed entry: an entry
-/// starts at the previous one's segue, or at its end before a hard fixed entry. A `Hard`
-/// entry starts at its target, or later when what precedes it cannot be cut in time. A
-/// `Soft` entry starts where the material before it hands over. `FitResult::planned` is
-/// that hand-over time for both modes.
+/// Afterwards every start is recomputed: an entry starts at the previous one's segue, or
+/// at its end before a hard fixed entry. Anchors never start early: a `Hard` entry starts at
+/// its target (later only after an untrimmable item), a `Soft` one no earlier than its
+/// target less its tolerance, a locked one at its own start. `FitResult::planned` is when
+/// the material before the event hands over to it; `error` is that less the target.
 pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
     let Some(t0) = tl.entries.iter().map(|e| e.start).min() else {
         return;
     };
+    let tz = TimeZone::get(&station.tz).unwrap_or_else(|_| {
+        let warning = Warning::UnknownTimeZone {
+            tz: station.tz.clone(),
+        };
+        if !tl.warnings.contains(&warning) {
+            tl.warnings.push(warning);
+        }
+        TimeZone::UTC
+    });
     let f = Fitter {
         station,
-        hist,
-        tz: TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC),
+        tz,
         items: station
             .playlists
             .iter()
@@ -314,17 +598,14 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
     let (events, flow): (Vec<Entry>, Vec<Entry>) =
         tl.entries.drain(..).partition(|e| e.fixed.is_some());
     let mut flow = VecDeque::from(flow);
-    if events.is_empty() {
-        tl.entries = flow.into();
-        return;
-    }
     let slots = f.resolve(&events);
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&i| (slots[i], i));
 
+    let mut sim = hist.clone();
     let mut out: Vec<Entry> = Vec::with_capacity(events.len() + flow.len());
     for (k, &i) in order.iter().enumerate() {
-        let ev = events[i].clone();
+        let ev = &events[i];
         let Some(fx) = ev.fixed.clone() else {
             continue;
         };
@@ -332,54 +613,63 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
         let head = out.pop();
         let base = head.as_ref().map_or(t0, |e| e.start);
         let mut seg: Vec<Entry> = head.into_iter().collect();
+        let fit = Fit {
+            f: &f,
+            sim: &sim,
+            base,
+            head: seg.len(),
+            ev,
+            target,
+        };
         let mut steps = Vec::new();
 
         if slots[i] == target {
             // Entries that end more than MAX_GAP before the target stay as they are.
-            while let Some(front) = flow.front() {
-                let at = f.arrival(base, &seg, front);
-                if later(later(at, f.natural(front)), MAX_GAP) >= target {
-                    break;
+            if let Some(front) = flow.front() {
+                let mut t = f.arrival(base, &seg, front);
+                while let Some(front) = flow.front() {
+                    let start = f.anchor(front, t);
+                    let end = later(start, f.natural(front));
+                    if later(end, MAX_GAP) >= target {
+                        break;
+                    }
+                    seg.extend(flow.pop_front());
+                    t = end;
                 }
-                seg.extend(flow.pop_front());
             }
             let mut window: Vec<(Entry, bool)> = Vec::new();
             while flow.front().is_some_and(|e| e.start < target) {
                 window.extend(flow.pop_front().map(|e| (e, true)));
             }
+            // A locked entry is a boundary: what is before it is not reordered.
+            if let Some(last_locked) = window.iter().rposition(|(e, _)| e.locked) {
+                seg.extend(window.drain(..=last_locked).map(|(e, _)| e));
+            }
+            let fixed_len = seg.len();
             let next_slot = order.get(k + 1).map(|&j| slots[j]);
             let mut ahead = 0;
             while ahead < LOOKAHEAD
                 && flow
                     .front()
-                    .is_some_and(|e| next_slot.is_none_or(|n| e.start < n))
+                    .is_some_and(|e| !e.locked && next_slot.is_none_or(|n| e.start < n))
             {
                 window.extend(flow.pop_front().map(|e| (e, false)));
                 ahead += 1;
             }
-            let cursor = f.arrival(base, &seg, window.first().map_or(&ev, |(e, _)| e));
+
+            // Reorder.
+            let cursor = f.arrival(base, &seg, window.first().map_or(ev, |(e, _)| e));
             let gap = if cursor < target {
-                target.duration_since(cursor).unsigned_abs()
+                apart(target, cursor)
             } else {
                 Duration::ZERO
             };
-            let cands: Vec<_> = window
-                .iter()
-                .map(|(e, before)| (f.natural(e), f.movable(e), *before))
-                .collect();
-            let (kept, _) = select_before(gap, &cands);
-            let mut keep = vec![false; window.len()];
-            for &j in &kept {
-                keep[j] = true;
-            }
-            let moved = window
+            let keep = fit.choose(&seg, &window, gap);
+            let mut moved = window
                 .iter()
                 .zip(&keep)
                 .filter(|((_, before), kept)| before != *kept)
                 .count();
-            if moved > 0 {
-                steps.push(FitStep::Reordered { moved });
-            }
             let mut rest = Vec::new();
             for ((e, _), kept) in window.into_iter().zip(keep) {
                 if kept { seg.push(e) } else { rest.push(e) }
@@ -389,82 +679,88 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             }
 
             // Fill.
-            let arr = f.arrival(base, &seg, &ev);
-            if arr < target {
-                let leftover = target.duration_since(arr).unsigned_abs();
-                let pool = f.fill_pool(arr, seg.last());
-                let cands: Vec<_> = pool
-                    .iter()
-                    .map(|(item, _)| (advance(item, Some(item)), true, false))
-                    .collect();
-                let (picked, _) = select_before(leftover, &cands);
-                let fills: Vec<Entry> = picked
-                    .iter()
-                    .map(|&j| {
-                        let (item, pl) = pool[j];
-                        Entry {
-                            playlist: pl.id,
-                            item: item.id,
-                            start: arr,
-                            len: radio_timing::item_len(item),
-                            origin: Origin::Fill,
-                            locked: false,
-                            fixed: None,
-                            trim: Duration::ZERO,
-                        }
-                    })
-                    .collect();
-                if !fills.is_empty() {
-                    let mut with = seg.clone();
-                    with.extend(fills.iter().cloned());
-                    let new_arr = f.arrival(base, &with, &ev);
-                    // Keep the fill only if it brings the event closer to its time.
-                    if new_arr.duration_since(target).unsigned_abs() < leftover {
-                        steps.push(FitStep::Filled {
-                            items: fills.iter().map(|e| e.item).collect(),
-                        });
-                        seg = with;
-                    }
-                }
+            if let Some(fills) = fit.fill(&seg) {
+                seg.extend(fills);
             }
 
             // Trim.
-            let arr = f.arrival(base, &seg, &ev);
-            if arr > target {
-                let late = arr.duration_since(target).unsigned_abs();
+            let mut trimmed = None;
+            if f.arrival(base, &seg, ev) > target {
+                if fx.mode == FixMode::Hard {
+                    // What would start at or after the target goes after the event instead.
+                    while seg.len() > fixed_len {
+                        let (starts, _) = f.times(base, &seg, Some(ev));
+                        if starts.last().is_none_or(|s| *s < target) {
+                            break;
+                        }
+                        match seg.last() {
+                            Some(e) if e.origin == Origin::Fill => {
+                                seg.pop();
+                            }
+                            Some(e) if f.movable(e) => {
+                                if let Some(e) = seg.pop() {
+                                    flow.push_front(e);
+                                    moved += 1;
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+                let arr = f.arrival(base, &seg, ev);
+                let late = if arr > target {
+                    apart(arr, target)
+                } else {
+                    Duration::ZERO
+                };
                 let wait = fx.mode == FixMode::Soft && late <= fx.tolerance;
                 if let Some(last) = seg.last().filter(|e| !wait && f.trimmable(e)) {
-                    let room = MAX_TRIM
-                        .saturating_sub(last.trim)
-                        .min(f.step(last, Some(&ev)));
-                    let by = late.min(room);
+                    let cap = match fx.mode {
+                        FixMode::Hard => Duration::MAX,
+                        FixMode::Soft => MAX_TRIM.saturating_sub(last.trim),
+                    };
+                    let by = late.min(cap).min(f.step(last, Some(ev)));
                     if by > Duration::ZERO {
                         if let Some(last) = seg.last_mut() {
                             last.trim = last.trim.saturating_add(by);
                         }
-                        steps.push(FitStep::Trimmed { by });
+                        trimmed = Some(by);
                     }
                 }
             }
+            if moved > 0 {
+                steps.push(FitStep::Reordered { moved });
+            }
+            // The hard step above may have taken fill back out, so list what stayed.
+            let items: Vec<ItemId> = seg
+                .get(fixed_len..)
+                .unwrap_or_default()
+                .iter()
+                .filter(|e| e.origin == Origin::Fill)
+                .map(|e| e.item)
+                .collect();
+            if !items.is_empty() {
+                steps.push(FitStep::Filled { items });
+            }
+            if let Some(by) = trimmed {
+                steps.push(FitStep::Trimmed { by });
+            }
         }
 
-        let planned = f.arrival(base, &seg, &ev);
+        let planned = f.arrival(base, &seg, ev);
         let error = planned.duration_since(target);
         let miss = error.unsigned_abs();
         if slots[i] != target {
             tl.warnings.push(Warning::FixedConflict {
                 playlist: ev.playlist,
                 wanted: target,
-                got: match fx.mode {
-                    FixMode::Hard => planned.max(target),
-                    FixMode::Soft => planned,
-                },
+                got: f.anchor(ev, planned),
             });
-        } else if fx.mode == FixMode::Soft && miss > Duration::ZERO {
-            steps.push(if error.is_positive() {
-                FitStep::LateStart { by: miss }
-            } else {
-                FitStep::EarlyStart { by: miss }
+        } else if error.is_positive() {
+            steps.push(FitStep::LateStart { by: miss });
+        } else if error.is_negative() && fx.mode == FixMode::Soft {
+            steps.push(FitStep::EarlyStart {
+                by: miss.min(fx.tolerance),
             });
         }
         let within_tolerance = miss <= fx.tolerance;
@@ -473,12 +769,6 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                 playlist: ev.playlist,
                 error,
             });
-            if fx.mode == FixMode::Hard && error.is_negative() {
-                tl.warnings.push(Warning::DeadAir {
-                    at: planned,
-                    gap: miss,
-                });
-            }
         }
         tl.fits.push(FitResult {
             playlist: ev.playlist,
@@ -488,11 +778,48 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             within_tolerance,
             steps,
         });
-        seg.push(ev);
+        let head = fit.head;
+        seg.push(ev.clone());
         f.reflow(&mut seg, base);
+        for e in &seg[head..] {
+            f.record(&mut sim, e, e.start);
+        }
         out.extend(seg);
     }
     out.extend(flow);
     f.reflow(&mut out, t0);
+    dead_air(&f, tl, &out, t0);
     tl.entries = out;
+}
+
+/// Replaces the timeline's `DeadAir` warnings with the silences of the re-flowed `out`:
+/// before its first entry (from `t0`, or earlier where an old warning began) (up to the horizon the old warnings reached),
+/// and between any two entries.
+fn dead_air(f: &Fitter, tl: &mut Timeline, out: &[Entry], t0: Timestamp) {
+    let mut old = Vec::new();
+    tl.warnings.retain(|w| match w {
+        Warning::DeadAir { at, gap } => {
+            old.push((*at, later(*at, *gap)));
+            false
+        }
+        _ => true,
+    });
+    let mut push = |at: Timestamp, until: Timestamp| {
+        if until > at {
+            tl.warnings.push(Warning::DeadAir {
+                at,
+                gap: apart(until, at),
+            });
+        }
+    };
+    if let Some(first) = out.first() {
+        let from = old.iter().map(|o| o.0).min().map_or(t0, |at| at.min(t0));
+        push(from, first.start);
+    }
+    for w in out.windows(2) {
+        push(later(w[0].start, f.step(&w[0], Some(&w[1]))), w[1].start);
+    }
+    if let (Some(last), Some(end)) = (out.last(), old.iter().map(|o| o.1).max()) {
+        push(later(last.start, f.natural(last)), end);
+    }
 }
