@@ -113,6 +113,8 @@ struct Fit {
     /// The natural width of the content, from the last sizing pass, and when it ran.
     natural_w: Option<f32>,
     measured: Option<std::time::Instant>,
+    /// The size of the content in the last frame.
+    content: Option<egui::Vec2>,
 }
 
 /// A sizing pass measures the natural width of the content this often.
@@ -353,7 +355,18 @@ fn native(
                     add(ui);
                     egui::vec2(ui.min_rect().width(), list_height(min, max))
                 } else {
-                    egui::ScrollArea::both().show(ui, |ui| add(ui)).content_size
+                    // A direction scrolls only when the content is larger than the window by more
+                    // than the slack. A fitted window can be a fraction smaller than its content.
+                    // A scroll bar then shows, takes room, hides again, and the window draws
+                    // every frame.
+                    let room = ui.available_size() + egui::Vec2::splat(size::FIT_SLACK);
+                    let last = fit.content.unwrap_or(egui::Vec2::ZERO);
+                    let scroll = [last.x > room.x, last.y > room.y];
+                    let size = egui::ScrollArea::new(scroll)
+                        .show(ui, |ui| add(ui))
+                        .content_size;
+                    fit.content = Some(size);
+                    size
                 }
             });
             let margin = frame.total_margin().sum();

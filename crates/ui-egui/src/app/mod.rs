@@ -375,14 +375,9 @@ impl RadioApp {
             }),
         );
         let w = ToolWindow::Mixer;
-        let moving = self.meters_moving;
         note(
             w,
             windows::show(ctx, w, open, saved(w), t, |ui| {
-                // The Mixer window draws its meters at about 30 fps while sound moves them.
-                if moving {
-                    ui.ctx().request_repaint_after(size::METER_FRAME);
-                }
                 mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
             }),
         );
@@ -445,12 +440,17 @@ impl eframe::App for RadioApp {
             }
         }
         // While sound moves a meter on show, draw at about 30 fps. Else once a second is
-        // enough. The main window shows only the Out meter.
-        ctx.request_repaint_after(if self.out_moving {
-            size::METER_FRAME
+        // enough. The main window shows only the Out meter, the Mixer window all of them.
+        // Only the main window asks for frames: each of its frames draws the Mixer window too.
+        // A request of the Mixer window itself adds a second clock, and doubles the frames.
+        let meters = self.out_moving || (self.meters_moving && self.open.get(ToolWindow::Mixer));
+        if meters {
+            // egui starts a delayed frame one frame early. The added frame time undoes that.
+            let dt = ctx.input(|i| Duration::try_from_secs_f32(i.predicted_dt).unwrap_or_default());
+            ctx.request_repaint_after(size::METER_FRAME + dt);
         } else {
-            Duration::from_secs(1)
-        });
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         let t = Tokens::get(&ctx);
         let mut actions = Vec::new();
         self.link.has_clip = !self.clip.items.is_empty();
