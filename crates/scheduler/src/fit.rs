@@ -641,6 +641,9 @@ impl Fit<'_, '_> {
 /// 4. **Alarm**: outside tolerance gives `Warning::OutsideTolerance`. Silence before any
 ///    entry gives `Warning::DeadAir`.
 ///
+/// A fixed entry with `frozen` set skips the reorder and moves nothing across its window's
+/// boundaries: it only fills and trims, taking the entries before it as they are.
+///
 /// Locked entries are anchors fitted the same way, as a hard event with zero tolerance at
 /// their own start (handing over at the previous entry's segue). Material that does not fit
 /// before one moves after it. Only a non-trimmable item in the way makes a locked entry
@@ -701,6 +704,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             mode: FixMode::Hard,
             tolerance: Duration::ZERO,
             priority: i32::MAX,
+            frozen: false,
         });
         let target = fx.target;
         let head = out.pop();
@@ -738,7 +742,8 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             let fixed_len = seg.len();
             let next_slot = order.get(k + 1).map(|&j| slots[j]);
             let mut ahead = 0;
-            while ahead < LOOKAHEAD
+            while !fx.frozen
+                && ahead < LOOKAHEAD
                 && flow
                     .front()
                     .is_some_and(|e| next_slot.is_none_or(|n| e.start < n))
@@ -754,7 +759,12 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             } else {
                 Duration::ZERO
             };
-            let keep = fit.choose(&seg, &window, flow.front(), gap);
+            // A frozen window keeps its order: nothing moves across its boundaries.
+            let keep = if fx.frozen {
+                window.iter().map(|(_, before)| *before).collect()
+            } else {
+                fit.choose(&seg, &window, flow.front(), gap)
+            };
             let mut moved = window
                 .iter()
                 .zip(&keep)
@@ -776,7 +786,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             // Trim.
             let mut trimmed = None;
             if f.arrival(base, &seg, ev) > target {
-                if fx.mode == FixMode::Hard {
+                if fx.mode == FixMode::Hard && !fx.frozen {
                     // What would start at or after the target goes after the event instead.
                     while seg.len() > fixed_len {
                         let (starts, _) = f.times(base, &seg, Some(ev));
@@ -819,7 +829,8 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                     if play.saturating_sub(by) < MIN_PLAY {
                         // Keeping the anchor's time wins: move the entry after it, or drop
                         // fill. Otherwise fade it down to MIN_PLAY and stop.
-                        let droppable = last.origin == Origin::Fill || f.movable(last);
+                        let droppable =
+                            last.origin == Origin::Fill || (f.movable(last) && !fx.frozen);
                         if seg.len() <= fit.head || !droppable {
                             let by = play.saturating_sub(MIN_PLAY);
                             if by > Duration::ZERO

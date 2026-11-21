@@ -35,6 +35,10 @@ pub struct Fixed {
     pub mode: FixMode,
     pub tolerance: Duration,
     pub priority: i32,
+    /// The window before this event keeps its order: the fitter only fills and trims there
+    /// and pulls no entry across the window's boundaries. Set by `plan`.
+    #[serde(default)]
+    pub frozen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +258,7 @@ impl<'a> Walk<'a> {
             mode: f.mode,
             tolerance: f.tolerance,
             priority,
+            frozen: false,
         };
         self.fire(f.playlist, f.rule, f.target, Some(fixed));
     }

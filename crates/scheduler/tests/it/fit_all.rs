@@ -82,6 +82,7 @@ fn timeline(st: &Station, events: &[(Timestamp, FixMode)]) -> Timeline {
                 mode: *mode,
                 tolerance: TOL,
                 priority: pl.priority,
+                frozen: false,
             }),
             trim: Duration::ZERO,
         });

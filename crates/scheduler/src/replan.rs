@@ -1,9 +1,9 @@
 //! `plan`: merge and fit, keeping the previous plan steady where a change is not worth it.
 
-use crate::{Entry, FitResult, Origin, PlanInput, Timeline, Warning, fit_all, merge};
-use jiff::{SignedDuration, Timestamp};
-use radio_model::{FixMode, Item, ItemId, PlaylistId};
-use radio_timing::{advance, item_len, start_times};
+use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all, merge};
+use jiff::SignedDuration;
+use radio_model::{Item, ItemId};
+use radio_timing::{item_len, start_times};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
@@ -69,9 +69,7 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         .collect();
     let lock = SignedDuration::try_from(opts.lock_before).unwrap_or(SignedDuration::MAX);
 
-    let mut forced_ids = BTreeSet::new();
-    let mut barrier_ids = BTreeSet::new();
-    let mut soft_tails: Vec<(PlaylistId, Timestamp, Vec<Entry>)> = Vec::new();
+    let mut kept_any = false;
     for fit in &tl.fits {
         let Some(old) = prev
             .fits
@@ -80,13 +78,13 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         else {
             continue;
         };
-        let frozen = fit.target.duration_since(input.now) <= lock;
+        let near = fit.target.duration_since(input.now) <= lock;
         let better = fit
             .error
             .unsigned_abs()
             .saturating_add(opts.replan_threshold)
             < old.error.unsigned_abs();
-        if better && !frozen {
+        if better && !near {
             continue;
         }
         let (Some(old_win), Some(new_win)) =
@@ -101,7 +99,7 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         let Some(raw_win) = window_of(&raw.entries, fit) else {
             continue;
         };
-        let Some(first) = raw.entries.get(raw_win.start) else {
+        let Some(first_start) = raw.entries.get(raw_win.start).map(|e| e.start) else {
             continue;
         };
         let keep: Vec<&Entry> = old_win
@@ -113,37 +111,39 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
             .iter()
             .filter_map(|e| items.get(&e.item).copied())
             .collect();
-        let starts = start_times(first.start, &seq);
-        let last = keep.len().saturating_sub(1);
+        let starts = start_times(first_start, &seq);
+        // What would start at or after the event is no longer part of the window.
+        let n = starts.iter().take_while(|s| **s < fit.target).count();
         let forced: Vec<Entry> = keep
             .iter()
             .zip(&seq)
-            .enumerate()
-            .map(|(k, (e, item))| {
+            .zip(&starts)
+            .take(n)
+            .map(|((e, item), start)| {
                 let mut e = (*e).clone();
-                e.start = starts[k];
+                e.start = *start;
                 e.len = item_len(item);
                 e.trim = Duration::ZERO;
-                // Pinned in place while the hand-over to the next one is before the event;
-                // the rest stay free so fill and trim can absorb an overrun.
-                let settled = starts.get(k + 1).is_some_and(|next| *next <= fit.target);
-                e.locked = e.locked || (k < last && settled);
                 e
             })
             .collect();
         let forced_set: BTreeSet<ItemId> = forced.iter().map(|e| e.item).collect();
-        // Main items the old window lacked go back as candidates after the event.
+        let raw_ids: BTreeSet<ItemId> = raw.entries[raw_win.clone()]
+            .iter()
+            .map(|e| e.item)
+            .collect();
+        // Main items the kept window lacks go back as candidates after the event.
         let mut leftover: Vec<Entry> = raw.entries[raw_win.clone()]
             .iter()
             .filter(|e| e.origin == Origin::Main && !is_anchor(e) && !forced_set.contains(&e.item))
             .cloned()
             .collect();
-        forced_ids.extend(forced_set.iter().copied());
         let forced_len = forced.len();
         raw.entries.splice(raw_win.clone(), forced);
         let ev = raw_win.start + forced_len;
-        // An item the old window kept must not air again later.
-        for id in &forced_set {
+        // An item brought into the window from later must not air there twice. Items the
+        // raw window had already were spliced out with it; their later airings are rotation.
+        for id in forced_set.difference(&raw_ids) {
             let dup = raw.entries[ev + 1..]
                 .iter()
                 .position(|e| e.origin == Origin::Main && !is_anchor(e) && e.item == *id);
@@ -151,32 +151,13 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
                 raw.entries.remove(ev + 1 + d);
             }
         }
-        let mut after = raw.entries.get(ev).map_or(fit.target, |e| e.start);
-        let mut tail = None;
-        if frozen {
-            let hard = raw
-                .entries
-                .get(ev)
-                .and_then(|e| e.fixed.as_ref())
-                .is_some_and(|f| f.mode == FixMode::Hard);
-            if hard {
-                // Stops the fitter pulling entries from behind the event into the window.
-                if let Some(next) = raw.entries.get_mut(ev + 1)
-                    && !is_anchor(next)
-                {
-                    next.locked = true;
-                    barrier_ids.insert(next.item);
-                    after = next.start;
-                    forced_ids.insert(next.item);
-                }
-            } else if raw.entries[ev + 1..].iter().all(|e| !is_anchor(e)) {
-                // A soft event hands over at an unknown time: keep what follows out of the fit.
-                tail = Some(raw.entries.split_off(ev + 1));
-            }
+        let Some(event) = raw.entries.get_mut(ev) else {
+            continue;
+        };
+        if let Some(f) = event.fixed.as_mut() {
+            f.frozen = true;
         }
-        if let Some(t) = tail {
-            soft_tails.push((fit.playlist, fit.target, t));
-        }
+        let after = event.start;
         for (k, mut e) in leftover.drain(..).enumerate() {
             e.start = after
                 .checked_add(Duration::from_millis(k as u64 + 1))
@@ -184,50 +165,11 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
             raw.entries.push(e);
         }
         raw.entries.sort_by_key(|e| e.start);
+        kept_any = true;
     }
-    if forced_ids.is_empty() {
+    if !kept_any {
         return tl;
     }
     fit_all(&mut raw, input.station, input.history);
-    for (playlist, target, tail) in soft_tails {
-        let Some(ev) = raw.entries.iter().find(|e| {
-            e.playlist == playlist && e.fixed.as_ref().is_some_and(|f| f.target == target)
-        }) else {
-            continue;
-        };
-        let next = tail.first().and_then(|t| items.get(&t.item).copied());
-        let begin = items.get(&ev.item).map_or(ev.start, |item| {
-            ev.start
-                .checked_add(advance(item, next))
-                .unwrap_or(ev.start)
-        });
-        let seq: Vec<&Item> = tail
-            .iter()
-            .filter_map(|e| items.get(&e.item).copied())
-            .collect();
-        if seq.len() == tail.len() {
-            for (mut e, start) in tail.into_iter().zip(start_times(begin, &seq)) {
-                e.start = start;
-                raw.entries.push(e);
-            }
-        } else {
-            raw.entries.extend(tail);
-        }
-        raw.entries.sort_by_key(|e| e.start);
-    }
-    let own = |id: &ItemId| {
-        !input.pinned.iter().any(|p| p.item == *id) && items.get(id).is_some_and(|i| !i.locked)
-    };
-    // Locks taken only to hold the kept order are not the user's; never warn about them.
-    raw.warnings.retain(|w| {
-        !matches!(w, Warning::LockedMoved { item, .. }
-            if (forced_ids.contains(item) || barrier_ids.contains(item)) && own(item))
-    });
-    for e in &mut raw.entries {
-        let own = !input.pinned.iter().any(|p| p.item == e.item);
-        if own && e.origin != Origin::Manual && forced_ids.contains(&e.item) {
-            e.locked = items.get(&e.item).is_some_and(|i| i.locked);
-        }
-    }
     raw
 }

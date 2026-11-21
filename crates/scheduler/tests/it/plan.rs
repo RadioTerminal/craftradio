@@ -38,13 +38,17 @@ fn make_station(main: Vec<Item>, minute: i8) -> Station {
 }
 
 fn run(st: &Station, pinned: &[Entry], prev: Option<&Timeline>) -> Timeline {
+    run_for(st, pinned, prev, Duration::from_secs(3600))
+}
+
+fn run_for(st: &Station, pinned: &[Entry], prev: Option<&Timeline>, horizon: Duration) -> Timeline {
     let history = PlayHistory::new();
     plan(
         &PlanInput {
             station: st,
             history: &history,
             now: now(),
-            horizon: Duration::from_secs(3600),
+            horizon,
             pinned,
         },
         &PlanOptions::default(),
@@ -147,12 +151,12 @@ fn same_input_same_output() {
 }
 
 #[test]
-fn each_main_item_airs_at_most_once() {
+fn kept_window_does_not_change_how_often_items_air() {
     let st = make_station(tracks(30), 30);
-    let fresh = run(&st, &[], None);
-    // An older plan that had track 12 first; the new merge has it later in the hour.
-    let mut prev = fresh.clone();
-    let dropped = prev.entries[0].item;
+    let day = Duration::from_secs(24 * 3600);
+    let fresh = run_for(&st, &[], None, day);
+    // An older plan had track 12 first; the new merge airs it later in the window's cycle.
+    let mut prev = run(&st, &[], None);
     prev.entries[0].item = ItemId(12);
     let err = prev.fits[0].error;
     let worse = SignedDuration::from_millis(300);
@@ -161,12 +165,76 @@ fn each_main_item_airs_at_most_once() {
     } else {
         err + worse
     };
-    let tl = run(&st, &[], Some(&prev));
-    assert_eq!(tl.entries[0].item, ItemId(12));
-    let mut seen = std::collections::BTreeSet::new();
-    for e in tl.entries.iter().filter(|e| e.origin == Origin::Main) {
-        assert!(seen.insert(e.item), "{:?} airs twice", e.item);
+    let kept = run_for(&st, &[], Some(&prev), day);
+    assert_eq!(kept.entries[0].item, ItemId(12));
+    let airings = |tl: &Timeline| {
+        let mut n = std::collections::BTreeMap::new();
+        for e in tl.entries.iter().filter(|e| e.origin == Origin::Main) {
+            *n.entry(e.item).or_insert(0_i64) += 1;
+        }
+        n
+    };
+    let (a, b) = (airings(&fresh), airings(&kept));
+    assert!(
+        a.values().all(|n| *n >= 2),
+        "the playlist should cycle twice"
+    );
+    for (item, n) in &a {
+        let m = b.get(item).copied().unwrap_or(0);
+        assert!((n - m).abs() <= 1, "{item:?} aired {n} times, now {m}");
     }
-    // The track the old window lacked is still played, later.
-    assert!(seen.contains(&dropped));
+    let (ta, tb): (i64, i64) = (a.values().sum(), b.values().sum());
+    assert!((ta - tb).abs() <= 2, "{ta} airings became {tb}");
+}
+
+#[test]
+fn frozen_window_never_pulls_entries_across() {
+    let mut st = make_station(tracks(30), 5);
+    // A second, hard event follows the soft one.
+    st.playlists[1].items.push(jingle(101, 30));
+    st.playlists[1].rules[0].placement = Placement::Fixed {
+        mode: FixMode::Soft,
+        tolerance: Duration::from_secs(1),
+    };
+    let mut second = st.playlists[1].rules[0].clone();
+    second.trigger = Trigger::At {
+        at: date(2026, 11, 21).at(13, 15, 0, 0),
+        repeat: Repeat::Once,
+    };
+    second.placement = Placement::Fixed {
+        mode: FixMode::Hard,
+        tolerance: Duration::from_secs(1),
+    };
+    let mut other = playlist(3, "event-2", vec![jingle(102, 30)]);
+    other.rules = vec![second];
+    st.playlists.push(other);
+    let prev = run(&st, &[], None);
+    let before = window(&prev);
+    let mut st2 = st.clone();
+    st2.playlists[0].items.retain(|i| i.id != before[0]);
+    let tl = run(&st2, &[], Some(&prev));
+    let first_event = tl.entries.iter().position(|e| e.fixed.is_some()).unwrap();
+    for e in &tl.entries[..first_event] {
+        assert!(
+            e.origin == Origin::Fill || before.contains(&e.item),
+            "{e:?} came from beyond the event"
+        );
+    }
+    let len = |e: &Entry| {
+        let item = st2
+            .playlists
+            .iter()
+            .flat_map(|p| &p.items)
+            .find(|i| i.id == e.item)
+            .unwrap();
+        radio_timing::item_len(item)
+    };
+    for w in tl.entries.windows(2) {
+        assert!(
+            w[0].start + len(&w[0]) - w[0].trim <= w[1].start + Duration::from_secs(2),
+            "{:?} overlaps {:?}",
+            w[0],
+            w[1]
+        );
+    }
 }
