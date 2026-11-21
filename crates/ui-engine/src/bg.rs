@@ -40,6 +40,11 @@ pub(crate) enum Job {
         since: Timestamp,
         limit: u32,
     },
+    /// Write alarms as CSV to the file at `path`.
+    ExportAlarms {
+        path: String,
+        rows: Vec<radio_ui_egui::view::AlarmView>,
+    },
 }
 
 /// A result of the background lane.
@@ -67,6 +72,12 @@ pub(crate) enum Done {
         result: Result<bool, String>,
     },
     History(Result<Vec<AsPlayed>, String>),
+    /// The alarm export wrote `count` rows to `path`, or failed.
+    Exported {
+        path: String,
+        count: usize,
+        result: Result<(), String>,
+    },
 }
 
 /// The background lane: one thread that runs the jobs in order.
@@ -165,6 +176,15 @@ fn run(job: Job) -> Done {
         }
         Job::History { log, since, limit } => {
             Done::History(log.history(since, limit).map_err(|e| e.to_string()))
+        }
+        Job::ExportAlarms { path, rows } => {
+            let result =
+                std::fs::write(&path, crate::alarms::csv(&rows)).map_err(|e| e.to_string());
+            Done::Exported {
+                path,
+                count: rows.len(),
+                result,
+            }
         }
     }
 }

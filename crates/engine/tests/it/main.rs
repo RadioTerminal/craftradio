@@ -619,7 +619,8 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
         "page": 0, "slot": 0, "commands": [], "station": e.state().station,
         "part": "test", "key": "test", "value": true, "color": [0,0,0],
         "duck_db": -6.0, "strip": "A", "since": "2026-11-21T00:00:00Z",
-        "until": "2026-11-22T00:00:00Z", "limit": 10
+        "until": "2026-11-22T00:00:00Z", "limit": 10,
+        "id": 1, "ids": [1]
     });
     let specs = registry();
     let command_schema = schemars::schema_for!(Command).to_value();
@@ -707,4 +708,28 @@ fn fade_command_distinguishes_default_from_explicit_cut() {
         };
         assert_eq!(over, expected);
     }
+}
+
+#[test]
+fn acknowledged_alarms_survive_a_reopen_and_cannot_be_undone() {
+    let path = temp_db("alarm-ack");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.dispatch(Command::AlarmAck { id: 41 }).unwrap();
+        e.dispatch(Command::AlarmAckAll {
+            ids: vec![41, 7, 9],
+        })
+        .unwrap();
+        assert!(
+            e.dispatch(Command::HistoryUndo).is_err(),
+            "an acknowledgement is no undo step"
+        );
+        e.flush().unwrap();
+    }
+    let e = Engine::open(&path).unwrap();
+    for id in [41, 7, 9] {
+        assert!(e.state().is_acked(id), "alarm {id} stays acknowledged");
+    }
+    assert!(!e.state().is_acked(8), "other alarms stay new");
+    assert_eq!(e.state().acked_alarms.len(), 3, "each id is kept once");
 }

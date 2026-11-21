@@ -9,6 +9,7 @@ use crate::view::{Edit, StationView};
 
 pub(crate) const CLOCK: &str = "clock";
 pub(crate) const HISTORY: &str = "history";
+pub(crate) const ALARMS: &str = "alarms";
 pub(crate) const LIBRARY: &str = "library";
 pub(crate) const CARTWALL: &str = "cartwall";
 pub(crate) const MIXER: &str = "mixer";

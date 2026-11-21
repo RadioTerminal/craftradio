@@ -1,5 +1,5 @@
 //! The main window: decks on top, the main and scheduled panes in the middle, a status line below.
-//! Tool windows (cartwall, mixer, clock, history, library) open from the deck strip.
+//! Tool windows (cartwall, mixer, clock, history, library, alarms) open from the deck strip.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,7 +29,9 @@ use crate::view::{
     Status, ViewSource,
 };
 use crate::windows::{self, ToolWindow};
-use crate::{cartwall, clock_window, decks, history, library, main_pane, mixer, scheduled_pane};
+use crate::{
+    alarms, cartwall, clock_window, decks, history, library, main_pane, mixer, scheduled_pane,
+};
 
 /// The pane that has the keyboard, for the edit shortcuts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -151,6 +153,7 @@ pub struct RadioApp {
     mixer: mixer::State,
     clock_state: clock_window::State,
     history: history::State,
+    alarms: alarms::State,
     library: library::State,
     editor: Option<Editor>,
     toast: Option<(String, f64)>,
@@ -209,6 +212,7 @@ impl RadioApp {
             mixer: mixer::State::default(),
             clock_state: clock_window::State::default(),
             history: history::State::default(),
+            alarms: alarms::State::default(),
             library: library::State::default(),
             editor: None,
             toast: None,
@@ -401,6 +405,13 @@ impl RadioApp {
                 let root = own_keys(ui, link);
                 history::show(ui, view, &mut self.history, link, actions, t);
                 link.keys = root;
+            }),
+        );
+        let w = ToolWindow::Alarms;
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                alarms::show(ui, view, &mut self.alarms, actions, t);
             }),
         );
         if self.library.docked {
@@ -662,28 +673,24 @@ fn status_line(
                     .color(colour),
             );
         }
-        if view.warnings > 0 {
-            let warn = RichText::new(icons::lead(
-                Icon::TriangleAlert,
-                &format!("{} warnings", view.warnings),
+        // The chip counts the alarms that nobody acknowledged, with the icon and colour of
+        // the most serious one. It opens the Alarms window.
+        let open = view.open_alarms().count();
+        let chip = match view.worst_open() {
+            Some(worst) => RichText::new(icons::lead(
+                alarms::icon(worst),
+                &format!("{open} {}", if open == 1 { "warning" } else { "warnings" }),
             ))
-            .font(theme::text(theme::LABEL))
-            .color(t.warn);
-            if ui.button(warn).on_hover_text("Show the warnings").clicked() {
-                actions.push(Action::Toast(
-                    view.say(
-                        "preview — the warning list comes with the engine",
-                        "The warning list is not in this build yet; the log has the alarms",
-                    )
-                    .to_owned(),
-                ));
-            }
-        } else {
-            ui.label(
-                RichText::new("0 warnings")
-                    .font(theme::text(theme::LABEL))
-                    .color(t.text_muted),
-            );
+            .color(alarms::colour(worst, t)),
+            None => RichText::new("0 warnings").color(t.text_muted),
+        };
+        let chip = chip.font(theme::text(theme::LABEL));
+        if ui
+            .button(chip)
+            .on_hover_text("Show the alarms and warnings")
+            .clicked()
+        {
+            actions.push(Action::OpenWindow(ToolWindow::Alarms));
         }
         // The right side comes first. The toast truncates in the room that is left.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

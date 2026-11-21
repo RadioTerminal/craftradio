@@ -27,7 +27,7 @@ pub use view::{
 };
 
 use jiff::Timestamp;
-use radio_audio::{MeterReader, MixerConfig};
+use radio_audio::{MeterReader, MixerConfig, ProgramDynamics};
 use radio_engine::{AsPlayed, Command, Engine, EngineError, LogHandle, Outcome};
 use radio_model::Timing;
 use radio_scheduler::PlanOptions;
@@ -58,6 +58,9 @@ pub struct PlayoutConfig {
     pub output: OutputChoice,
     /// The mixer settings, with the Program silence detector for dead air.
     pub mixer: MixerConfig,
+    /// The compressor and lookahead limiter on Program. The default is the limiter alone.
+    /// With `None`, a soft clip protects Program, and Program has no latency.
+    pub dynamics: Option<ProgramDynamics>,
     /// Playout loads a file at least this long before its start (default 30 s).
     pub preload: Duration,
     /// Playout connects an internet stream this long before its start (default 5 s).
@@ -101,6 +104,7 @@ impl PlayoutConfig {
             clock,
             output,
             mixer: MixerConfig::default(),
+            dynamics: Some(ProgramDynamics::default()),
             preload: Duration::from_secs(30),
             stream_preroll: Duration::from_secs(5),
             horizon: Duration::from_secs(3 * 3600),

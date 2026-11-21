@@ -27,15 +27,17 @@ pub enum ToolWindow {
     Clock,
     History,
     Library,
+    Alarms,
 }
 
 impl ToolWindow {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Cartwall,
         Self::Mixer,
         Self::Clock,
         Self::History,
         Self::Library,
+        Self::Alarms,
     ];
 
     pub fn title(self) -> &'static str {
@@ -45,6 +47,7 @@ impl ToolWindow {
             Self::Clock => "Clock",
             Self::History => "History",
             Self::Library => "Library",
+            Self::Alarms => "Alarms",
         }
     }
 
@@ -56,6 +59,7 @@ impl ToolWindow {
             Self::Clock => crate::parts::CLOCK,
             Self::History => crate::parts::HISTORY,
             Self::Library => crate::parts::LIBRARY,
+            Self::Alarms => crate::parts::ALARMS,
         }
     }
 
@@ -66,6 +70,7 @@ impl ToolWindow {
             Self::Clock => [size::CLOCK_WIN_W, size::CLOCK_WIN_H],
             Self::History => [size::HISTORY_W, size::HISTORY_H],
             Self::Library => [size::LIBRARY_W, size::LIBRARY_H],
+            Self::Alarms => [size::ALARMS_W, size::ALARMS_H],
         }
     }
 
@@ -77,12 +82,13 @@ impl ToolWindow {
             Self::Clock => [size::CLOCK_MIN_W, size::CLOCK_MIN_H],
             Self::History => [size::HISTORY_MIN_W, size::HISTORY_MIN_H],
             Self::Library => [size::LIBRARY_MIN_W, size::LIBRARY_MIN_H],
+            Self::Alarms => [size::ALARMS_MIN_W, size::ALARMS_MIN_H],
         }
     }
 
     /// True for the windows that are mostly a long list.
     fn is_list(self) -> bool {
-        matches!(self, Self::History | Self::Library)
+        matches!(self, Self::History | Self::Library | Self::Alarms)
     }
 
     /// The egui id of the floating form of the window.

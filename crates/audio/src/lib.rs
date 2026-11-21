@@ -7,6 +7,7 @@
 mod command;
 mod deck;
 mod decode;
+mod dynamics;
 mod error;
 mod meter;
 mod mixer;
@@ -14,6 +15,7 @@ mod mixer;
 pub use command::{AudioEvent, Command, CommandKind, DeckId, Strip};
 pub use deck::{DeckFeeder, DeckState, LoadOptions};
 pub use decode::{Clip, Decoder, MAX_CHANNELS, MAX_RATE, MIN_RATE, Probe, codecs, probe};
+pub use dynamics::{CompressorConfig, LimiterConfig, ProgramDynamics};
 pub use error::AudioError;
 pub use meter::{METER_FLOOR_DB, MeterReader, MeterSnapshot, SilenceDetector, StripMeter};
 pub use mixer::{

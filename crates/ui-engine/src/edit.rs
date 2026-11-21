@@ -1206,6 +1206,42 @@ impl EngineSource {
                 item.trimmable = false;
                 self.add_to(&playlist, vec![item], at)
             }
+            Edit::AckAlarm(id) => {
+                self.run_edit(Command::AlarmAck { id })?;
+                self.pending_acks.insert(id);
+                Ok(1)
+            }
+            Edit::AckAlarms(ids) => {
+                let new: Vec<u64> = ids
+                    .into_iter()
+                    .filter(|id| !self.state.is_acked(*id) && !self.pending_acks.contains(id))
+                    .collect();
+                if new.is_empty() {
+                    return Ok(0);
+                }
+                let n = new.len();
+                self.run_edit(Command::AlarmAckAll { ids: new.clone() })?;
+                self.pending_acks.extend(new);
+                Ok(n)
+            }
+            Edit::ExportAlarms { path, ids } => {
+                let rows: Vec<_> = self
+                    .alarms
+                    .iter()
+                    .filter(|a| ids.contains(&a.id))
+                    .cloned()
+                    .collect();
+                let worker = self
+                    .worker
+                    .as_ref()
+                    .ok_or("The background lane is not running, so the export cannot run")?;
+                let n = rows.len();
+                worker
+                    .jobs
+                    .send(crate::bg::Job::ExportAlarms { path, rows })
+                    .map_err(|_| "The background lane stopped, so the export cannot run")?;
+                Ok(n)
+            }
         }
     }
 

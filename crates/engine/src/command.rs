@@ -272,6 +272,13 @@ pub enum Command {
         #[serde(default)]
         route: Option<Route>,
     },
+    /// Acknowledges one alarm or warning by its id: it stops counting as new.
+    #[serde(rename = "alarm.ack")]
+    AlarmAck { id: u64 },
+    /// Acknowledges the alarms and warnings with these ids. The engine does not hold the
+    /// alarms themselves (playout and the plan raise them), so the caller names the ids.
+    #[serde(rename = "alarm.ack_all")]
+    AlarmAckAll { ids: Vec<u64> },
 }
 
 impl Command {
@@ -329,6 +336,8 @@ impl Command {
             Self::CartClear { .. } => "cart.clear",
             Self::CartSet { .. } => "cart.set",
             Self::MixerSetStrip { .. } => "mixer.set_strip",
+            Self::AlarmAck { .. } => "alarm.ack",
+            Self::AlarmAckAll { .. } => "alarm.ack_all",
         }
     }
 
@@ -385,7 +394,9 @@ impl Command {
             | Self::PlaylistDuplicate { .. }
             | Self::CartClear { .. }
             | Self::CartSet { .. }
-            | Self::MixerSetStrip { .. } => Tier::OnAir,
+            | Self::MixerSetStrip { .. }
+            | Self::AlarmAck { .. }
+            | Self::AlarmAckAll { .. } => Tier::OnAir,
         }
     }
 }
@@ -741,6 +752,18 @@ pub fn registry() -> Vec<CommandSpec> {
             "Set the fader, mute, PFL or route of a mixer strip",
             A,
             &[("strip", "string")],
+        ),
+        spec(
+            "alarm.ack",
+            "Acknowledge one alarm or warning by its id",
+            A,
+            &[("id", "integer")],
+        ),
+        spec(
+            "alarm.ack_all",
+            "Acknowledge the alarms and warnings with these ids",
+            A,
+            &[("ids", "array")],
         ),
         spec("station.get", "Read the station state", R, &[]),
         spec(

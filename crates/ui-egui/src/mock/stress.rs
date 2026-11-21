@@ -127,7 +127,16 @@ pub fn stress(v: &mut StationView) {
         };
         STRESS_CARTS
     ];
-    v.warnings = STRESS_WARNINGS;
+    let sample = v.alarms.clone();
+    v.alarms = (0..STRESS_WARNINGS)
+        .zip(sample.iter().cycle())
+        .map(|(i, a)| crate::view::AlarmView {
+            id: a.id ^ ((i as u64 + 1) << 32),
+            text: format!("{}{LONG_NAME}", a.text),
+            concerns: a.concerns.clone().or_else(|| Some(title(i))),
+            ..a.clone()
+        })
+        .collect();
     v.station = format!("Radio{LONG_NAME}");
     let files: Vec<LibraryItem> = v.library.iter().take(40).cloned().collect();
     v.folders = vec![

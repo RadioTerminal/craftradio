@@ -43,6 +43,9 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::StopCarts
             | Edit::Undo
             | Edit::Redo
+            | Edit::AckAlarm(_)
+            | Edit::AckAlarms(_)
+            | Edit::ExportAlarms { .. }
     )
 }
 
@@ -590,6 +593,12 @@ impl MockSource {
                 let id = self.add_special(&title, &path, planned_len, "Live");
                 self.add_to(&playlist, &[id], at)
             }
+            Edit::AckAlarm(id) => self.ack_alarms(&[id]),
+            Edit::AckAlarms(ids) => self.ack_alarms(&ids),
+            Edit::ExportAlarms { .. } => Err(
+                "preview — Export CSV needs the station; Copy puts the rows on the clipboard"
+                    .to_owned(),
+            ),
             Edit::SetPartSetting { part, key, value } => {
                 self.settings
                     .entry(part.clone())

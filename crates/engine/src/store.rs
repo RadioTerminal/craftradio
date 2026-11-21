@@ -254,6 +254,7 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     set(&tx, "library", "folders", &json(&s.folders)?)?;
     set(&tx, "library", "missing", &json(&s.missing)?)?;
     set(&tx, "library", "hashes", &json(&s.hashes)?)?;
+    set(&tx, "alarms", "acked", &json(&s.acked_alarms)?)?;
     for (name, st) in &s.strips {
         set(&tx, "mixer", name, &json(st)?)?;
     }
@@ -374,6 +375,9 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
     }
     if let Some(v) = get("library", "hashes")? {
         state.hashes = serde_json::from_str(&v).map_err(bad)?;
+    }
+    if let Some(v) = get("alarms", "acked")? {
+        state.acked_alarms = serde_json::from_str(&v).map_err(bad)?;
     }
     Ok(Some(state))
 }
