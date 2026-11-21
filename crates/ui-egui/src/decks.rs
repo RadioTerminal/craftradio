@@ -661,7 +661,8 @@ pub(crate) fn gain_detail(g: &ItemGain, preview: bool) -> String {
         (_, None) => {}
     }
     lines.push(format!("Target: {}", level(g.target_lufs, "LUFS")));
-    if g.trim_db != 0.0 {
+    let applies = matches!(g.source, GainSource::Measured | GainSource::Tag);
+    if g.trim_db != 0.0 && applies {
         lines.push(format!("Trim: {}", db_text(g.trim_db)));
     }
     if let Some(c) = g.clamp {
@@ -675,7 +676,7 @@ pub(crate) fn gain_detail(g: &ItemGain, preview: bool) -> String {
             .to_owned(),
         );
     }
-    if matches!(g.source, GainSource::Measured | GainSource::Tag) {
+    if applies {
         lines.push(format!("Gain on this deck: {}", db_text(g.db)));
     }
     if preview {
@@ -1274,5 +1275,32 @@ fn start_lines(deck: &DeckView, now: Option<jiff::Timestamp>) -> Vec<String> {
             out.push(format!("{sharp}{at}"));
             out
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radio_model::{Loudness, LoudnessSettings};
+
+    /// A trim that does not apply (normalisation off, or nothing known) is not shown as
+    /// part of the gain.
+    #[test]
+    fn the_tooltip_shows_a_trim_only_when_it_applies() {
+        let measured = Some((
+            Loudness {
+                lufs: -20.0,
+                peak_db: Some(-6.0),
+            },
+            GainSource::Measured,
+        ));
+        let on = LoudnessSettings::default();
+        assert!(gain_detail(&on.gain(measured, -2.0), false).contains("Trim"));
+        let off = LoudnessSettings {
+            enabled: false,
+            ..on
+        };
+        assert!(!gain_detail(&off.gain(measured, -2.0), false).contains("Trim"));
+        assert!(!gain_detail(&on.gain(None, -2.0), false).contains("Trim"));
     }
 }

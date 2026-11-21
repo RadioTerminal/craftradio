@@ -171,7 +171,8 @@ pub struct ItemGain {
     pub source: GainSource,
     pub loudness: Option<Loudness>,
     pub target_lufs: f32,
-    /// The manual trim of the item, in dB. `db` includes it.
+    /// The manual trim of the item, in dB. `db` includes it only for a measured or tagged
+    /// loudness. With normalisation off, or nothing known, the item plays at unity.
     pub trim_db: f32,
     pub clamp: Option<Clamp>,
 }
