@@ -1,0 +1,315 @@
+//! The one scale every panel draws from: colours, text sizes, gaps, padding and layout sizes.
+//! Panels never write a colour or a size as a number.
+//!
+//! The scale follows the craft design system, with a dark broadcast palette.
+
+use egui::{Color32, CornerRadius, FontFamily, FontId, Margin, Stroke, TextStyle};
+
+/// Heading and text sizes (points).
+pub const TITLE: f32 = 26.0;
+pub const SECTION: f32 = 18.0;
+pub const CARD: f32 = 16.0;
+pub const LEAD: f32 = 17.0;
+pub const BODY: f32 = 15.0;
+pub const SMALL: f32 = 14.0;
+pub const LABEL: f32 = 13.0;
+pub const CAPTION: f32 = 12.0;
+pub const TINY: f32 = 11.0;
+/// Code, times and lengths (monospace).
+pub const CODE: f32 = 12.5;
+
+/// Gaps between things.
+pub mod space {
+    pub const XXS: f32 = 2.0;
+    pub const XS: f32 = 4.0;
+    pub const S: f32 = 8.0;
+    pub const M: f32 = 12.0;
+    pub const L: f32 = 16.0;
+    pub const XL: f32 = 24.0;
+    pub const XXL: f32 = 32.0;
+}
+
+/// Padding inside frames, built from the gaps.
+pub mod pad {
+    use egui::Margin;
+
+    pub const TIGHT: Margin = Margin::same(4);
+    pub const CHIP: Margin = Margin::symmetric(8, 2);
+    pub const ROW: Margin = Margin::symmetric(8, 4);
+    pub const CARD: Margin = Margin::same(12);
+    pub const PANEL: Margin = Margin::same(12);
+    pub const BAR: Margin = Margin::symmetric(12, 8);
+    pub const GUTTER: Margin = Margin::symmetric(16, 12);
+}
+
+/// Layout sizes of the console.
+pub mod size {
+    /// Control heights (small, medium and large).
+    pub const CONTROL_SM: f32 = 24.0;
+    pub const CONTROL_MD: f32 = 32.0;
+    pub const CONTROL_LG: f32 = 40.0;
+
+    /// A row of the main timeline.
+    pub const ROW: f32 = 26.0;
+    /// A thin divider row for an item from another playlist.
+    pub const DIVIDER_ROW: f32 = 20.0;
+    /// The fit line under a fixed row in Upcoming.
+    pub const FIT_LINE: f32 = 16.0;
+
+    /// Table columns.
+    pub const COL_TIME: f32 = 84.0;
+    pub const COL_LEN: f32 = 56.0;
+    pub const COL_PLAYLIST: f32 = 78.0;
+
+    /// The part of the central area that the scheduled pane takes.
+    pub const SPLIT_FRACTION: f32 = 0.45;
+    pub const SPLIT_MIN: f32 = 320.0;
+
+    /// Deck cards.
+    pub const DECK_MIN_W: f32 = 180.0;
+    pub const PROGRESS_H: f32 = 6.0;
+    pub const BADGE: f32 = 28.0;
+    pub const CLOCK_W: f32 = 196.0;
+
+    /// The on-air marker at the left edge of a row.
+    pub const ON_AIR_BAR: f32 = 3.0;
+    /// The radius of a playlist dot.
+    pub const DOT_R: f32 = 4.0;
+    pub const HAIRLINE: f32 = 1.0;
+
+    /// Cartwall.
+    pub const CART_COLS: usize = 4;
+    pub const CART_W: f32 = 132.0;
+    pub const CART_H: f32 = CONTROL_MD;
+    pub const STOP_W: f32 = 168.0;
+    /// The time that a pressed cart flashes, in seconds.
+    pub const CART_FLASH_S: f64 = 1.0;
+
+    /// The window.
+    pub const WINDOW_W: f32 = 1440.0;
+    pub const WINDOW_H: f32 = 860.0;
+    pub const WINDOW_MIN_W: f32 = 1024.0;
+    pub const WINDOW_MIN_H: f32 = 640.0;
+}
+
+/// One set of colours for the dark console theme.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tokens {
+    /// The page behind everything.
+    pub canvas: Color32,
+    /// A card or panel on the page.
+    pub card: Color32,
+    /// Anything to press. It is a shade lighter than the card.
+    pub field: Color32,
+    pub hover: Color32,
+    pub pressed: Color32,
+    /// The soft edge at rest.
+    pub card_border: Color32,
+    /// The 3:1 edge under the pointer.
+    pub field_border: Color32,
+    pub text: Color32,
+    pub text_muted: Color32,
+    /// The app colour for selection, focus and the playing deck.
+    pub accent: Color32,
+    pub accent_ink: Color32,
+    pub selection: Color32,
+    /// The colour of the row and the deck that are on air.
+    pub on_air: Color32,
+    pub on_air_bg: Color32,
+    pub ok: Color32,
+    pub warn: Color32,
+    pub danger: Color32,
+    pub danger_fill: Color32,
+    /// A cart while it flashes.
+    pub flash: Color32,
+    pub flash_ink: Color32,
+    pub radius_sm: CornerRadius,
+    pub radius: CornerRadius,
+    pub radius_lg: CornerRadius,
+}
+
+impl Tokens {
+    pub const DARK: Self = Self {
+        canvas: Color32::from_rgb(0x0E, 0x10, 0x14),
+        card: Color32::from_rgb(0x16, 0x19, 0x1F),
+        field: Color32::from_rgb(0x20, 0x24, 0x2C),
+        hover: Color32::from_rgb(0x2A, 0x2F, 0x39),
+        pressed: Color32::from_rgb(0x34, 0x3A, 0x46),
+        card_border: Color32::from_rgb(0x2A, 0x2F, 0x38),
+        field_border: Color32::from_rgb(0x6A, 0x73, 0x82),
+        text: Color32::from_rgb(0xE8, 0xEB, 0xF0),
+        text_muted: Color32::from_rgb(0x9C, 0xA5, 0xB4),
+        accent: Color32::from_rgb(0x3D, 0xB8, 0xF5),
+        accent_ink: Color32::from_rgb(0x8F, 0xD6, 0xFA),
+        selection: Color32::from_rgb(0x17, 0x3A, 0x52),
+        on_air: Color32::from_rgb(0xFF, 0x5A, 0x5F),
+        on_air_bg: Color32::from_rgb(0x3A, 0x18, 0x1C),
+        ok: Color32::from_rgb(0x4C, 0xC3, 0x8A),
+        warn: Color32::from_rgb(0xF5, 0xB9, 0x42),
+        danger: Color32::from_rgb(0xFF, 0x7A, 0x7A),
+        danger_fill: Color32::from_rgb(0x8E, 0x22, 0x2A),
+        flash: Color32::from_rgb(0xF5, 0xB9, 0x42),
+        flash_ink: Color32::from_rgb(0x1A, 0x14, 0x05),
+        radius_sm: CornerRadius::same(4),
+        radius: CornerRadius::same(6),
+        radius_lg: CornerRadius::same(8),
+    };
+
+    pub fn get(_ctx: &egui::Context) -> Self {
+        Self::DARK
+    }
+
+    /// A playlist colour from the view-model as a `Color32`.
+    pub fn playlist(rgb: [u8; 3]) -> Color32 {
+        Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+    }
+
+    /// The playlist colour, moved toward `text` until it reads at 4.5:1 on `bg`.
+    pub fn readable(&self, rgb: [u8; 3], bg: Color32) -> Color32 {
+        let base = Self::playlist(rgb);
+        (0u8..=10)
+            .map(|step| lerp(base, self.text, f32::from(step) / 10.0))
+            .find(|c| contrast(*c, bg) >= MIN_TEXT_CONTRAST)
+            .unwrap_or(self.text)
+    }
+}
+
+/// The WCAG minimum contrast for text.
+pub const MIN_TEXT_CONTRAST: f32 = 4.5;
+
+fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| {
+        let v = f32::from(x) + (f32::from(y) - f32::from(x)) * t;
+        v.round().clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
+fn luminance(c: Color32) -> f32 {
+    let lin = |v: u8| {
+        let s = f32::from(v) / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// The WCAG contrast ratio between two opaque colours.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Proportional text at a size from the scale.
+pub fn text(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Proportional)
+}
+
+/// Monospace text for times, lengths and the clock.
+pub fn mono(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Monospace)
+}
+
+/// A card on the canvas.
+pub fn card_frame(t: &Tokens) -> egui::Frame {
+    egui::Frame::new()
+        .fill(t.card)
+        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
+        .corner_radius(t.radius_lg)
+        .inner_margin(pad::CARD)
+}
+
+/// A panel on the canvas with even padding.
+pub fn panel_frame(t: &Tokens) -> egui::Frame {
+    egui::Frame::new().fill(t.canvas).inner_margin(pad::PANEL)
+}
+
+/// A bar across the window, for the decks, the cartwall and the status line.
+pub fn bar_frame(t: &Tokens, margin: Margin) -> egui::Frame {
+    egui::Frame::new()
+        .fill(t.card)
+        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
+        .inner_margin(margin)
+}
+
+/// Set the egui style from the tokens.
+pub fn apply(ctx: &egui::Context) {
+    let t = Tokens::get(ctx);
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.style_mut_of(egui::Theme::Dark, |style| {
+        style.text_styles = [
+            (TextStyle::Heading, text(SECTION)),
+            (TextStyle::Body, text(BODY)),
+            (TextStyle::Button, text(BODY)),
+            (TextStyle::Small, text(CAPTION)),
+            (TextStyle::Monospace, mono(CODE)),
+        ]
+        .into();
+        let s = &mut style.spacing;
+        s.item_spacing = egui::vec2(space::S, space::XS);
+        s.button_padding = egui::vec2(space::M, space::XS);
+        s.interact_size.y = size::CONTROL_SM;
+
+        let v = &mut style.visuals;
+        v.dark_mode = true;
+        v.override_text_color = Some(t.text);
+        v.panel_fill = t.canvas;
+        v.window_fill = t.card;
+        v.window_stroke = Stroke::new(size::HAIRLINE, t.card_border);
+        v.extreme_bg_color = t.canvas;
+        v.faint_bg_color = t.card;
+        v.hyperlink_color = t.accent_ink;
+        v.warn_fg_color = t.warn;
+        v.error_fg_color = t.danger;
+        v.selection.bg_fill = t.selection;
+        v.selection.stroke = Stroke::new(size::HAIRLINE, t.accent_ink);
+        v.window_corner_radius = t.radius_lg;
+        v.menu_corner_radius = t.radius;
+
+        let w = &mut v.widgets;
+        w.noninteractive.bg_fill = t.card;
+        w.noninteractive.weak_bg_fill = t.card;
+        w.noninteractive.bg_stroke = Stroke::new(size::HAIRLINE, t.card_border);
+        w.noninteractive.fg_stroke = Stroke::new(size::HAIRLINE, t.text);
+        for (wv, fill, edge) in [
+            (&mut w.inactive, t.field, t.card_border),
+            (&mut w.hovered, t.hover, t.field_border),
+            (&mut w.active, t.pressed, t.accent),
+            (&mut w.open, t.pressed, t.accent),
+        ] {
+            wv.bg_fill = fill;
+            wv.weak_bg_fill = fill;
+            wv.bg_stroke = Stroke::new(size::HAIRLINE, edge);
+            wv.fg_stroke = Stroke::new(size::HAIRLINE, t.text);
+            wv.corner_radius = t.radius;
+            wv.expansion = 0.0;
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_and_playlist_names_read_at_4_5_to_1_on_every_surface() {
+        let t = Tokens::DARK;
+        let surfaces = [t.canvas, t.card, t.field, t.hover, t.selection, t.on_air_bg];
+        for bg in surfaces {
+            for ink in [t.text, t.text_muted] {
+                assert!(contrast(ink, bg) >= MIN_TEXT_CONTRAST, "{ink:?} on {bg:?}");
+            }
+            // Playlist colours are data. Any colour must come out readable.
+            for rgb in [[0xD0, 0x48, 0x48], [0x8E, 0x6A, 0xD8], [0x10, 0x10, 0x10]] {
+                let ink = t.readable(rgb, bg);
+                assert!(contrast(ink, bg) >= MIN_TEXT_CONTRAST, "{rgb:?} on {bg:?}");
+            }
+        }
+        assert!(contrast(t.flash_ink, t.flash) >= MIN_TEXT_CONTRAST);
+        assert!(contrast(t.text, t.danger_fill) >= MIN_TEXT_CONTRAST);
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "radio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+radio-ui-egui.workspace = true
+eframe.workspace = true
+jiff.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

@@ -16,7 +16,12 @@ thiserror = "2"
 rand_chacha = "0.9"
 clap = { version = "4", features = ["derive"] }
 proptest = "1"
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.36"
+egui_extras = "0.36"
+egui_kittest = "0.36"
 radio-model = { path = "crates/model" }
+radio-ui-egui = { path = "crates/ui-egui" }
 radio-testkit = { path = "crates/testkit" }
 
 [workspace.lints.rust]
