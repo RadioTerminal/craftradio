@@ -415,6 +415,8 @@ panes.
   event and to the end of the current item.
 - **History:** the as-played log (aired at, playlist, title, length, origin), newest first,
   filterable by text and playlist.
+- **Library:** a folder/category tree plus a searchable table. Items are dragged onto the Main
+  pane, onto a playlist or onto a cart; files dropped in from the OS file manager are imported.
 
 The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§6.6).
 
