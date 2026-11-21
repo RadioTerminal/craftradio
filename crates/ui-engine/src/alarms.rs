@@ -370,9 +370,16 @@ pub(crate) fn from_state(
     }
 }
 
+/// The first characters that make a spreadsheet read a cell as a formula.
+const FORMULA_START: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
 /// A field for CSV. A field with a comma, a quote or a line break goes in quotes.
+// Titles, paths and stream tags come from outside the station. A field that starts like a
+// formula gets a quote mark first and always goes in quotes, so a spreadsheet shows it as text.
 fn csv_field(f: &str) -> String {
-    if f.contains([',', '"', '\n', '\r']) {
+    if f.starts_with(FORMULA_START) {
+        format!("\"'{}\"", f.replace('"', "\"\""))
+    } else if f.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", f.replace('"', "\"\""))
     } else {
         f.to_owned()
@@ -544,6 +551,34 @@ mod tests {
             "the plan has warnings: {first:?}"
         );
         assert_eq!(ids(&first, now), ids(&again, later));
+    }
+
+    /// A message that starts like a formula comes out as quoted text. An ordinary field stays.
+    #[test]
+    fn csv_neutralises_fields_that_start_like_a_formula() {
+        assert_eq!(
+            csv_field("=HYPERLINK(\"http://x\",\"y\")"),
+            "\"'=HYPERLINK(\"\"http://x\"\",\"\"y\"\")\""
+        );
+        assert_eq!(csv_field("@SUM(A1:A9)"), "\"'@SUM(A1:A9)\"");
+        assert_eq!(csv_field("+1+1"), "\"'+1+1\"");
+        assert_eq!(csv_field("-2"), "\"'-2\"");
+        assert_eq!(csv_field("\tx"), "\"'\tx\"");
+        assert_eq!(csv_field("Dead air at 14:03:00"), "Dead air at 14:03:00");
+        // Every column gets the same treatment, the concerns column too.
+        let mut a = from_state(
+            "watch",
+            "",
+            Severity::Warning,
+            AlarmSource::Library,
+            "=cmd|' /C calc'!A0".to_owned(),
+            t("2026-11-21T14:00:00Z").to_zoned(TimeZone::UTC),
+        );
+        a.concerns = Some("@evil".to_owned());
+        let out = csv(&[a]);
+        let row = out.lines().nth(1).expect("a row");
+        assert!(row.contains(",\"'=cmd|' /C calc'!A0\","), "{row}");
+        assert!(row.ends_with(",\"'@evil\",false"), "{row}");
     }
 
     #[test]
