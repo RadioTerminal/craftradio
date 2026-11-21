@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 radio-model.workspace = true
 jiff.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 radio-testkit.workspace = true

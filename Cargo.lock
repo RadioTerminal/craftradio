@@ -3974,6 +3974,7 @@ dependencies = [
  "jiff",
  "radio-model",
  "radio-testkit",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
