@@ -184,8 +184,15 @@ impl Core {
                     Err(_) => Check::Now(false),
                 }
             }
-            // Playout does not apply item gains yet: the audio did not change.
-            AudioIntent::SetLoudness(_) => Check::Now(false),
+            AudioIntent::SetLoudness(_) => {
+                // The deck gains follow the new setting now; a playing deck ramps to it.
+                let at = self.mixer.now();
+                if self.refresh_gains() {
+                    Check::Passed(at)
+                } else {
+                    Check::Now(false)
+                }
+            }
             AudioIntent::Next => {
                 self.leave_emergency(now);
                 self.hold = false;

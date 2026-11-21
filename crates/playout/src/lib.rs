@@ -12,6 +12,7 @@ mod cue;
 mod deadair;
 mod device;
 mod input;
+mod loudness;
 pub use input::{Capture, OpenInput, open_input};
 mod ops;
 mod output;
@@ -89,7 +90,31 @@ pub struct PlayoutConfig {
     /// Finds the cue points of a file without timing. It runs on the analysis lane. The
     /// default is [`analyse_file`]; tests put a slow or fake one here.
     pub analyse: fn(&Path) -> Option<Timing>,
+    /// Measures the loudness of a file for the item gain. It runs on the analysis lane,
+    /// once per file: the engine keeps the result by content hash. The default is
+    /// [`measure_file`]; tests put a fake one here.
+    pub measure: fn(&Path) -> Option<Measured>,
     pub open_input: OpenInput,
+}
+
+/// The loudness of a file, with the content hash and size that the cache keys it by.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Measured {
+    pub loudness: radio_model::Loudness,
+    pub hash: String,
+    pub size: u64,
+}
+
+/// The default measurement: [`radio_library::analyse`] (EBU R128 integrated loudness and
+/// true peak). A silent or unreadable file gives `None`, so it plays at unity.
+pub fn measure_file(path: &Path) -> Option<Measured> {
+    let a = radio_library::analyse(path).ok()?;
+    let hash = a.hash.iter().map(|b| format!("{b:02x}")).collect();
+    Some(Measured {
+        loudness: a.loudness?,
+        hash,
+        size: a.size,
+    })
 }
 
 /// The default analysis: [`radio_library::analyse`], keeping only the timing.
@@ -118,6 +143,7 @@ impl PlayoutConfig {
             webhook: None,
             confirm_timeout: Duration::from_secs(1),
             analyse: analyse_file,
+            measure: measure_file,
             open_input,
         }
     }

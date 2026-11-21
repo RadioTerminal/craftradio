@@ -44,7 +44,7 @@ pub struct PlayoutView {
 }
 
 /// One deck.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DeckView {
     pub item: Option<ItemId>,
     pub title: String,
@@ -54,6 +54,9 @@ pub struct DeckView {
     pub start: Option<Timestamp>,
     /// The planned end.
     pub end: Option<Timestamp>,
+    /// The item gain that playout sent to the mixer for a file item: the loudness gain
+    /// with the trim and the clamps. `None` for an empty deck, a stream or live input.
+    pub gain: Option<radio_model::ItemGain>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

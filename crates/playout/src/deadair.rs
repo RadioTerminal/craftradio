@@ -39,6 +39,9 @@ pub(crate) struct DeadAir {
 #[derive(Default)]
 pub(crate) struct Analysis {
     done: BTreeMap<ItemId, Option<Timing>>,
+    /// Items whose loudness is in measurement, or whose measurement failed. A failed one
+    /// is not measured again until playout restarts, so a silent file costs one decode.
+    pub(crate) measuring: std::collections::BTreeSet<ItemId>,
 }
 
 fn audio_file(p: &Path) -> bool {

@@ -34,6 +34,8 @@ pub(crate) enum Done {
     Opened {
         tag: u64,
         result: Result<Decoder, String>,
+        /// The loudness from the ReplayGain or R128 tags of the file, if it has them.
+        tagged: Option<radio_model::Loudness>,
     },
     /// The as-played row of the load with this tag.
     Row {
@@ -44,6 +46,8 @@ pub(crate) enum Done {
     Folder(Vec<PathBuf>),
     /// The analysis of an item without timing.
     Analysed(ItemId, Option<Timing>),
+    /// The loudness measurement of the file of an item.
+    Measured(ItemId, Option<crate::Measured>),
     /// A decoded cartwall clip for a slot.
     Cart(usize, ItemId, Result<Clip, String>),
 }
