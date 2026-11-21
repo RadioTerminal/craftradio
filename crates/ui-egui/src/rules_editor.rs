@@ -361,8 +361,21 @@ fn highlighted_script(ui: &egui::Ui, code: &str, t: &Tokens) -> egui::text::Layo
 
 fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, preview: bool, t: &Tokens) {
     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
-        let mut job = highlighted_script(ui, text.as_str(), t);
-        job.wrap.max_width = width;
+        let key = (egui::util::hash(text.as_str()), width.to_bits());
+        let cache_id = ui.id().with("script_palette");
+        let cached = ui
+            .ctx()
+            .data_mut(|data| data.get_temp::<((u64, u32), egui::text::LayoutJob)>(cache_id));
+        let job = match cached {
+            Some((cached_key, job)) if cached_key == key => job,
+            _ => {
+                let mut job = highlighted_script(ui, text.as_str(), t);
+                job.wrap.max_width = width;
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(cache_id, (key, job.clone())));
+                job
+            }
+        };
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
     let edit = TextEdit::multiline(&mut tab.script)

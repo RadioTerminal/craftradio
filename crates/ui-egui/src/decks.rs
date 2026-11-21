@@ -133,43 +133,56 @@ pub(crate) fn show(
         ui.ctx().request_repaint_after_secs(ARM_REPAINT_S);
     }
     state.next = next_ranks(&view.decks);
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = space::M;
-        egui_extras::StripBuilder::new(ui)
-            .size(egui_extras::Size::exact(size::DECK_STRIP_H))
-            .vertical(|mut strip| {
-                strip.strip(|builder| {
-                    builder
-                        .sizes(egui_extras::Size::remainder(), view.decks.len())
-                        .size(
-                            egui_extras::Size::relative(size::CLOCK_SHARE)
-                                .at_least(size::CLOCK_NARROW_W)
-                                .at_most(size::CLOCK_W),
-                        )
-                        .horizontal(|mut strip| {
-                            for (i, deck) in view.decks.iter().enumerate() {
-                                strip.cell(|ui| {
-                                    let card = deck_card(
-                                        ui,
-                                        i,
-                                        deck,
-                                        ui.available_width(),
-                                        state,
-                                        actions,
-                                        t,
-                                    );
-                                    card.context_menu(|ui| {
-                                        deck_menu(ui, i, deck, view, state, now, actions)
+    let wide = ui.available_width() >= size::STRIP_WIDE;
+    let clock_width = if wide {
+        size::CLOCK_W
+    } else {
+        size::CLOCK_NARROW_W
+    };
+    let deck_min = if wide {
+        size::DECK_MIN_W
+    } else {
+        size::DECK_TINY_W
+    };
+    egui::ScrollArea::horizontal()
+        .id_salt("deck_strip_scroll")
+        .show(ui, |ui| {
+            ui.set_min_width((deck_min + space::M) * view.decks.len() as f32 + clock_width);
+            ui.spacing_mut().item_spacing.x = space::M;
+            egui_extras::StripBuilder::new(ui)
+                .size(egui_extras::Size::exact(size::DECK_STRIP_H))
+                .vertical(|mut strip| {
+                    strip.strip(|builder| {
+                        builder
+                            .sizes(
+                                egui_extras::Size::remainder().at_least(deck_min),
+                                view.decks.len(),
+                            )
+                            .size(egui_extras::Size::exact(clock_width))
+                            .horizontal(|mut strip| {
+                                for (i, deck) in view.decks.iter().enumerate() {
+                                    strip.cell(|ui| {
+                                        let card = deck_card(
+                                            ui,
+                                            i,
+                                            deck,
+                                            ui.available_width(),
+                                            state,
+                                            actions,
+                                            t,
+                                        );
+                                        card.context_menu(|ui| {
+                                            deck_menu(ui, i, deck, view, state, now, actions)
+                                        });
                                     });
+                                }
+                                strip.cell(|ui| {
+                                    clock(ui, view, actions, t);
                                 });
-                            }
-                            strip.cell(|ui| {
-                                clock(ui, view, actions, t);
                             });
-                        });
+                    });
                 });
-            });
-    });
+        });
     if state.confirm != old_confirm {
         actions.push(parts::set(parts::DECKS, CONFIRM_KEY, state.confirm));
     }
@@ -755,7 +768,7 @@ fn mode_control(
             let on = view.play_mode == *mode;
             // A narrow window shows two letters; the tooltip names the mode.
             let word = if wide {
-                mode.label().to_uppercase()
+                mode.label().to_owned()
             } else {
                 short_mode(*mode).to_owned()
             };

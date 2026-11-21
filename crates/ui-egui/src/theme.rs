@@ -105,7 +105,7 @@ pub mod size {
     pub const DECK_WORD_MIN_W: f32 = 40.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
-    pub const CLOCK_SHARE: f32 = 0.23;
+    pub const PLAYLIST_TABLE_H: f32 = 360.0;
     pub const CLOCK_W: f32 = 340.0;
     /// The clock cluster in a narrow window: no date, and the LIVE chip shows its glyph only.
     pub const CLOCK_NARROW_W: f32 = 216.0;

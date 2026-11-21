@@ -175,6 +175,7 @@ fn upcoming(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    let clip_rect = ui.clip_rect();
     let now = view.now.timestamp();
     let order: Vec<u64> = prep.upcoming.iter().map(|i| prep.ids[*i]).collect();
     link.step_rows(Pane::Scheduled, &order);
@@ -213,6 +214,7 @@ fn upcoming(
                 let on_air = r.start.timestamp() <= now;
                 row.set_selected(link.is_selected(r.id));
                 row.col(|ui| {
+                    crate::main_pane::on_air_bg(ui, on_air, true, t);
                     crate::widgets::deck_mark(ui, r.deck, &r.title);
                     let ink = if on_air { t.on_air } else { t.text };
                     ui.label(
@@ -222,6 +224,7 @@ fn upcoming(
                     );
                 });
                 row.col(|ui| {
+                    crate::main_pane::on_air_bg(ui, on_air, false, t);
                     ui.add(
                         egui::Label::new(
                             RichText::new(&r.playlist).color(t.readable(r.color, t.card)),
@@ -231,10 +234,12 @@ fn upcoming(
                     .on_hover_text(&r.playlist);
                 });
                 row.col(|ui| {
+                    crate::main_pane::on_air_bg(ui, on_air, false, t);
                     ui.add(egui::Label::new(&r.title).truncate())
                         .on_hover_text(&r.title);
                 });
                 row.col(|ui| {
+                    crate::main_pane::on_air_bg(ui, on_air, false, t);
                     if let Some(fit) = r.fixed {
                         ui.label(
                             RichText::new(fit_words(fit))
@@ -244,13 +249,29 @@ fn upcoming(
                     }
                 });
                 row.col(|ui| {
+                    crate::main_pane::on_air_bg(ui, on_air, false, t);
                     ui.label(
                         RichText::new(&prep.len[i])
                             .font(theme::mono(theme::CODE))
                             .color(t.text_muted),
                     );
                 });
-                let resp = row.response();
+                let mut resp = row.response();
+                resp.rect = resp.rect.intersect(clip_rect);
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::SelectableLabel,
+                        true,
+                        format!(
+                            "{} {} {} {} {}",
+                            prep.start[i],
+                            r.playlist,
+                            r.title,
+                            r.fixed.map(fit_words).unwrap_or_default(),
+                            prep.len[i]
+                        ),
+                    )
+                });
                 let resp = match r.fixed {
                     Some(fit) => resp.on_hover_text(fit_detail(r, fit)),
                     None => resp,
@@ -369,6 +390,11 @@ fn playlist(
     t: &Tokens,
 ) {
     let decks = &view.decks;
+    let artists: std::collections::HashMap<_, _> = view
+        .library
+        .iter()
+        .map(|item| (item.id, item.artist.as_deref().unwrap_or("—")))
+        .collect();
     // The selection belongs to one playlist. Another tab starts with none.
     if link.playlist_sel_of != p.name {
         link.playlist_sel = Selection::default();
@@ -387,145 +413,154 @@ fn playlist(
             actions.push(remove_items(p, decks, sel));
         }
     }
-    ui.push_id(("playlist_tab", &p.name), |ui| {
-        ui.horizontal(|ui| {
-            let (dot, _) =
-                ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
-            ui.painter()
-                .circle_filled(dot.center(), size::DOT_R, Tokens::playlist(p.color));
-            let folder = if p.source.is_some() { " 📁" } else { "" };
-            let name = RichText::new(format!("{}{folder}", p.name));
-            ui.label(name.font(theme::text(theme::SECTION)).strong());
-            if rules_editor::cog(ui, &p.name) {
-                actions.push(Action::OpenRules(p.name.clone()));
-            }
-            add_menu::button(ui, &p.name, None, actions);
-        });
-        if let Some(src) = &p.source {
-            caption(ui, &format!("From folder {}", src.path), t);
-        }
-        ui.add_space(space::S);
-        caption(ui, "PICK", t);
-        ui.label(RichText::new(&p.pick).font(theme::text(theme::BODY)));
-        ui.add_space(space::M);
-        caption(ui, "RULES", t);
-        for rule in &p.rules {
-            ui.label(RichText::new(format!("•  {rule}")).font(theme::text(theme::BODY)));
-        }
-        ui.add_space(space::M);
-        caption(ui, &format!("ITEMS ({})", p.items.len()), t);
-        let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
-        let mut rows = Vec::new();
-        let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
-            ui.set_width(ui.available_width());
-            let hint = RichText::new("Drop a library title or files here to add them");
-            ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
-            TableBuilder::new(ui)
-                .id_salt("items")
-                .sense(Sense::click())
-                .auto_shrink(false)
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::remainder().clip(true))
-                .column(
-                    Column::initial(size::COL_ARTIST)
-                        .at_least(size::TEXT_COL_MIN)
-                        .clip(true),
-                )
-                .column(Column::exact(size::COL_LEN))
-                .header(size::DIVIDER_ROW, |mut header| {
-                    for name in ["TITLE", "ARTIST", "LENGTH"] {
-                        header.col(|ui| {
-                            caption(ui, name, t);
-                        });
+    egui::ScrollArea::vertical()
+        .id_salt(("playlist_scroll", &p.name))
+        .show(ui, |ui| {
+            ui.push_id(("playlist_tab", &p.name), |ui| {
+                ui.horizontal(|ui| {
+                    let (dot, _) = ui
+                        .allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+                    ui.painter().circle_filled(
+                        dot.center(),
+                        size::DOT_R,
+                        Tokens::playlist(p.color),
+                    );
+                    let folder = if p.source.is_some() { " 📁" } else { "" };
+                    let name = RichText::new(format!("{}{folder}", p.name));
+                    ui.label(name.font(theme::text(theme::SECTION)).strong());
+                    if rules_editor::cog(ui, &p.name) {
+                        actions.push(Action::OpenRules(p.name.clone()));
                     }
-                })
-                .body(|body| {
-                    body.rows(size::ROW, p.items.len(), |mut row| {
-                        let i = row.index();
-                        let (name, len) = &p.items[i];
-                        let id = p.ids.get(i).copied();
-                        row.set_selected(id.is_some_and(|id| link.playlist_sel.contains(id)));
-                        row.col(|ui| {
-                            let on = decks.iter().position(|d| id.is_some() && d.item == id);
-                            let hint = on
-                                .and_then(|d| decks[d].start.as_ref().map(|s| (d, s)))
-                                .map_or_else(String::new, |(d, s)| crate::widgets::deck_hint(d, s));
-                            crate::widgets::deck_mark(ui, on, &hint);
-                            let weight = p.weights.get(i).copied().unwrap_or(1);
-                            let title = if weight == 1 {
-                                name.clone()
-                            } else {
-                                format!("{name}  ×{weight}")
-                            };
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(title).font(theme::text(theme::SMALL)),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(name);
-                        });
-                        row.col(|ui| {
-                            let artist = view
-                                .library
-                                .iter()
-                                .find(|item| Some(item.id) == id)
-                                .and_then(|item| item.artist.as_deref())
-                                .unwrap_or("—");
-                            ui.add(egui::Label::new(artist).truncate())
-                                .on_hover_text(artist);
-                        });
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(mmss(*len))
-                                    .font(theme::mono(theme::CODE))
-                                    .color(t.text_muted),
-                            );
-                        });
-                        let resp = row.response();
-                        rows.push(resp.rect);
-                        if let Some(id) = id {
-                            let plain = !link.playlist_sel.contains(id);
-                            if resp.clicked() || (resp.secondary_clicked() && plain) {
-                                let m = if resp.clicked() {
-                                    resp.ctx.input(|i| i.modifiers)
-                                } else {
-                                    egui::Modifiers::NONE
-                                };
-                                link.focus = Pane::Playlist;
-                                link.playlist_sel.click(id, m, order);
-                            }
-                        }
-                        resp.context_menu(|ui| item_menu(ui, p, decks, i, link, actions));
-                    });
+                    add_menu::button(ui, &p.name, None, actions);
                 });
-        });
-        // The zone takes clicks only outside the rows. A click on the zone on top of the
-        // rows would take the clicks of the rows.
-        let pointer = ui.input(|i| i.pointer.interact_pos());
-        let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
-        if !on_row {
-            zone.response
-                .interact(Sense::click())
-                .context_menu(|ui| add_menu::items(ui, &p.name, None, actions));
-        }
-        if let Some(drag) = dropped {
-            actions.push(Action::Drop {
-                item: drag.0,
-                target: DropTarget::Playlist(p.name.clone()),
+                if let Some(src) = &p.source {
+                    caption(ui, &format!("From folder {}", src.path), t);
+                }
+                ui.add_space(space::S);
+                caption(ui, "PICK", t);
+                ui.label(RichText::new(&p.pick).font(theme::text(theme::BODY)));
+                ui.add_space(space::M);
+                caption(ui, "RULES", t);
+                for rule in &p.rules {
+                    ui.label(RichText::new(format!("•  {rule}")).font(theme::text(theme::BODY)));
+                }
+                ui.add_space(space::M);
+                caption(ui, &format!("ITEMS ({})", p.items.len()), t);
+                let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
+                let mut rows = Vec::new();
+                let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
+                    ui.set_width(ui.available_width());
+                    let hint = RichText::new("Drop a library title or files here to add them");
+                    ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
+                    TableBuilder::new(ui)
+                        .id_salt("items")
+                        .max_scroll_height(size::PLAYLIST_TABLE_H)
+                        .sense(Sense::click())
+                        .auto_shrink(false)
+                        .cell_layout(Layout::left_to_right(Align::Center))
+                        .column(Column::remainder().clip(true))
+                        .column(
+                            Column::initial(size::COL_ARTIST)
+                                .at_least(size::TEXT_COL_MIN)
+                                .clip(true),
+                        )
+                        .column(Column::exact(size::COL_LEN))
+                        .header(size::DIVIDER_ROW, |mut header| {
+                            for name in ["TITLE", "ARTIST", "LENGTH"] {
+                                header.col(|ui| {
+                                    caption(ui, name, t);
+                                });
+                            }
+                        })
+                        .body(|body| {
+                            body.rows(size::ROW, p.items.len(), |mut row| {
+                                let i = row.index();
+                                let (name, len) = &p.items[i];
+                                let id = p.ids.get(i).copied();
+                                row.set_selected(
+                                    id.is_some_and(|id| link.playlist_sel.contains(id)),
+                                );
+                                row.col(|ui| {
+                                    let on =
+                                        decks.iter().position(|d| id.is_some() && d.item == id);
+                                    let hint = on
+                                        .and_then(|d| decks[d].start.as_ref().map(|s| (d, s)))
+                                        .map_or_else(String::new, |(d, s)| {
+                                            crate::widgets::deck_hint(d, s)
+                                        });
+                                    crate::widgets::deck_mark(ui, on, &hint);
+                                    let weight = p.weights.get(i).copied().unwrap_or(1);
+                                    let title = if weight == 1 {
+                                        name.clone()
+                                    } else {
+                                        format!("{name}  ×{weight}")
+                                    };
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(title).font(theme::text(theme::SMALL)),
+                                        )
+                                        .truncate(),
+                                    )
+                                    .on_hover_text(name);
+                                });
+                                row.col(|ui| {
+                                    let artist =
+                                        id.and_then(|id| artists.get(&id).copied()).unwrap_or("—");
+                                    ui.add(egui::Label::new(artist).truncate())
+                                        .on_hover_text(artist);
+                                });
+                                row.col(|ui| {
+                                    ui.label(
+                                        RichText::new(mmss(*len))
+                                            .font(theme::mono(theme::CODE))
+                                            .color(t.text_muted),
+                                    );
+                                });
+                                let resp = row.response();
+                                rows.push(resp.rect);
+                                if let Some(id) = id {
+                                    let plain = !link.playlist_sel.contains(id);
+                                    if resp.clicked() || (resp.secondary_clicked() && plain) {
+                                        let m = if resp.clicked() {
+                                            resp.ctx.input(|i| i.modifiers)
+                                        } else {
+                                            egui::Modifiers::NONE
+                                        };
+                                        link.focus = Pane::Playlist;
+                                        link.playlist_sel.click(id, m, order);
+                                    }
+                                }
+                                resp.context_menu(|ui| item_menu(ui, p, decks, i, link, actions));
+                            });
+                        });
+                });
+                // The zone takes clicks only outside the rows. A click on the zone on top of the
+                // rows would take the clicks of the rows.
+                let pointer = ui.input(|i| i.pointer.interact_pos());
+                let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
+                if !on_row {
+                    zone.response
+                        .interact(Sense::click())
+                        .context_menu(|ui| add_menu::items(ui, &p.name, None, actions));
+                }
+                if let Some(drag) = dropped {
+                    actions.push(Action::Drop {
+                        item: drag.0,
+                        target: DropTarget::Playlist(p.name.clone()),
+                    });
+                }
+                if files_over(ui, zone.response.rect) {
+                    link.hover_files(FileTarget::Playlist(p.name.clone()));
+                    let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
+                    ui.painter().rect_stroke(
+                        zone.response.rect,
+                        t.radius_lg,
+                        edge,
+                        egui::StrokeKind::Outside,
+                    );
+                }
             });
-        }
-        if files_over(ui, zone.response.rect) {
-            link.hover_files(FileTarget::Playlist(p.name.clone()));
-            let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
-            ui.painter().rect_stroke(
-                zone.response.rect,
-                t.radius_lg,
-                edge,
-                egui::StrokeKind::Outside,
-            );
-        }
-    });
+        });
 }
 
 /// The action that removes items of playlist `p`. Items on a deck stay, with the reason.

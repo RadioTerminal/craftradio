@@ -149,6 +149,8 @@ pub(crate) fn show(
         .id_salt("history_columns")
         .auto_shrink(false)
         .show(ui, |ui| {
+            let table_id = ui.id().with(egui::IdSalt::new(("history_table", shown)));
+            let mut widths = Vec::new();
             let mut table = TableBuilder::new(ui)
                 .id_salt(("history_table", shown))
                 .striped(true)
@@ -161,22 +163,37 @@ pub(crate) fn show(
             for c in &cols {
                 table = table.column(match c {
                     Col::Aired => Column::exact(size::COL_TIME),
-                    Col::Playlist => Column::initial(size::COL_PLAYLIST + space::XL)
-                        .at_least(size::TEXT_COL_MIN)
-                        .at_most(size::TEXT_COL_MAX)
-                        .resizable(true)
-                        .clip(true),
-                    Col::Title => Column::initial(size::COL_TITLE)
-                        .at_least(size::TEXT_COL_MIN)
-                        .at_most(size::TEXT_COL_MAX)
-                        .resizable(true)
-                        .clip(true),
+                    Col::Playlist => Column::initial(parts::f32(
+                        view,
+                        parts::HISTORY,
+                        "width_playlist",
+                        size::COL_PLAYLIST + space::XL,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
+                    Col::Title => Column::initial(parts::f32(
+                        view,
+                        parts::HISTORY,
+                        "width_title",
+                        size::COL_TITLE,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
                     Col::Length => Column::exact(size::COL_LEN),
-                    Col::Origin => Column::initial(size::COL_ORIGIN)
-                        .at_least(size::TEXT_COL_MIN)
-                        .at_most(size::TEXT_COL_MAX)
-                        .resizable(true)
-                        .clip(true),
+                    Col::Origin => Column::initial(parts::f32(
+                        view,
+                        parts::HISTORY,
+                        "width_origin",
+                        size::COL_ORIGIN,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
                 });
             }
             let head = |s: &str| {
@@ -197,6 +214,7 @@ pub(crate) fn show(
                     }
                 })
                 .body(|body| {
+                    widths = body.widths().to_vec();
                     body.rows(size::ROW, rows.len(), |mut row| {
                         let Some(r) = rows.get(row.index()) else {
                             return;
@@ -219,6 +237,17 @@ pub(crate) fn show(
                         resp.context_menu(|ui| row_menu(ui, view, r, &state.selected.ids, actions));
                     });
                 });
+            let columns: Vec<_> = cols
+                .iter()
+                .map(|col| match col {
+                    Col::Playlist => "width_playlist",
+                    Col::Title => "width_title",
+                    Col::Origin => "width_origin",
+                    Col::Aired | Col::Length => "",
+                })
+                .zip(widths)
+                .collect();
+            parts::save_column_widths(ui, table_id, parts::HISTORY, &columns, actions);
         });
 }
 

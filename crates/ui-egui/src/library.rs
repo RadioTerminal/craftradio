@@ -368,6 +368,8 @@ fn table(
         .id_salt("library_columns")
         .auto_shrink(false)
         .show(ui, |ui| {
+            let table_id = ui.id().with(egui::IdSalt::new("library_table"));
+            let mut widths = Vec::new();
             let mut builder = TableBuilder::new(ui);
             if let Some(i) = scroll {
                 builder = builder.scroll_to_row(i, Some(Align::Center));
@@ -379,33 +381,53 @@ fn table(
                 .auto_shrink(false)
                 .cell_layout(Layout::left_to_right(Align::Center))
                 .column(
-                    Column::initial(size::COL_TITLE)
-                        .at_least(size::TEXT_COL_MIN)
-                        .at_most(size::TEXT_COL_MAX)
-                        .resizable(true)
-                        .clip(true),
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_title",
+                        size::COL_TITLE,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
                 )
                 .column(
-                    Column::initial(size::COL_ARTIST)
-                        .at_least(size::TEXT_COL_MIN)
-                        .at_most(size::TEXT_COL_MAX)
-                        .resizable(true)
-                        .clip(true),
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_artist",
+                        size::COL_ARTIST,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
                 )
                 .column(Column::exact(size::COL_LEN))
                 .column(
-                    Column::initial(size::COL_CATEGORY)
-                        .at_least(size::TEXT_COL_MIN)
-                        .at_most(size::TEXT_COL_MAX)
-                        .resizable(true)
-                        .clip(true),
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_category",
+                        size::COL_CATEGORY,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
                 )
                 .column(
-                    Column::initial(size::COL_PATH)
-                        .at_least(size::TEXT_COL_MIN)
-                        .at_most(size::TEXT_COL_MAX)
-                        .resizable(true)
-                        .clip(true),
+                    Column::initial(parts::f32(
+                        view,
+                        parts::LIBRARY,
+                        "width_path",
+                        size::COL_PATH,
+                    ))
+                    .at_least(size::TEXT_COL_MIN)
+                    .at_most(size::TEXT_COL_MAX)
+                    .resizable(true)
+                    .clip(true),
                 )
                 .header(size::DIVIDER_ROW, |mut h| {
                     for name in ["TITLE", "ARTIST", "LENGTH", "CATEGORY", "PATH"] {
@@ -415,6 +437,7 @@ fn table(
                     }
                 })
                 .body(|body| {
+                    widths = body.widths().to_vec();
                     body.rows(size::ROW, items.len(), |mut row| {
                         let Some(item) = items.get(row.index()) else {
                             return;
@@ -478,6 +501,15 @@ fn table(
                         });
                     });
                 });
+            let keys = [
+                "width_title",
+                "width_artist",
+                "",
+                "width_category",
+                "width_path",
+            ];
+            let columns: Vec<_> = keys.into_iter().zip(widths).collect();
+            parts::save_column_widths(ui, table_id, parts::LIBRARY, &columns, actions);
         });
     if let Some((id, m)) = clicked {
         state.selected.click(id, m, &order);

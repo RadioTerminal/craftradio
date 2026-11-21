@@ -246,3 +246,9 @@ fn a_library_column_changes_width_after_a_drag() {
         "the title column must grow after dragging: {before} -> {after}"
     );
 }
+
+#[test]
+fn header_shows_full_mode_names_at_1440() {
+    let harness = harness();
+    assert!(harness.query_all_by_label("Assist").next().is_some());
+}

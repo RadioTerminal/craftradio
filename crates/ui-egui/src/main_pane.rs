@@ -432,7 +432,7 @@ fn row_menu(
 }
 
 /// Paint the on-air background behind a cell, over the gaps between cells too.
-fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
+pub(crate) fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
     if !on_air {
         return;
     }
