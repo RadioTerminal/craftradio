@@ -239,6 +239,8 @@ or silence detection (my call).
     on the playout analysis lane. Playout measures the planned items that start within 15
     minutes (at most 12 entries), and any file an operator loads, so the result is normally
     ready before air. A silent or unreadable file is measured once per run and plays at unity.
+    Files of the emergency fallback folder aren't station items, so they aren't measured; they
+    use their tags only.
   - *Cache:* the engine keeps each measurement by file content hash (`settings_by_part`, part
     `loudness`, key = hash) with the item → hash map, so a file is measured once and a
     restart keeps it. Items with the same file share it. `item.set_loudness` stores one.
@@ -249,7 +251,8 @@ or silence detection (my call).
   - *Gain:* target − loudness + the item trim, then the clamps: a boost never lifts the true
     peak over −1 dBTP (it limits a boost, never turns it into a cut); at most the max boost
     (default +12 dB) and at least −24 dB. A tag without a peak gets no boost. The clamps apply
-    after the trim, so a trim can't defeat the peak guard.
+    after the trim, so a trim can't defeat the peak guard. With normalisation off, or with no
+    known loudness, the item plays at unity and its trim does not apply either.
   - *On the deck:* an item gain stage before the strip fader. The gain goes with the deck load
     and applies from the first sample. A change while the item is on air (a late measurement,
     a trim, a settings change) ramps linearly over 1.5 s; on a deck that isn't playing it
