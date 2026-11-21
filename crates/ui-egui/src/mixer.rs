@@ -10,7 +10,7 @@ use crate::parts;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
-    DeviceRole, Edit, IcecastView, MeterView, Route, StationView, StreamFormat, StripChange,
+    DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
 };
 
 /// The dB marks beside a meter.
@@ -422,14 +422,28 @@ fn icecast_settings(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let status = RichText::new("Icecast ○ not connected — preview").font(theme::text(theme::LABEL));
-    ui.label(status.color(t.text_muted));
+    let (word, ink) = match &view.output.icecast {
+        _ if view.preview => ("Icecast ○ not connected — preview".to_owned(), t.text_muted),
+        Status::Connected => ("Icecast ● connected".to_owned(), t.ok),
+        Status::Reconnecting { attempt } => {
+            (format!("Icecast ↻ connecting, try {attempt}"), t.warn)
+        }
+        Status::Failed(e) => (format!("Icecast ○ down: {e}"), t.danger),
+        Status::NotConnected | Status::Preview => {
+            ("Icecast ○ not connected".to_owned(), t.text_muted)
+        }
+    };
+    let status = RichText::new(word).font(theme::text(theme::LABEL));
+    ui.label(status.color(ink));
     ui.horizontal(|ui| {
         ui.label(RichText::new("Now streaming:").color(t.text_muted));
         let text = RichText::new(format!("“{streaming}”")).font(theme::mono(theme::CODE));
         ui.label(text.color(t.accent_ink));
     });
-    let note = "The stream would carry this text. The preview sends nothing.";
+    let note = view.say(
+        "The stream would carry this text. The preview sends nothing.",
+        "Changes to the mount apply on the next start of the app.",
+    );
     ui.label(
         RichText::new(note)
             .font(theme::text(theme::CAPTION))
@@ -456,7 +470,15 @@ fn icecast_settings(
             field(ui, &mut ice.user, false);
             ui.end_row();
             settings::label(ui, "Password", t);
-            field(ui, &mut ice.password, true);
+            let hint = if view.icecast.password_set {
+                "set · leave empty to keep it"
+            } else {
+                "not set"
+            };
+            let edit = egui::TextEdit::singleline(&mut ice.password)
+                .password(true)
+                .hint_text(hint);
+            ui.add(edit.desired_width(size::FIELD_W));
             ui.end_row();
             settings::label(ui, "Format", t);
             ui.horizontal(|ui| {

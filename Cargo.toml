@@ -53,6 +53,8 @@ egui_kittest = "0.36"
 rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }
+# The OS keychain: macOS Keychain, Windows Credential Manager, Secret Service on Linux.
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 radio-playout = { path = "crates/playout" }
 radio-testkit = { path = "crates/testkit" }
 

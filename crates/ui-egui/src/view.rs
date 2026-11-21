@@ -577,7 +577,10 @@ pub struct IcecastView {
     pub port: u16,
     pub mount: String,
     pub user: String,
+    /// A new password to store. A source never fills it in a snapshot, and empty keeps the old one.
     pub password: String,
+    /// True when the source keeps a password for the mount.
+    pub password_set: bool,
     pub format: StreamFormat,
     pub kbps: u32,
 }
@@ -591,6 +594,7 @@ impl std::fmt::Debug for IcecastView {
             .field("mount", &self.mount)
             .field("user", &self.user)
             .field("password", &"…")
+            .field("password_set", &self.password_set)
             .field("format", &self.format)
             .field("kbps", &self.kbps)
             .finish()

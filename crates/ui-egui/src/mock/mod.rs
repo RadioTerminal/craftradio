@@ -190,6 +190,7 @@ impl MockSource {
                 mount: "/live".to_owned(),
                 user: "source".to_owned(),
                 password: String::new(),
+                password_set: false,
                 format: StreamFormat::Opus,
                 kbps: ICECAST_KBPS,
             },

@@ -17,6 +17,7 @@ radio-library.workspace = true
 radio-stream.workspace = true
 jiff.workspace = true
 serde_json.workspace = true
+keyring.workspace = true
 
 [dev-dependencies]
 hound.workspace = true

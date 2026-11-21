@@ -4,6 +4,11 @@ mod edit;
 mod fader;
 mod folders;
 mod icecast;
+
+pub use icecast::{
+    ICECAST_PART, KEYCHAIN_SERVICE, KeyringStore, MemoryStore, SecretStore, icecast_config,
+    icecast_view,
+};
 mod map;
 
 use std::collections::{HashMap, HashSet};
@@ -20,8 +25,8 @@ use radio_scheduler::Origin as SOrigin;
 use radio_stream::StreamStatus;
 use radio_ui_egui::view::{
     CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles, DropTarget, Edit, FitView,
-    FolderSource, IcecastView, Imported, LibraryItem, MeterView, Origin, OutputStatus, PlayMode,
-    PlaylistTab, Route, Row, StationView, Status, StreamState, ViewSource,
+    FolderSource, Imported, LibraryItem, MeterView, Origin, OutputStatus, PlayMode, PlaylistTab,
+    Route, Row, StationView, Status, StreamState, ViewSource,
 };
 
 use map::{display_title, effective_meta, item_len, view_meta};
@@ -91,6 +96,9 @@ pub struct EngineSource {
     watches: HashMap<PlaylistId, (radio_model::FolderSource, radio_library::Watcher)>,
     /// Watch problems, for the warnings.
     watch_errors: Vec<String>,
+    secrets: Box<dyn SecretStore>,
+    /// The keychain entry of the mount and whether it holds a password.
+    secret_known: Option<(String, bool)>,
 }
 
 /// What a timeline row stands for.
@@ -136,7 +144,16 @@ impl EngineSource {
             folders: Vec::new(),
             watches: HashMap::new(),
             watch_errors: Vec::new(),
+            secrets: Box::new(MemoryStore::default()),
+            secret_known: None,
         }
+    }
+
+    /// The same source with another store for the Icecast password.
+    pub fn with_secrets(mut self, secrets: Box<dyn SecretStore>) -> Self {
+        self.secrets = secrets;
+        self.secret_known = None;
+        self
     }
 
     /// The same source with other limits for folder reads.
@@ -620,7 +637,7 @@ impl ViewSource for EngineSource {
             },
             carts,
             cartwall,
-            icecast: IcecastView::default(),
+            icecast: self.icecast(),
             output: Self::output(&pv),
             folders: self.folder_views(),
             settings: self.state.ui_settings().clone(),
