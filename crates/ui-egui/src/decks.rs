@@ -339,7 +339,6 @@ fn deck_card(
     t: &Tokens,
 ) -> egui::Response {
     let deck = &decks[i];
-    let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
     // The edge has the colour of the deck. The deck on air has a thick edge, its fill and
     // the ON AIR word, so the colour is not the only sign.
     // An armed button turns the edge to the danger colour. Its width stays, so the card
@@ -356,7 +355,7 @@ fn deck_card(
     };
     let frame = theme::card_frame(t)
         .inner_margin(pad::DECK)
-        .fill(if live { t.on_air_bg } else { t.field })
+        .fill(card_fill(i, deck, t))
         .stroke(Stroke::new(edge_w, edge));
     let inner = width - frame.total_margin().sum().x - edge_w * 2.0;
     let frame_h = frame.total_margin().sum().y;
@@ -371,6 +370,16 @@ fn deck_card(
     ui.ctx()
         .data_mut(|d| d.insert_temp(card_rect_id(i), shown.response.rect));
     shown.inner
+}
+
+/// The fill of a deck card: a dark tint of the deck colour while it is on air (playing or
+/// fading), else the plain field.
+fn card_fill(i: usize, deck: &DeckView, t: &Tokens) -> egui::Color32 {
+    if matches!(deck.state, DeckState::Playing | DeckState::Fading) {
+        t.deck_on_air_fill(i)
+    } else {
+        t.field
+    }
 }
 
 /// Where the card of deck `i` was drawn, for tests.
@@ -539,7 +548,7 @@ fn deck_body(
             );
             (
                 deck.playlist.as_str(),
-                t.readable(deck.playlist_color, t.field),
+                t.readable(deck.playlist_color, card_fill(i, deck, t)),
             )
         };
         let name = RichText::new(name).font(theme::text(theme::CAPTION));
@@ -687,8 +696,10 @@ fn cluster(
                         .strong(),
                 );
             });
-            let rest = (inner_h - (ui.cursor().top() - y0)).max(size::VU_NARROW_H);
+            let rest = (inner_h - (ui.cursor().top() - y0) - size::NOW_LINE - space::XS)
+                .max(size::VU_NARROW_H);
             out_meter(ui, view, rest, false, actions, t);
+            now_playing(ui, view, t);
             return;
         }
         ui.spacing_mut().item_spacing = egui::vec2(space::M, space::S);
@@ -728,9 +739,74 @@ fn cluster(
                 },
             );
         });
-        let rest = (inner_h - top.response.rect.height() - space::S).max(size::VU_NARROW_H);
+        let rest = (inner_h - top.response.rect.height() - size::NOW_LINE - 2.0 * space::S)
+            .max(size::VU_NARROW_H);
         out_meter(ui, view, rest, true, actions, t);
+        now_playing(ui, view, t);
     });
+}
+
+/// The deck that listeners hear now: the deck that plays, else the deck that fades out.
+/// A paused deck is silent, so it does not count.
+fn audible_deck(decks: &[DeckView]) -> Option<usize> {
+    decks
+        .iter()
+        .position(|d| d.state == DeckState::Playing)
+        .or_else(|| decks.iter().position(|d| d.state == DeckState::Fading))
+}
+
+/// The line under the Out meter: the badge of the deck on air, its "Artist – Title" and the
+/// time left at the right end. With nothing on air it says so, and never shows a stale item.
+fn now_playing(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
+    let w = ui.available_width();
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, size::NOW_LINE),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_width(w);
+            ui.spacing_mut().item_spacing.x = space::S;
+            let small = |s: String| RichText::new(s).font(theme::text(theme::LABEL));
+            let Some((i, deck)) =
+                audible_deck(&view.decks).and_then(|i| Some((i, view.decks.get(i)?)))
+            else {
+                ui.label(small("Nothing playing".to_owned()).color(t.text_muted));
+                return;
+            };
+            // The badge: the deck colour with the letter on it, as on the deck card.
+            let (rect, badge) =
+                ui.allocate_exact_size(egui::Vec2::splat(size::DECK_MARK), Sense::hover());
+            let p = ui.painter();
+            p.rect_filled(rect, t.radius_sm, Tokens::deck(i));
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                deck.label,
+                theme::mono(theme::CAPTION),
+                t.deck_ink(i),
+            );
+            badge.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Label,
+                    true,
+                    format!("Deck {} on air", deck.label),
+                )
+            });
+            let left = deck.len.saturating_sub(deck.elapsed);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let time = RichText::new(format!("−{}", mmss(left))).font(theme::mono(theme::CODE));
+                ui.label(time.color(t.text_muted))
+                    .on_hover_text("Time left on the item on air");
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let title = if deck.title.is_empty() {
+                        "—"
+                    } else {
+                        deck.title.as_str()
+                    };
+                    widgets::truncated_label(ui, small(title.to_owned())).on_hover_text(title);
+                });
+            });
+        },
+    );
 }
 
 /// The transport of the station: Play next, Fade out and Stop after current, at one height.

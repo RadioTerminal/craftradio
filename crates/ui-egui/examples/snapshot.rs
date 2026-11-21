@@ -15,7 +15,7 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::mock::StressSource;
 use radio_ui_egui::theme::size;
-use radio_ui_egui::view::{Edit, Row, StationView};
+use radio_ui_egui::view::{DeckState, Edit, Row, StationView};
 use radio_ui_egui::{MockSource, RadioApp, ToolWindow, ViewSource};
 
 /// Render at twice the point size, as a Retina display does.
@@ -30,12 +30,16 @@ const QA_WIDTHS: [f32; 3] = [1024.0, 1440.0, 1920.0];
 #[derive(Clone)]
 enum Scene {
     Main,
+    /// The main window with deck `0` (A) to `3` (D) on air and the others waiting.
+    OnAir(usize),
     Window(ToolWindow),
     /// A tool window at the minimum size of its kind.
     WindowMin(ToolWindow),
     Click(Vec<String>),
     /// Open a window, then click labels in it.
     WindowClick(ToolWindow, Vec<String>),
+    /// Open a window at the minimum size of its kind, then click labels in it.
+    WindowMinClick(ToolWindow, Vec<String>),
     /// Right-click the lowest node with this label, then click the menu row, if any.
     Menu(String, String),
     /// Open a window, then right-click a node in it.
@@ -48,6 +52,8 @@ const ROW: &str = "Juniper Vale – Satellites of Ulvenik";
 struct Qa {
     inner: Box<dyn ViewSource>,
     min: Option<ToolWindow>,
+    /// A deck to show on air in place of the deck that the source plays.
+    on_air: Option<usize>,
 }
 
 impl ViewSource for Qa {
@@ -59,6 +65,17 @@ impl ViewSource for Qa {
                 .entry(w.part().to_owned())
                 .or_default()
                 .insert("window_size".to_owned(), serde_json::json!([x, y]));
+        }
+        if let Some(k) = self.on_air {
+            for (i, d) in v.decks.iter_mut().enumerate() {
+                if i == k {
+                    d.state = DeckState::Playing;
+                    d.elapsed = d.len / 3;
+                } else if d.state != DeckState::Empty {
+                    d.state = DeckState::Ready;
+                    d.elapsed = std::time::Duration::ZERO;
+                }
+            }
         }
         v
     }
@@ -195,6 +212,29 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
             wc(ToolWindow::Mixer, "Toggle Mixer settings"),
         ));
         scenes.push((
+            "mixer-settings-icecast".into(),
+            wide,
+            wc(ToolWindow::Mixer, "Toggle Icecast settings"),
+        ));
+        // At the minimum size the Out strip scrolls out of view: the short Icecast scene goes
+        // through the window ⚙ and the Icecast tab.
+        let wmc = |labels: &[&str]| {
+            Scene::WindowMinClick(
+                ToolWindow::Mixer,
+                labels.iter().map(|l| (*l).to_owned()).collect(),
+            )
+        };
+        scenes.push((
+            "mixer-settings-short".into(),
+            wide,
+            wmc(&["Toggle Mixer settings"]),
+        ));
+        scenes.push((
+            "mixer-settings-icecast-short".into(),
+            wide,
+            wmc(&["Toggle Mixer settings", "Icecast — "]),
+        ));
+        scenes.push((
             "cartwall-settings".into(),
             wide,
             wc(ToolWindow::Cartwall, "Toggle Cartwall settings"),
@@ -253,6 +293,10 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
             wide,
             Scene::Click(vec!["Play deck B".into()]),
         ));
+        // Each other deck on air, for the tint of its card.
+        for (k, deck) in ['b', 'c', 'd'].into_iter().enumerate() {
+            scenes.push((format!("deck-{deck}-on-air"), wide, Scene::OnAir(k + 1)));
+        }
         scenes.push((
             "toast".into(),
             QA_WIDTHS[0],
@@ -263,7 +307,7 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
                 continue;
             }
             let min = match &scene {
-                Scene::WindowMin(w) => Some(*w),
+                Scene::WindowMin(w) | Scene::WindowMinClick(w, _) => Some(*w),
                 _ => None,
             };
             let out = format!("{dir}/{name}-{}-{data}.png", width as u32);
@@ -312,7 +356,15 @@ fn render(
     scene: &Scene,
     out: &str,
 ) -> Result<(), String> {
-    let source = Qa { inner: src, min };
+    let on_air = match scene {
+        Scene::OnAir(k) => Some(*k),
+        _ => None,
+    };
+    let source = Qa {
+        inner: src,
+        min,
+        on_air,
+    };
     let mut harness = Harness::builder()
         .with_size(size)
         .with_pixels_per_point(ppp)
@@ -320,9 +372,9 @@ fn render(
         .build_eframe(move |_cc| RadioApp::new(Box::new(source), Box::new(move || now)));
     harness.run_steps(FRAMES);
     match scene {
-        Scene::Main => {}
+        Scene::Main | Scene::OnAir(_) => {}
         Scene::Window(w) | Scene::WindowMin(w) => harness.state_mut().set_window(*w, true),
-        Scene::WindowClick(w, labels) => {
+        Scene::WindowClick(w, labels) | Scene::WindowMinClick(w, labels) => {
             harness.state_mut().set_window(*w, true);
             harness.run_steps(FRAMES);
             for label in labels {

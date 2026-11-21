@@ -137,6 +137,8 @@ pub mod size {
     pub const CLOCK_COL_W: f32 = 140.0;
     /// The Out meter in the header: the height of the meter in a narrow cluster.
     pub const VU_NARROW_H: f32 = 20.0;
+    /// The now-playing line under the Out meter.
+    pub const NOW_LINE: f32 = 20.0;
     /// The two channel bars of the Out meter in the cluster, together.
     pub const VU_BARS_H: f32 = 36.0;
     /// The gap between the two channel bars of a meter.
@@ -214,6 +216,14 @@ pub mod size {
     pub const COL_ORIGIN: f32 = 70.0;
     /// A text field in a settings section.
     pub const FIELD_W: f32 = 220.0;
+    /// A settings page: the tab rail, the label column and the one width of every control.
+    /// A narrow window shrinks the controls to the least width, never below it.
+    pub const SETTINGS_RAIL: f32 = 96.0;
+    pub const SETTINGS_LABEL: f32 = 124.0;
+    pub const SETTINGS_FIELD: f32 = FIELD_W;
+    pub const SETTINGS_FIELD_MIN: f32 = 132.0;
+    /// The height of a settings page with its header. A shorter window scrolls the form.
+    pub const SETTINGS_PAGE_H: f32 = 480.0;
     /// The cart colour bar at the left edge of a cart.
     pub const CART_BAR: f32 = 4.0;
     /// The longest list in the rules editor before it scrolls.
@@ -225,8 +235,6 @@ pub mod size {
     pub const STRIP_W: f32 = 104.0;
     /// The dB numbers beside a mixer meter.
     pub const METER_SCALE_W: f32 = 22.0;
-    /// The settings column beside the mixer strips.
-    pub const MIXER_SIDE_W: f32 = 340.0;
     pub const METER_H: f32 = 220.0;
     pub const METER_BAR_W: f32 = 8.0;
     pub const FADER_W: f32 = 20.0;
@@ -366,6 +374,25 @@ impl Tokens {
         }
     }
 
+    /// The fill of the card of deck `i` while it is on air: a dark tint of the deck colour,
+    /// blended into the card colour. It is the strongest tint up to [`ON_AIR_TINT`] on which
+    /// the text, the muted text, the ON AIR word and the warning word all still read at
+    /// 4.5:1, so a light deck colour gets a weaker tint than a dark one.
+    pub fn deck_on_air_fill(&self, i: usize) -> Color32 {
+        let inks = [self.text, self.text_muted, self.on_air, self.warn];
+        (0..=ON_AIR_TINT_STEPS)
+            .rev()
+            .map(|step| {
+                let strength = ON_AIR_TINT * f32::from(step) / f32::from(ON_AIR_TINT_STEPS);
+                lerp(self.card, Self::deck(i), strength)
+            })
+            .find(|fill| {
+                inks.iter()
+                    .all(|ink| contrast(*ink, *fill) >= MIN_TEXT_CONTRAST)
+            })
+            .unwrap_or(self.card)
+    }
+
     /// The playlist colour, moved toward `text` until it reads at 4.5:1 on `bg`.
     pub fn readable(&self, rgb: [u8; 3], bg: Color32) -> Color32 {
         let base = Self::playlist(rgb);
@@ -399,6 +426,11 @@ pub const PALETTE: [(&str, [u8; 3]); 8] = [
     ("Rose", [0xD0, 0x6A, 0xA8]),
     ("Slate", [0x8A, 0x96, 0xA8]),
 ];
+
+/// The strongest share of the deck colour in the fill of a deck card on air, and the steps
+/// by which it weakens until the text on the card reads.
+pub const ON_AIR_TINT: f32 = 0.22;
+const ON_AIR_TINT_STEPS: u8 = 22;
 
 /// The WCAG minimum contrast for text.
 pub const MIN_TEXT_CONTRAST: f32 = 4.5;
@@ -644,5 +676,33 @@ mod tests {
         assert!(contrast(t.text, t.danger_fill) >= MIN_TEXT_CONTRAST);
         assert!(contrast(t.text, t.warn_fill) >= MIN_TEXT_CONTRAST);
         assert!(contrast(t.warn, t.warn_fill) >= MIN_TEXT_CONTRAST);
+    }
+
+    #[test]
+    fn the_card_of_each_deck_on_air_is_its_own_tint_and_keeps_its_text_readable() {
+        let t = Tokens::DARK;
+        let fills: Vec<Color32> = (0..4).map(|i| t.deck_on_air_fill(i)).collect();
+        for (i, fill) in fills.iter().enumerate() {
+            for ink in [t.text, t.text_muted, t.on_air, t.warn] {
+                let c = contrast(ink, *fill);
+                assert!(
+                    c >= MIN_TEXT_CONTRAST,
+                    "{ink:?} on deck {i} reads at {c:.2}"
+                );
+            }
+            // The playlist name moves toward the text until it reads on the fill.
+            let name = t.readable([0x9C, 0xC0, 0x3A], *fill);
+            assert!(contrast(name, *fill) >= MIN_TEXT_CONTRAST);
+            // The tint leans toward the deck colour: it is not the plain card.
+            assert!(
+                delta_e(*fill, Tokens::deck(i)) < delta_e(t.card, Tokens::deck(i)),
+                "deck {i} has a tint of its colour"
+            );
+        }
+        for i in 0..4 {
+            for j in i + 1..4 {
+                assert_ne!(fills[i], fills[j], "decks {i} and {j} have their own tints");
+            }
+        }
     }
 }
