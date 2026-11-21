@@ -455,3 +455,25 @@ fn locked_entry_keeps_start_when_material_is_displaced_before_it() {
             .any(|w| matches!(w, Warning::LockedMoved { .. }))
     );
 }
+
+#[test]
+fn hard_event_beats_locked_entry() {
+    // A 60 s hard event at 340 s overlaps locked track 3 at 356 s.
+    let st = make_station(tracks(1, 8, 180), vec![(jingle(100, 60), 0)], Vec::new());
+    let target = at(340);
+    let mut tl = timeline(&st, &[(target, FixMode::Hard)]);
+    for e in tl.entries.iter_mut() {
+        e.locked = e.item == ItemId(3);
+    }
+    let locked_at = tl.entries.iter().find(|e| e.locked).unwrap().start;
+    fit(&st, &mut tl);
+    let hard = &tl.entries[event_index(&tl, 100)];
+    assert_eq!(hard.start, target, "the hard event keeps its time");
+    let locked = tl.entries.iter().find(|e| e.locked).unwrap();
+    assert!(locked.start >= hard.start + item_len(find(&st, hard.item).0));
+    assert!(tl.warnings.iter().any(|w| matches!(
+        w,
+        Warning::LockedMoved { item, by }
+            if *item == ItemId(3) && locked_at + *by == locked.start
+    )));
+}

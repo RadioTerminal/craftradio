@@ -221,15 +221,19 @@ impl<'a> Fitter<'a> {
         e.fixed.is_none() && !e.locked && self.item(e).is_some_and(|i| i.trimmable)
     }
 
-    /// A locked entry outranks every fixed event; a fixed one has its playlist's priority.
-    fn priority(&self, e: &Entry) -> i32 {
-        if e.fixed.is_none() {
-            return i32::MAX;
-        }
-        self.playlist(e.playlist).map_or_else(
+    /// Precedence for overlapping anchors: a `Hard` event (2) beats a locked entry (1),
+    /// which beats a `Soft` event (0); then the higher playlist priority.
+    fn rank(&self, e: &Entry) -> (u8, i32) {
+        let tier = match &e.fixed {
+            Some(f) if f.mode == FixMode::Hard => 2,
+            Some(_) => 0,
+            None => 1,
+        };
+        let priority = self.playlist(e.playlist).map_or_else(
             || e.fixed.as_ref().map_or(0, |f| f.priority),
             |p| p.priority,
-        )
+        );
+        (tier, priority)
     }
 
     /// Where `e` starts when the material before it hands over at `t`. Anchors never start
@@ -319,13 +323,13 @@ impl<'a> Fitter<'a> {
         None
     }
 
-    /// The start slot of each fixed entry. Higher priority is placed first, then the earlier
-    /// target, then the earlier listed. An entry whose time is taken moves to the first free
+    /// The start slot of each anchor. The higher [`Fitter::rank`] is placed first, then the
+    /// earlier target, then the earlier listed. An entry whose time is taken moves to the first free
     /// time after the entries in its way.
     fn resolve(&self, events: &[Entry]) -> Vec<Timestamp> {
         let target = |e: &Entry| e.fixed.as_ref().map_or(e.start, |f| f.target);
         let mut order: Vec<usize> = (0..events.len()).collect();
-        order.sort_by_key(|&i| (Reverse(self.priority(&events[i])), target(&events[i]), i));
+        order.sort_by_key(|&i| (Reverse(self.rank(&events[i])), target(&events[i]), i));
         let mut placed: Vec<(Timestamp, Timestamp)> = Vec::with_capacity(events.len());
         let mut slots = vec![Timestamp::MIN; events.len()];
         for i in order {
@@ -640,11 +644,15 @@ impl Fit<'_, '_> {
 /// Locked entries are anchors fitted the same way, as a hard event with zero tolerance at
 /// their own start (handing over at the previous entry's segue). Material that does not fit
 /// before one moves after it. Only a non-trimmable item in the way makes a locked entry
-/// start late, with `Warning::LockedMoved`. A locked entry outranks any fixed event.
+/// start late, with `Warning::LockedMoved`.
 ///
-/// Overlapping fixed entries: the higher playlist priority keeps its time (then the
-/// earlier target, then the earlier listed); the other starts right after it and gets
-/// `Warning::FixedConflict`. It is not fitted itself.
+/// Overlapping anchors rank `Hard` event > locked entry > `Soft` event, then by playlist
+/// priority. A locked entry that loses its slot to a `Hard` event starts right after it,
+/// with `Warning::LockedMoved`.
+///
+/// Overlapping fixed entries: the higher rank keeps its time (then the earlier target, then
+/// the earlier listed); the other starts right after it and gets `Warning::FixedConflict`.
+/// It is not fitted itself.
 ///
 /// Afterwards every start is recomputed: an entry starts at the previous one's segue, or
 /// at its end before a hard fixed entry. Anchors never start early: a `Hard` entry starts at
@@ -809,8 +817,17 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                     let play = f.step(last, Some(ev));
                     let by = late.min(cap).min(play);
                     if play.saturating_sub(by) < MIN_PLAY {
+                        // Keeping the anchor's time wins: move the entry after it, or drop
+                        // fill. Otherwise fade it down to MIN_PLAY and stop.
                         let droppable = last.origin == Origin::Fill || f.movable(last);
-                        if seg.len() <= fixed_len || !droppable {
+                        if seg.len() <= fit.head || !droppable {
+                            let by = play.saturating_sub(MIN_PLAY);
+                            if by > Duration::ZERO
+                                && let Some(last) = seg.last_mut()
+                            {
+                                last.trim = last.trim.saturating_add(by);
+                                trimmed = Some(by);
+                            }
                             break;
                         }
                         if let Some(e) = seg.pop().filter(|e| e.origin != Origin::Fill) {
