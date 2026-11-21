@@ -5,7 +5,8 @@ use egui::{Align, DragValue, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{hms, mmss};
+use crate::app::{Action, hms, mmss, row_fields};
+use crate::context_menu::{COPY, menu_item};
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{Row, StationView};
@@ -34,6 +35,7 @@ pub(crate) struct State {
     settings: bool,
     shown: [bool; COLS.len()],
     hours_back: u32,
+    selected: Vec<u64>,
 }
 
 impl Default for State {
@@ -44,11 +46,18 @@ impl Default for State {
             settings: false,
             shown: [true; COLS.len()],
             hours_back: 3,
+            selected: Vec::new(),
         }
     }
 }
 
-pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &Tokens) {
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let mut open = state.settings;
     settings::header(ui, "History", &mut open, |_| {});
     state.settings = open;
@@ -119,6 +128,7 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
     let mut table = TableBuilder::new(ui)
         .id_salt("history_table")
         .striped(true)
+        .sense(Sense::click())
         .auto_shrink(false)
         .cell_layout(Layout::left_to_right(Align::Center));
     for c in &cols {
@@ -149,9 +159,23 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
                 let Some(r) = rows.get(row.index()) else {
                     return;
                 };
+                row.set_selected(state.selected.contains(&r.id));
                 for c in &cols {
                     row.col(|ui| cell(ui, *c, r, t));
                 }
+                let resp = row.response();
+                if resp.clicked() {
+                    if resp.ctx.input(|i| i.modifiers.command) {
+                        if let Some(k) = state.selected.iter().position(|s| *s == r.id) {
+                            state.selected.remove(k);
+                        } else {
+                            state.selected.push(r.id);
+                        }
+                    } else {
+                        state.selected = vec![r.id];
+                    }
+                }
+                resp.context_menu(|ui| row_menu(ui, view, r, &state.selected, actions));
             });
         });
 }
@@ -193,5 +217,82 @@ fn cell(ui: &mut egui::Ui, c: Col, r: &Row, t: &Tokens) {
                     .color(t.text_muted),
             );
         }
+    }
+}
+
+fn line(r: &Row, sep: &str) -> String {
+    [
+        hms(&r.start),
+        r.playlist.clone(),
+        r.title.clone(),
+        mmss(r.len),
+        r.origin.label().to_owned(),
+    ]
+    .join(sep)
+}
+
+/// Quote a field for CSV when it holds a comma or a quote.
+fn csv_field(f: &str) -> String {
+    if f.contains([',', '"']) {
+        format!("\"{}\"", f.replace('"', "\"\""))
+    } else {
+        f.to_owned()
+    }
+}
+
+fn row_menu(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    r: &Row,
+    selected: &[u64],
+    actions: &mut Vec<Action>,
+) {
+    if menu_item(ui, "Copy row", Some(COPY)) {
+        ui.ctx().copy_text(line(r, "\t"));
+        actions.push(Action::Toast("copied 1 row".to_owned()));
+    }
+    if menu_item(ui, "Copy as CSV", None) {
+        let rows: Vec<&Row> = if selected.contains(&r.id) {
+            view.history
+                .iter()
+                .filter(|h| selected.contains(&h.id))
+                .collect()
+        } else {
+            vec![r]
+        };
+        let mut csv = "aired_at,playlist,title,length,origin\n".to_owned();
+        for h in &rows {
+            let fields = [
+                hms(&h.start),
+                h.playlist.clone(),
+                h.title.clone(),
+                mmss(h.len),
+                h.origin.label().to_owned(),
+            ];
+            let line: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
+            csv.push_str(&line.join(","));
+            csv.push('\n');
+        }
+        ui.ctx().copy_text(csv);
+        actions.push(Action::Toast(format!("copied {} rows as CSV", rows.len())));
+    }
+    if menu_item(ui, &format!("Add to {} again", view.main_playlist), None) {
+        actions.push(Action::Duplicate {
+            titles: vec![(r.title.clone(), r.len)],
+            after: crate::view::Place::End,
+        });
+    }
+    if menu_item(ui, "Show in Library", None) {
+        actions.push(Action::ShowInLibrary(r.title.clone()));
+    }
+    if menu_item(ui, "Properties", None) {
+        let extra = [
+            ("Playlist", r.playlist.clone()),
+            ("Aired at", hms(&r.start)),
+        ];
+        actions.push(Action::Properties {
+            title: r.title.clone(),
+            fields: row_fields(&r.title, r.len, &extra),
+        });
     }
 }

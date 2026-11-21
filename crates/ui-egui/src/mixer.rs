@@ -4,6 +4,7 @@
 
 use egui::{DragValue, RichText, Sense, Stroke};
 
+use crate::context_menu::{check_item, menu_item};
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{MeterView, StationView};
@@ -114,12 +115,17 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
                     icecast_settings(ui, &mut state.icecast, t)
                 });
             }
+            let mut open_settings = false;
             ui.horizontal_top(|ui| {
                 for (meter, strip) in view.meters.iter().zip(state.strips.iter_mut()) {
                     let is_out = meter.label == "Out";
-                    strip_ui(ui, meter, strip, is_out, &mut state.icecast.open, t);
+                    let icecast = &mut state.icecast.open;
+                    open_settings |= strip_ui(ui, meter, strip, is_out, icecast, t);
                 }
             });
+            if open_settings {
+                state.settings = true;
+            }
         });
 }
 
@@ -130,7 +136,8 @@ fn strip_ui(
     is_out: bool,
     icecast: &mut bool,
     t: &Tokens,
-) {
+) -> bool {
+    let mut settings_wanted = false;
     let fill = if is_out { t.selection } else { t.card };
     egui::Frame::new()
         .fill(fill)
@@ -142,13 +149,15 @@ fn strip_ui(
             ui.vertical_centered(|ui| {
                 ui.horizontal(|ui| {
                     let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
-                    ui.label(name.strong());
+                    let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
+                    r.context_menu(|ui| settings_wanted |= strip_menu(ui, strip));
                     if is_out {
                         settings::settings_button(ui, "Icecast", icecast);
                     }
                 });
                 ui.horizontal(|ui| {
-                    meter_bars(ui, meter, t);
+                    meter_bars(ui, meter, t)
+                        .context_menu(|ui| settings_wanted |= strip_menu(ui, strip));
                     ui.spacing_mut().slider_width = size::METER_H;
                     let range = size::METER_MIN_DB..=size::METER_MAX_DB;
                     let fader = egui::Slider::new(&mut strip.gain_db, range)
@@ -170,6 +179,7 @@ fn strip_ui(
                 });
             });
         });
+    settings_wanted
 }
 
 /// A level as text. Silence shows as "−∞ dB".
@@ -187,9 +197,31 @@ fn frac(v: f32) -> f32 {
 }
 
 /// Two meter bars (left and right) with green, amber and red zones and a peak line.
-fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) {
+/// The right-click menu of a strip. It returns true when the person asks for the settings.
+fn strip_menu(ui: &mut egui::Ui, strip: &mut Strip) -> bool {
+    if check_item(ui, strip.mute, "Mute") {
+        strip.mute = !strip.mute;
+    }
+    if check_item(ui, strip.pfl, "PFL") {
+        strip.pfl = !strip.pfl;
+    }
+    if menu_item(ui, "Reset gain to 0 dB", None) {
+        strip.gain_db = 0.0;
+    }
+    ui.menu_button("Route to", |ui| {
+        for (k, route) in ROUTES.iter().enumerate() {
+            if check_item(ui, strip.route == k, route) {
+                strip.route = k;
+            }
+        }
+    });
+    ui.separator();
+    menu_item(ui, "⚙ Settings", None)
+}
+
+fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) -> egui::Response {
     let w = size::METER_BAR_W * 2.0 + space::XXS;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, size::METER_H), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, size::METER_H), Sense::click());
     let p = ui.painter();
     for ch in 0..2 {
         let left = rect.left() + ch as f32 * (size::METER_BAR_W + space::XXS);
@@ -229,6 +261,7 @@ fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) {
             Stroke::new(size::HAIRLINE, t.field_border),
         );
     }
+    resp
 }
 
 fn mixer_settings(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &Tokens) {

@@ -105,6 +105,7 @@ mod tests {
             visual,
             script: String::new(),
             script_by_hand: false,
+            source: None,
         };
 
         let script = generate(&tab);

@@ -6,6 +6,7 @@ use std::time::Duration;
 use egui::{Align2, RichText, Sense};
 use jiff::SignedDuration;
 
+use crate::context_menu::check_item;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{DeckState, StationView};
@@ -73,7 +74,18 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
         .x
         .min(avail.y * size::CLOCK_RING_SHARE)
         .max(size::CONTROL_LG);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail.x, side), Sense::hover());
+    let (rect, ring) = ui.allocate_exact_size(egui::vec2(avail.x, side), Sense::click());
+    ring.context_menu(|ui| {
+        if check_item(ui, state.h24, "24-hour time") {
+            state.h24 = !state.h24;
+        }
+        if check_item(ui, state.show_date, "Show date") {
+            state.show_date = !state.show_date;
+        }
+        if check_item(ui, state.show_ring, "Show seconds ring") {
+            state.show_ring = !state.show_ring;
+        }
+    });
     let c = rect.center();
     let r = side / 2.0 - size::CLOCK_TICK_R * 2.0;
     let p = ui.painter();

@@ -3,11 +3,17 @@
 use egui::{Align, Layout, RichText, Sense, Stroke, UiBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Action, Linked, hms, mmss};
+use crate::app::{Action, FileTarget, Linked, Pane, PasteTo, Timing, hms, mmss, row_fields};
+use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DropTarget, PlaylistTab, Row, StationView};
+use crate::view::{DropTarget, Edit, Pick, PlaylistTab, Row, StationView};
+
+/// The tolerances that the Edit timing menu offers, in seconds.
+const TOLERANCES: [f32; 3] = [0.5, 1.0, 2.0];
+/// The weights that the Set weight menu offers.
+const WEIGHTS: [u32; 5] = [1, 2, 3, 4, 5];
 
 /// The tab that the pane shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,27 +29,36 @@ pub(crate) fn show(
     link: &mut Linked,
     actions: &mut Vec<Action>,
     t: &Tokens,
-) -> Option<usize> {
-    tab_bar(ui, view, tab, actions);
+) {
+    tab_bar(ui, view, tab, link, actions, t);
     ui.add_space(space::S);
     ui.separator();
     ui.add_space(space::XS);
     match *tab {
-        Tab::Upcoming => {
-            upcoming(ui, view, link, t);
-            None
-        }
+        Tab::Upcoming => upcoming(ui, view, link, actions, t),
         Tab::Playlist(i) => match view.tabs.get(i) {
-            Some(p) => playlist(ui, p, actions, t).then_some(i),
-            None => {
-                *tab = Tab::Upcoming;
-                None
-            }
+            Some(p) => playlist(ui, p, link, actions, t),
+            None => *tab = Tab::Upcoming,
         },
     }
 }
 
-fn tab_bar(ui: &mut egui::Ui, view: &StationView, tab: &mut Tab, actions: &mut Vec<Action>) {
+/// True while files from the file manager hover or drop over `rect`.
+fn files_over(ui: &egui::Ui, rect: egui::Rect) -> bool {
+    ui.input(|i| {
+        (!i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
+            && i.pointer.latest_pos().is_some_and(|p| rect.contains(p))
+    })
+}
+
+fn tab_bar(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    tab: &mut Tab,
+    link: &mut Linked,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         let label = |s: &str| RichText::new(s).font(theme::text(theme::LABEL));
@@ -56,8 +71,13 @@ fn tab_bar(ui: &mut egui::Ui, view: &StationView, tab: &mut Tab, actions: &mut V
         for (i, p) in view.tabs.iter().enumerate() {
             let selected = *tab == Tab::Playlist(i);
             // The playlist colour always comes with its name.
-            // The playlist colour always comes with its name.
-            let text = RichText::new(format!("    {}", p.name)).font(theme::text(theme::LABEL));
+            let folder = if p.source.is_some() { " 📁" } else { "" };
+            let off = if link.disabled.contains(&p.name) {
+                " (off)"
+            } else {
+                ""
+            };
+            let text = label(&format!("    {}{folder}{off}", p.name));
             let r = ui.selectable_label(selected, text);
             let dot = egui::pos2(r.rect.left() + space::S + size::DOT_R, r.rect.center().y);
             ui.painter()
@@ -69,13 +89,61 @@ fn tab_bar(ui: &mut egui::Ui, view: &StationView, tab: &mut Tab, actions: &mut V
                     target: DropTarget::Playlist(p.name.clone()),
                 });
             }
+            if files_over(ui, r.rect) {
+                link.hover_files(FileTarget::Playlist(p.name.clone()));
+                let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
+                ui.painter()
+                    .rect_stroke(r.rect, t.radius, edge, egui::StrokeKind::Outside);
+            }
             if r.clicked() {
                 *tab = Tab::Playlist(i);
             }
+            r.context_menu(|ui| tab_menu(ui, p, link, actions, t));
         }
         ui.add_enabled(false, egui::Button::new(label("+")))
             .on_disabled_hover_text("coming soon");
     });
+}
+
+fn tab_menu(
+    ui: &mut egui::Ui,
+    p: &PlaylistTab,
+    link: &mut Linked,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    if menu_item(ui, "Rename…", None) {
+        actions.push(Action::Rename(p.name.clone()));
+    }
+    if menu_item(ui, "⚙ Rules…", None) {
+        actions.push(Action::OpenRules(p.name.clone()));
+    }
+    if menu_item(ui, "Duplicate playlist", None) {
+        actions.push(Action::Edit(Edit::DuplicatePlaylist(p.name.clone())));
+    }
+    if menu_item(ui, "Make main", None) {
+        actions.push(Action::UseAsMain(p.name.clone()));
+    }
+    let off = link.disabled.contains(&p.name);
+    if menu_item(ui, if off { "Enable" } else { "Disable" }, None) {
+        if off {
+            link.disabled.remove(&p.name);
+        } else {
+            link.disabled.insert(p.name.clone());
+        }
+        let text = "preview — changed here only; the scheduler is not connected".to_owned();
+        actions.push(Action::Toast(text));
+    }
+    ui.separator();
+    if context_menu::danger_item(ui, "Delete playlist…", t) {
+        actions.push(Action::Confirm {
+            text: format!(
+                "Delete the playlist {}? The preview cannot undo this.",
+                p.name
+            ),
+            then: Box::new(Action::Edit(Edit::DeletePlaylist(p.name.clone()))),
+        });
+    }
 }
 
 fn row_end(r: &Row) -> jiff::Timestamp {
@@ -83,25 +151,35 @@ fn row_end(r: &Row) -> jiff::Timestamp {
     SignedDuration::try_from(r.len).map_or(start, |d| start + d)
 }
 
-fn upcoming(ui: &mut egui::Ui, view: &StationView, link: &mut Linked, t: &Tokens) {
+fn upcoming(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    link: &mut Linked,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let now = view.now.timestamp();
     let target = link.scroll_scheduled.take();
+    let rows: Vec<&Row> = view
+        .rows
+        .iter()
+        .filter(|r| !r.is_main && row_end(r) > now)
+        .collect();
+    let order: Vec<u64> = rows.iter().map(|r| r.id).collect();
     egui::ScrollArea::vertical()
         .id_salt("upcoming")
         .auto_shrink(false)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = space::XXS;
-            for r in view.rows.iter().filter(|r| !r.is_main && row_end(r) > now) {
-                let resp = upcoming_row(
-                    ui,
-                    r,
-                    link.selected == Some(r.id),
-                    r.start.timestamp() <= now,
-                    t,
-                );
+            for r in rows {
+                let timing = link.timing.get(&r.id).copied();
+                let on_air = r.start.timestamp() <= now;
+                let resp = upcoming_row(ui, r, link.is_selected(r.id), on_air, timing, t);
                 if resp.clicked() {
-                    link.pick_in_scheduled(r.id);
+                    let m = resp.ctx.input(|i| i.modifiers);
+                    link.click(Pane::Scheduled, r.id, m, &order);
                 }
+                resp.context_menu(|ui| upcoming_menu(ui, r, link, actions));
                 if target == Some(r.id) {
                     resp.scroll_to_me(Some(Align::Center));
                 }
@@ -109,11 +187,76 @@ fn upcoming(ui: &mut egui::Ui, view: &StationView, link: &mut Linked, t: &Tokens
         });
 }
 
+fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Vec<Action>) {
+    ui.menu_button("Edit timing", |ui| {
+        let now = link.timing.get(&r.id).copied().unwrap_or(Timing {
+            hard: true,
+            tolerance_s: 1.0,
+        });
+        let mut set = |ui: &mut egui::Ui, label: &str, next: Timing, on: bool| {
+            if context_menu::check_item(ui, on, label) {
+                link.timing.insert(r.id, next);
+                let kind = if next.hard { "hard" } else { "soft" };
+                let text = format!(
+                    "preview — timing {kind} ±{:.1} s here only; the scheduler is not connected",
+                    next.tolerance_s
+                );
+                actions.push(Action::Toast(text));
+            }
+        };
+        set(ui, "Hard", Timing { hard: true, ..now }, now.hard);
+        set(ui, "Soft", Timing { hard: false, ..now }, !now.hard);
+        ui.separator();
+        for tol in TOLERANCES {
+            let on = (now.tolerance_s - tol).abs() < f32::EPSILON;
+            set(
+                ui,
+                &format!("Tolerance ±{tol:.1} s"),
+                Timing {
+                    tolerance_s: tol,
+                    ..now
+                },
+                on,
+            );
+        }
+    });
+    if menu_item(ui, "Move to…", None) {
+        actions.push(Action::Toast(
+            "preview — moving a fixed event needs the scheduler".to_owned(),
+        ));
+    }
+    if menu_item(ui, "Skip this occurrence", None) {
+        actions.push(Action::Edit(Edit::Remove(vec![r.id])));
+    }
+    if menu_item(ui, "Remove", Some(DELETE)) {
+        actions.push(Action::Edit(Edit::Remove(link.targets(r.id))));
+    }
+    if menu_item(ui, "Copy", Some(COPY)) {
+        actions.push(Action::CopyTitles {
+            titles: vec![(r.title.clone(), r.len)],
+            rows: Vec::new(),
+            cut: false,
+        });
+    }
+    ui.separator();
+    if menu_item(ui, "⚙ Open playlist rules", None) {
+        actions.push(Action::OpenRules(r.playlist.clone()));
+    }
+    if menu_item(ui, "Properties", None) {
+        let extra = [("Playlist", r.playlist.clone()), ("Starts", hms(&r.start))];
+        actions.push(Action::Properties {
+            title: r.title.clone(),
+            fields: row_fields(&r.title, r.len, &extra),
+        });
+    }
+}
+
 fn upcoming_row(
     ui: &mut egui::Ui,
     r: &Row,
     selected: bool,
     on_air: bool,
+    timing: Option<Timing>,
     t: &Tokens,
 ) -> egui::Response {
     let id = ui.id().with(("upcoming_row", r.id));
@@ -138,14 +281,10 @@ fn upcoming_row(
                     let mark = if r.fixed.is_some() { "⏱" } else { " " };
                     let time = format!("{mark}{}", hms(&r.start));
                     let time_ink = if on_air { t.on_air } else { t.text };
-                    ui.add_sized(
-                        [size::COL_TIME, size::CONTROL_SM],
-                        egui::Label::new(
-                            RichText::new(time)
-                                .font(theme::mono(theme::CODE))
-                                .color(time_ink),
-                        ),
-                    );
+                    let time = RichText::new(time)
+                        .font(theme::mono(theme::CODE))
+                        .color(time_ink);
+                    ui.add_sized([size::COL_TIME, size::CONTROL_SM], egui::Label::new(time));
                     let (dot, _) = ui
                         .allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
                     ui.painter().circle_filled(
@@ -153,20 +292,16 @@ fn upcoming_row(
                         size::DOT_R,
                         Tokens::playlist(r.color),
                     );
+                    let name = RichText::new(&r.playlist)
+                        .font(theme::text(theme::LABEL))
+                        .strong();
                     ui.add_sized(
                         [size::COL_PLAYLIST, size::CONTROL_SM],
-                        egui::Label::new(
-                            RichText::new(&r.playlist)
-                                .font(theme::text(theme::LABEL))
-                                .strong()
-                                .color(ink),
-                        ),
+                        egui::Label::new(name.color(ink)),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let len = RichText::new(mmss(r.len))
-                            .font(theme::mono(theme::CODE))
-                            .color(t.text_muted);
-                        ui.label(len);
+                        let len = RichText::new(mmss(r.len)).font(theme::mono(theme::CODE));
+                        ui.label(len.color(t.text_muted));
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             let title = RichText::new(&r.title).font(theme::text(theme::SMALL));
                             ui.add(egui::Label::new(title).truncate());
@@ -182,10 +317,17 @@ fn upcoming_row(
                         } else {
                             ("✖", t.danger)
                         };
-                        let text = format!("fit: {sign}{:.1} s {mark}", fit.error_s.abs());
-                        let font = theme::mono(theme::CAPTION);
+                        let mut text = format!("fit: {sign}{:.1} s {mark}", fit.error_s.abs());
+                        if let Some(tm) = timing {
+                            let kind = if tm.hard { "hard" } else { "soft" };
+                            text.push_str(&format!(" · {kind} ±{:.1} s (preview)", tm.tolerance_s));
+                        }
                         ui.set_min_height(size::FIT_LINE);
-                        ui.label(RichText::new(text).font(font).color(colour));
+                        ui.label(
+                            RichText::new(text)
+                                .font(theme::mono(theme::CAPTION))
+                                .color(colour),
+                        );
                     });
                 }
             });
@@ -193,9 +335,14 @@ fn upcoming_row(
     res.response
 }
 
-/// Show one playlist tab. It returns true when the ⚙ rules button was clicked.
-fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &Tokens) -> bool {
-    let mut cog = false;
+/// Show one playlist tab.
+fn playlist(
+    ui: &mut egui::Ui,
+    p: &PlaylistTab,
+    link: &mut Linked,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     egui::ScrollArea::vertical()
         .id_salt(("playlist_tab", &p.name))
         .auto_shrink(false)
@@ -205,13 +352,16 @@ fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
                     ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
                 ui.painter()
                     .circle_filled(dot.center(), size::DOT_R, Tokens::playlist(p.color));
-                ui.label(
-                    RichText::new(&p.name)
-                        .font(theme::text(theme::SECTION))
-                        .strong(),
-                );
-                cog = rules_editor::cog(ui, &p.name);
+                let folder = if p.source.is_some() { " 📁" } else { "" };
+                let name = RichText::new(format!("{}{folder}", p.name));
+                ui.label(name.font(theme::text(theme::SECTION)).strong());
+                if rules_editor::cog(ui, &p.name) {
+                    actions.push(Action::OpenRules(p.name.clone()));
+                }
             });
+            if let Some(src) = &p.source {
+                caption(ui, &format!("From folder {}", src.path), t);
+            }
             ui.add_space(space::S);
             caption(ui, "PICK", t);
             ui.label(RichText::new(&p.pick).font(theme::text(theme::BODY)));
@@ -223,20 +373,26 @@ fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
             ui.add_space(space::M);
             caption(ui, &format!("ITEMS ({})", p.items.len()), t);
             let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
-            let (_, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
+            let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
                 ui.set_width(ui.available_width());
-                for (name, len) in &p.items {
-                    egui::Frame::new().inner_margin(pad::ROW).show(ui, |ui| {
+                for (i, (name, len)) in p.items.iter().enumerate() {
+                    let row = egui::Frame::new().inner_margin(pad::ROW).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(name).font(theme::text(theme::SMALL)));
+                            let weight = link.weights.get(&(p.name.clone(), i));
+                            let w = weight.map_or(String::new(), |w| format!("  ×{w}"));
+                            ui.label(
+                                RichText::new(format!("{name}{w}")).font(theme::text(theme::SMALL)),
+                            );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 let len = RichText::new(mmss(*len)).font(theme::mono(theme::CODE));
                                 ui.label(len.color(t.text_muted));
                             });
                         });
                     });
+                    let resp = row.response.interact(Sense::click());
+                    resp.context_menu(|ui| item_menu(ui, p, i, name, *len, link, actions));
                 }
-                let hint = RichText::new("Drop a library title here to add it");
+                let hint = RichText::new("Drop a library title or files here to add them");
                 ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
             });
             if let Some(drag) = dropped {
@@ -245,8 +401,83 @@ fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
                     target: DropTarget::Playlist(p.name.clone()),
                 });
             }
+            if files_over(ui, zone.response.rect) {
+                link.hover_files(FileTarget::Playlist(p.name.clone()));
+                let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
+                ui.painter().rect_stroke(
+                    zone.response.rect,
+                    t.radius_lg,
+                    edge,
+                    egui::StrokeKind::Outside,
+                );
+            }
         });
-    cog
+}
+
+fn item_menu(
+    ui: &mut egui::Ui,
+    p: &PlaylistTab,
+    i: usize,
+    name: &str,
+    len: std::time::Duration,
+    link: &mut Linked,
+    actions: &mut Vec<Action>,
+) {
+    let copy = |cut| Action::CopyTitles {
+        titles: vec![(name.to_owned(), len)],
+        rows: Vec::new(),
+        cut,
+    };
+    let remove = || {
+        Action::Edit(Edit::RemovePlaylistItem {
+            playlist: p.name.clone(),
+            index: i,
+        })
+    };
+    if menu_item(ui, "Cut", Some(CUT)) {
+        actions.push(copy(false));
+        actions.push(remove());
+    }
+    if menu_item(ui, "Copy", Some(COPY)) {
+        actions.push(copy(false));
+    }
+    if menu_item_if(ui, link.has_clip, "Paste", Some(PASTE)) {
+        actions.push(Action::Paste(PasteTo::Playlist(p.name.clone())));
+    }
+    if menu_item(ui, "Remove", Some(DELETE)) {
+        actions.push(remove());
+    }
+    ui.separator();
+    for (label, up) in [("Move up", true), ("Move down", false)] {
+        if menu_item(ui, label, None) {
+            actions.push(Action::Edit(Edit::MovePlaylistItem {
+                playlist: p.name.clone(),
+                index: i,
+                up,
+            }));
+        }
+    }
+    let weighted = p.order == Pick::Weighted;
+    ui.add_enabled_ui(weighted, |ui| {
+        ui.menu_button("Set weight", |ui| {
+            for w in WEIGHTS {
+                if menu_item(ui, &format!("×{w}"), None) {
+                    link.weights.insert((p.name.clone(), i), w);
+                    actions.push(Action::Toast(format!(
+                        "preview — weight ×{w} here only (not saved)"
+                    )));
+                }
+            }
+        })
+        .response
+        .on_disabled_hover_text("Only for the weighted pick order");
+    });
+    if menu_item(ui, "Properties", None) {
+        actions.push(Action::Properties {
+            title: name.to_owned(),
+            fields: row_fields(name, len, &[("Playlist", p.name.clone())]),
+        });
+    }
 }
 
 fn caption(ui: &mut egui::Ui, text: &str, t: &Tokens) {

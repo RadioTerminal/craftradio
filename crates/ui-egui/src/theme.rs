@@ -109,6 +109,10 @@ pub mod size {
     pub const COL_ORIGIN: f32 = 70.0;
     /// A text field in a settings section.
     pub const FIELD_W: f32 = 220.0;
+    /// The cart colour bar at the left edge of a cart.
+    pub const CART_BAR: f32 = 4.0;
+    /// The longest list in the rules editor before it scrolls.
+    pub const EDITOR_ITEMS_H: f32 = 140.0;
     /// The time that a toast stays, in seconds.
     pub const TOAST_S: f64 = 4.0;
 
@@ -233,6 +237,16 @@ impl Tokens {
     }
 }
 
+/// Colours that a person can give a cart, with their names. The name always shows too.
+pub const CART_COLOURS: [(&str, [u8; 3]); 6] = [
+    ("Red", [0xD0, 0x48, 0x48]),
+    ("Amber", [0xE0, 0xA0, 0x30]),
+    ("Green", [0x5B, 0xAA, 0x5B]),
+    ("Teal", [0x3F, 0xB5, 0xA8]),
+    ("Blue", [0x4A, 0x90, 0xD9]),
+    ("Violet", [0x8E, 0x6A, 0xD8]),
+];
+
 /// The WCAG minimum contrast for text.
 pub const MIN_TEXT_CONTRAST: f32 = 4.5;
 
@@ -312,6 +326,8 @@ pub fn apply(ctx: &egui::Context) {
         s.item_spacing = egui::vec2(space::S, space::XS);
         s.button_padding = egui::vec2(space::M, space::XS);
         s.interact_size.y = size::CONTROL_SM;
+        // Rows react to clicks and right-clicks. Selectable text would take those clicks.
+        style.interaction.selectable_labels = false;
 
         let v = &mut style.visuals;
         v.dark_mode = true;

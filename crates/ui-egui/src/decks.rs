@@ -2,18 +2,19 @@
 
 use egui::{Align, Layout, RichText, Sense, Stroke};
 
-use crate::app::{hms, mmss};
+use crate::app::{Action, hms, mmss};
+use crate::context_menu::{self, menu_item};
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckState, DeckView, StationView};
 
-pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
+pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::M;
         let gaps = space::M * view.decks.len() as f32;
         let free = ui.available_width() - size::CLOCK_W - gaps;
         let card_w = (free / view.decks.len() as f32).max(size::DECK_MIN_W);
         for deck in &view.decks {
-            deck_card(ui, deck, card_w, t);
+            deck_card(ui, deck, card_w, t).context_menu(|ui| deck_menu(ui, actions));
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             clock(ui, view, t)
@@ -21,17 +22,28 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
     });
 }
 
-fn deck_card(ui: &mut egui::Ui, deck: &DeckView, width: f32, t: &Tokens) {
+fn deck_menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    for label in ["Play / Pause", "Stop", "Eject", "Reload", "Cue to start"] {
+        if menu_item(ui, label, None) {
+            actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
+        }
+    }
+}
+
+fn deck_card(ui: &mut egui::Ui, deck: &DeckView, width: f32, t: &Tokens) -> egui::Response {
     let playing = deck.state == DeckState::Playing;
     let edge = if playing { t.on_air } else { t.card_border };
     let frame = theme::card_frame(t)
         .fill(if playing { t.on_air_bg } else { t.field })
         .stroke(Stroke::new(size::HAIRLINE, edge));
     let inner = width - frame.total_margin().sum().x - size::HAIRLINE * 2.0;
-    frame.show(ui, |ui| {
-        ui.set_width(inner);
-        ui.vertical(|ui| deck_body(ui, deck, playing, t));
-    });
+    frame
+        .show(ui, |ui| {
+            ui.set_width(inner);
+            ui.vertical(|ui| deck_body(ui, deck, playing, t));
+        })
+        .response
+        .interact(Sense::click())
 }
 
 fn deck_body(ui: &mut egui::Ui, deck: &DeckView, playing: bool, t: &Tokens) {

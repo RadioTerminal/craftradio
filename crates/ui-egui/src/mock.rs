@@ -7,10 +7,12 @@ use std::time::Duration;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, ToSpan, Zoned};
 
+use crate::folders;
 use crate::rules_script;
 use crate::view::{
-    Constraint, ConstraintKind, DeckState, DeckView, DropTarget, FitView, LibraryItem, MeterView,
-    Origin, Pick, Placement, PlaylistTab, Row, RuleView, StationView, Trigger, ViewSource,
+    Constraint, ConstraintKind, DeckState, DeckView, DropTarget, Edit, FitView, FolderSource,
+    LibraryItem, MeterView, MoveTo, Origin, Pick, Place, Placement, PlaylistTab, Row, RuleView,
+    StationView, Trigger, ViewSource,
 };
 
 const MUSIC: [u8; 3] = [0x5B, 0xAA, 0x5B];
@@ -19,6 +21,15 @@ const ADS: [u8; 3] = [0xD0, 0x48, 0x48];
 const NEWS: [u8; 3] = [0x4A, 0x90, 0xD9];
 const SHOWS: [u8; 3] = [0x8E, 0x6A, 0xD8];
 const BEDS: [u8; 3] = [0x3F, 0xB5, 0xA8];
+/// Colours for playlists made from folders, in turn.
+const FOLDER_COLOURS: [[u8; 3]; 4] = [
+    [0x3F, 0xB5, 0xA8],
+    [0xC8, 0x6F, 0xC9],
+    [0x6F, 0x9F, 0xE8],
+    [0xD9, 0x8C, 0x4A],
+];
+/// The name of the built-in sample music once a folder takes its place.
+const SAMPLE: &str = "Music (sample)";
 
 const HOURS: i64 = 6;
 /// The as-played log covers this many hours before now.
@@ -133,8 +144,30 @@ pub struct MockSource {
     main: PlaylistTab,
     library: Vec<LibraryItem>,
     carts: Vec<String>,
-    /// Library items dropped into the main playlist: after which row, and which item.
-    inserts: Vec<(u64, u64)>,
+    /// Edits to the timeline, in order. The mock applies them to each new snapshot.
+    ops: Vec<Op>,
+    next_manual: u64,
+    /// The tracks of the main playlist when it is not the sample music.
+    main_tracks: Option<Vec<(String, Duration)>>,
+    last_top: Option<Zoned>,
+    last_now: Timestamp,
+}
+
+/// One edit to the timeline.
+#[derive(Clone)]
+enum Op {
+    Insert {
+        at: Place,
+        id: u64,
+        title: String,
+        len: Duration,
+    },
+    Remove(u64),
+    Move {
+        id: u64,
+        at: Place,
+    },
+    Lock(u64),
 }
 
 impl MockSource {
@@ -195,27 +228,110 @@ impl MockSource {
             main: main_tab(),
             library,
             carts: CARTS.iter().map(|c| (*c).to_owned()).collect(),
-            inserts: Vec::new(),
+            ops: Vec::new(),
+            next_manual: MANUAL_ID,
+            main_tracks: None,
+            last_top: None,
+            last_now: Timestamp::UNIX_EPOCH,
         }
     }
 
-    /// Put the dropped library items into `rows`. Items that do not fit stay out.
-    fn apply_inserts(&self, rows: &mut Vec<Row>) {
-        for (n, (after, item)) in self.inserts.iter().enumerate() {
-            let Some(lib) = self.library.iter().find(|l| l.id == *item) else {
-                continue;
-            };
-            let title = match &lib.artist {
-                Some(a) => format!("{a} – {}", lib.title),
-                None => lib.title.clone(),
-            };
-            let len = if lib.len.is_zero() {
-                secs(180)
-            } else {
-                lib.len
-            };
-            insert_manual(rows, *after, MANUAL_ID + n as u64, title, len, &self.tz);
+    /// Apply the edits to `rows`. It returns false when the rows no longer fit the fixed items.
+    fn apply_ops(&self, rows: &mut Vec<Row>, ops: &[Op], now: Timestamp) -> bool {
+        for op in ops {
+            match op {
+                Op::Insert { at, id, title, len } => {
+                    let Some(i) = index_of(rows, *at) else {
+                        continue;
+                    };
+                    let Some(base) = rows.get(i.saturating_sub(1)).or(rows.first()).cloned() else {
+                        continue;
+                    };
+                    rows.insert(
+                        i,
+                        Row {
+                            id: *id,
+                            playlist: self.main.name.clone(),
+                            color: self.main.color,
+                            title: title.clone(),
+                            len: *len,
+                            is_main: true,
+                            fixed: None,
+                            origin: Origin::Manual,
+                            locked: false,
+                            ..base
+                        },
+                    );
+                }
+                Op::Remove(id) => rows.retain(|r| r.id != *id),
+                Op::Move { id, at } => {
+                    let Some(from) = rows.iter().position(|r| r.id == *id) else {
+                        continue;
+                    };
+                    let row = rows.remove(from);
+                    match index_of(rows, *at) {
+                        Some(i) => rows.insert(i, row),
+                        None => rows.insert(from, row),
+                    }
+                }
+                Op::Lock(id) => {
+                    if let Some(r) = rows.iter_mut().find(|r| r.id == *id) {
+                        r.locked = !r.locked;
+                    }
+                }
+            }
         }
+        fit_all(rows, &self.tz, now)
+    }
+
+    /// The rows of the last snapshot window, with all edits.
+    fn current(&mut self) -> Vec<Row> {
+        let Some(top) = self.last_top.clone() else {
+            return Vec::new();
+        };
+        let mut rows = self.rows_from(&top).to_vec();
+        let ops = self.ops.clone();
+        self.apply_ops(&mut rows, &ops, self.last_now);
+        rows
+    }
+
+    /// Keep `op` when the rows still fit with it.
+    fn try_op(&mut self, op: Op, done: String) -> Result<String, String> {
+        let Some(top) = self.last_top.clone() else {
+            return Err("preview — no timeline yet".to_owned());
+        };
+        let mut rows = self.rows_from(&top).to_vec();
+        let mut ops = self.ops.clone();
+        ops.push(op);
+        if self.apply_ops(&mut rows, &ops, self.last_now) {
+            self.ops = ops;
+            Ok(done)
+        } else {
+            Err("preview — that does not fit before the next fixed item".to_owned())
+        }
+    }
+
+    fn library_item(&self, id: u64) -> Option<&LibraryItem> {
+        self.library.iter().find(|l| l.id == id)
+    }
+
+    fn tab_mut(&mut self, name: &str) -> Option<&mut PlaylistTab> {
+        if self.main.name == name {
+            Some(&mut self.main)
+        } else {
+            self.tabs.iter_mut().find(|t| t.name == name)
+        }
+    }
+
+    fn unique_name(&self, base: &str) -> String {
+        let taken = |n: &str| self.main.name == n || self.tabs.iter().any(|t| t.name == n);
+        if !taken(base) {
+            return base.to_owned();
+        }
+        (2..)
+            .map(|k| format!("{base} {k}"))
+            .find(|n| !taken(n))
+            .unwrap_or_else(|| base.to_owned())
     }
 
     fn rows_from(&mut self, top: &Zoned) -> &[Row] {
@@ -247,21 +363,23 @@ impl MockSource {
             let Ok(span) = SignedDuration::try_from(item.len) else {
                 return;
             };
+            let main = item.playlist == "Music";
             *t += span;
             rows.push(Row {
                 id: start.timestamp().as_millisecond().unsigned_abs(),
                 start,
-                playlist: item.playlist.to_owned(),
-                color: item.color,
+                playlist: if main {
+                    self.main.name.clone()
+                } else {
+                    item.playlist.to_owned()
+                },
+                color: if main { self.main.color } else { item.color },
                 title: item.title,
                 len: item.len,
-                is_main: item.playlist == "Music",
+                is_main: main,
                 fixed: item.fixed,
-                origin: if item.playlist == "Music" {
-                    Origin::Main
-                } else {
-                    Origin::Rule
-                },
+                origin: if main { Origin::Main } else { Origin::Rule },
+                locked: false,
             });
         };
 
@@ -305,7 +423,10 @@ impl MockSource {
                 }
                 continue;
             }
-            let (title, len) = &self.tracks[track % TRACKS];
+            let list = self.main_tracks.as_ref().unwrap_or(&self.tracks);
+            let Some((title, len)) = list.get(track % list.len().max(1)) else {
+                break;
+            };
             track += 1;
             since_jingle += 1;
             // The last track before the next hour ends early, so the fixed item starts on time.
@@ -410,6 +531,7 @@ fn playlist(
         visual,
         script: String::new(),
         script_by_hand: false,
+        source: None,
     };
     rules_script::refresh(&mut tab);
     tab
@@ -511,68 +633,95 @@ fn tabs() -> Vec<PlaylistTab> {
     ]
 }
 
-/// Insert a manual row after the row `after`. The music before the next fixed row gets shorter,
-/// so every fixed row keeps its start. It returns false when the item does not fit.
-fn insert_manual(
-    rows: &mut Vec<Row>,
-    after: u64,
-    id: u64,
-    title: String,
-    len: Duration,
-    tz: &TimeZone,
-) -> bool {
-    let Some(i) = rows.iter().position(|r| r.id == after) else {
-        return false;
-    };
-    let fixed = rows[i + 1..]
-        .iter()
-        .position(|r| r.fixed.is_some())
-        .map_or(rows.len(), |k| i + 1 + k);
-    let room: Duration = rows[i + 1..fixed]
-        .iter()
-        .filter(|r| r.origin == Origin::Main)
-        .map(|r| r.len)
-        .sum();
-    if room < len {
-        return false;
+/// The end instant of a row.
+fn end_of(r: &Row) -> Timestamp {
+    let start = r.start.timestamp();
+    SignedDuration::try_from(r.len).map_or(start, |d| start + d)
+}
+
+/// Where a place is in `rows`, as an index to insert at.
+fn index_of(rows: &[Row], at: Place) -> Option<usize> {
+    match at {
+        Place::Before(id) => rows.iter().position(|r| r.id == id),
+        Place::After(id) => rows.iter().position(|r| r.id == id).map(|i| i + 1),
+        Place::End => Some(rows.len()),
     }
-    let mut owed = len;
-    for r in rows[i + 1..fixed].iter_mut().rev() {
-        if owed.is_zero() {
+}
+
+/// The mock may shorten or lengthen this row to fit: a future main row that nobody locked.
+fn adjustable(r: &Row, now: Timestamp) -> bool {
+    r.origin == Origin::Main && !r.locked && r.start.timestamp() > now
+}
+
+/// Make every fixed row start on its time again. The mock cuts or lengthens future main rows,
+/// then sets each start to the end of the row before. It returns false when a gap stays.
+fn fit_all(rows: &mut Vec<Row>, tz: &TimeZone, now: Timestamp) -> bool {
+    let mut ok = true;
+    let mut p = 0;
+    while p < rows.len() {
+        let next_fixed = |rows: &[Row]| {
+            rows.iter()
+                .skip(p + 1)
+                .position(|r| r.fixed.is_some())
+                .map(|k| p + 1 + k)
+        };
+        let Some(f) = next_fixed(rows) else {
+            let n = rows.len();
+            retime(rows, p, n, tz);
             break;
+        };
+        let target = rows[f].start.timestamp();
+        let begin = end_of(&rows[p]);
+        let have: Duration = rows[p + 1..f].iter().map(|r| r.len).sum();
+        let want = Duration::try_from(target.duration_since(begin)).unwrap_or_default();
+        if have > want {
+            let mut owed = have - want;
+            for r in rows[p + 1..f].iter_mut().rev() {
+                if owed.is_zero() {
+                    break;
+                }
+                if adjustable(r, now) {
+                    let cut = owed.min(r.len);
+                    r.len -= cut;
+                    owed -= cut;
+                }
+            }
+            ok &= owed.is_zero();
+        } else if have < want {
+            match rows[p + 1..f].iter_mut().rev().find(|r| adjustable(r, now)) {
+                Some(r) => r.len += want - have,
+                None => ok = false,
+            }
         }
-        if r.origin == Origin::Main {
-            let cut = owed.min(r.len);
-            r.len -= cut;
-            owed -= cut;
+        let mut i = p + 1;
+        while i < rows.len() && rows[i].fixed.is_none() {
+            if rows[i].len.is_zero() {
+                rows.remove(i);
+            } else {
+                i += 1;
+            }
         }
+        let f = next_fixed(rows).unwrap_or(rows.len());
+        retime(rows, p, f, tz);
+        p = f;
     }
-    let mut row = rows[i].clone();
-    row.id = id;
-    row.playlist = "Music".to_owned();
-    row.color = MUSIC;
-    row.title = title;
-    row.len = len;
-    row.is_main = true;
-    row.fixed = None;
-    row.origin = Origin::Manual;
-    rows.insert(i + 1, row);
-    let fixed = fixed + 1;
-    let mut j = i + 1;
-    let mut end = fixed;
-    while j < end {
-        if rows[j].len.is_zero() {
-            rows.remove(j);
-            end -= 1;
-            continue;
-        }
-        let prev = &rows[j - 1];
-        let start = SignedDuration::try_from(prev.len)
-            .map_or(prev.start.timestamp(), |d| prev.start.timestamp() + d);
+    ok
+}
+
+/// Set the start of each row in `from + 1 .. to` to the end of the row before it.
+fn retime(rows: &mut [Row], from: usize, to: usize, tz: &TimeZone) {
+    for j in from + 1..to.min(rows.len()) {
+        let start = end_of(&rows[j - 1]);
         rows[j].start = start.to_zoned(tz.clone());
-        j += 1;
     }
-    true
+}
+
+/// A made-up length for a file that nobody decoded yet. The same name always gives the same length.
+fn estimated_len(name: &str) -> Duration {
+    let hash = name
+        .bytes()
+        .fold(7u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)));
+    secs(150 + hash % 151)
 }
 
 /// Simulated meter levels. Only the playing deck and the output move.
@@ -631,8 +780,11 @@ impl ViewSource for MockSource {
             .subsec_nanosecond(0)
             .build()
             .unwrap_or_else(|_| local.clone());
+        self.last_top = Some(top.clone());
+        self.last_now = now;
         let mut all = self.rows_from(&top).to_vec();
-        self.apply_inserts(&mut all);
+        let ops = self.ops.clone();
+        self.apply_ops(&mut all, &ops, now);
         let since = now
             .checked_sub(SignedDuration::from_hours(PAST_HOURS))
             .unwrap_or(now);
@@ -667,6 +819,7 @@ impl ViewSource for MockSource {
             rows,
             tabs: self.tabs.clone(),
             main: self.main.clone(),
+            main_playlist: self.main.name.clone(),
             meters,
             history,
             library: self.library.clone(),
@@ -682,10 +835,12 @@ impl ViewSource for MockSource {
         };
         let entry = (lib.title.clone(), lib.len);
         match target {
-            DropTarget::Main { after } => {
-                self.inserts.push((after, item));
-                true
-            }
+            DropTarget::Main { after } => self
+                .edit(Edit::Insert {
+                    item,
+                    at: Place::After(after),
+                })
+                .is_ok(),
             DropTarget::Playlist(name) => {
                 let tab = if self.main.name == name {
                     Some(&mut self.main)
@@ -698,19 +853,253 @@ impl ViewSource for MockSource {
         }
     }
 
-    fn import_files(&mut self, paths: Vec<String>) {
+    fn import_files(&mut self, paths: Vec<String>, category: &str) -> Vec<u64> {
+        let mut ids = Vec::new();
         for path in paths {
-            let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_owned();
+            let name = folders::stem_of(&path).to_owned();
             let id = self.library.iter().map(|l| l.id).max().unwrap_or(0) + 1;
             self.library.push(LibraryItem {
                 id,
                 title: name,
                 artist: None,
                 len: Duration::ZERO,
-                category: "Unsorted".to_owned(),
+                category: category.to_owned(),
                 path,
             });
+            ids.push(id);
         }
+        ids
+    }
+
+    fn edit(&mut self, edit: Edit) -> Result<String, String> {
+        let not_saved = |what: String| format!("preview — {what} (not saved)");
+        match edit {
+            Edit::Insert { item, at } => {
+                let Some(lib) = self.library_item(item) else {
+                    return Err("preview — that library item is gone".to_owned());
+                };
+                let title = match &lib.artist {
+                    Some(a) => format!("{a} – {}", lib.title),
+                    None => lib.title.clone(),
+                };
+                let len = if lib.len.is_zero() {
+                    estimated_len(&title)
+                } else {
+                    lib.len
+                };
+                let id = self.next_manual;
+                self.next_manual += 1;
+                let done = not_saved(format!("added {title} to {}", self.main.name));
+                self.try_op(Op::Insert { at, id, title, len }, done)
+            }
+            Edit::Remove(ids) => {
+                let n = ids.len();
+                let mut ops = self.ops.clone();
+                ops.extend(ids.into_iter().map(Op::Remove));
+                let Some(top) = self.last_top.clone() else {
+                    return Err("preview — no timeline yet".to_owned());
+                };
+                let mut rows = self.rows_from(&top).to_vec();
+                if self.apply_ops(&mut rows, &ops, self.last_now) {
+                    self.ops = ops;
+                    Ok(not_saved(format!("removed {n} rows")))
+                } else {
+                    Err(
+                        "preview — nothing left to fill the gap before the next fixed item"
+                            .to_owned(),
+                    )
+                }
+            }
+            Edit::Move { id, to } => {
+                let rows = self.current();
+                let Some(i) = rows.iter().position(|r| r.id == id) else {
+                    return Err("preview — that row is gone".to_owned());
+                };
+                let at = match to {
+                    MoveTo::Next => {
+                        let now = self.last_now;
+                        match rows
+                            .iter()
+                            .find(|r| r.start.timestamp() <= now && now < end_of(r))
+                        {
+                            Some(r) => Place::After(r.id),
+                            None => return Err("preview — nothing is on air".to_owned()),
+                        }
+                    }
+                    MoveTo::Top => match rows[..i].iter().rev().find(|r| r.fixed.is_some()) {
+                        Some(r) => Place::After(r.id),
+                        None => Place::Before(rows[0].id),
+                    },
+                    MoveTo::Bottom => match rows[i + 1..].iter().find(|r| r.fixed.is_some()) {
+                        Some(r) => Place::Before(r.id),
+                        None => Place::End,
+                    },
+                };
+                self.try_op(Op::Move { id, at }, not_saved("moved the row".to_owned()))
+            }
+            Edit::ToggleLock(id) => {
+                self.try_op(Op::Lock(id), not_saved("changed the lock".to_owned()))
+            }
+            Edit::RenamePlaylist { from, to } => {
+                let to = to.trim().to_owned();
+                if to.is_empty() || self.unique_name(&to) != to {
+                    return Err(format!("preview — the name {to:?} is empty or taken"));
+                }
+                let Some(tab) = self.tab_mut(&from) else {
+                    return Err(format!("preview — no playlist {from}"));
+                };
+                tab.name.clone_from(&to);
+                rules_script::refresh(tab);
+                self.cache = None;
+                Ok(not_saved(format!("renamed {from} to {to}")))
+            }
+            Edit::DuplicatePlaylist(name) => {
+                let Some(tab) = self
+                    .tabs
+                    .iter()
+                    .chain([&self.main])
+                    .find(|t| t.name == name)
+                else {
+                    return Err(format!("preview — no playlist {name}"));
+                };
+                let mut copy = tab.clone();
+                copy.name = self.unique_name(&format!("{name} copy"));
+                rules_script::refresh(&mut copy);
+                let msg = not_saved(format!("made {}", copy.name));
+                self.tabs.push(copy);
+                Ok(msg)
+            }
+            Edit::DeletePlaylist(name) => {
+                if self.main.name == name {
+                    return Err(
+                        "preview — the main playlist cannot go; make another one main first"
+                            .to_owned(),
+                    );
+                }
+                let before = self.tabs.len();
+                self.tabs.retain(|t| t.name != name);
+                if self.tabs.len() == before {
+                    return Err(format!("preview — no playlist {name}"));
+                }
+                Ok(not_saved(format!("deleted {name}")))
+            }
+            Edit::RemovePlaylistItem { playlist, index } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(format!("preview — no playlist {playlist}"));
+                };
+                if index >= tab.items.len() {
+                    return Err("preview — that item is gone".to_owned());
+                }
+                let (title, _) = tab.items.remove(index);
+                Ok(not_saved(format!("removed {title} from {playlist}")))
+            }
+            Edit::MovePlaylistItem {
+                playlist,
+                index,
+                up,
+            } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(format!("preview — no playlist {playlist}"));
+                };
+                let other = if up {
+                    index.checked_sub(1)
+                } else {
+                    Some(index + 1)
+                };
+                match other.filter(|o| *o < tab.items.len() && index < tab.items.len()) {
+                    Some(o) => {
+                        tab.items.swap(index, o);
+                        Ok(not_saved("moved the item".to_owned()))
+                    }
+                    None => Err("preview — the item is already at the end".to_owned()),
+                }
+            }
+            Edit::AssignCart { cart, item } => {
+                let label = match item {
+                    Some(id) => match self.library_item(id) {
+                        Some(l) => l.title.clone(),
+                        None => return Err("preview — that library item is gone".to_owned()),
+                    },
+                    None => String::new(),
+                };
+                let Some(slot) = self.carts.get_mut(cart) else {
+                    return Err("preview — no such cart".to_owned());
+                };
+                let msg = if label.is_empty() {
+                    format!("cleared cart {}", cart + 1)
+                } else {
+                    format!("assigned {label} to cart {}", cart + 1)
+                };
+                *slot = label;
+                Ok(not_saved(msg))
+            }
+        }
+    }
+
+    fn library_ref(&mut self, title: &str, len: Duration) -> Option<u64> {
+        let found = self.library.iter().find(|l| {
+            l.title == title
+                || l.artist
+                    .as_ref()
+                    .is_some_and(|a| format!("{a} – {}", l.title) == title)
+        });
+        if let Some(l) = found {
+            return Some(l.id);
+        }
+        let id = self.library.iter().map(|l| l.id).max().unwrap_or(0) + 1;
+        self.library.push(LibraryItem {
+            id,
+            title: title.to_owned(),
+            artist: None,
+            len,
+            category: "Unsorted".to_owned(),
+            path: "—".to_owned(),
+        });
+        Some(id)
+    }
+
+    fn playlist_from_folder(&mut self, folder: FolderSource, files: Vec<String>) -> Option<String> {
+        let name = self.unique_name(folders::name_of(&folder.path));
+        let colour = FOLDER_COLOURS[self.tabs.len() % FOLDER_COLOURS.len()];
+        let items = files
+            .iter()
+            .map(|f| (folders::stem_of(f).to_owned(), Duration::ZERO))
+            .collect();
+        let mut tab = playlist(&name, colour, Pick::Shuffle, Vec::new(), items);
+        tab.source = Some(folder);
+        rules_script::refresh(&mut tab);
+        self.tabs.push(tab);
+        Some(name)
+    }
+
+    fn use_as_main(&mut self, name: &str) -> bool {
+        let Some(i) = self.tabs.iter().position(|t| t.name == name) else {
+            return false;
+        };
+        let sample = self.tabs[i].name == SAMPLE;
+        if self.tabs[i].items.is_empty() && !sample {
+            return false;
+        }
+        let tab = self.tabs.remove(i);
+        let mut old = std::mem::replace(&mut self.main, tab);
+        if old.source.is_none() && old.items.is_empty() && old.name == "Music" {
+            old.name = SAMPLE.to_owned();
+        }
+        self.tabs.push(old);
+        self.main_tracks = if sample {
+            None
+        } else {
+            Some(
+                self.main
+                    .items
+                    .iter()
+                    .map(|(t, l)| (t.clone(), if l.is_zero() { estimated_len(t) } else { *l }))
+                    .collect(),
+            )
+        };
+        self.cache = None;
+        self.ops.clear();
+        true
     }
 
     fn apply_rules(&mut self, tab: PlaylistTab) -> bool {

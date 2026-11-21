@@ -3,7 +3,9 @@
 mod app;
 mod cartwall;
 mod clock_window;
+mod context_menu;
 mod decks;
+pub mod folders;
 mod history;
 mod library;
 mod main_pane;

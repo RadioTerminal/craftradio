@@ -3,11 +3,29 @@
 
 use egui::{Align, DragValue, Layout, RichText, Stroke};
 
-use crate::app::Action;
+use crate::app::{Action, PasteTo};
+use crate::context_menu::{self, PASTE, check_item, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{DropTarget, StationView};
+use crate::view::{DropTarget, Edit, StationView};
+use crate::windows::ToolWindow;
+
+/// How a cart plays when somebody presses it again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    OneShot,
+    Loop,
+    Restart,
+}
+
+const MODES: [(Mode, &str); 3] = [
+    (Mode::OneShot, "One-shot"),
+    (Mode::Loop, "Loop"),
+    (Mode::Restart, "Restart"),
+];
+/// The ducking choices in the menu, in dB. Zero means off.
+const DUCKS: [f32; 4] = [0.0, -6.0, -12.0, -18.0];
 
 const NO_AUDIO: &str = "preview — no audio";
 const DEFAULT_DUCK_DB: f32 = -12.0;
@@ -24,6 +42,9 @@ pub(crate) struct State {
     flash_until: Vec<f64>,
     last: Option<usize>,
     settings: bool,
+    /// The colour of each cart, as an index into the theme cart colours.
+    colour: Vec<Option<usize>>,
+    mode: Vec<Mode>,
 }
 
 impl State {
@@ -39,6 +60,8 @@ impl State {
             flash_until: vec![f64::NEG_INFINITY; carts],
             last: None,
             settings: false,
+            colour: vec![None; carts],
+            mode: vec![Mode::OneShot; carts],
         }
     }
 
@@ -51,9 +74,12 @@ pub(crate) fn show(
     ui: &mut egui::Ui,
     view: &StationView,
     state: &mut State,
+    has_clip: bool,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    state.colour.resize(view.carts.len(), None);
+    state.mode.resize(view.carts.len(), Mode::OneShot);
     state
         .flash_until
         .resize(view.carts.len(), f64::NEG_INFINITY);
@@ -101,7 +127,7 @@ pub(crate) fn show(
             for n in 0..state.per_page() {
                 let i = first + n;
                 match view.carts.get(i) {
-                    Some(name) => cart(ui, i, name, state, now, actions, t),
+                    Some(name) => cart(ui, i, name, state, has_clip, actions, t),
                     None => {
                         let empty = egui::Button::new(RichText::new("empty").color(t.text_muted))
                             .min_size(egui::vec2(size::CART_W, size::CART_H));
@@ -134,16 +160,23 @@ fn cart(
     i: usize,
     name: &str,
     state: &mut State,
-    now: f64,
+    has_clip: bool,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    let now = ui.input(|i| i.time);
+    let empty = name.is_empty();
+    let name = if empty { "empty" } else { name };
     let until = state.flash_until[i];
     let lit = until > now;
     let (fill, ink, edge) = if lit {
         (t.flash, t.flash_ink, t.flash)
     } else {
-        (t.field, t.text, t.card_border)
+        (
+            t.field,
+            if empty { t.text_muted } else { t.text },
+            t.card_border,
+        )
     };
     let text = RichText::new(name)
         .font(theme::text(theme::LABEL))
@@ -153,6 +186,13 @@ fn cart(
         .stroke(Stroke::new(size::HAIRLINE, edge))
         .min_size(egui::vec2(size::CART_W, size::CART_H));
     let resp = ui.add(button);
+    if let Some(c) = state.colour[i].and_then(|c| theme::CART_COLOURS.get(c)) {
+        let mut bar = resp.rect;
+        bar.set_width(size::CART_BAR);
+        ui.painter()
+            .rect_filled(bar, t.radius_sm, Tokens::playlist(c.1));
+    }
+    resp.context_menu(|ui| cart_menu(ui, i, state, has_clip, actions));
     if let Some(drag) = resp.dnd_release_payload::<LibraryDrag>() {
         actions.push(Action::Drop {
             item: drag.0,
@@ -167,7 +207,18 @@ fn cart(
             egui::StrokeKind::Outside,
         );
     }
-    if resp.on_hover_text(NO_AUDIO).clicked() {
+    let colour = state.colour[i]
+        .and_then(|c| theme::CART_COLOURS.get(c))
+        .map_or("no colour", |c| c.0);
+    let mode = MODES
+        .iter()
+        .find(|(m, _)| *m == state.mode[i])
+        .map_or("", |m| m.1);
+    let hint = format!(
+        "{NO_AUDIO} · {mode} · {colour} · ducking {:.0} dB",
+        state.duck_db[i]
+    );
+    if resp.on_hover_text(hint).clicked() {
         state.flash_until[i] = now + size::CART_FLASH_S;
         state.last = Some(i);
     }
@@ -175,6 +226,65 @@ fn cart(
         ui.ctx()
             .request_repaint_after_secs((until - now).max(0.0) as f32);
     }
+}
+
+fn cart_menu(
+    ui: &mut egui::Ui,
+    i: usize,
+    state: &mut State,
+    has_clip: bool,
+    actions: &mut Vec<Action>,
+) {
+    for label in ["Play", "Stop"] {
+        if menu_item(ui, label, None) {
+            actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
+        }
+    }
+    if menu_item(ui, "Assign from library…", None) {
+        actions.push(Action::OpenWindow(ToolWindow::Library));
+        actions.push(Action::Toast(
+            "drag a title from the Library onto the cart".to_owned(),
+        ));
+    }
+    if menu_item_if(ui, has_clip, "Paste", Some(PASTE)) {
+        actions.push(Action::Paste(PasteTo::Cart(i)));
+    }
+    if menu_item(ui, "Clear", None) {
+        actions.push(Action::Edit(Edit::AssignCart {
+            cart: i,
+            item: None,
+        }));
+    }
+    ui.separator();
+    ui.menu_button("Colour", |ui| {
+        if check_item(ui, state.colour[i].is_none(), "None") {
+            state.colour[i] = None;
+        }
+        for (k, (name, _)) in theme::CART_COLOURS.iter().enumerate() {
+            if check_item(ui, state.colour[i] == Some(k), name) {
+                state.colour[i] = Some(k);
+            }
+        }
+    });
+    ui.menu_button("Ducking", |ui| {
+        for db in DUCKS {
+            let label = if db == 0.0 {
+                "Off".to_owned()
+            } else {
+                format!("{db:.0} dB")
+            };
+            if check_item(ui, (state.duck_db[i] - db).abs() < f32::EPSILON, &label) {
+                state.duck_db[i] = db;
+            }
+        }
+    });
+    ui.menu_button("Mode", |ui| {
+        for (mode, label) in MODES {
+            if check_item(ui, state.mode[i] == mode, label) {
+                state.mode[i] = mode;
+            }
+        }
+    });
 }
 
 fn cart_settings(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &Tokens) {

@@ -6,21 +6,23 @@
 
 use egui::{Align, ComboBox, DragValue, Layout, RichText, Stroke, TextEdit};
 
+use crate::app::{FileTarget, Linked, mmss};
+use crate::folders;
 use crate::rules_script;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{
-    Constraint, ConstraintKind, Pick, Placement, PlaylistTab, RuleView, Trigger, ViewSource,
-};
+use crate::view::{Constraint, ConstraintKind, Pick, Placement, PlaylistTab, RuleView, Trigger};
 
 const NOT_APPLIED: &str = "preview — rules are not applied to the scheduler yet";
 const SCRIPT_NOTE: &str = "Script edits take effect when the script engine lands. \
 Visual view shows the last generated rules.";
+const WATCH_NOTE: &str = "watching starts with the library engine";
 const BY_HAND: &str = "edited by hand — visual editing would overwrite it";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Visual,
     Script,
+    Items,
 }
 
 /// An open editor and its working copy.
@@ -38,21 +40,32 @@ impl Editor {
             applied: false,
         }
     }
+
+    pub fn name(&self) -> &str {
+        &self.draft.name
+    }
+
+    /// Add dropped files to the working copy. Their length is not known yet.
+    pub fn add_files(&mut self, paths: &[String]) {
+        let items = paths
+            .iter()
+            .map(|p| (folders::stem_of(p).to_owned(), std::time::Duration::ZERO));
+        self.draft.items.extend(items);
+        self.mode = Mode::Items;
+    }
 }
 
-/// Show the editor while it is open. It returns true after Apply.
+/// Show the editor while it is open. After Apply, it returns the working copy to store.
 pub(crate) fn show(
     ctx: &egui::Context,
     slot: &mut Option<Editor>,
-    source: &mut dyn ViewSource,
+    link: &mut Linked,
     t: &Tokens,
-) -> bool {
-    let Some(editor) = slot.as_mut() else {
-        return false;
-    };
+) -> Option<PlaylistTab> {
+    let editor = slot.as_mut()?;
     let mut open = true;
     let mut close = false;
-    let mut applied = false;
+    let mut applied = None;
     egui::Window::new(format!("{} — rules", editor.draft.name))
         .id(egui::Id::new("rules_editor"))
         .open(&mut open)
@@ -66,6 +79,7 @@ pub(crate) fn show(
             match editor.mode {
                 Mode::Visual => visual(ui, &mut editor.draft, t),
                 Mode::Script => script(ui, &mut editor.draft, t),
+                Mode::Items => items(ui, &mut editor.draft, link, t),
             }
             ui.add_space(space::M);
             ui.separator();
@@ -74,7 +88,7 @@ pub(crate) fn show(
                     .fill(t.accent)
                     .min_size(egui::vec2(0.0, size::CONTROL_MD));
                 if ui.add(apply).clicked() {
-                    applied = source.apply_rules(editor.draft.clone());
+                    applied = Some(editor.draft.clone());
                     editor.applied = true;
                 }
                 let cancel =
@@ -103,7 +117,12 @@ pub(crate) fn cog(ui: &mut egui::Ui, name: &str) -> bool {
 
 fn mode_bar(ui: &mut egui::Ui, editor: &mut Editor) {
     ui.horizontal(|ui| {
-        for (mode, label) in [(Mode::Visual, "Visual"), (Mode::Script, "Script")] {
+        let modes = [
+            (Mode::Visual, "Visual"),
+            (Mode::Script, "Script"),
+            (Mode::Items, "Items & source"),
+        ];
+        for (mode, label) in modes {
             if ui.selectable_label(editor.mode == mode, label).clicked() {
                 editor.mode = mode;
             }
@@ -317,4 +336,64 @@ fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
     }
     ui.add_space(space::XS);
     caption(ui, SCRIPT_NOTE, t);
+}
+
+/// The items of the playlist, and the folder behind it. Files from the file manager drop here.
+fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, t: &Tokens) {
+    if let Some(src) = &mut tab.source {
+        caption(ui, "FOLDER", t);
+        ui.label(RichText::new(&src.path).font(theme::mono(theme::CODE)));
+        ui.checkbox(&mut src.recursive, "Include subfolders");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut src.watch, "Watch for changes");
+            if src.watch {
+                let note = RichText::new(WATCH_NOTE).font(theme::text(theme::CAPTION));
+                ui.label(note.color(t.text_muted));
+            }
+        });
+        ui.add_space(space::S);
+    }
+    caption(ui, &format!("ITEMS ({})", tab.items.len()), t);
+    let frame = egui::Frame::new()
+        .fill(t.field)
+        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
+        .corner_radius(t.radius)
+        .inner_margin(pad::TIGHT);
+    let zone = frame.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let mut remove = None;
+        egui::ScrollArea::vertical()
+            .id_salt("editor_items")
+            .max_height(size::EDITOR_ITEMS_H)
+            .show(ui, |ui| {
+                for (i, (name, len)) in tab.items.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(name).font(theme::text(theme::SMALL)));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button(format!("Remove {name}")).clicked() {
+                                remove = Some(i);
+                            }
+                            let len = RichText::new(mmss(*len)).font(theme::mono(theme::CODE));
+                            ui.label(len.color(t.text_muted));
+                        });
+                    });
+                }
+            });
+        if let Some(i) = remove {
+            tab.items.remove(i);
+        }
+        let hint = "Drop files or a folder from the file manager here to add them";
+        caption(ui, hint, t);
+    });
+    let rect = zone.response.rect;
+    let over = ui.input(|i| {
+        (!i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty())
+            && i.pointer.latest_pos().is_some_and(|p| rect.contains(p))
+    });
+    if over {
+        link.hover_files(FileTarget::Editor);
+        let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
+        ui.painter()
+            .rect_stroke(rect, t.radius, edge, egui::StrokeKind::Outside);
+    }
 }

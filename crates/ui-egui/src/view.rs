@@ -41,6 +41,8 @@ pub struct Row {
     pub fixed: Option<FitView>,
     /// What put the row in the timeline.
     pub origin: Origin,
+    /// True when a person locked the row in place.
+    pub locked: bool,
 }
 
 /// What put a row in the timeline.
@@ -103,6 +105,18 @@ pub struct PlaylistTab {
     pub script: String,
     /// True when somebody changed the script by hand after the last generation.
     pub script_by_hand: bool,
+    /// The folder that this playlist comes from, if a folder backs it.
+    pub source: Option<FolderSource>,
+}
+
+/// A folder that backs a playlist.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderSource {
+    pub path: String,
+    /// Include the files in subfolders.
+    pub recursive: bool,
+    /// Follow changes in the folder. The library engine does this later.
+    pub watch: bool,
 }
 
 /// The order in which a playlist picks its items.
@@ -113,15 +127,17 @@ pub enum Pick {
     Shuffle,
     Latest,
     ByDate,
+    Weighted,
 }
 
 impl Pick {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::InOrder,
         Self::Rotate,
         Self::Shuffle,
         Self::Latest,
         Self::ByDate,
+        Self::Weighted,
     ];
 
     /// The words a person reads.
@@ -132,6 +148,7 @@ impl Pick {
             Self::Shuffle => "shuffle",
             Self::Latest => "latest item",
             Self::ByDate => "by date",
+            Self::Weighted => "weighted",
         }
     }
 
@@ -143,6 +160,7 @@ impl Pick {
             Self::Shuffle => "shuffle",
             Self::Latest => "latest",
             Self::ByDate => "by-date",
+            Self::Weighted => "weighted",
         }
     }
 }
@@ -328,6 +346,8 @@ pub struct StationView {
     pub tabs: Vec<PlaylistTab>,
     /// The main playlist, with its pick order and rules.
     pub main: PlaylistTab,
+    /// The name of the main playlist.
+    pub main_playlist: String,
     /// Level meters: one per deck, then the cart bus, the live input and the output.
     pub meters: Vec<MeterView>,
     /// The as-played log, oldest first.
@@ -349,6 +369,64 @@ pub struct MeterView {
     pub gain_db: f32,
 }
 
+/// A place in the main timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Before(u64),
+    After(u64),
+    /// After the last row.
+    End,
+}
+
+/// Where to move a row in its hour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveTo {
+    /// Right after the row that is on air.
+    Next,
+    /// First after the fixed item that opens the hour.
+    Top,
+    /// Last before the next fixed item.
+    Bottom,
+}
+
+/// A change to the station. Panels ask for changes only through these commands.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Edit {
+    /// Put a library item into the main timeline.
+    Insert {
+        item: u64,
+        at: Place,
+    },
+    /// Take rows out of the timeline.
+    Remove(Vec<u64>),
+    Move {
+        id: u64,
+        to: MoveTo,
+    },
+    /// Lock or unlock a row in place.
+    ToggleLock(u64),
+    RenamePlaylist {
+        from: String,
+        to: String,
+    },
+    DuplicatePlaylist(String),
+    DeletePlaylist(String),
+    RemovePlaylistItem {
+        playlist: String,
+        index: usize,
+    },
+    MovePlaylistItem {
+        playlist: String,
+        index: usize,
+        up: bool,
+    },
+    /// Put a library item on a cart, or clear the cart with `None`.
+    AssignCart {
+        cart: usize,
+        item: Option<u64>,
+    },
+}
+
 /// Something that can describe the station at a given instant.
 pub trait ViewSource {
     fn snapshot(&mut self, now: jiff::Timestamp) -> StationView;
@@ -366,8 +444,33 @@ pub trait ViewSource {
         false
     }
 
-    /// Add files that came from the file manager to the library, by path.
-    fn import_files(&mut self, paths: Vec<String>) {
-        let _ = paths;
+    /// Add files to the library under `category`, by path. It returns the new item ids.
+    fn import_files(&mut self, paths: Vec<String>, category: &str) -> Vec<u64> {
+        let _ = (paths, category);
+        Vec::new()
+    }
+
+    /// Make a playlist from the audio files of a folder. It returns the playlist name.
+    fn playlist_from_folder(&mut self, folder: FolderSource, files: Vec<String>) -> Option<String> {
+        let _ = (folder, files);
+        None
+    }
+
+    /// Apply one edit. It returns the message for the person, or why the edit failed.
+    fn edit(&mut self, edit: Edit) -> Result<String, String> {
+        let _ = edit;
+        Err("preview — this source cannot change".to_owned())
+    }
+
+    /// The library item for a title, made when the library does not have one.
+    fn library_ref(&mut self, title: &str, len: Duration) -> Option<u64> {
+        let _ = (title, len);
+        None
+    }
+
+    /// Make the playlist `name` the main playlist. It returns true on success.
+    fn use_as_main(&mut self, name: &str) -> bool {
+        let _ = name;
+        false
     }
 }
