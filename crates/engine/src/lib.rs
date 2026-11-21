@@ -342,6 +342,7 @@ fn undoable(cmd: &Command) -> bool {
         | C::ItemLock { .. }
         | C::ItemUnlock { .. }
         | C::ItemSetMeta { .. }
+        | C::ItemSetKeepAlive { .. }
         | C::CartAssign { .. }
         | C::CartClear { .. }
         | C::CartSet { .. } => true,
@@ -710,7 +711,31 @@ impl Engine {
                 if !self.state.has_item(item) {
                     return Err(EngineError::UnknownItem(item));
                 }
+                // Typed tags also go into the item, so playout titles and logs use them.
+                if let Ok(typed) = serde_json::from_value::<radio_model::ItemMeta>(meta.clone()) {
+                    self.edit_station(|s| {
+                        if let Some(i) = item_mut(s, item) {
+                            i.meta = typed;
+                        }
+                        Ok(())
+                    })?;
+                }
                 self.state.item_meta.insert(item, meta);
+                Ok(Outcome::default())
+            }
+            C::ItemSetKeepAlive { item, keep_alive } => {
+                self.edit_station(|s| {
+                    let i = item_mut(s, item).ok_or(EngineError::UnknownItem(item))?;
+                    match &mut i.source {
+                        radio_model::Source::Stream { keep_alive: k, .. } => {
+                            *k = keep_alive;
+                            Ok(())
+                        }
+                        _ => Err(EngineError::BadArgument(
+                            "only a stream has keep-alive".into(),
+                        )),
+                    }
+                })?;
                 Ok(Outcome::default())
             }
             C::DeckLoad { deck, item } => {
@@ -1134,6 +1159,13 @@ impl Engine {
             interrupted,
         })
     }
+}
+
+fn item_mut(s: &mut Station, id: ItemId) -> Option<&mut Item> {
+    s.playlists
+        .iter_mut()
+        .flat_map(|p| p.items.iter_mut())
+        .find(|i| i.id == id)
 }
 
 fn playlist_mut(s: &mut Station, id: PlaylistId) -> Result<&mut Playlist, EngineError> {

@@ -177,6 +177,9 @@ impl EngineSource {
         if !host.is_empty() && !mount.starts_with('/') {
             return Err("The mount starts with /, such as /live".into());
         }
+        if ice.format == StreamFormat::Mp3 && !radio_stream::MP3 {
+            return Err("This build cannot encode MP3; pick Opus".into());
+        }
         if ice.port == 0 {
             return Err("The port must be over 0".into());
         }

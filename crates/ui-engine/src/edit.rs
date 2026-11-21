@@ -483,6 +483,18 @@ impl EngineSource {
             if let Some(item) = item {
                 let value = serde_json::to_value(model_meta(meta)).map_err(|e| e.to_string())?;
                 cmds.push(Command::ItemSetMeta { item, meta: value });
+                let now = self.items.get(&item).and_then(|(_, i)| match i.source {
+                    Source::Stream { keep_alive, .. } => Some(keep_alive),
+                    _ => None,
+                });
+                if let (Some(want), Some(now)) = (meta.keep_alive, now)
+                    && want != now
+                {
+                    cmds.push(Command::ItemSetKeepAlive {
+                        item,
+                        keep_alive: want,
+                    });
+                }
             }
         }
         self.run_batch(cmds)?;

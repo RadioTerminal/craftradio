@@ -418,6 +418,24 @@ impl Core {
     }
 
     /// Keeps the cartwall clips in the mixer in step with the engine's assignments.
+    /// Sends the stored fader and mute of each mixer strip to the mixer.
+    pub(crate) fn sync_strips(&mut self) {
+        let strips: Vec<(String, f32, bool)> = self
+            .engine
+            .state()
+            .strips
+            .iter()
+            .map(|(k, s)| (k.clone(), s.gain_db, s.mute))
+            .collect();
+        for (name, gain, mute) in strips {
+            if let Some(strip) = strip_of(&name) {
+                let db = if mute { f32::NEG_INFINITY } else { gain };
+                let cmd = Cmd::new(self.mixer.now(), CommandKind::SetGain { strip, db });
+                let _ = self.mixer.send(cmd);
+            }
+        }
+    }
+
     pub(crate) fn sync_carts(&mut self) {
         let wanted: Vec<ItemId> = self.engine.state().carts.iter().map(|c| c.item).collect();
         for i in 0..self.carts.loaded.len() {

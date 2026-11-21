@@ -100,6 +100,9 @@ pub enum Command {
     ItemUnlock { item: ItemId },
     #[serde(rename = "item.set_meta")]
     ItemSetMeta { item: ItemId, meta: Value },
+    /// Keep-alive of a stream item: it reconnects until its planned end.
+    #[serde(rename = "item.set_keep_alive")]
+    ItemSetKeepAlive { item: ItemId, keep_alive: bool },
     #[serde(rename = "deck.load")]
     DeckLoad { deck: u8, item: ItemId },
     /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
@@ -232,6 +235,7 @@ impl Command {
             Self::ItemLock { .. } => "item.lock",
             Self::ItemUnlock { .. } => "item.unlock",
             Self::ItemSetMeta { .. } => "item.set_meta",
+            Self::ItemSetKeepAlive { .. } => "item.set_keep_alive",
             Self::DeckLoad { .. } => "deck.load",
             Self::DeckPlay { .. } => "deck.play",
             Self::DeckPause { .. } => "deck.pause",
@@ -284,6 +288,7 @@ impl Command {
             | Self::ItemLock { .. }
             | Self::ItemUnlock { .. }
             | Self::ItemSetMeta { .. }
+            | Self::ItemSetKeepAlive { .. }
             | Self::DeckLoad { .. }
             | Self::DeckPlay { .. }
             | Self::DeckPause { .. }
@@ -440,6 +445,12 @@ pub fn registry() -> Vec<CommandSpec> {
             "Edit an item's metadata",
             A,
             &[("item", "integer"), ("meta", "object")],
+        ),
+        spec(
+            "item.set_keep_alive",
+            "Make a stream reconnect until its planned end, or not",
+            A,
+            &[("item", "integer"), ("keep_alive", "boolean")],
         ),
         spec(
             "deck.load",

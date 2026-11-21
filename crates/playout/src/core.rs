@@ -570,6 +570,7 @@ impl Core {
         self.ticks += 1;
         if self.ticks == 1 {
             self.resume(now);
+            self.sync_strips();
         }
         let _ = self.drain_engine();
         self.take_done(now);

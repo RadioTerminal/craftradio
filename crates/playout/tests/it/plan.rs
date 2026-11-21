@@ -285,3 +285,25 @@ fn restart_resumes_a_late_hard_event_from_its_real_start() {
         "the event did not resume at its position"
     );
 }
+
+/// A mute that the station stored before a restart still mutes Out after it.
+#[test]
+fn a_stored_mute_holds_after_a_restart() {
+    let path = wav("muted", 2.0, Side::Both);
+    let mut engine = engine_with(vec![file_item(1, "Song", &path, 2.0, 2.0, 0.0)]);
+    engine
+        .dispatch(Command::MixerSetStrip {
+            strip: "Out".into(),
+            gain_db: None,
+            mute: Some(true),
+            pfl: None,
+            route: None,
+        })
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let program = run(&p, &clock, 1.0);
+    assert!(
+        peak(&program, 0, SR / 10, SR) < 0.001,
+        "Out stays muted after the start"
+    );
+}

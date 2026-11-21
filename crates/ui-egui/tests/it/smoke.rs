@@ -172,9 +172,18 @@ fn the_mixer_window_follows_the_size_of_its_content() {
     let closed = height(&harness);
     click(&mut harness, "⚙ Mixer settings");
     let opened = height(&harness);
-    assert!(opened > closed + 2.0, "the window grows: {closed} → {opened}");
+    assert!(
+        opened > closed + 2.0,
+        "the window grows: {closed} → {opened}"
+    );
     click(&mut harness, "⚙ Mixer settings");
     let again = height(&harness);
-    assert!(again < opened - 2.0, "the window shrinks back: {opened} → {again}");
-    assert!((again - closed).abs() <= 2.0, "back to its size: {closed} vs {again}");
+    assert!(
+        again < opened - 2.0,
+        "the window shrinks back: {opened} → {again}"
+    );
+    assert!(
+        (again - closed).abs() <= 2.0,
+        "back to its size: {closed} vs {again}"
+    );
 }

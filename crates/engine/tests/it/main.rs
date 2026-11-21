@@ -341,3 +341,38 @@ fn ui_settings_survive_a_reopen_beside_the_engine_parts() {
         "the engine part stays apart"
     );
 }
+
+#[test]
+fn edited_tags_reach_the_item_that_playout_reads() {
+    let mut e = Engine::open_in_memory().unwrap();
+    e.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![item(1, "one")],
+        at: None,
+    })
+    .unwrap();
+    let meta = radio_model::ItemMeta {
+        title: "New Title".into(),
+        publish: radio_model::PublishMode::Custom,
+        custom: "{title} live".into(),
+        ..Default::default()
+    };
+    e.dispatch(Command::ItemSetMeta {
+        item: radio_model::ItemId(1),
+        meta: serde_json::to_value(&meta).unwrap(),
+    })
+    .unwrap();
+    assert_eq!(e.state().station.main().items[0].meta, meta);
+    e.dispatch(Command::ItemSetKeepAlive {
+        item: radio_model::ItemId(1),
+        keep_alive: false,
+    })
+    .unwrap();
+    assert!(matches!(
+        e.state().station.main().items[0].source,
+        radio_model::Source::Stream {
+            keep_alive: false,
+            ..
+        }
+    ));
+}
