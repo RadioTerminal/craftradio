@@ -19,6 +19,8 @@ rand_chacha = "0.9"
 clap = { version = "4", features = ["derive"] }
 proptest = "1"
 radio-model = { path = "crates/model" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+schemars = "1"
 radio-testkit = { path = "crates/testkit" }
 
 [workspace.lints.rust]
