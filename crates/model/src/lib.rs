@@ -9,7 +9,7 @@ mod station;
 
 pub use error::ModelError;
 pub use ids::{ItemId, PlaylistId};
-pub use item::{Item, Source, Timing};
-pub use playlist::{PickOrder, Playlist};
+pub use item::{Item, ItemMeta, PublishMode, Source, Timing, stream_title};
+pub use playlist::{FolderSource, PickOrder, Playlist};
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
 pub use station::Station;

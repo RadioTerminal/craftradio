@@ -1,0 +1,308 @@
+//! Folder scanning, audio analysis, file tags and content-based relinking.
+//!
+//! Opus uses bundled libopus through the Symphonia adapter. Building requires
+//! CMake and a C compiler. AAC support is AAC-LC; unsupported profiles return errors.
+//! Keep scan results in station data and cache `Analysis` separately for gain and hashes.
+mod watch;
+use lofty::{
+    file::TaggedFileExt,
+    tag::{Accessor, ItemKey, Tag, TagExt},
+};
+use radio_model::{FolderSource, Item, ItemId, ItemMeta, Source, Timing};
+use std::{
+    fs::{self, File},
+    io::Read,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use symphonia::core::{
+    audio::SampleBuffer, codecs::DecoderOptions, errors::Error as DecodeError,
+    formats::FormatOptions, io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+};
+pub use watch::{WatchEvent, Watcher};
+
+/// A file, tag, decoder or watcher operation failed.
+#[derive(Debug, thiserror::Error)]
+pub enum LibraryError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Media(String),
+    #[error("folder contains more than 50 000 audio files")]
+    FileLimit,
+}
+fn media(e: impl std::fmt::Display) -> LibraryError {
+    LibraryError::Media(e.to_string())
+}
+
+/// Results of a complete audio decode. Silence has zero gain and zero cue points.
+#[derive(Debug, Clone)]
+pub struct Analysis {
+    pub len: Duration,
+    pub timing: Timing,
+    pub gain_db: f32,
+    pub meta: ItemMeta,
+    pub hash: [u8; 32],
+}
+fn audio_path(path: &Path) -> bool {
+    path.extension().and_then(|x| x.to_str()).is_some_and(|x| {
+        matches!(
+            x.to_ascii_lowercase().as_str(),
+            "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac"
+        )
+    })
+}
+fn paths(src: &FolderSource) -> Result<Vec<PathBuf>, LibraryError> {
+    let mut dirs = vec![PathBuf::from(&src.path)];
+    let mut files = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() && src.recursive {
+                dirs.push(entry.path());
+            }
+            if kind.is_file() && audio_path(&entry.path()) {
+                files.push(entry.path());
+                if files.len() > 50_000 {
+                    return Err(LibraryError::FileLimit);
+                }
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+/// Scans in path order. Progress is the number of fully analysed files.
+/// IDs are local to this scan; the station must assign its own IDs on import.
+pub fn scan(
+    src: &FolderSource,
+    progress: &mut dyn FnMut(usize),
+) -> Result<Vec<Item>, LibraryError> {
+    let mut items = Vec::new();
+    for path in paths(src)? {
+        let a = analyse(&path)?;
+        let path = path
+            .into_os_string()
+            .into_string()
+            .map_err(|_| media("path is not UTF-8"))?;
+        items.push(Item {
+            id: ItemId(items.len() as u64 + 1),
+            title: a.meta.title.clone(),
+            artist: (!a.meta.artist.is_empty()).then(|| a.meta.artist.clone()),
+            meta: a.meta,
+            source: Source::File { path },
+            timing: Some(a.timing),
+            planned_len: Some(a.len),
+            movable: true,
+            trimmable: true,
+            locked: false,
+            valid_from: None,
+            valid_to: None,
+            max_per_day: None,
+        });
+        progress(items.len());
+    }
+    Ok(items)
+}
+fn hash(path: &Path) -> Result<[u8; 32], LibraryError> {
+    let file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut hasher = blake3::Hasher::new();
+    let mut reader = file.take(1024 * 1024);
+    let mut buffer = [0; 8192];
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    hasher.update(&size.to_le_bytes());
+    Ok(*hasher.finalize().as_bytes())
+}
+fn metadata(path: &Path) -> Result<ItemMeta, LibraryError> {
+    let file = lofty::read_from_path(path).map_err(media)?;
+    let mut m = ItemMeta::default();
+    if let Some(t) = file.primary_tag().or_else(|| file.first_tag()) {
+        m.title = t.title().unwrap_or_default().into_owned();
+        m.artist = t.artist().unwrap_or_default().into_owned();
+        m.album = t.album().unwrap_or_default().into_owned();
+        m.year = t
+            .get_string(&ItemKey::RecordingDate)
+            .unwrap_or_default()
+            .to_owned();
+        m.genre = t.genre().unwrap_or_default().into_owned();
+        m.comment = t.comment().unwrap_or_default().into_owned();
+    }
+    Ok(m)
+}
+/// Decodes audio in packets, with bounded sample memory. Unsupported codecs return an error.
+/// Tail levels use 100 ms RMS windows. Hash input ends with the little-endian u64 file size.
+pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
+    let path = path.as_ref();
+    let meta = metadata(path)?;
+    let hash = hash(path)?;
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|x| x.to_str()) {
+        hint.with_extension(ext);
+    }
+    let source = MediaSourceStream::new(Box::new(File::open(path)?), Default::default());
+    let mut format = symphonia::default::get_probe()
+        .format(
+            &hint,
+            source,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(media)?
+        .format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| media("no audio track"))?;
+    let id = track.id;
+    let mut registry = symphonia::core::codecs::CodecRegistry::new();
+    symphonia::default::register_enabled_codecs(&mut registry);
+    registry.register_all::<symphonia_adapter_libopus::OpusDecoder>();
+    let mut decoder = registry
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(media)?;
+    let mut meter = None;
+    let mut rate = 0;
+    let mut channels = 0;
+    let mut frames = 0u64;
+    let mut first = None;
+    let mut last = 0;
+    let mut windows = Vec::new();
+    let mut energy = 0.0;
+    let mut count = 0u32;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(DecodeError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(media(e)),
+        };
+        if packet.track_id() != id {
+            continue;
+        }
+        let decoded = decoder.decode(&packet).map_err(media)?;
+        let spec = *decoded.spec();
+        if meter.is_none() {
+            rate = spec.rate;
+            channels = spec.channels.count();
+            meter = Some(
+                ebur128::EbuR128::new(channels as u32, rate, ebur128::Mode::I).map_err(media)?,
+            );
+        }
+        if rate != spec.rate || channels != spec.channels.count() {
+            return Err(media("audio format changed"));
+        }
+        let mut samples = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        samples.copy_interleaved_ref(decoded);
+        if let Some(m) = meter.as_mut() {
+            m.add_frames_f32(samples.samples()).map_err(media)?;
+        }
+        for frame in samples.samples().chunks_exact(channels) {
+            let peak = frame.iter().fold(0.0f32, |a, s| a.max(s.abs()));
+            if peak > 10.0f32.powf(-45.0 / 20.0) {
+                first.get_or_insert(frames);
+                last = frames + 1;
+            }
+            energy += frame.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / channels as f64;
+            count += 1;
+            frames += 1;
+            if count >= (rate / 10).max(1) {
+                windows.push((frames, energy / f64::from(count)));
+                energy = 0.0;
+                count = 0;
+            }
+        }
+    }
+    if frames == 0 || rate == 0 {
+        return Err(media("empty audio"));
+    }
+    if count > 0 {
+        windows.push((frames, energy / f64::from(count)));
+    }
+    let loudness = meter
+        .as_ref()
+        .ok_or_else(|| media("no loudness meter"))?
+        .loudness_global()
+        .map_err(media)?;
+    let gain_db = if loudness.is_finite() {
+        (-18.0 - loudness) as f32
+    } else {
+        0.0
+    };
+    let time = |n| Duration::from_secs_f64(n as f64 / f64::from(rate));
+    let cue_in = time(first.unwrap_or(0));
+    let cue_out = time(last);
+    let threshold = 10.0f64.powf((loudness - 20.0) / 10.0);
+    let tail = windows
+        .iter()
+        .rev()
+        .find(|(_, e)| *e >= threshold && *e > 0.0)
+        .map(|(n, _)| time(*n));
+    let segue = tail
+        .filter(|t| *t < cue_out)
+        .unwrap_or_else(|| cue_out.saturating_sub(Duration::from_secs(2)))
+        .max(cue_in)
+        .min(cue_out);
+    Ok(Analysis {
+        len: time(frames),
+        timing: Timing {
+            cue_in,
+            segue,
+            cue_out,
+            intro_end: None,
+            fade_in: Duration::ZERO,
+            fade_out: Duration::ZERO,
+        },
+        gain_db,
+        meta,
+        hash,
+    })
+}
+/// Writes file tags. Publish settings stay in station data.
+pub fn write_tags(path: impl AsRef<Path>, meta: &ItemMeta) -> Result<(), LibraryError> {
+    let path = path.as_ref();
+    let mut file = lofty::read_from_path(path).map_err(media)?;
+    let kind = file.primary_tag_type();
+    if file.primary_tag().is_none() {
+        file.insert_tag(Tag::new(kind));
+    }
+    let tag = file
+        .primary_tag_mut()
+        .ok_or_else(|| media("no writable tag"))?;
+    tag.set_title(meta.title.clone());
+    tag.set_artist(meta.artist.clone());
+    tag.set_album(meta.album.clone());
+    tag.insert_text(ItemKey::RecordingDate, meta.year.clone());
+    tag.set_genre(meta.genre.clone());
+    tag.set_comment(meta.comment.clone());
+    tag.save_to_path(path, lofty::config::WriteOptions::default())
+        .map_err(media)
+}
+/// Finds the first sorted matching path per ID. Unreadable roots and files are skipped.
+/// Hashing does not require a supported audio decoder.
+pub fn relink(missing: &[(ItemId, [u8; 32])], roots: &[FolderSource]) -> Vec<(ItemId, String)> {
+    let mut candidates: Vec<_> = roots
+        .iter()
+        .filter_map(|r| paths(r).ok())
+        .flatten()
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    let mut found = std::collections::BTreeMap::new();
+    for path in candidates {
+        if let Ok(h) = hash(&path)
+            && let Some(path) = path.to_str()
+        {
+            found.entry(h).or_insert_with(|| path.to_owned());
+        }
+    }
+    missing
+        .iter()
+        .filter_map(|(id, h)| found.get(h).map(|p| (*id, p.clone())))
+        .collect()
+}

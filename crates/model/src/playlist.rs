@@ -16,6 +16,8 @@ pub enum PickOrder {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: PlaylistId,
+    #[serde(default)]
+    pub source: Option<FolderSource>,
     pub name: String,
     pub color: [u8; 3],
     #[serde(default = "yes")]
@@ -27,4 +29,12 @@ pub struct Playlist {
     pub items: Vec<Item>,
     pub rules: Vec<Rule>,
     pub constraints: Vec<Constraint>,
+}
+
+/// A folder that supplies playlist files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderSource {
+    pub path: String,
+    pub recursive: bool,
+    pub watch: bool,
 }
