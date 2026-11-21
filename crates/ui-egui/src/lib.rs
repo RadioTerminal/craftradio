@@ -48,3 +48,10 @@ pub use app::RadioApp;
 pub use mock::MockSource;
 pub use view::{DeckState, DeckView, FitView, PlaylistTab, Row, StationView, ViewSource};
 pub use windows::ToolWindow;
+
+/// Where the card of deck `i` was drawn in the last frame. For tests.
+#[doc(hidden)]
+#[must_use]
+pub fn deck_card_rect(ctx: &egui::Context, i: usize) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(decks::card_rect_id(i)))
+}

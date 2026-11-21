@@ -37,6 +37,8 @@ pub mod pad {
     pub const CHIP: Margin = Margin::symmetric(8, 2);
     pub const ROW: Margin = Margin::symmetric(8, 4);
     pub const CARD: Margin = Margin::same(12);
+    /// A deck card: one step more room than a plain card.
+    pub const DECK: Margin = Margin::same(16);
     pub const PANEL: Margin = Margin::same(12);
     pub const BAR: Margin = Margin::symmetric(12, 8);
     pub const GUTTER: Margin = Margin::symmetric(16, 12);
@@ -178,7 +180,7 @@ pub mod size {
     pub const UPCOMING_TIME: f32 = 112.0;
     pub const UPCOMING_PLAYLIST: f32 = 64.0;
     pub const UPCOMING_LEN: f32 = 52.0;
-    pub const DECK_STRIP_H: f32 = 142.0;
+    pub const DECK_STRIP_H: f32 = 190.0;
     pub const COL_TITLE: f32 = 240.0;
     pub const COL_ARTIST: f32 = 150.0;
     pub const COL_CATEGORY: f32 = 90.0;

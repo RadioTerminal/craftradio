@@ -223,7 +223,7 @@ fn deck_cards_name_their_playlist_and_start_and_rows_show_their_deck() {
     let in_strip = |label: &str| {
         harness
             .query_all_by_label(label)
-            .any(|n| n.rect().bottom() < 200.0)
+            .any(|n| n.rect().bottom() < 250.0)
     };
     assert!(
         in_strip("Music"),
@@ -232,13 +232,13 @@ fn deck_cards_name_their_playlist_and_start_and_rows_show_their_deck() {
     assert!(
         harness
             .query_all_by_label_contains("Starts 15:")
-            .any(|n| n.rect().bottom() < 200.0),
+            .any(|n| n.rect().bottom() < 250.0),
         "a NEXT deck says when it starts"
     );
     assert!(
         harness
             .query_all_by_label("Deck C")
-            .any(|n| n.rect().top() > 200.0),
+            .any(|n| n.rect().top() > 250.0),
         "the row on deck C shows the C badge"
     );
 }
@@ -278,4 +278,20 @@ fn a_library_column_changes_width_after_a_drag() {
 fn header_shows_full_mode_names_at_1440() {
     let harness = harness();
     assert!(harness.query_all_by_label("Assist").next().is_some());
+}
+
+/// One deck on air and three waiting: the four cards are as tall as each other.
+#[test]
+fn deck_cards_have_equal_height_whatever_their_state() {
+    let harness = harness();
+    let rects: Vec<egui::Rect> = (0..4)
+        .map(|i| radio_ui_egui::deck_card_rect(&harness.ctx, i).expect("deck card drawn"))
+        .collect();
+    assert!(shows(&harness, "ON AIR"), "one deck is on air");
+    for r in &rects {
+        assert!(
+            (r.height() - rects[0].height()).abs() < 0.5,
+            "deck cards differ in height: {rects:?}"
+        );
+    }
 }

@@ -338,17 +338,27 @@ fn deck_card(
         _ => size::HAIRLINE,
     };
     let frame = theme::card_frame(t)
+        .inner_margin(pad::DECK)
         .fill(if live { t.on_air_bg } else { t.field })
         .stroke(Stroke::new(edge_w, edge));
     let inner = width - frame.total_margin().sum().x - edge_w * 2.0;
+    let frame_h = frame.total_margin().sum().y;
     // The badge and the title take the right-click. A card-wide sensor would take the button clicks.
-    frame
-        .show(ui, |ui| {
-            ui.set_width(inner);
-            ui.vertical(|ui| deck_body(ui, i, decks, state, actions, t))
-                .inner
-        })
-        .inner
+    let shown = frame.show(ui, |ui| {
+        ui.set_width(inner);
+        // Every card fills the strip, so the four are as tall as each other.
+        ui.set_min_height(size::DECK_STRIP_H - frame_h);
+        ui.vertical(|ui| deck_body(ui, i, decks, state, actions, t))
+            .inner
+    });
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(card_rect_id(i), shown.response.rect));
+    shown.inner
+}
+
+/// Where the card of deck `i` was drawn, for tests.
+pub(crate) fn card_rect_id(i: usize) -> egui::Id {
+    egui::Id::new(("deck_card_rect", i))
 }
 
 fn deck_body(
@@ -359,7 +369,7 @@ fn deck_body(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) -> egui::Response {
-    ui.spacing_mut().item_spacing.y = space::XS;
+    ui.spacing_mut().item_spacing.y = space::S;
     let deck = &decks[i];
     let now = ui.input(|i| i.time);
     let head = ui.horizontal(|ui| {
@@ -495,49 +505,72 @@ fn deck_body(
     };
     let label = egui::Label::new(RichText::new(title).font(theme::text(theme::BODY)));
     let title = ui.add(label.truncate().sense(Sense::click()));
-    // The playlist of the item, as a chip: its colour and its name.
-    if deck.state == DeckState::Empty {
-        let empty = RichText::new("Empty: nothing planned").font(theme::text(theme::CAPTION));
-        widgets::truncated_label(ui, empty.color(t.text_muted));
-    } else if !deck.playlist.is_empty() {
-        ui.horizontal(|ui| {
-            let (dot, _) =
-                ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+    // The playlist of the item, as a chip: its colour and its name. An empty deck keeps the row.
+    ui.horizontal(|ui| {
+        let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+        let (name, colour) = if deck.state == DeckState::Empty {
+            ("Empty: nothing planned", t.text_muted)
+        } else if deck.playlist.is_empty() {
+            ("No playlist", t.text_muted)
+        } else {
             ui.painter().circle_filled(
                 dot.center(),
                 size::DOT_R,
                 Tokens::playlist(deck.playlist_color),
             );
-            let ink = t.readable(deck.playlist_color, t.field);
-            let name = RichText::new(&deck.playlist).font(theme::text(theme::CAPTION));
-            widgets::truncated_label(ui, name.color(ink));
-        });
-    }
+            (
+                deck.playlist.as_str(),
+                t.readable(deck.playlist_color, t.field),
+            )
+        };
+        let name = RichText::new(name).font(theme::text(theme::CAPTION));
+        widgets::truncated_label(ui, name.color(colour));
+    });
     progress(ui, deck, t);
     let left = deck.len.saturating_sub(deck.elapsed);
-    let muted = |s: String| {
+    let muted = |s: &str| {
         RichText::new(s)
             .font(theme::mono(theme::CODE))
             .color(t.text_muted)
     };
-    match deck.state {
-        DeckState::Playing | DeckState::Fading | DeckState::Paused => {
-            // The time left is the largest number on the card.
-            ui.horizontal(|ui| {
-                let left = RichText::new(format!("−{}", mmss(left)))
-                    .font(theme::mono(theme::SECTION))
-                    .strong();
-                ui.label(left).on_hover_text("Time left on this item");
+    // The time row: the time left on air, the length of a waiting deck, a dash when empty.
+    // The largest number of the row is the same size in every state.
+    ui.horizontal(|ui| {
+        let big = |s: String| RichText::new(s).font(theme::mono(theme::SECTION)).strong();
+        match deck.state {
+            DeckState::Playing | DeckState::Fading | DeckState::Paused => {
+                ui.label(big(format!("−{}", mmss(left))))
+                    .on_hover_text("Time left on this item");
                 let done = format!("{} / {}", mmss(deck.elapsed), mmss(deck.len));
-                widgets::truncated_label(ui, muted(done));
-            });
+                widgets::truncated_label(ui, muted(&done));
+            }
+            DeckState::Ready => {
+                ui.label(big(mmss(deck.len)).color(t.text_muted))
+                    .on_hover_text("Length of this item");
+            }
+            DeckState::Empty => {
+                ui.label(big("–:––".to_owned()).color(t.text_muted));
+            }
         }
-        DeckState::Ready | DeckState::Empty => {}
-    }
+    });
     // When the deck starts, or when it started and ends. The times come from the plan.
-    if let Some(line) = start_line(deck, now_ts(deck, ui)) {
-        widgets::truncated_label(ui, muted(line));
-    }
+    // The line shows the longest form that fits; the title is the only text that truncates.
+    let lines = start_lines(deck, now_ts(deck, ui));
+    let room = ui.available_width();
+    let font = theme::mono(theme::CODE);
+    let fits = |s: &String| {
+        ui.painter()
+            .layout_no_wrap(s.clone(), font.clone(), t.text_muted)
+            .size()
+            .x
+            <= room
+    };
+    let line = lines
+        .iter()
+        .find(|s| fits(s))
+        .or(lines.last())
+        .map_or("Nothing planned", String::as_str);
+    ui.add(egui::Label::new(muted(line)).wrap_mode(egui::TextWrapMode::Extend));
     head.inner.union(title)
 }
 
@@ -957,31 +990,49 @@ fn now_ts(_deck: &DeckView, ui: &egui::Ui) -> Option<jiff::Timestamp> {
 /// The key of the snapshot instant in the egui data, for the countdowns of the decks.
 pub(crate) const NOW_KEY: &str = "decks_now";
 
-/// The line under a deck: when it starts, or when it started and ends.
-fn start_line(deck: &DeckView, now: Option<jiff::Timestamp>) -> Option<String> {
-    let start = deck.start.as_ref()?;
+/// The line under a deck as candidates, the longest first: when it starts, or when it
+/// started and ends. A narrow card takes a shorter one; the less important part goes first.
+fn start_lines(deck: &DeckView, now: Option<jiff::Timestamp>) -> Vec<String> {
+    let Some(start) = deck.start.as_ref() else {
+        return vec!["Nothing planned".to_owned()];
+    };
     match deck.state {
-        DeckState::Empty => None,
-        DeckState::Paused => Some("Paused".to_owned()),
+        DeckState::Empty => vec!["Nothing planned".to_owned()],
+        DeckState::Paused => vec!["Paused".to_owned()],
         DeckState::Playing | DeckState::Fading => {
             let end = jiff::SignedDuration::try_from(deck.len)
                 .ok()
                 .and_then(|d| start.timestamp().checked_add(d).ok())
-                .map(|e| hms(&e.to_zoned(start.time_zone().clone())))
-                .unwrap_or_default();
-            Some(format!("Started {} · ends {end}", hms(start)))
-        }
-        DeckState::Ready if deck.waiting => Some("Waits for Next".to_owned()),
-        DeckState::Ready => {
-            let left = now.map_or(String::new(), |n| {
-                let secs = start.timestamp().duration_since(n).as_secs().max(0) as u64;
-                format!(" · in {}", mmss(std::time::Duration::from_secs(secs)))
-            });
-            if deck.hard {
-                Some(format!("⏱ Starts {} sharp{left}", hms(start)))
-            } else {
-                Some(format!("Starts {}{left}", hms(start)))
+                .map(|e| e.to_zoned(start.time_zone().clone()));
+            let from = hms(start);
+            match end {
+                Some(end) => {
+                    let end_hm = end.strftime("%H:%M").to_string();
+                    vec![
+                        format!("{from} → {}", hms(&end)),
+                        format!("{from} → {end_hm}"),
+                        from,
+                    ]
+                }
+                None => vec![from],
             }
+        }
+        DeckState::Ready if deck.waiting => vec!["Waits for Next".to_owned(), "Waits".to_owned()],
+        DeckState::Ready => {
+            let at = hms(start);
+            let sharp = if deck.hard { "⏱ " } else { "" };
+            let tail = if deck.hard { " sharp" } else { "" };
+            let left = now.map(|n| {
+                let secs = start.timestamp().duration_since(n).as_secs().max(0) as u64;
+                mmss(std::time::Duration::from_secs(secs))
+            });
+            let mut out = Vec::new();
+            if let Some(left) = &left {
+                out.push(format!("{sharp}Starts {at}{tail} · in {left}"));
+            }
+            out.push(format!("{sharp}Starts {at}{tail}"));
+            out.push(format!("{sharp}{at}"));
+            out
         }
     }
 }
