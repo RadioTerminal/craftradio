@@ -95,6 +95,31 @@ impl<W: Write> OggMuxer<W> {
     }
 }
 
+/// Output encoding and bitrate in kilobits per second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFormat {
+    Opus {
+        kbps: u32,
+    },
+    /// Requires the default `mp3` feature.
+    Mp3 {
+        kbps: u32,
+    },
+}
+impl StreamFormat {
+    fn kbps(self) -> u32 {
+        match self {
+            Self::Opus { kbps } | Self::Mp3 { kbps } => kbps,
+        }
+    }
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Opus { .. } => "audio/ogg",
+            Self::Mp3 { .. } => "audio/mpeg",
+        }
+    }
+}
+
 /// Plain HTTP Icecast source settings. TLS is rejected until supported.
 #[derive(Clone)]
 pub struct IcecastConfig {
@@ -106,7 +131,7 @@ pub struct IcecastConfig {
     pub name: String,
     pub description: String,
     pub genre: String,
-    pub kbps: u32,
+    pub format: StreamFormat,
     pub tls: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,8 +256,14 @@ fn connect(cfg: &IcecastConfig, method: &str) -> Result<TcpStream, StreamError> 
         base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", cfg.user, cfg.password));
     write!(
         socket,
-        "{method} {} HTTP/1.0\r\nHost: {}\r\nAuthorization: Basic {auth}\r\nContent-Type: audio/ogg\r\nIce-Name: {}\r\nIce-Description: {}\r\nIce-Genre: {}\r\nIce-Bitrate: {}\r\n\r\n",
-        cfg.mount, cfg.host, cfg.name, cfg.description, cfg.genre, cfg.kbps
+        "{method} {} HTTP/1.0\r\nHost: {}\r\nAuthorization: Basic {auth}\r\nContent-Type: {}\r\nIce-Name: {}\r\nIce-Description: {}\r\nIce-Genre: {}\r\nIce-Bitrate: {}\r\n\r\n",
+        cfg.mount,
+        cfg.host,
+        cfg.format.content_type(),
+        cfg.name,
+        cfg.description,
+        cfg.genre,
+        cfg.format.kbps()
     )?;
     let mut response = Vec::new();
     while response.len() < 8192 && !response.ends_with(b"\r\n\r\n") {
@@ -260,10 +291,7 @@ fn send(
     title: &mut String,
     delay: &mut u64,
 ) -> Result<(), StreamError> {
-    let mut encoder = OpusEncoder::new(cfg.kbps)?;
-    let socket = connect(cfg, "PUT")?;
-    let mut muxer = OggMuxer::new(socket);
-    muxer.start(title, None, encoder.pre_skip()?)?;
+    let mut output = SourceOutput::new(cfg, title)?;
     status(
         state,
         StreamStatus::Connected {
@@ -276,13 +304,8 @@ fn send(
         match rx.try_recv() {
             Ok(Control::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             Ok(Control::Title(t)) => {
-                // End the old chain with a complete frame, then reset the codec.
-                samples.resize(1920, 0.0);
-                muxer.packet(encoder.encode(&samples)?, true)?;
-                samples.clear();
                 *title = t;
-                encoder = OpusEncoder::new(cfg.kbps)?;
-                muxer.start(title, None, encoder.pre_skip()?)?;
+                output.set_title(cfg, title, &mut samples)?;
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -299,10 +322,109 @@ fn send(
             }
         }
         if samples.len() == 1920 {
-            muxer.packet(encoder.encode(&samples)?, false)?;
+            output.packet(&samples)?;
             samples.clear();
         } else {
             thread::sleep(Duration::from_millis(2));
         }
     }
+}
+
+enum SourceOutput {
+    Opus {
+        encoder: OpusEncoder,
+        muxer: OggMuxer<TcpStream>,
+    },
+    #[cfg(feature = "mp3")]
+    Mp3 {
+        encoder: crate::mp3::Mp3Encoder,
+        socket: TcpStream,
+    },
+}
+impl SourceOutput {
+    fn new(cfg: &IcecastConfig, title: &str) -> Result<Self, StreamError> {
+        match cfg.format {
+            StreamFormat::Opus { kbps } => {
+                let mut encoder = OpusEncoder::new(kbps)?;
+                let mut muxer = OggMuxer::new(connect(cfg, "PUT")?);
+                muxer.start(title, None, encoder.pre_skip()?)?;
+                Ok(Self::Opus { encoder, muxer })
+            }
+            StreamFormat::Mp3 { kbps: _ } => {
+                #[cfg(feature = "mp3")]
+                {
+                    let encoder = crate::mp3::Mp3Encoder::new(cfg.format.kbps())?;
+                    let socket = connect(cfg, "PUT")?;
+                    if !title.is_empty() {
+                        update_mp3_title(cfg, title)?;
+                    }
+                    Ok(Self::Mp3 { encoder, socket })
+                }
+                #[cfg(not(feature = "mp3"))]
+                Err(StreamError::Invalid(
+                    "MP3 output requires the mp3 feature".into(),
+                ))
+            }
+        }
+    }
+    fn packet(&mut self, samples: &[f32]) -> Result<(), StreamError> {
+        match self {
+            Self::Opus { encoder, muxer } => muxer.packet(encoder.encode(samples)?, false),
+            #[cfg(feature = "mp3")]
+            Self::Mp3 { encoder, socket } => {
+                socket.write_all(&encoder.encode(samples)?)?;
+                Ok(())
+            }
+        }
+    }
+    fn set_title(
+        &mut self,
+        cfg: &IcecastConfig,
+        title: &str,
+        samples: &mut Vec<f32>,
+    ) -> Result<(), StreamError> {
+        match self {
+            Self::Opus { encoder, muxer } => {
+                samples.resize(1920, 0.0);
+                muxer.packet(encoder.encode(samples)?, true)?;
+                samples.clear();
+                *encoder = OpusEncoder::new(cfg.format.kbps())?;
+                muxer.start(title, None, encoder.pre_skip()?)
+            }
+            #[cfg(feature = "mp3")]
+            Self::Mp3 { .. } => update_mp3_title(cfg, title),
+        }
+    }
+}
+
+#[cfg(feature = "mp3")]
+fn update_mp3_title(cfg: &IcecastConfig, title: &str) -> Result<(), StreamError> {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+    let address = (cfg.host.as_str(), cfg.port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| StreamError::Invalid("host has no address".into()))?;
+    let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let auth =
+        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", cfg.user, cfg.password));
+    write!(
+        socket,
+        "GET /admin/metadata?mount={}&mode=updinfo&song={} HTTP/1.0\r\nHost: {}\r\nAuthorization: Basic {auth}\r\nConnection: close\r\n\r\n",
+        utf8_percent_encode(&cfg.mount, NON_ALPHANUMERIC),
+        utf8_percent_encode(title, NON_ALPHANUMERIC),
+        cfg.host
+    )?;
+    let mut response = Vec::new();
+    while response.len() < 8192 && !response.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        socket.read_exact(&mut byte)?;
+        response.push(byte[0]);
+    }
+    let text = String::from_utf8_lossy(&response);
+    if text.split_whitespace().nth(1) != Some("200") {
+        return Err(StreamError::Invalid("MP3 metadata update rejected".into()));
+    }
+    Ok(())
 }

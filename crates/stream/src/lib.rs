@@ -1,5 +1,7 @@
-//! Threaded Ogg/Opus output and HTTP radio input. Samples are interleaved stereo at 48 kHz.
+//! Threaded MP3 and Ogg/Opus output and HTTP radio input. Samples are interleaved stereo at 48 kHz.
 mod input;
+#[cfg(feature = "mp3")]
+mod mp3;
 mod output;
 pub use input::*;
 pub use output::*;

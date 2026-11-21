@@ -9,6 +9,8 @@ rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+mp3lame-encoder = "0.3"
+percent-encoding = "2"
 opus = "0.3"
 ogg = "0.9"
 rtrb = "0.3"

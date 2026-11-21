@@ -74,7 +74,7 @@ fn config(port: u16) -> IcecastConfig {
         name: "Cloud Radio".into(),
         description: "Test source".into(),
         genre: "Test".into(),
-        kbps: 96,
+        format: StreamFormat::Opus { kbps: 96 },
         tls: false,
     }
 }
@@ -259,3 +259,6 @@ fn input_decodes_icy_wrapped_wav_to_stereo() {
     input.stop();
     server.join().unwrap();
 }
+
+#[cfg(feature = "mp3")]
+mod mp3;
