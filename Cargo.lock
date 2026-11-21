@@ -1315,6 +1315,7 @@ dependencies = [
  "radio-timing",
  "rand_chacha",
  "serde",
+ "toml",
 ]
 
 [[package]]

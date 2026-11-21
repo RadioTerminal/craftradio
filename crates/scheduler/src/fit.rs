@@ -1,8 +1,8 @@
 use crate::constraints::item_ok;
-use crate::{Entry, Fixed, Origin, PlayHistory, Played, Timeline, Warning, allowed};
+use crate::{DropReason, Entry, Fixed, Origin, PlayHistory, Played, Timeline, Warning, allowed};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
-use radio_model::{FixMode, Item, ItemId, Playlist, PlaylistId, Station};
+use radio_model::{Constraint, FixMode, Item, ItemId, Playlist, PlaylistId, Station};
 use radio_timing::advance;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -152,6 +152,16 @@ const LOOKAHEAD: usize = 10;
 /// The least a trimmed entry may still play; shorter, it is dropped instead.
 const MIN_PLAY: Duration = Duration::from_secs(1);
 
+/// Before a hard event, a fill item faded at the target must still play at least this long,
+/// and at least [`OVERRUN_MIN_SHARE_PERCENT`] of its length.
+const OVERRUN_MIN_PLAY: Duration = Duration::from_secs(5);
+
+/// The least share of its length, in percent, an overrunning fill item must still play.
+const OVERRUN_MIN_SHARE_PERCENT: u32 = 50;
+
+/// An overrunning fill is only preferred when the nearest fill leaves more dead air than this.
+const OVERRUN_DEAD_AIR: Duration = Duration::from_millis(500);
+
 /// How often the reorder and fill steps re-run after a rotation rule rejects their choice.
 const RETRIES: usize = 3;
 
@@ -166,6 +176,21 @@ fn is_hard(e: &Entry) -> bool {
 /// `|a − b|` as an unsigned duration.
 fn apart(a: Timestamp, b: Timestamp) -> Duration {
     a.duration_since(b).unsigned_abs()
+}
+
+/// A rule insertion the planner may take out to keep a hard constraint: never an anchor
+/// (fixed or locked), main, manual or fill entry.
+fn droppable_insertion(e: &Entry) -> bool {
+    matches!(e.origin, Origin::Rule { .. }) && e.fixed.is_none() && !e.locked
+}
+
+fn drop_warning(e: &Entry, reason: DropReason) -> Warning {
+    Warning::EntryDropped {
+        at: e.start,
+        playlist: e.playlist,
+        item: e.item,
+        reason,
+    }
 }
 
 fn mask(len: usize, picked: &[usize]) -> Vec<bool> {
@@ -211,6 +236,77 @@ impl<'a> Fitter<'a> {
         self.item(e)
             .map_or(e.len, |item| advance(item, Some(item)))
             .saturating_sub(e.trim)
+    }
+
+    /// The rotation rules `e` must keep: its playlist's constraints, plus those of the rule
+    /// that inserted it (merge picked it under both).
+    fn constraints(&self, e: &Entry) -> impl Iterator<Item = &'a Constraint> {
+        let pl = self.playlist(e.playlist);
+        let from_rule = match (&e.origin, pl) {
+            (Origin::Rule { playlist, rule }, Some(p)) if *playlist == p.id => {
+                p.rules.get(*rule).map_or(&[][..], |r| &r.constraints[..])
+            }
+            _ => &[],
+        };
+        pl.map_or(&[][..], |p| &p.constraints[..])
+            .iter()
+            .chain(from_rule)
+    }
+
+    /// Whether `e` may follow `prev` under its adjacency rules (`NotAdjacentToSelf`,
+    /// `NotAdjacentTo`). These depend only on the neighbour, not on when `e` plays.
+    fn may_follow(&self, prev: &Entry, e: &Entry) -> bool {
+        let Some(item) = self.item(e) else {
+            return true;
+        };
+        let none = PlayHistory::new();
+        self.constraints(e)
+            .filter(|c| {
+                matches!(
+                    c,
+                    Constraint::NotAdjacentToSelf | Constraint::NotAdjacentTo(_)
+                )
+            })
+            .all(|c| allowed(c, item, e.playlist, e.start, Some(prev), &none, &self.tz))
+    }
+
+    /// Puts `e`, moved across an anchor, in front of `flow`. A rule-inserted entry that
+    /// would break an adjacency rule there is dropped, as is a rule-inserted front entry
+    /// that may not follow `e`: constraints are hard, and the rule's other insertions stay.
+    /// Each drop is reported in `dropped`.
+    fn push_moved(&self, flow: &mut VecDeque<Entry>, e: Entry, dropped: &mut Vec<Warning>) {
+        let clash = flow
+            .front()
+            .is_some_and(|front| !self.may_follow(&e, front));
+        if clash && droppable_insertion(&e) {
+            dropped.push(drop_warning(&e, DropReason::AdjacencyAfterMove));
+            return;
+        }
+        if clash
+            && flow.front().is_some_and(droppable_insertion)
+            && let Some(front) = flow.pop_front()
+        {
+            dropped.push(drop_warning(&front, DropReason::AdjacencyAfterMove));
+        }
+        flow.push_front(e);
+    }
+
+    /// Drops the rule-inserted entries at the front of `flow` that may not follow `prev`,
+    /// reporting each in `dropped`.
+    fn drop_clashing_front(
+        &self,
+        prev: Option<&Entry>,
+        flow: &mut VecDeque<Entry>,
+        dropped: &mut Vec<Warning>,
+    ) {
+        let Some(prev) = prev else {
+            return;
+        };
+        while let Some(front) =
+            flow.pop_front_if(|front| droppable_insertion(front) && !self.may_follow(prev, front))
+        {
+            dropped.push(drop_warning(&front, DropReason::AdjacencyAfterMove));
+        }
     }
 
     fn movable(&self, e: &Entry) -> bool {
@@ -309,11 +405,9 @@ impl<'a> Fitter<'a> {
                 && let Some(item) = self.item(e)
             {
                 let ok = item_ok(item, at, &sim, &self.tz)
-                    && self.playlist(e.playlist).is_none_or(|p| {
-                        p.constraints
-                            .iter()
-                            .all(|c| allowed(c, item, p.id, at, before, &sim, &self.tz))
-                    });
+                    && self
+                        .constraints(e)
+                        .all(|c| allowed(c, item, e.playlist, at, before, &sim, &self.tz));
                 if !ok {
                     return Some(i);
                 }
@@ -564,14 +658,65 @@ impl Fit<'_, '_> {
 
     /// Fill entries for the gap before the event, checked against the rotation rules after
     /// `seg` and after each other. A rejected item is banned and the search re-run.
+    ///
+    /// Before a `Hard` event an early finish is dead air that nothing later can close, while
+    /// a late one is faded to the target by the trim step. So when the nearest fill (or no
+    /// fill) leaves more than [`OVERRUN_DEAD_AIR`] of dead air, a fill that runs over by about
+    /// as much is tried too. It wins only if its last item, faded at the target, still plays
+    /// at least [`OVERRUN_MIN_PLAY`] and [`OVERRUN_MIN_SHARE_PERCENT`] of its length.
     fn fill(&self, seg: &[Entry]) -> Option<Vec<Entry>> {
         let f = self.f;
         let arr = f.arrival(self.base, seg, self.ev);
         if arr >= self.target {
             return None;
         }
-        let leftover = apart(self.target, arr);
-        let pool = f.fill_pool(self.sim, arr, seg.last());
+        // Followed by fill, the last entry hands over at its segue rather than playing to its
+        // end as it does before a hard event, so the fill starts there.
+        let start = seg.last().map_or(arr, |last| {
+            let ordinary = Entry {
+                fixed: None,
+                ..last.clone()
+            };
+            f.arrival(self.base, seg, &ordinary)
+        });
+        let gap = apart(self.target, arr);
+        let leftover = apart(self.target, start);
+        let nearest = self.fill_for(seg, start, leftover);
+        // The dead air the nearest fill leaves, or the whole gap without one.
+        let early = match &nearest {
+            Some((_, reached)) if *reached < self.target => apart(self.target, *reached),
+            Some(_) => Duration::ZERO,
+            None => leftover,
+        };
+        if self.hard && early > OVERRUN_DEAD_AIR {
+            let over = self.fill_for(seg, start, leftover.saturating_add(early));
+            if let Some((fills, reached)) = over
+                && reached >= self.target
+                && fills.last().is_some_and(|last| {
+                    let len = f.step(last, Some(self.ev));
+                    let play = len.saturating_sub(apart(reached, self.target));
+                    let share = len * OVERRUN_MIN_SHARE_PERCENT / 100;
+                    f.trimmable(last) && play >= OVERRUN_MIN_PLAY.max(share).max(MIN_PLAY)
+                })
+            {
+                return Some(fills);
+            }
+        }
+        // Keep the fill only if it brings the event closer to its time.
+        nearest
+            .filter(|(_, reached)| apart(*reached, self.target) < gap)
+            .map(|(fills, _)| fills)
+    }
+
+    /// The fill nearest to `leftover` from `start`, with when it hands over to the event.
+    fn fill_for(
+        &self,
+        seg: &[Entry],
+        start: Timestamp,
+        leftover: Duration,
+    ) -> Option<(Vec<Entry>, Timestamp)> {
+        let f = self.f;
+        let pool = f.fill_pool(self.sim, start, seg.last());
         let mut banned = vec![false; pool.len()];
         for _ in 0..=RETRIES {
             let cands: Vec<_> = pool
@@ -590,7 +735,7 @@ impl Fit<'_, '_> {
                     Entry {
                         playlist: pl.id,
                         item: item.id,
-                        start: arr,
+                        start,
                         len: radio_timing::item_len(item),
                         origin: Origin::Fill,
                         locked: false,
@@ -616,14 +761,41 @@ impl Fit<'_, '_> {
                         && fills.last().is_some_and(|e| !f.trimmable(e));
                     match picked.last() {
                         Some(&last) if overshoots => banned[last] = true,
-                        // Keep the fill only if it brings the event closer to its time.
-                        _ => return (apart(reached, self.target) < leftover).then_some(fills),
+                        _ => return Some((fills, reached)),
                     }
                 }
             }
         }
         None
     }
+}
+
+/// Drops each rule-inserted, unanchored entry of `entries` (in time order) that breaks an
+/// adjacency rule against the entry before it. Used where a step outside the fitter takes
+/// entries out from between rule insertions.
+pub(crate) fn drop_adjacent_clashes(
+    entries: &mut Vec<Entry>,
+    station: &Station,
+    warnings: &mut Vec<Warning>,
+) {
+    let f = Fitter {
+        station,
+        tz: TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC),
+        items: station
+            .playlists
+            .iter()
+            .flat_map(|p| p.items.iter().map(|i| (i.id, i)))
+            .collect(),
+    };
+    let mut kept: Vec<Entry> = Vec::with_capacity(entries.len());
+    for e in entries.drain(..) {
+        if droppable_insertion(&e) && kept.last().is_some_and(|prev| !f.may_follow(prev, &e)) {
+            warnings.push(drop_warning(&e, DropReason::AdjacencyAfterReplan));
+            continue;
+        }
+        kept.push(e);
+    }
+    *entries = kept;
 }
 
 /// Fits every fixed entry of `tl` onto its target, in this order (spec §6.3):
@@ -694,6 +866,8 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
     let mut flow = VecDeque::from(flow);
     // Entries displaced by the event before a frozen window wait here until that window is past.
     let mut deferred: VecDeque<Entry> = VecDeque::new();
+    // Rule insertions taken out to keep adjacency rules, reported once the fit is done.
+    let mut dropped: Vec<Warning> = Vec::new();
     let slots = f.resolve(&events);
     let mut order: Vec<usize> = (0..events.len()).collect();
     order.sort_by_key(|&i| (slots[i], i));
@@ -730,11 +904,14 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             .get(k + 1)
             .is_some_and(|&j| events[j].fixed.as_ref().is_some_and(|f| f.frozen));
         let shut = fx.frozen || next_frozen;
-        let park = |flow: &mut VecDeque<Entry>, deferred: &mut VecDeque<Entry>, e: Entry| {
+        let park = |flow: &mut VecDeque<Entry>,
+                    deferred: &mut VecDeque<Entry>,
+                    dropped: &mut Vec<Warning>,
+                    e: Entry| {
             if next_frozen && !fx.frozen {
                 deferred.push_front(e);
             } else {
-                flow.push_front(e);
+                f.push_moved(flow, e, dropped);
             }
         };
 
@@ -742,7 +919,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             // Its slot went elsewhere and the window is not fitted; what was displaced still
             // follows the frozen entries.
             while let Some(e) = deferred.pop_back() {
-                flow.push_front(e);
+                f.push_moved(&mut flow, e, &mut dropped);
             }
         }
         if slots[i] == target {
@@ -766,7 +943,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             if fx.frozen {
                 // The window is past: what the event before it displaced follows it.
                 while let Some(e) = deferred.pop_back() {
-                    flow.push_front(e);
+                    f.push_moved(&mut flow, e, &mut dropped);
                 }
             }
             let fixed_len = seg.len();
@@ -805,7 +982,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                 if kept { seg.push(e) } else { rest.push(e) }
             }
             for e in rest.into_iter().rev() {
-                park(&mut flow, &mut deferred, e);
+                park(&mut flow, &mut deferred, &mut dropped, e);
             }
 
             // Fill.
@@ -829,7 +1006,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                             }
                             Some(e) if f.movable(e) => {
                                 if let Some(e) = seg.pop() {
-                                    park(&mut flow, &mut deferred, e);
+                                    park(&mut flow, &mut deferred, &mut dropped, e);
                                     moved += 1;
                                 }
                             }
@@ -872,7 +1049,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                             break;
                         }
                         if let Some(e) = seg.pop().filter(|e| e.origin != Origin::Fill) {
-                            park(&mut flow, &mut deferred, e);
+                            park(&mut flow, &mut deferred, &mut dropped, e);
                             moved += 1;
                         }
                         continue;
@@ -952,13 +1129,17 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             f.record(&mut sim, e, e.start);
         }
         out.extend(seg);
+        // What was moved after the event now follows it.
+        f.drop_clashing_front(out.last(), &mut flow, &mut dropped);
     }
     while let Some(e) = deferred.pop_back() {
-        flow.push_front(e);
+        f.push_moved(&mut flow, e, &mut dropped);
     }
+    f.drop_clashing_front(out.last(), &mut flow, &mut dropped);
     out.extend(flow);
     f.reflow(&mut out, t0);
     dead_air(&f, tl, &out, t0);
+    tl.warnings.extend(dropped);
     tl.entries = out;
 }
 

@@ -4,7 +4,9 @@ use clap::{Parser, Subcommand};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_model::{Item, ItemId, ModelError, PlaylistId, Station};
-use radio_scheduler::{Entry, PlanInput, PlanOptions, PlayHistory, Timeline, Warning, plan};
+use radio_scheduler::{
+    DropReason, Entry, PlanInput, PlanOptions, PlayHistory, Timeline, Warning, plan,
+};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -96,6 +98,7 @@ fn run(cli: Cli) -> Result<u8, String> {
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(exit_code(&timeline)),
                 Err(e) => return Err(format!("cannot write output: {e}")),
             }
+            let tz = TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC);
             for w in &timeline.warnings {
                 eprintln!("warning: {}", warning_text(&station, &tz, w));
             }
@@ -203,6 +206,23 @@ fn warning_text(station: &Station, tz: &TimeZone, w: &Warning) -> String {
             find_item(station, *item).map_or("?", |i| i.title.as_str()),
             by.as_secs_f64()
         ),
+        Warning::EntryDropped {
+            at,
+            playlist,
+            item,
+            reason,
+        } => {
+            let why = match reason {
+                DropReason::AdjacencyAfterMove => "moved across a fixed event",
+                DropReason::AdjacencyAfterReplan => "left next to its kind by a re-plan",
+            };
+            format!(
+                "{}: dropped \"{}\" planned at {} ({why}, it would break an adjacency rule)",
+                playlist_name(station, *playlist),
+                find_item(station, *item).map_or("?", |i| i.title.as_str()),
+                clock(tz, *at)
+            )
+        }
         Warning::UnknownTimeZone { tz } => format!("unknown time zone '{tz}'"),
     }
 }

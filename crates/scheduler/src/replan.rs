@@ -1,5 +1,6 @@
 //! `plan`: merge and fit, keeping the previous plan steady where a change is not worth it.
 
+use crate::fit::drop_adjacent_clashes;
 use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all, merge};
 use jiff::SignedDuration;
 use radio_model::{Item, ItemId};
@@ -193,6 +194,8 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
     if !kept_any {
         return tl;
     }
+    // Taking out the duplicates can leave two rule insertions side by side.
+    drop_adjacent_clashes(&mut raw.entries, input.station, &mut raw.warnings);
     fit_all(&mut raw, input.station, input.history);
     // `frozen` is a planning-time flag; it does not outlive the plan.
     for f in raw.entries.iter_mut().filter_map(|e| e.fixed.as_mut()) {

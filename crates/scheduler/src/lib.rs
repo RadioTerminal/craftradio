@@ -8,6 +8,6 @@ pub mod replan;
 pub use constraints::allowed;
 pub use fit::{FitResult, FitStep, MAX_GAP, RESOLUTION, fit_all, select_before};
 pub use history::{PlayHistory, Played};
-pub use merge::{Entry, Fixed, Origin, PlanInput, Timeline, Warning, merge};
+pub use merge::{DropReason, Entry, Fixed, Origin, PlanInput, Timeline, Warning, merge};
 pub use pick::Picker;
 pub use replan::{PlanOptions, plan};
