@@ -33,6 +33,7 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::SetStrip { .. }
             | Edit::SetIcecast(_)
             | Edit::SetDynamics(_)
+            | Edit::SetLoudness(_)
             | Edit::SetDevice { .. }
             | Edit::AddFolder { .. }
             | Edit::RemoveFolder { .. }
@@ -458,6 +459,11 @@ impl MockSource {
                 self.dynamics = d;
                 Ok(1)
             }
+            Edit::SetLoudness(l) => {
+                l.validate()?;
+                self.loudness = l;
+                Ok(1)
+            }
             Edit::SetDevice { role, device } => {
                 if !DEVICES.contains(&device.as_str()) {
                     return Err(format!("preview — no device {device}"));
@@ -581,6 +587,7 @@ impl MockSource {
                 let id = self.add_special(&title, &url, planned_len, "Streams");
                 if let Some(l) = self.library.iter_mut().find(|l| l.id == id) {
                     l.meta.keep_alive = Some(keep_alive);
+                    l.meta.gain_trim_db = None;
                 }
                 self.add_to(&playlist, &[id], at)
             }

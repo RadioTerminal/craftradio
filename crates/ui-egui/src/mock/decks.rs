@@ -1,6 +1,7 @@
 //! Decks and meters of the mock.
 
 use super::*;
+use radio_model::{GainSource, ItemGain, Loudness};
 
 impl MockSource {
     /// End the item on air at `at`, so the next item starts then.
@@ -75,6 +76,7 @@ pub(super) fn deck(
             hard: r.fixed.is_some() && r.playlist == "News",
             waiting: false,
             item: None,
+            gain: None,
         },
         None => DeckView {
             label,
@@ -88,8 +90,40 @@ pub(super) fn deck(
             hard: false,
             waiting: false,
             item: None,
+            gain: None,
         },
     }
+}
+
+/// A sample item gain for deck `i` of the preview: a measured cut, a tag, a clamped
+/// boost and a file without loudness. The preview plays nothing, so the deck tooltip
+/// says so.
+pub(super) fn sample_gain(i: usize, settings: &radio_model::LoudnessSettings) -> ItemGain {
+    let known = match i {
+        0 => Some((
+            Loudness {
+                lufs: -14.8,
+                peak_db: Some(-0.3),
+            },
+            GainSource::Measured,
+        )),
+        1 => Some((
+            Loudness {
+                lufs: -15.9,
+                peak_db: Some(-1.2),
+            },
+            GainSource::Tag,
+        )),
+        2 => Some((
+            Loudness {
+                lufs: -27.0,
+                peak_db: Some(-4.5),
+            },
+            GainSource::Measured,
+        )),
+        _ => None,
+    };
+    settings.gain(known, 0.0)
 }
 
 /// Simulated meter levels. Only the playing deck and the output move.

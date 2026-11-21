@@ -137,6 +137,7 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             ice.host, ice.port, ice.mount
         ),
         Edit::SetDynamics(_) => "Changed the processing on Program".to_owned(),
+        Edit::SetLoudness(_) => "Changed the loudness normalisation".to_owned(),
         Edit::SetDevice { device, .. } => {
             format!("Picked {device}; the app uses it from its next start")
         }
@@ -218,6 +219,7 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
             ice.host, ice.port, ice.mount
         ),
         Edit::SetDynamics(_) => "changed the processing · nothing plays here".to_owned(),
+        Edit::SetLoudness(_) => "changed the loudness · nothing plays here".to_owned(),
         Edit::SetDevice { device, .. } => format!("picked {device}"),
         Edit::AddCartPage { name } => format!("added the page {name}"),
         Edit::RenameCartPage { name, .. } => format!("renamed the page to {name}"),

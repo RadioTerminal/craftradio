@@ -305,7 +305,7 @@ impl EngineSource {
                     len: item_len(item),
                     category: p.name.clone(),
                     path,
-                    meta: view_meta(item, &meta),
+                    meta: view_meta(item, &meta, Some(self.state.trim_of(item.id))),
                 });
             }
         }
@@ -342,7 +342,7 @@ impl EngineSource {
             fixed: None,
             origin: Origin::Main,
             locked: item.locked,
-            meta: view_meta(item, &meta),
+            meta: view_meta(item, &meta, Some(self.state.trim_of(item.id))),
             timing: None,
             stream: None,
             deck: None,
@@ -498,6 +498,7 @@ impl EngineSource {
                 len,
                 state,
                 start: d.start.map(|s| self.zoned(s)),
+                gain: d.gain,
             }
         })
     }
@@ -556,7 +557,7 @@ impl EngineSource {
                 _ => Origin::Manual,
             },
             locked: false,
-            meta: view_meta(&item, &item.meta),
+            meta: view_meta(&item, &item.meta, None),
             timing: None,
             stream: None,
             deck: None,
@@ -949,6 +950,7 @@ impl ViewSource for EngineSource {
             cartwall,
             icecast: self.icecast(),
             dynamics: self.state.dynamics.unwrap_or_default(),
+            loudness: self.state.loudness,
             output: Self::output(&pv),
             folders: self.folder_views(),
             settings: self.settings(),

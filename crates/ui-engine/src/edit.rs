@@ -721,6 +721,15 @@ impl EngineSource {
                         keep_alive: want,
                     });
                 }
+                let file = self
+                    .items
+                    .get(&item)
+                    .is_some_and(|(_, i)| matches!(i.source, Source::File { .. }));
+                if let Some(db) = meta.gain_trim_db.filter(|_| file)
+                    && db != self.state.trim_of(item)
+                {
+                    cmds.push(Command::ItemSetGainTrim { item, db });
+                }
             }
         }
         self.run_batch(cmds)?;
@@ -1052,6 +1061,14 @@ impl EngineSource {
             } => self.set_weight(&playlist, index, weight),
             Edit::SetStrip { strip, change } => self.set_strip(strip, change),
             Edit::SetIcecast(ice) => self.set_icecast(ice),
+            Edit::SetLoudness(l) => {
+                self.run_edit(Command::MixerSetLoudness {
+                    enabled: Some(l.enabled),
+                    target_lufs: Some(l.target_lufs),
+                    max_boost_db: Some(l.max_boost_db),
+                })?;
+                Ok(1)
+            }
             Edit::SetDynamics(d) => {
                 let (c, l) = (d.compressor, d.limiter);
                 self.run_edit(Command::MixerSetDynamics {
