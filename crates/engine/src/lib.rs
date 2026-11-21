@@ -282,6 +282,8 @@ pub enum AudioIntent {
     Play {
         deck: u8,
         expect_item: Option<ItemId>,
+        /// A deck that has not started fades in over this time.
+        fade_in: std::time::Duration,
     },
     /// `expect_item` is the item the command meant, or else the item the engine believes
     /// is on the deck. Playout refuses the intent if its deck holds another item.
@@ -741,6 +743,7 @@ impl Engine {
                 playlist,
                 items,
                 at,
+                lock,
             } => {
                 self.edit_station(|s| {
                     let list = &mut playlist_mut(s, playlist)?.items;
@@ -752,7 +755,7 @@ impl Engine {
                         )));
                     }
                     let locked = items.into_iter().map(|mut i: Item| {
-                        i.locked = true;
+                        i.locked = lock;
                         i
                     });
                     list.splice(at..at, locked);
@@ -943,10 +946,18 @@ impl Engine {
                 self.state.decks[d] = Some(item);
                 Ok(self.audio(AudioIntent::Load { deck, item }))
             }
-            C::DeckPlay { deck, expect_item } => {
+            C::DeckPlay {
+                deck,
+                expect_item,
+                fade_in,
+            } => {
                 self.loaded_with(deck, expect_item)?;
                 let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
-                Ok(self.audio(AudioIntent::Play { deck, expect_item }))
+                Ok(self.audio(AudioIntent::Play {
+                    deck,
+                    expect_item,
+                    fade_in,
+                }))
             }
             C::DeckPause { deck, expect_item } => {
                 self.loaded_with(deck, expect_item)?;

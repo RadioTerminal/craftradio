@@ -29,6 +29,7 @@ fn undoable(edit: &Edit) -> bool {
     !matches!(
         edit,
         Edit::Deck { .. }
+            | Edit::PlayNext { .. }
             | Edit::SetStrip { .. }
             | Edit::SetIcecast(_)
             | Edit::SetDevice { .. }
@@ -133,7 +134,7 @@ impl MockSource {
             .enumerate()
             .map(|(k, r)| {
                 let why = if k == 0 {
-                    format!("{} is on air; use Skip instead", r.title)
+                    format!("{} is on air; use Play next instead", r.title)
                 } else {
                     format!("{} is loaded on deck {}", r.title, ['A', 'B', 'C', 'D'][k])
                 };
@@ -380,6 +381,7 @@ impl MockSource {
                 Ok(n)
             }
             Edit::Deck { deck, command } => self.deck_command(deck, command),
+            Edit::PlayNext { .. } => self.deck_command(1, DeckCommand::Play(0.0)),
             Edit::AssignCart { cart, item } => {
                 let label = match item {
                     Some(id) => match self.library_item(id) {

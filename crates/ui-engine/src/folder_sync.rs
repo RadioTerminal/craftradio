@@ -138,6 +138,7 @@ pub fn reconcile(
                 playlist,
                 items,
                 at: None,
+                lock: false,
             });
         }
         if cmds.is_empty() {
@@ -171,6 +172,60 @@ pub fn reconcile(
         }
     }
     lines
+}
+
+/// Removes the new items that the playlist holds now. It gives new ids to the other items.
+///
+/// The background lane reconciles an old snapshot. `added` holds the files of this round.
+pub fn settle(
+    state: &radio_engine::State,
+    cmd: Command,
+    added: &mut Vec<(radio_model::PlaylistId, String)>,
+    fresh: &mut impl FnMut(Vec<radio_model::Item>) -> Vec<radio_model::Item>,
+) -> Option<Command> {
+    match cmd {
+        Command::StationSystem { commands } => {
+            let commands: Vec<Command> = commands
+                .into_iter()
+                .filter_map(|c| settle(state, c, added, fresh))
+                .collect();
+            (!commands.is_empty()).then_some(Command::StationSystem { commands })
+        }
+        Command::PlaylistAddItems {
+            playlist,
+            items,
+            at,
+            lock,
+        } => {
+            let held = |path: &str| {
+                state
+                    .station
+                    .playlists
+                    .iter()
+                    .filter(|p| p.id == playlist)
+                    .flat_map(|p| p.items.iter())
+                    .any(|i| matches!(&i.source, Source::File { path: p } if p == path))
+            };
+            let mut kept = Vec::new();
+            for item in items {
+                if let Source::File { path } = &item.source {
+                    let key = (playlist, path.clone());
+                    if held(path) || added.contains(&key) {
+                        continue;
+                    }
+                    added.push(key);
+                }
+                kept.push(item);
+            }
+            (!kept.is_empty()).then(|| Command::PlaylistAddItems {
+                playlist,
+                items: fresh(kept),
+                at,
+                lock,
+            })
+        }
+        other => Some(other),
+    }
 }
 
 fn hex(bytes: &[u8; 32]) -> String {

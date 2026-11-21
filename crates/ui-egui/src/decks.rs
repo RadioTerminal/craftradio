@@ -16,25 +16,32 @@ use crate::widgets::{self, guard_button, icon_button};
 const CONFIRM_KEY: &str = "confirm_on_air";
 /// While a button is armed, the strip draws again at this interval, in seconds.
 const ARM_REPAINT_S: f32 = 0.1;
-/// The fade time of a new deck, in seconds.
+/// The fade-out time of a new deck, in seconds.
 const DEFAULT_FADE_S: f32 = 3.0;
+/// The fade-in of a new deck when it plays before its turn, in seconds.
+const DEFAULT_FADE_IN_S: f32 = 0.5;
 
-/// An action that needs a second press on the deck on air.
+/// An action that needs a second press when it cuts the item on air before its end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Guarded {
+    /// Fade out the deck on air.
     Fade,
-    Skip,
+    /// Play this deck now: a crossfade from the item on air.
+    Play,
+    /// Play the NEXT 1 deck now, from the header. The deck of the guard is that deck.
+    PlayNext,
 }
 
 /// The deck view state. The fade times and the confirm switch come from the view source.
 pub(crate) struct State {
     fade_s: [f32; 4],
+    fade_in_s: [f32; 4],
     settings: [bool; 4],
-    /// True when Skip and Fade on the deck on air need a second press.
+    /// True when an action that cuts the item on air needs a second press.
     confirm: bool,
     /// The armed button: deck, action and the egui time of the first press.
     armed: Option<(usize, Guarded, f64)>,
-    /// The deck that Space, Skip and Fade keys act on.
+    /// The deck that Space acts on.
     focused: usize,
     /// The place of each deck in the queue, for this frame: 1 plays next.
     next: Vec<Option<usize>>,
@@ -44,6 +51,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             fade_s: [DEFAULT_FADE_S; 4],
+            fade_in_s: [DEFAULT_FADE_IN_S; 4],
             settings: [false; 4],
             confirm: true,
             armed: None,
@@ -54,16 +62,16 @@ impl Default for State {
 }
 
 impl State {
-    /// A press of Skip or Fade. It returns the action when the press fires.
-    /// On the deck on air, with confirm on, the first press arms and a second press fires.
+    /// A press of a guarded action. It returns the action when the press fires.
+    /// With confirm on, a press that `cuts` the item on air arms, and a second press fires.
     pub(crate) fn press(
         &mut self,
         deck: usize,
         kind: Guarded,
-        live: bool,
+        cuts: bool,
         now: f64,
     ) -> Option<Action> {
-        if live && self.confirm {
+        if cuts && self.confirm {
             let again = self
                 .armed
                 .is_some_and(|(d, k, at)| d == deck && k == kind && now - at <= size::ARM_S);
@@ -75,8 +83,24 @@ impl State {
         self.armed = None;
         Some(match kind {
             Guarded::Fade => command(deck, DeckCommand::Fade(self.fade_s[deck])),
-            Guarded::Skip => command(deck, DeckCommand::Skip),
+            Guarded::Play => command(deck, DeckCommand::Play(self.fade_in_s[deck])),
+            Guarded::PlayNext => Action::Edit(Edit::PlayNext {
+                fade_in_s: self.fade_in_s[deck],
+            }),
         })
+    }
+
+    /// The NEXT 1 deck of this frame, if a deck waits.
+    pub(crate) fn next_deck(&self) -> Option<usize> {
+        self.next.iter().position(|r| *r == Some(1))
+    }
+
+    /// The fade-in of deck `deck`, in seconds.
+    pub(crate) fn fade_in(&self, deck: usize) -> f32 {
+        self.fade_in_s
+            .get(deck)
+            .copied()
+            .unwrap_or(DEFAULT_FADE_IN_S)
     }
 
     /// Focus deck `deck` for the keys. A number past the last deck is ignored.
@@ -106,6 +130,23 @@ pub(crate) fn is_live(deck: &DeckView) -> bool {
     )
 }
 
+/// True when a start of deck `deck` with a fade of `fade_s` seconds cuts an item on air
+/// before its end. An item that ends inside the fade, or fades out already, is not cut.
+pub(crate) fn cuts_on_air(decks: &[DeckView], deck: usize, fade_s: f32) -> bool {
+    decks.iter().enumerate().any(|(k, d)| {
+        let left = d.len.saturating_sub(d.elapsed).as_secs_f32();
+        k != deck && matches!(d.state, DeckState::Playing | DeckState::Paused) && left > fade_s
+    })
+}
+
+/// The deck on air that Fade out acts on: the deck that plays, else the paused deck.
+pub(crate) fn on_air_deck(decks: &[DeckView]) -> Option<usize> {
+    decks
+        .iter()
+        .position(|d| d.state == DeckState::Playing)
+        .or_else(|| decks.iter().position(|d| d.state == DeckState::Paused))
+}
+
 pub(crate) fn show(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -120,8 +161,11 @@ pub(crate) fn show(
     let labels = ['A', 'B', 'C', 'D'];
     for (i, label) in labels.iter().enumerate() {
         state.fade_s[i] = parts::f32(view, parts::DECKS, &fade_key(*label), DEFAULT_FADE_S);
+        let key = fade_in_key(*label);
+        state.fade_in_s[i] = parts::f32(view, parts::DECKS, &key, DEFAULT_FADE_IN_S);
     }
     let old = state.fade_s;
+    let old_in = state.fade_in_s;
     state.confirm = parts::bool(view, parts::DECKS, CONFIRM_KEY, true);
     let old_confirm = state.confirm;
     let now = ui.input(|i| i.time);
@@ -165,7 +209,7 @@ pub(crate) fn show(
                                         let card = deck_card(
                                             ui,
                                             i,
-                                            deck,
+                                            &view.decks,
                                             ui.available_width(),
                                             state,
                                             actions,
@@ -177,7 +221,7 @@ pub(crate) fn show(
                                     });
                                 }
                                 strip.cell(|ui| {
-                                    clock(ui, view, actions, t);
+                                    clock(ui, view, state, actions, t);
                                 });
                             });
                     });
@@ -190,6 +234,10 @@ pub(crate) fn show(
         if state.fade_s[i] != old[i] {
             let value = f64::from(state.fade_s[i]);
             actions.push(parts::set(parts::DECKS, &fade_key(*label), value));
+        }
+        if state.fade_in_s[i] != old_in[i] {
+            let value = f64::from(state.fade_in_s[i]);
+            actions.push(parts::set(parts::DECKS, &fade_in_key(*label), value));
         }
     }
 }
@@ -216,6 +264,10 @@ fn fade_key(deck: char) -> String {
     format!("{deck}_fade_s")
 }
 
+fn fade_in_key(deck: char) -> String {
+    format!("{deck}_fade_in_s")
+}
+
 fn command(deck: usize, command: DeckCommand) -> Action {
     Action::Edit(Edit::Deck { deck, command })
 }
@@ -229,20 +281,20 @@ fn deck_menu(
     now: f64,
     actions: &mut Vec<Action>,
 ) {
-    if menu_item(ui, "Play / Pause", None) {
-        actions.push(command(i, DeckCommand::PlayPause));
-    }
-    // The menu goes through the same guard as the buttons: on air, it arms the button.
-    let live = is_live(deck);
-    for (label, kind, keys) in [
-        ("Fade out", Guarded::Fade, shortcuts::FADE),
-        ("Skip", Guarded::Skip, shortcuts::SKIP),
-    ] {
-        if menu_item(ui, label, Some(keys))
-            && let Some(a) = state.press(i, kind, live, now)
-        {
+    // The menu goes through the same guard as the buttons: a cut of the item on air arms.
+    let (_, _, label) = primary(deck);
+    if menu_item(ui, label, Some(shortcuts::PLAY_PAUSE)) {
+        if is_live(deck) {
+            actions.push(command(i, DeckCommand::PlayPause));
+        } else if let Some(a) = state.press(i, Guarded::Play, cuts(view, i, state), now) {
             actions.push(a);
         }
+    }
+    let live = is_live(deck);
+    if menu_item(ui, "Fade out", None)
+        && let Some(a) = state.press(i, Guarded::Fade, live, now)
+    {
+        actions.push(a);
     }
     ui.separator();
     for label in ["Stop", "Eject", "Reload", "Cue to start"] {
@@ -252,15 +304,31 @@ fn deck_menu(
     }
 }
 
+/// The one main button of a deck: Pause on air, Resume when paused, else Play this deck.
+/// It gives the verb, the glyph and the words of the deck menu.
+fn primary(deck: &DeckView) -> (&'static str, &'static str, &'static str) {
+    match deck.state {
+        DeckState::Playing => ("Pause", "⏸", "Pause"),
+        DeckState::Paused => ("Resume", "▶", "Resume"),
+        _ => ("Play", "▶", "Play this deck"),
+    }
+}
+
+/// True when playing deck `i` now cuts the item on air before its end.
+fn cuts(view: &StationView, i: usize, state: &State) -> bool {
+    cuts_on_air(&view.decks, i, state.fade_in(i))
+}
+
 fn deck_card(
     ui: &mut egui::Ui,
     i: usize,
-    deck: &DeckView,
+    decks: &[DeckView],
     width: f32,
     state: &mut State,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) -> egui::Response {
+    let deck = &decks[i];
     let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
     // The edge has the colour of the deck. The deck on air has a thick edge, its fill and
     // the ON AIR word, so the colour is not the only sign.
@@ -277,7 +345,7 @@ fn deck_card(
     frame
         .show(ui, |ui| {
             ui.set_width(inner);
-            ui.vertical(|ui| deck_body(ui, i, deck, state, actions, t))
+            ui.vertical(|ui| deck_body(ui, i, decks, state, actions, t))
                 .inner
         })
         .inner
@@ -286,21 +354,21 @@ fn deck_card(
 fn deck_body(
     ui: &mut egui::Ui,
     i: usize,
-    deck: &DeckView,
+    decks: &[DeckView],
     state: &mut State,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) -> egui::Response {
     ui.spacing_mut().item_spacing.y = space::XS;
-    let live = is_live(deck);
+    let deck = &decks[i];
     let now = ui.input(|i| i.time);
     let head = ui.horizontal(|ui| {
         let focused = state.focused == i;
         let keys = shortcuts::label(ui.ctx(), &shortcuts::FOCUS_DECK[i.min(3)]);
         let hint = if focused {
-            "The keys act on this deck. Right-click for the deck menu.".to_owned()
+            "Space acts on this deck. Right-click for the deck menu.".to_owned()
         } else {
-            format!("{keys} focuses this deck for the keys. Right-click for the deck menu.")
+            format!("{keys} focuses this deck for Space. Right-click for the deck menu.")
         };
         let badge = badge(ui, i, deck.label, focused, t).on_hover_text(hint);
         let (word, colour) = match deck.state {
@@ -335,39 +403,29 @@ fn deck_body(
             let narrow = ui.available_width() < size::DECK_MIN_W;
             ui.add_space(if narrow { space::XS } else { space::M });
             ui.add_enabled_ui(deck.state != DeckState::Empty, |ui| {
-                let keys = shortcuts::label(ui.ctx(), &shortcuts::SKIP);
-                let hint = format!("Skip: fade out and start the next item ({keys})");
-                let armed = state.armed_left(i, Guarded::Skip, now);
-                let skip = guard_button(ui, "⏭", &format!("⏭ Skip deck {name}"), &hint, armed);
-                if skip.clicked()
-                    && let Some(a) = state.press(i, Guarded::Skip, live, now)
-                {
-                    actions.push(a);
-                }
-                let keys = shortcuts::label(ui.ctx(), &shortcuts::FADE);
-                let hint = format!("Fade out over {:.1} s ({keys})", state.fade_s[i]);
-                let armed = state.armed_left(i, Guarded::Fade, now);
-                let fade = guard_button(ui, "⤵", &format!("⤵ Fade deck {name}"), &hint, armed);
-                if fade.clicked()
-                    && let Some(a) = state.press(i, Guarded::Fade, live, now)
-                {
-                    actions.push(a);
-                }
-                let (glyph, verb) = if deck.state == DeckState::Playing {
-                    ("⏸", "Pause")
-                } else {
-                    ("▶", "Play")
-                };
+                // One main action: Play this deck, or Pause and Resume on the deck on air.
                 let keys = shortcuts::label(ui.ctx(), &shortcuts::PLAY_PAUSE);
-                let play = icon_button(
-                    ui,
-                    glyph,
-                    false,
-                    &format!("{glyph} {verb} deck {name}"),
-                    &format!("{verb} ({keys} on the focused deck)"),
-                );
-                if play.clicked() {
-                    actions.push(command(i, DeckCommand::PlayPause));
+                let (verb, glyph, _) = primary(deck);
+                let accessible = format!("{glyph} {verb} deck {name}");
+                if is_live(deck) {
+                    let hint = format!("{verb} the item on air ({keys} on the focused deck)");
+                    if icon_button(ui, glyph, false, &accessible, &hint).clicked() {
+                        actions.push(command(i, DeckCommand::PlayPause));
+                    }
+                } else {
+                    let hint = format!(
+                        "Play this deck now: it fades in over {:.1} s and the item on air fades \
+                         out. The plan goes on from this deck ({keys} on the focused deck)",
+                        state.fade_in(i)
+                    );
+                    let armed = state.armed_left(i, Guarded::Play, now);
+                    let play = guard_button(ui, glyph, &accessible, &hint, armed);
+                    let cut = cuts_on_air(decks, i, state.fade_in(i));
+                    if play.clicked()
+                        && let Some(a) = state.press(i, Guarded::Play, cut, now)
+                    {
+                        actions.push(a);
+                    }
                 }
             });
             // The word takes the room that the buttons leave, and truncates there.
@@ -384,10 +442,11 @@ fn deck_body(
         && d == i
     {
         let what = match kind {
-            Guarded::Fade => "Fade",
-            Guarded::Skip => "Skip",
+            Guarded::Fade => "Fade out cuts the item on air",
+            Guarded::Play => "Play cuts the item on air",
+            Guarded::PlayNext => "Play next cuts the item on air",
         };
-        let note = format!("{what} is on air: press again to confirm");
+        let note = format!("{what}: press again to confirm");
         let note = RichText::new(note)
             .font(theme::text(theme::CAPTION))
             .strong();
@@ -402,15 +461,27 @@ fn deck_body(
             .show(ui, |ui| {
                 ui.checkbox(
                     &mut state.confirm,
-                    "Confirm on-air actions (press Skip or Fade twice)",
+                    "Confirm a cut of the item on air (press Play or Fade out twice)",
                 );
                 ui.horizontal(|ui| {
-                    let label = ui.label(RichText::new("Fade time").color(t.text_muted));
+                    let label = ui.label(RichText::new("Fade-in").color(t.text_muted));
+                    let fade = DragValue::new(&mut state.fade_in_s[i])
+                        .range(size::FADE_IN_MIN_S..=size::FADE_MAX_S)
+                        .speed(0.1)
+                        .suffix(" s");
+                    ui.add(fade)
+                        .labelled_by(label.id)
+                        .on_hover_text("Play this deck and Play next fade this deck in so long");
+                });
+                ui.horizontal(|ui| {
+                    let label = ui.label(RichText::new("Fade-out").color(t.text_muted));
                     let fade = DragValue::new(&mut state.fade_s[i])
                         .range(size::FADE_MIN_S..=size::FADE_MAX_S)
                         .speed(0.1)
                         .suffix(" s");
-                    ui.add(fade).labelled_by(label.id);
+                    ui.add(fade)
+                        .labelled_by(label.id)
+                        .on_hover_text("Fade out in the header fades this deck out so long");
                 });
                 let note = RichText::new(settings::NOT_SAVED).font(theme::text(theme::CAPTION));
                 ui.label(note.color(t.text_muted));
@@ -508,19 +579,30 @@ fn progress(ui: &mut egui::Ui, deck: &DeckView, t: &Tokens) {
     }
 }
 
-fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+fn clock(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     ui.vertical(|ui| {
         ui.with_layout(Layout::top_down(Align::Max), |ui| {
             ui.spacing_mut().item_spacing.y = space::XXS;
             let w = ui.available_width();
             let row = |h: f32| egui::vec2(w, h);
             let rtl = Layout::right_to_left(Align::Center);
-            // Left to right: the mode, the LIVE chip and the Out meter.
+            // Left to right: Play next, Fade out, the mode, the LIVE chip and the Out meter.
+            // A narrow cluster has no room for the transport here: it goes to the third row.
+            let roomy = w >= size::CLOCK_MID_W;
             ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
                 ui.spacing_mut().button_padding = egui::vec2(space::XS, space::XXS);
                 out_vu(ui, view, actions, t);
                 live_chip(ui, view, w >= size::CLOCK_MID_W, actions, t);
                 mode_control(ui, view, w >= size::CLOCK_W, actions, t);
+                if roomy {
+                    transport(ui, view, state, actions);
+                }
             });
             // A narrow window drops the date first, then the word of the LIVE chip.
             let room = w >= size::CLOCK_W;
@@ -542,6 +624,9 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
             let wide = w >= size::CLOCK_W;
             ui.allocate_ui_with_layout(row(size::HEADER_ROW), rtl, |ui| {
                 stop_after(ui, view, actions, t);
+                if !roomy {
+                    transport(ui, view, state, actions);
+                }
                 if view.warnings > 0 {
                     // Warnings show here too, where the eyes are.
                     let chip = RichText::new(format!("⚠ {}", view.warnings))
@@ -556,6 +641,48 @@ fn clock(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &T
                 countdown(ui, view, wide, t);
             });
         });
+    });
+}
+
+/// The transport of the station: Play next and Fade out. Each arms first when it cuts the
+/// item on air before its end.
+fn transport(ui: &mut egui::Ui, view: &StationView, state: &mut State, actions: &mut Vec<Action>) {
+    let now = ui.input(|i| i.time);
+    let air = on_air_deck(&view.decks);
+    // The parent lays out right to left, so Fade out comes first.
+    ui.add_enabled_ui(air.is_some(), |ui| {
+        let deck = air.unwrap_or(0);
+        let keys = shortcuts::label(ui.ctx(), &shortcuts::FADE);
+        let hint = format!("Fade out the item on air ({keys})");
+        let armed = air.and_then(|d| state.armed_left(d, Guarded::Fade, now));
+        let fade = guard_button(ui, "⤵", "⤵ Fade out", &hint, armed);
+        if fade.clicked()
+            && let Some(a) = state.press(deck, Guarded::Fade, true, now)
+        {
+            actions.push(a);
+        }
+    });
+    let next = state.next_deck();
+    ui.add_enabled_ui(next.is_some(), |ui| {
+        let deck = next.unwrap_or(0);
+        let keys = shortcuts::label(ui.ctx(), &shortcuts::PLAY_NEXT);
+        let assist = view.play_mode == PlayMode::Assist;
+        let what = if assist {
+            "Next: start"
+        } else {
+            "Play next: start"
+        };
+        let hint = format!(
+            "{what} the NEXT 1 deck now. It fades in and the item on air fades out ({keys})"
+        );
+        let armed = next.and_then(|d| state.armed_left(d, Guarded::PlayNext, now));
+        let play = guard_button(ui, "⏭", "⏭ Play next", &hint, armed);
+        let cut = cuts(view, deck, state);
+        if play.clicked()
+            && let Some(a) = state.press(deck, Guarded::PlayNext, cut, now)
+        {
+            actions.push(a);
+        }
     });
 }
 

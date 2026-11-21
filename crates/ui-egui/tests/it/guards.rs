@@ -37,21 +37,40 @@ fn right_click_row(h: &mut Harness<'_, RadioApp>, label: &str) {
 }
 
 #[test]
-fn skip_on_the_deck_on_air_fires_only_on_the_second_press() {
+fn play_next_cuts_the_item_on_air_only_on_the_second_press() {
     let mut h = harness();
     let before = count(&h, ON_AIR);
-    h.get_by_label("⏭ Skip deck A").click();
+    h.get_by_label("⏭ Play next").click();
     h.run_steps(FRAMES);
-    assert_eq!(count(&h, ON_AIR), before, "the first press only arms Skip");
+    assert_eq!(
+        count(&h, ON_AIR),
+        before,
+        "the first press only arms Play next"
+    );
     assert!(
         h.query_all_by_label_contains("press again")
             .next()
             .is_some(),
-        "the armed deck asks for a second press"
+        "the armed button asks for a second press"
     );
-    h.get_by_label("⏭ Skip deck A — press again").click();
+    h.get_by_label("⏭ Play next — press again").click();
     h.run_steps(FRAMES);
-    assert!(count(&h, ON_AIR) < before, "the second press skips");
+    assert!(
+        count(&h, ON_AIR) < before,
+        "the second press plays the next deck"
+    );
+}
+
+#[test]
+fn play_on_a_waiting_deck_cuts_the_item_on_air_only_on_the_second_press() {
+    let mut h = harness();
+    let before = count(&h, ON_AIR);
+    h.get_by_label("▶ Play deck C").click();
+    h.run_steps(FRAMES);
+    assert_eq!(count(&h, ON_AIR), before, "the first press only arms Play");
+    h.get_by_label("▶ Play deck C — press again").click();
+    h.run_steps(FRAMES);
+    assert!(count(&h, ON_AIR) < before, "the second press plays deck C");
 }
 
 #[test]

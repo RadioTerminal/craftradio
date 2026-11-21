@@ -463,24 +463,10 @@ impl Mixer {
     fn apply(&mut self, cmd: Command) {
         match cmd.kind {
             CommandKind::Play(deck) if self.for_this_item(deck, cmd.item_tag) => {
-                let slot = &mut self.decks[deck.index()];
-                if let Some(src) = &slot.source
-                    && (!slot.playing || slot.paused)
-                {
-                    let started = !slot.playing;
-                    slot.playing = true;
-                    slot.paused = false;
-                    src.shared.set_state(DeckState::Playing);
-                    if started {
-                        let item_tag = src.item_tag;
-                        let at_sample = self.sample;
-                        self.emit(AudioEvent::Started {
-                            deck,
-                            at_sample,
-                            item_tag,
-                        });
-                    }
-                }
+                self.play(deck, None);
+            }
+            CommandKind::PlayFadeIn { deck, over } if self.for_this_item(deck, cmd.item_tag) => {
+                self.play(deck, Some(duration_frames(over)));
             }
             CommandKind::Pause(deck) if self.for_this_item(deck, cmd.item_tag) => {
                 let slot = &mut self.decks[deck.index()];
@@ -566,6 +552,34 @@ impl Mixer {
             src.shared.underrun.store(false, Ordering::Release);
             self.retire(Retired::Deck(src));
         }
+    }
+
+    /// Starts or continues a deck. A start with `fade_in` fades in over that many frames.
+    fn play(&mut self, deck: DeckId, fade_in: Option<u64>) {
+        let slot = &mut self.decks[deck.index()];
+        let Some(src) = slot.source.as_mut() else {
+            return;
+        };
+        if slot.playing && !slot.paused {
+            return;
+        }
+        let started = !slot.playing;
+        slot.playing = true;
+        slot.paused = false;
+        src.shared.set_state(DeckState::Playing);
+        if !started {
+            return;
+        }
+        if let Some(frames) = fade_in {
+            src.fade_in = src.fade_in.max(frames);
+        }
+        let item_tag = src.item_tag;
+        let at_sample = self.sample;
+        self.emit(AudioEvent::Started {
+            deck,
+            at_sample,
+            item_tag,
+        });
     }
 
     /// Unloads a deck and tells the handle that its item ended.

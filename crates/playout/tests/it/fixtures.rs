@@ -87,6 +87,7 @@ pub fn engine_with(items: Vec<Item>) -> Engine {
             playlist: PlaylistId(1),
             items,
             at: None,
+            lock: true,
         })
         .unwrap();
     engine
@@ -128,6 +129,7 @@ pub fn add_playlist(engine: &mut Engine, name: &str, items: Vec<Item>, script: &
             playlist,
             items,
             at: None,
+            lock: true,
         })
         .unwrap();
     engine

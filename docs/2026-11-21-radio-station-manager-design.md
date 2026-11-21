@@ -448,8 +448,14 @@ Every window and pane has its own ⚙ for that part only:
 The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§6.6).
 
 **Deck controls and metadata (user, 2026-11-21).**
-- **Deck controls:** each deck has Play/Pause, Fade (fade out over the deck's fade time) and
-  Skip (fade out and start the next item).
+- **Deck controls (revised 2026-11-21):** each deck card has one button: *Play this deck*
+  fades the deck in (its ⚙ fade-in, 0.5 s by default) while the item on air fades out
+  (`deck.play` with `fade_in`); on the deck on air it is Pause / Resume. There is no per-deck
+  Next or Skip. The header has the one *Play next* (⌘⇧N), beside the mode control: it plays
+  the NEXT 1 deck the same way, and in Assist mode it is the Next. *Fade out* (⌘⇧F) sits
+  beside it. These arm and need a second press only when they would cut the item on air
+  before its end. The plan goes on from the deck played; the items that waited before it
+  leave their decks and return to the rotation for a later turn, so nothing plays twice.
 - **Metadata editing:** any item's file tags (title, artist, album, year, genre, comment)
   can be edited and written back to the file, via lofty.
 - **Exact control over the stream title:** every item also has a *publish mode* that

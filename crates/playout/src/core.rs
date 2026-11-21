@@ -562,6 +562,8 @@ impl Core {
                 }
                 // Faders and cart settings: the UI sees them, and no plan runs for them.
                 EngineEvent::SettingsChanged => self.state_dirty = true,
+                // The UI reads the save error from the log. It needs a new snapshot only.
+                EngineEvent::PersistenceFailed { .. } => self.state_dirty = true,
                 EngineEvent::AudioIntent(intent) => {
                     let now = self.clock.now();
                     checks.push(self.intent(intent, now));
@@ -987,11 +989,20 @@ impl Core {
             .filter(|s| s.not_started() && !s.is_hard())
             .count();
         let assigned = self.assigned();
+        // An item that waits on a deck already never loads on a second deck.
+        let waiting: Vec<ItemId> = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|s| s.not_started())
+            .map(|s| s.item.id)
+            .collect();
         let next: Vec<Entry> = self
             .timeline
             .entries
             .iter()
             .filter(|e| !assigned.contains(&(e.item, e.start)))
+            .filter(|e| !waiting.contains(&e.item))
             .filter(|e| !e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
             .filter(|e| {
                 !self
@@ -1132,13 +1143,26 @@ impl Core {
 
     /// Sends `Play` for deck `i` at frame `at`.
     pub(crate) fn play_at(&mut self, i: usize, at: u64) {
+        self.play_fading_at(i, at, Duration::ZERO);
+    }
+
+    /// Sends `Play` for deck `i` at frame `at`, with a fade-in over `fade_in`.
+    pub(crate) fn play_fading_at(&mut self, i: usize, at: u64, fade_in: Duration) {
         let Some(s) = &mut self.slots[i] else { return };
         if s.phase == Phase::Opening {
             s.asap = true;
             return;
         }
-        let cmd = Cmd::new(at, CommandKind::Play(DeckId::ALL[i])).for_item(s.tag);
-        if self.mixer.send(cmd).is_ok() {
+        let deck = DeckId::ALL[i];
+        let kind = if fade_in.is_zero() {
+            CommandKind::Play(deck)
+        } else {
+            CommandKind::PlayFadeIn {
+                deck,
+                over: fade_in,
+            }
+        };
+        if self.mixer.send(Cmd::new(at, kind).for_item(s.tag)).is_ok() {
             s.phase = Phase::Cued(at);
         }
     }

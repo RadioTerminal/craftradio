@@ -120,6 +120,16 @@ impl EngineSource {
             match d {
                 crate::bg::Done::Reconciled { commands, lines } => {
                     let mut failed = false;
+                    let mut added = Vec::new();
+                    let state = self.state.clone();
+                    let commands: Vec<_> = commands
+                        .into_iter()
+                        .filter_map(|c| {
+                            crate::folder_sync::settle(&state, c, &mut added, &mut |items| {
+                                self.copies(items)
+                            })
+                        })
+                        .collect();
                     for command in commands {
                         if let Err(e) = self.run_edit(command) {
                             self.watch_errors.push(e);

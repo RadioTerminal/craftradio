@@ -118,6 +118,7 @@ impl Core {
             AudioIntent::Play {
                 deck: d,
                 expect_item,
+                ..
             } if !self.holds(deck(d), expect_item) => Check::Now(false),
             AudioIntent::Pause {
                 deck: d,
@@ -131,9 +132,11 @@ impl Core {
                 deck: d,
                 expect_item,
             } if !self.holds(deck(d), expect_item) => Check::Now(false),
-            AudioIntent::Play { deck: d, .. } => {
+            AudioIntent::Play {
+                deck: d, fade_in, ..
+            } => {
                 self.leave_emergency(now);
-                self.op_play(deck(d))
+                self.op_play(deck(d), fade_in, now)
             }
             AudioIntent::Pause { deck: d, .. } => self.op_pause(deck(d)),
             AudioIntent::Fade { deck: d, .. } => self.op_fade(deck(d)),
@@ -256,7 +259,9 @@ impl Core {
         }
     }
 
-    fn op_play(&mut self, i: usize) -> Check {
+    /// Plays deck `i`. A deck that has not started fades in over `fade_in`, and the item
+    /// on air fades out at the same time: a crossfade. The plan goes on from this deck.
+    fn op_play(&mut self, i: usize, fade_in: Duration, now: Timestamp) -> Check {
         self.hold = false;
         let Some(s) = &self.slots[i] else {
             return Check::Now(false);
@@ -265,7 +270,18 @@ impl Core {
         match s.phase {
             Phase::Opening | Phase::Loading | Phase::Ready => {
                 let at = self.mixer.now();
-                self.play_at(i, at);
+                self.crossfade_from_air(i, at, fade_in);
+                self.skip_over(i);
+                if let Some(s) = &mut self.slots[i] {
+                    // The deck starts now, so the plan goes on from it.
+                    if !s.is_hard() {
+                        s.entry.start = now;
+                    }
+                    // A file that a worker still opens takes the fade with its load.
+                    s.options.fade_in = s.options.fade_in.max(fade_in);
+                }
+                self.play_fading_at(i, at, fade_in);
+                self.dirty = true;
                 Check::Started { deck: i, tag }
             }
             Phase::Cued(_) => Check::Started { deck: i, tag },
@@ -280,6 +296,48 @@ impl Core {
                 }
             }
             Phase::Playing => Check::Now(true),
+        }
+    }
+
+    /// Fades out each item on air but deck `i`, from frame `at`. The fade lasts as long as
+    /// the fade-in of deck `i`, or as the early fade of the item when there is no fade-in.
+    fn crossfade_from_air(&mut self, i: usize, at: u64, fade_in: Duration) {
+        for k in (0..4).filter(|&k| k != i) {
+            let fade = self.slots[k]
+                .as_ref()
+                .filter(|s| !s.not_started() && !s.end_sent && s.role != DeckRole::Bed)
+                .map(|s| {
+                    if fade_in.is_zero() {
+                        Self::early_fade(s)
+                    } else {
+                        fade_in
+                    }
+                });
+            if let Some(over) = fade {
+                self.fade_at(k, at, over, true);
+            }
+        }
+    }
+
+    /// Deck `i` plays before its turn. The plan items that waited to play before it leave
+    /// their decks: they return to the rotation and play at a later turn. Hard events and
+    /// play-next items stay.
+    fn skip_over(&mut self, i: usize) {
+        let Some(start) = self.slots[i].as_ref().map(|s| s.entry.start) else {
+            return;
+        };
+        let queue = self.engine.state().queue.clone();
+        for k in (0..4).filter(|&k| k != i) {
+            let skipped = self.slots[k].as_ref().is_some_and(|s| {
+                s.role == DeckRole::Plan
+                    && s.not_started()
+                    && !s.is_hard()
+                    && !queue.contains(&s.item.id)
+                    && s.entry.start <= start
+            });
+            if skipped {
+                self.unload(k);
+            }
         }
     }
 

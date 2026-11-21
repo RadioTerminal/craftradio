@@ -38,26 +38,37 @@ impl RadioApp {
                 self.link.scroll_main = Some(r.id);
             }
         }
+        // Play next and Fade out act on the station, whatever deck has the focus.
+        if p.play_next
+            && let Some(next) = self.decks.next_deck()
+        {
+            let cut = decks::cuts_on_air(&self.view.decks, next, self.decks.fade_in(next));
+            if let Some(a) = self.decks.press(next, decks::Guarded::PlayNext, cut, now) {
+                actions.push(a);
+            }
+        }
+        if p.fade
+            && let Some(air) = decks::on_air_deck(&self.view.decks)
+            && let Some(a) = self.decks.press(air, decks::Guarded::Fade, true, now)
+        {
+            actions.push(a);
+        }
         let deck = self.decks.focused();
         let Some(dv) = self.view.decks.get(deck) else {
             return;
         };
-        if dv.state == DeckState::Empty {
+        if dv.state == DeckState::Empty || !p.play_pause {
             return;
         }
-        if p.play_pause {
+        // Space pauses the deck on air. On another deck it is Play this deck, with its guard.
+        if decks::is_live(dv) {
             actions.push(Action::Edit(Edit::Deck {
                 deck,
                 command: DeckCommand::PlayPause,
             }));
-        }
-        // The keys go through the same guard as the buttons.
-        let live = decks::is_live(dv);
-        for (pressed, kind) in [
-            (p.skip, decks::Guarded::Skip),
-            (p.fade, decks::Guarded::Fade),
-        ] {
-            if pressed && let Some(a) = self.decks.press(deck, kind, live, now) {
+        } else {
+            let cut = decks::cuts_on_air(&self.view.decks, deck, self.decks.fade_in(deck));
+            if let Some(a) = self.decks.press(deck, decks::Guarded::Play, cut, now) {
                 actions.push(a);
             }
         }

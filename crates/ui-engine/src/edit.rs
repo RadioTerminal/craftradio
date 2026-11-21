@@ -244,7 +244,7 @@ impl EngineSource {
     }
 
     /// Copies of items with fresh ids, for a playlist.
-    fn copies(&mut self, items: Vec<Item>) -> Vec<Item> {
+    pub(crate) fn copies(&mut self, items: Vec<Item>) -> Vec<Item> {
         let first = self.fresh_ids(items.len() as u64);
         items
             .into_iter()
@@ -328,6 +328,7 @@ impl EngineSource {
                     playlist: id,
                     items,
                     at: None,
+                    lock: true,
                 },
             );
             self.send(what, Command::StationBatch { commands: cmds })?;
@@ -341,6 +342,7 @@ impl EngineSource {
                 playlist: id,
                 items,
                 at,
+                lock: true,
             },
         )?;
         Ok(n)
@@ -415,6 +417,7 @@ impl EngineSource {
                                     playlist: id,
                                     items,
                                     at: None,
+                                    lock: false,
                                 },
                                 Command::PlaylistSetSource {
                                     playlist: id,
@@ -485,6 +488,7 @@ impl EngineSource {
             playlist,
             items: vec![copy],
             at: None,
+            lock: false,
         });
         cmds.push(Command::CartAssign {
             page,
@@ -582,17 +586,25 @@ impl EngineSource {
             DeckCommand::PlayPause => Command::DeckPlay {
                 deck: d,
                 expect_item,
+                fade_in: Duration::ZERO,
+            },
+            DeckCommand::Play(secs) => Command::DeckPlay {
+                deck: d,
+                expect_item,
+                fade_in: Duration::try_from_secs_f32(secs.max(0.0)).unwrap_or_default(),
             },
             DeckCommand::Fade(_) => Command::DeckFade {
                 deck: d,
                 expect_item,
             },
-            DeckCommand::Skip => Command::DeckSkip {
-                deck: d,
-                expect_item,
-            },
         };
         self.run_audio(cmd)
+    }
+
+    /// Plays the NEXT 1 deck: the deck that waits with the earliest start.
+    fn play_next(&mut self, fade_in_s: f32) -> Result<usize, String> {
+        let deck = self.next_ready.ok_or("No deck waits to play next")?;
+        self.deck_command(deck, DeckCommand::Play(fade_in_s))
     }
 
     fn move_row(&mut self, id: u64, to: MoveTo) -> Result<usize, String> {
@@ -661,7 +673,7 @@ impl EngineSource {
                     .items
                     .get(&r.item)
                     .map_or_else(String::new, |(_, i)| display_title(i));
-                return Err(format!("{title} is on air; use Skip instead"));
+                return Err(format!("{title} is on air; use Play next instead"));
             }
             match by_list.iter_mut().find(|(p, _)| *p == r.playlist) {
                 Some((_, v)) if !v.contains(&r.item) => v.push(r.item),
@@ -890,6 +902,7 @@ impl EngineSource {
                     playlist: main,
                     items,
                     at,
+                    lock: true,
                 })?;
                 Ok(1)
             }
@@ -1009,6 +1022,7 @@ impl EngineSource {
             }
             Edit::SetMeta(list) => self.set_meta(&list),
             Edit::Deck { deck, command } => self.deck_command(deck, command),
+            Edit::PlayNext { fade_in_s } => self.play_next(fade_in_s),
             Edit::SetTiming { .. } => Err(
                 "The timing of a fixed row comes from its rule; change it in the rules of the playlist"
                     .into(),

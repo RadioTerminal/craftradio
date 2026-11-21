@@ -106,11 +106,13 @@ pub mod size {
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
     pub const PLAYLIST_TABLE_H: f32 = 360.0;
-    pub const CLOCK_W: f32 = 340.0;
+    /// The clock cluster has room for Play next and Fade out beside the mode control.
+    pub const CLOCK_W: f32 = 404.0;
     /// The clock cluster in a narrow window: no date, and the LIVE chip shows its glyph only.
+    /// Play next and Fade out move down to the row of Stop after current.
     pub const CLOCK_NARROW_W: f32 = 216.0;
     /// The width of the clock cluster from which the LIVE chip shows its word.
-    pub const CLOCK_MID_W: f32 = 300.0;
+    pub const CLOCK_MID_W: f32 = 364.0;
     /// A deck strip at least this wide gives the clock cluster its full width.
     pub const STRIP_WIDE: f32 = 1200.0;
     /// The height of one row of the header cluster beside the decks.
@@ -125,6 +127,8 @@ pub mod size {
     /// The range of a deck fade time, in seconds.
     pub const FADE_MIN_S: f32 = 0.5;
     pub const FADE_MAX_S: f32 = 10.0;
+    /// The range of a deck fade-in, in seconds. Zero starts the deck at full level.
+    pub const FADE_IN_MIN_S: f32 = 0.0;
 
     /// The on-air marker at the left edge of a row.
     pub const ON_AIR_BAR: f32 = 3.0;
