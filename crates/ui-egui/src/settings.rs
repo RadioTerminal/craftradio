@@ -37,7 +37,13 @@ pub(crate) fn header(
 }
 
 /// The settings section for `part`, in a card, with the "not saved" note.
-pub(crate) fn section(ui: &mut egui::Ui, part: &str, t: &Tokens, add: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn section(
+    ui: &mut egui::Ui,
+    part: &str,
+    preview: bool,
+    t: &Tokens,
+    add: impl FnOnce(&mut egui::Ui),
+) {
     egui::Frame::new()
         .fill(t.field)
         .stroke(Stroke::new(size::HAIRLINE, t.accent))
@@ -51,8 +57,10 @@ pub(crate) fn section(ui: &mut egui::Ui, part: &str, t: &Tokens, add: impl FnOnc
                         .font(theme::text(theme::CARD))
                         .strong(),
                 );
-                let note = RichText::new(NOT_SAVED).font(theme::text(theme::CAPTION));
-                ui.label(note.color(t.text_muted));
+                if preview {
+                    let note = RichText::new(NOT_SAVED).font(theme::text(theme::CAPTION));
+                    ui.label(note.color(t.text_muted));
+                }
             });
             ui.add_space(space::S);
             add(ui);

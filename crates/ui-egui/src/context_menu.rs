@@ -10,6 +10,11 @@ use crate::theme::Tokens;
 /// The message for an action that needs the audio engine, which the preview does not have.
 pub(crate) const NEEDS_ENGINE: &str = "preview — needs the audio engine";
 
+/// The message for an action that this source cannot do yet.
+pub(crate) fn not_here(view: &crate::view::StationView) -> String {
+    view.say(NEEDS_ENGINE, "Not in this build yet").to_owned()
+}
+
 pub(crate) use crate::shortcuts::{COPY, CUT, DELETE, DUPLICATE, PASTE};
 
 /// A row of a menu. It returns true on a click, and then closes the menu.

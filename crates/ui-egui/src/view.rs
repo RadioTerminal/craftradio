@@ -494,6 +494,15 @@ pub struct StationView {
     /// Settings of each part of the app, by part and key.
     pub settings: Settings,
     pub warnings: usize,
+    /// True for the UI preview. The preview plays no audio and saves nothing.
+    pub preview: bool,
+}
+
+impl StationView {
+    /// The text for the preview or for a real station, by the source.
+    pub fn say<'a>(&self, preview: &'a str, real: &'a str) -> &'a str {
+        if self.preview { preview } else { real }
+    }
 }
 
 /// Settings by part of the app, then by key.
@@ -826,6 +835,12 @@ pub enum Edit {
     SetMode(PlayMode),
     /// Stop after the item on air, or clear that stop.
     StopAfterCurrent(bool),
+    /// Play cart `cart`, an index into `StationView::carts`.
+    FireCart {
+        cart: usize,
+    },
+    /// Stop every cart that plays.
+    StopCarts,
     /// Undo the last playlist edit.
     Undo,
     /// Do again the last edit that Undo took back.

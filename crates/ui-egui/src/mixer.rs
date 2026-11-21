@@ -58,11 +58,13 @@ pub(crate) fn show(
 ) {
     let mut open = state.settings;
     settings::header(ui, "Mixer", &mut open, |ui| {
-        ui.label(
-            RichText::new(NOTE)
-                .font(theme::text(theme::CAPTION))
-                .color(t.text_muted),
-        );
+        if view.preview {
+            ui.label(
+                RichText::new(NOTE)
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.text_muted),
+            );
+        }
     });
     state.settings = open;
     ui.add_space(space::S);
@@ -89,13 +91,13 @@ pub(crate) fn show(
                 ui.set_width(size::MIXER_SIDE_W);
                 ui.vertical(|ui| {
                     if state.settings {
-                        settings::section(ui, "Mixer", t, |ui| {
+                        settings::section(ui, "Mixer", view.preview, t, |ui| {
                             mixer_settings(ui, view, actions, t)
                         });
                     }
                     if state.icecast_open {
                         let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
-                        settings::section(ui, "Icecast", t, |ui| {
+                        settings::section(ui, "Icecast", view.preview, t, |ui| {
                             icecast_settings(ui, view, draft, streaming, actions, t);
                         });
                     } else {

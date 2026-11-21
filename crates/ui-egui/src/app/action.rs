@@ -75,7 +75,83 @@ pub(crate) enum Action {
 }
 
 /// The message after a successful edit that changed `n` items.
-fn describe(edit: &Edit, n: usize) -> String {
+fn describe(edit: &Edit, n: usize, preview: bool) -> String {
+    if preview {
+        describe_preview(edit, n)
+    } else {
+        describe_real(edit, n)
+    }
+}
+
+/// The message after an edit of a real station.
+fn describe_real(edit: &Edit, n: usize) -> String {
+    let deck_name = |d: usize| ['A', 'B', 'C', 'D'].get(d).copied().unwrap_or('?');
+    match edit {
+        Edit::Insert { .. } => format!("Added {n} items"),
+        Edit::Remove(_) => format!("Removed {n} rows"),
+        Edit::Move { .. } => format!("Moved {n} rows"),
+        Edit::ToggleLock(_) => format!("Changed the lock of {n} rows"),
+        Edit::RenamePlaylist { from, to } => format!("Renamed {from} to {to}"),
+        Edit::DuplicatePlaylist(name) => format!("Made a copy of {name}"),
+        Edit::NewPlaylist(_) => "Made a new playlist".to_owned(),
+        Edit::DeletePlaylist(name) => format!("Deleted {name}"),
+        Edit::RemovePlaylistItem { playlist, .. } => format!("Removed {n} items from {playlist}"),
+        Edit::MovePlaylistItem { .. } => format!("Moved {n} items"),
+        Edit::SetMeta(_) => format!("Changed the tags of {n} items; tags are not written to files"),
+        Edit::Deck { deck, command } => {
+            let name = deck_name(*deck);
+            match command {
+                DeckCommand::PlayPause => format!("Deck {name} plays or pauses"),
+                DeckCommand::Fade(_) => format!("Deck {name} fades out, then the next item starts"),
+                DeckCommand::Skip => format!("Deck {name} skipped to the next item"),
+            }
+        }
+        Edit::AssignCart {
+            cart,
+            item: Some(_),
+        } => format!("Assigned cart {}", cart + 1),
+        Edit::AssignCart { cart, item: None } => format!("Cleared cart {}", cart + 1),
+        Edit::SetTiming { .. } => "Changed the timing".to_owned(),
+        Edit::SetPlaylistColour { playlist, colour } => {
+            let name = crate::theme::PALETTE.get(*colour).map_or("?", |c| c.0);
+            format!("{playlist} is {name} now")
+        }
+        Edit::SetPlaylistEnabled { playlist, enabled } => {
+            let state = if *enabled { "on" } else { "off" };
+            format!("{playlist} is {state}")
+        }
+        Edit::SetWeight { weight, .. } => format!("Set the weight to ×{weight}"),
+        Edit::SetStrip { strip, .. } => format!("Changed strip {strip}"),
+        Edit::SetIcecast(ice) => format!(
+            "Saved the mount {}:{}{}; it connects on the next start",
+            ice.host, ice.port, ice.mount
+        ),
+        Edit::SetDevice { device, .. } => format!("Picked {device}"),
+        Edit::AddCartPage { name } => format!("Added the page {name}"),
+        Edit::RenameCartPage { name, .. } => format!("Renamed the page to {name}"),
+        Edit::RemoveCartPage { .. } => "Removed the page".to_owned(),
+        Edit::SetCart { cart, .. } => format!("Changed cart {}", cart + 1),
+        Edit::FireCart { cart } => format!("Fired cart {}", cart + 1),
+        Edit::StopCarts => "Stopped all carts".to_owned(),
+        Edit::AddFolder { path } => format!("Reading the audio files of {path}"),
+        Edit::RemoveFolder { path } => format!("Removed {path} from the Library"),
+        Edit::Rescan { folder } => format!("Reading the audio files of {folder} again"),
+        Edit::SetPartSetting { part, key, .. } => format!("Changed {part} {key}"),
+        Edit::Undo => "Undid the last edit".to_owned(),
+        Edit::Redo => "Did the edit again".to_owned(),
+        Edit::SetMode(mode) => format!("Mode is {}", mode.label()),
+        Edit::StopAfterCurrent(true) => "The station stops after the item on air".to_owned(),
+        Edit::StopAfterCurrent(false) => "The station plays on after the item on air".to_owned(),
+        Edit::AddFiles { playlist, .. } | Edit::AddFolderItems { playlist, .. } => {
+            format!("Added {n} files to {playlist}")
+        }
+        Edit::AddStream { playlist, .. } => format!("Added {n} stream to {playlist}"),
+        Edit::AddLive { playlist, .. } => format!("Added {n} live input to {playlist}"),
+    }
+}
+
+/// The message after an edit of the preview, which saves nothing.
+fn describe_preview(edit: &Edit, n: usize) -> String {
     let what = match edit {
         Edit::Insert { .. } => format!("added {n} items"),
         Edit::Remove(_) => format!("Removed {n} rows"),
@@ -125,6 +201,8 @@ fn describe(edit: &Edit, n: usize) -> String {
         Edit::RenameCartPage { name, .. } => format!("renamed the page to {name}"),
         Edit::RemoveCartPage { .. } => "removed the page".to_owned(),
         Edit::SetCart { cart, .. } => format!("changed cart {}", cart + 1),
+        Edit::FireCart { cart } => format!("cart {} flashes; no audio", cart + 1),
+        Edit::StopCarts => "stopped all carts; no audio".to_owned(),
         Edit::AddFolder { path } => format!("read {n} audio files from {path}"),
         Edit::RemoveFolder { path } => format!("removed {path} from the Library"),
         Edit::Rescan { folder } => format!("read {n} audio files from {folder}"),
@@ -149,6 +227,18 @@ fn describe(edit: &Edit, n: usize) -> String {
 }
 
 impl RadioApp {
+    /// The message after a change that worked: the preview says that it saves nothing.
+    pub(super) fn done(&self, what: String) -> String {
+        if self.view.preview {
+            format!("preview — {what} (not saved)")
+        } else {
+            let mut c = what.chars();
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect())
+                .unwrap_or_default()
+        }
+    }
+
     /// Pass the actions of this frame on.
     pub(super) fn run(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
         if actions.is_empty() {
@@ -164,7 +254,7 @@ impl RadioApp {
     pub(super) fn run_edit(&mut self, ctx: &egui::Context, edit: Edit, loud: bool) {
         match self.source.edit(edit.clone()) {
             Ok(n) if loud => {
-                self.toast(ctx, describe(&edit, n));
+                self.toast(ctx, describe(&edit, n, self.view.preview));
                 // A remove offers Undo in the toast, next to what it removed.
                 self.toast_undo = matches!(
                     edit,
@@ -188,7 +278,7 @@ impl RadioApp {
                     DropTarget::Cart(i) => format!("cart {}", i + 1),
                 };
                 let text = match self.source.drop_item(item, target) {
-                    Ok(n) => format!("preview — added {n} items to {place} (not saved)"),
+                    Ok(n) => self.done(format!("added {n} items to {place}")),
                     Err(e) => e,
                 };
                 self.toast(ctx, text);
@@ -196,8 +286,8 @@ impl RadioApp {
             Action::Import(paths) => {
                 let text = match self.source.import_files(paths, "Unsorted") {
                     Ok(i) => format!(
-                        "preview — added {} files to Unsorted (not saved){}",
-                        i.ids.len(),
+                        "{}{}",
+                        self.done(format!("added {} files to Unsorted", i.ids.len())),
                         drops::skipped_note(i.skipped)
                     ),
                     Err(e) => e,
@@ -237,7 +327,7 @@ impl RadioApp {
                     .filter_map(|(t, l)| self.source.library_ref(t, *l))
                     .collect();
                 let text = match self.insert_items(&items, after) {
-                    Ok(n) => format!("preview — added {n} copies (not saved)"),
+                    Ok(n) => self.done(format!("added {n} copies")),
                     Err(e) => e,
                 };
                 self.toast(ctx, text);
@@ -249,7 +339,9 @@ impl RadioApp {
                     self.view.tabs.iter().find(|t| t.name == name).cloned()
                 };
                 if let Some(tab) = tab {
-                    self.editor = Some(Editor::new(&tab));
+                    let mut editor = Editor::new(&tab);
+                    editor.preview = self.view.preview;
+                    self.editor = Some(editor);
                 }
             }
             Action::OpenIcecast => {
@@ -287,7 +379,7 @@ impl RadioApp {
             Action::AddDialog(d) => self.add_dialog = Some(d),
             Action::UseAsMain(name) => {
                 let text = match self.source.use_as_main(&name) {
-                    Ok(()) => format!("preview — {name} is the main playlist now (not saved)"),
+                    Ok(()) => self.done(format!("{name} is the main playlist now")),
                     Err(e) => e,
                 };
                 self.toast(ctx, text);
@@ -310,7 +402,7 @@ impl RadioApp {
                             .map_or(0, |t| t.items.len());
                         self.toast(
                             ctx,
-                            format!("preview — made playlist {name} from {n} files (not saved)"),
+                            self.done(format!("made playlist {name} from {n} files")),
                         );
                     }
                     Err(e) => self.toast(ctx, e),

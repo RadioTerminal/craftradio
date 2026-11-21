@@ -275,7 +275,11 @@ impl RadioApp {
                 r
             }),
         };
-        self.meta = base.map(|b| MetaEditor::new(list, b));
+        self.meta = base.map(|b| {
+            let mut ed = MetaEditor::new(list, b);
+            ed.base_preview = self.view.preview;
+            ed
+        });
     }
 
     pub(super) fn tool_windows(
@@ -411,9 +415,13 @@ impl eframe::App for RadioApp {
 
         if let Some(tab) = rules_editor::show(&ctx, &mut self.editor, &mut self.link, &t) {
             let text = match self.source.apply_rules(tab) {
-                Ok(()) => {
-                    "preview — rules stored; they are not applied to the scheduler yet".to_owned()
-                }
+                Ok(()) => self
+                    .view
+                    .say(
+                        "preview — rules stored; they are not applied to the scheduler yet",
+                        "Rules saved; the next plan uses them",
+                    )
+                    .to_owned(),
                 Err(e) => e,
             };
             self.toast(&ctx, text);
@@ -498,7 +506,11 @@ fn status_line(
                 .color(t.warn);
             if ui.button(warn).on_hover_text("Show the warnings").clicked() {
                 actions.push(Action::Toast(
-                    "preview — the warning list comes with the engine".to_owned(),
+                    view.say(
+                        "preview — the warning list comes with the engine",
+                        "The warning list is not in this build yet; the log has the alarms",
+                    )
+                    .to_owned(),
                 ));
             }
         } else {

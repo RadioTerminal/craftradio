@@ -113,7 +113,7 @@ fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Pr
     settings::header(ui, "Clock", &mut open, |_| {});
     state.settings = open;
     if state.settings {
-        settings::section(ui, "Clock", t, |ui| {
+        settings::section(ui, "Clock", view.preview, t, |ui| {
             ui.checkbox(&mut prefs.h24, "24-hour time");
             ui.checkbox(&mut prefs.show_date, "Show the date");
             ui.checkbox(&mut prefs.show_ring, "Show the seconds ring");

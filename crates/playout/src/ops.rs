@@ -147,6 +147,24 @@ impl Core {
                 self.hold = true;
                 Check::Now(true)
             }
+            AudioIntent::Continue => {
+                self.hold = false;
+                self.dirty = true;
+                Check::Now(true)
+            }
+            AudioIntent::SetStrip {
+                strip,
+                gain_db,
+                mute,
+            } => {
+                let Some(strip) = strip_of(&strip) else {
+                    return Check::Now(false);
+                };
+                let db = if mute { f32::NEG_INFINITY } else { gain_db };
+                let at = self.mixer.now();
+                let cmd = Cmd::new(at, CommandKind::SetGain { strip, db });
+                Check::Now(self.mixer.send(cmd).is_ok())
+            }
             AudioIntent::Next => {
                 self.leave_emergency(now);
                 self.hold = false;
@@ -450,4 +468,19 @@ impl Core {
             Err(_) => Check::Now(false),
         }
     }
+}
+
+/// The mixer strip of a strip name.
+fn strip_of(name: &str) -> Option<radio_audio::Strip> {
+    use radio_audio::{DeckId, Strip};
+    Some(match name {
+        "A" => Strip::Deck(DeckId::A),
+        "B" => Strip::Deck(DeckId::B),
+        "C" => Strip::Deck(DeckId::C),
+        "D" => Strip::Deck(DeckId::D),
+        "Cart" => Strip::Cart,
+        "Live" => Strip::Live,
+        "Out" => Strip::Out,
+        _ => return None,
+    })
 }

@@ -15,14 +15,18 @@ impl RadioApp {
             actions.push(Action::Edit(Edit::Redo));
         }
         if let Some(n) = p.cart
-            && let Some(name) = self.carts.fire_on_page(&self.view, n, now)
-            && !self.open.get(ToolWindow::Cartwall)
+            && let Some((cart, name)) = self.carts.fire_on_page(&self.view, n, now)
         {
+            actions.push(Action::EditQuiet(Edit::FireCart { cart }));
             // With the cartwall closed, the toast says which cart the key fired.
-            actions.push(Action::Toast(format!("{name} · {}", cartwall::NO_AUDIO)));
+            if !self.open.get(ToolWindow::Cartwall) {
+                let audio = self.view.say(cartwall::NO_AUDIO, "fired");
+                actions.push(Action::Toast(format!("{name} · {audio}")));
+            }
         }
         if p.stop_carts {
             self.carts.stop_all();
+            actions.push(Action::EditQuiet(Edit::StopCarts));
         }
         if let Some(d) = p.focus_deck {
             self.decks.focus(d);

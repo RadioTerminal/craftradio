@@ -223,6 +223,13 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     set(&tx, "engine", "tz", &json(&s.station.tz)?)?;
     set(&tx, "engine", "mode", &json(&s.mode)?)?;
     set(&tx, "library", "folders", &json(&s.folders)?)?;
+    for (name, st) in &s.strips {
+        set(&tx, "mixer", name, &json(st)?)?;
+    }
+    tx.execute("DELETE FROM settings_by_part WHERE part = 'carts'", [])?;
+    for c in &s.cart_settings {
+        set(&tx, "carts", &format!("{}:{}", c.page, c.slot), &json(c)?)?;
+    }
     for (part, keys) in &s.settings {
         for (key, value) in keys {
             set(&tx, part, key, &json(value)?)?;
@@ -298,7 +305,7 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
     > = std::collections::BTreeMap::new();
     let mut stmt = conn.prepare(
         "SELECT part, key, value FROM settings_by_part
-         WHERE part NOT IN ('engine', 'library', 'item_meta', 'runtime')",
+         WHERE part NOT IN ('engine', 'library', 'item_meta', 'runtime', 'mixer', 'carts')",
     )?;
     for row in stmt.query_map([], |r| {
         Ok((
@@ -313,5 +320,19 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
     }
     let mut state = State::from_parts(tz, records, mode, carts, folders, item_meta)?;
     state.settings = settings;
+    let mut stmt = conn.prepare("SELECT key, value FROM settings_by_part WHERE part = 'mixer'")?;
+    for kv in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (k, v) = kv?;
+        state
+            .strips
+            .insert(k, serde_json::from_str(&v).map_err(bad)?);
+    }
+    let mut stmt = conn.prepare("SELECT value FROM settings_by_part WHERE part = 'carts'")?;
+    for v in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        state
+            .cart_settings
+            .push(serde_json::from_str(&v?).map_err(bad)?);
+    }
+    state.cart_settings.sort_by_key(|c| (c.page, c.slot));
     Ok(Some(state))
 }

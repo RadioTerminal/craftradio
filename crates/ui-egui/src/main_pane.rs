@@ -136,7 +136,11 @@ pub(crate) fn show(
                 let on_air = prep.on_air == Some(i);
                 let played = prep.on_air.is_some_and(|a| i < a);
                 row.set_selected(link.is_selected(r.id));
-                let look = Look { on_air, played };
+                let look = Look {
+                    on_air,
+                    played,
+                    preview: view.preview,
+                };
                 if r.is_main {
                     track_row(&mut row, r, i, prep, look, t);
                 } else {
@@ -266,7 +270,7 @@ fn shortcuts(view: &StationView, prep: &Prepared, link: &Linked, actions: &mut V
 /// More than a few rows ask first. Every remove can be undone.
 pub(crate) fn remove_action(prep: &Prepared, rows: Vec<u64>) -> Action {
     if let Some(why) = rows.iter().find_map(|id| prep.protected(*id)) {
-        return Action::Toast(format!("preview — {why}"));
+        return Action::Toast(why.to_owned());
     }
     if rows.len() > CONFIRM_REMOVE_OVER {
         return Action::Confirm {
@@ -322,7 +326,7 @@ fn row_menu(
     ui.menu_button("Load to deck", |ui| {
         for deck in ["A", "B", "C", "D"] {
             if menu_item(ui, &format!("Deck {deck}"), None) {
-                actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
+                actions.push(Action::Toast(context_menu::not_here(view)));
             }
         }
     });
@@ -424,6 +428,8 @@ fn on_air_bg(ui: &egui::Ui, on_air: bool, first: bool, t: &Tokens) {
 struct Look {
     on_air: bool,
     played: bool,
+    /// The source is the preview, which plays no real stream.
+    preview: bool,
 }
 
 /// The time cell. A played row has a ✔ and the word in its tooltip.
@@ -454,7 +460,11 @@ fn track_row(
     look: Look,
     t: &Tokens,
 ) {
-    let Look { on_air, played } = look;
+    let Look {
+        on_air,
+        played,
+        preview,
+    } = look;
     let time_ink = if on_air { t.on_air } else { t.text_muted };
     row.col(|ui| {
         on_air_bg(ui, on_air, true, t);
@@ -476,7 +486,7 @@ fn track_row(
             text
         };
         if let Some(state) = r.stream {
-            stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), t);
+            stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), preview, t);
         }
         ui.add(egui::Label::new(if on_air { text.strong() } else { text }).truncate());
     });
@@ -493,9 +503,16 @@ fn track_row(
 }
 
 /// The state badge of a stream row. It says that no real stream plays in the preview.
-fn stream_badge(ui: &mut egui::Ui, state: StreamState, keep_alive: bool, t: &Tokens) {
+fn stream_badge(
+    ui: &mut egui::Ui,
+    state: StreamState,
+    keep_alive: bool,
+    preview: bool,
+    t: &Tokens,
+) {
     let (text, colour) = match state {
-        StreamState::Connected => ("stream ○ simulated".to_owned(), t.text_muted),
+        StreamState::Connected if preview => ("stream ○ simulated".to_owned(), t.text_muted),
+        StreamState::Connected => ("stream ● connected".to_owned(), t.ok),
         StreamState::Reconnecting { attempt, next_in_s } => (
             format!("reconnecting · bed playing · try {attempt}, next in {next_in_s} s"),
             t.warn,
@@ -503,7 +520,11 @@ fn stream_badge(ui: &mut egui::Ui, state: StreamState, keep_alive: bool, t: &Tok
         StreamState::Down => ("down · keep-alive is off".to_owned(), t.danger),
     };
     let keep = if keep_alive { " · keep alive" } else { "" };
-    let text = format!("{text}{keep} · preview — no real stream");
+    let text = if preview {
+        format!("{text}{keep} · preview — no real stream")
+    } else {
+        format!("{text}{keep}")
+    };
     ui.label(
         RichText::new(text)
             .font(theme::text(theme::CAPTION))
@@ -520,7 +541,7 @@ fn divider_row(
     look: Look,
     t: &Tokens,
 ) {
-    let Look { on_air, played } = look;
+    let Look { on_air, played, .. } = look;
     let bg = if on_air { t.on_air_bg } else { t.canvas };
     let ink = if played {
         t.text_muted

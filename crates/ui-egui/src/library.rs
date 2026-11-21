@@ -163,7 +163,7 @@ pub(crate) fn show(
         state.add_folder(&dir.display().to_string(), actions);
     }
     if state.settings {
-        settings::section(ui, "Library", t, |ui| {
+        settings::section(ui, "Library", view.preview, t, |ui| {
             library_settings(ui, view, state, actions, t)
         });
     }
@@ -477,7 +477,7 @@ fn item_menu(ui: &mut egui::Ui, view: &StationView, item: &LibraryItem, actions:
     ui.separator();
     if menu_item(ui, "Reveal in folder", None) {
         let text = format!(
-            "preview — {} · revealing needs the desktop integration",
+            "{} · revealing needs the desktop integration, which this build does not have",
             item.path
         );
         actions.push(Action::Toast(text));

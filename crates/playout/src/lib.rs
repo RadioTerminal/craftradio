@@ -232,6 +232,14 @@ impl Playout {
         view
     }
 
+    /// The revision of the engine state in the snapshot. It costs no copy.
+    pub fn revision(&self) -> u64 {
+        self.view
+            .lock()
+            .map(|v| v.revision)
+            .unwrap_or_else(|p| p.into_inner().revision)
+    }
+
     /// A meter reader for a meter display at 30 fps.
     pub fn meters(&self) -> MeterReader {
         self.meters

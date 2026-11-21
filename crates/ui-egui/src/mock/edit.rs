@@ -38,6 +38,8 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::SetPartSetting { .. }
             | Edit::SetMode(_)
             | Edit::StopAfterCurrent(_)
+            | Edit::FireCart { .. }
+            | Edit::StopCarts
             | Edit::Undo
             | Edit::Redo
     )
@@ -148,6 +150,12 @@ impl MockSource {
                 self.play_mode = mode;
                 Ok(1)
             }
+            // The preview plays no audio. The cartwall flashes the cart instead.
+            Edit::FireCart { cart } => match self.carts.get(cart) {
+                Some(c) if !c.is_empty() => Ok(1),
+                _ => Err(gone("that cart")),
+            },
+            Edit::StopCarts => Ok(1),
             Edit::StopAfterCurrent(on) => {
                 self.stop_after_current = on;
                 Ok(1)

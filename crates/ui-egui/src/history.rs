@@ -57,7 +57,7 @@ pub(crate) fn show(
     settings::header(ui, "History", &mut open, |_| {});
     state.settings = open;
     if state.settings {
-        settings::section(ui, "History", t, |ui| {
+        settings::section(ui, "History", view.preview, t, |ui| {
             ui.horizontal_wrapped(|ui| {
                 settings::label(ui, "Columns", t);
                 for (i, (_, name, _)) in COLS.iter().enumerate() {

@@ -136,7 +136,7 @@ pub(crate) fn show(
         state.next = next_ranks(&view.decks);
         for (i, deck) in view.decks.iter().enumerate() {
             let card = deck_card(ui, i, deck, card_w, state, actions, t);
-            card.context_menu(|ui| deck_menu(ui, i, deck, state, now, actions));
+            card.context_menu(|ui| deck_menu(ui, i, deck, view, state, now, actions));
         }
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
             clock(ui, view, actions, t)
@@ -183,6 +183,7 @@ fn deck_menu(
     ui: &mut egui::Ui,
     i: usize,
     deck: &DeckView,
+    view: &StationView,
     state: &mut State,
     now: f64,
     actions: &mut Vec<Action>,
@@ -205,7 +206,7 @@ fn deck_menu(
     ui.separator();
     for label in ["Stop", "Eject", "Reload", "Cue to start"] {
         if menu_item(ui, label, None) {
-            actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
+            actions.push(Action::Toast(context_menu::not_here(view)));
         }
     }
 }
@@ -536,7 +537,10 @@ fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
     let button = egui::Button::new(RichText::new(word).font(theme::text(theme::CAPTION)))
         .fill(fill)
         .stroke(Stroke::new(size::HAIRLINE, t.field_border));
-    let hint = "The station stops when the item on air ends · preview: here only";
+    let hint = view.say(
+        "The station stops when the item on air ends · preview: here only",
+        "The station stops when the item on air ends",
+    );
     if ui.add(button).on_hover_text(hint).clicked() {
         actions.push(Action::Edit(Edit::StopAfterCurrent(!stop)));
     }
@@ -671,8 +675,12 @@ fn mode_control(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>
                 .fill(fill)
                 .stroke(Stroke::new(size::HAIRLINE, edge));
             let hint = format!(
-                "{} mode · preview: stored here, the scheduler is not connected",
-                mode.label()
+                "{} mode{}",
+                mode.label(),
+                view.say(
+                    " · preview: stored here, the scheduler is not connected",
+                    ""
+                )
             );
             if ui.add(button).on_hover_text(hint).clicked() && !on {
                 let edit = Action::Edit(Edit::SetMode(*mode));

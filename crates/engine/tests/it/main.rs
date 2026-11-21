@@ -235,3 +235,59 @@ fn deck_commands_queue_intent_and_do_not_claim_audio() {
     ));
     assert_eq!(events.try_iter().count(), 0);
 }
+
+#[test]
+fn undo_takes_back_at_least_fifty_edits_and_redo_does_them_again() {
+    let mut e = Engine::open_in_memory().unwrap();
+    for i in 0..60 {
+        e.dispatch(Command::PlaylistAddItems {
+            playlist: radio_model::PlaylistId(1),
+            items: vec![item(100 + i, &format!("t{i}"))],
+            at: None,
+        })
+        .unwrap();
+    }
+    for _ in 0..50 {
+        e.dispatch(Command::HistoryUndo).unwrap();
+    }
+    assert_eq!(ids(&e).len(), 10, "fifty adds are undone");
+    // Mode is not a playlist edit, so it neither makes a step nor clears redo.
+    e.dispatch(Command::ModeSet {
+        mode: radio_engine::Mode::Assist,
+    })
+    .unwrap();
+    e.dispatch(Command::HistoryRedo).unwrap();
+    assert_eq!(ids(&e).len(), 11, "redo adds one back");
+    e.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![item(999, "new")],
+        at: None,
+    })
+    .unwrap();
+    assert!(
+        e.dispatch(Command::HistoryRedo).is_err(),
+        "a new edit clears the redo steps"
+    );
+}
+
+#[test]
+fn a_failed_batch_changes_nothing_and_undoes_as_one_step() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let add = |id, title: &str| Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![item(id, title)],
+        at: None,
+    };
+    let bad = e.dispatch(Command::StationBatch {
+        commands: vec![add(1, "a"), add(1, "duplicate id")],
+    });
+    assert!(bad.is_err());
+    assert!(ids(&e).is_empty(), "the failed batch left nothing");
+    e.dispatch(Command::StationBatch {
+        commands: vec![add(1, "a"), add(2, "b")],
+    })
+    .unwrap();
+    assert_eq!(ids(&e).len(), 2);
+    e.dispatch(Command::HistoryUndo).unwrap();
+    assert!(ids(&e).is_empty(), "one undo takes back the whole batch");
+}

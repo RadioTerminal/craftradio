@@ -35,6 +35,8 @@ pub(crate) struct MetaEditor {
     /// The row whose place in the timeline gives the preview line its context.
     base: Row,
     note: bool,
+    /// The source is the preview.
+    pub(crate) base_preview: bool,
 }
 
 impl MetaEditor {
@@ -60,6 +62,7 @@ impl MetaEditor {
             keep_alive_touched: false,
             base,
             note: false,
+            base_preview: true,
         }
     }
 
@@ -217,7 +220,12 @@ pub(crate) fn show(
                     close = true;
                 }
                 if ed.note {
-                    ui.label(RichText::new(NOT_WRITTEN).color(t.warn));
+                    let note = if ed.base_preview {
+                        NOT_WRITTEN
+                    } else {
+                        "Writing tags to files is not in this build yet"
+                    };
+                    ui.label(RichText::new(note).color(t.warn));
                 }
             });
         });

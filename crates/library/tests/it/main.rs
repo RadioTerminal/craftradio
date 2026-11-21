@@ -141,3 +141,56 @@ fn scan_keeps_good_files_after_analysis_failure() {
     assert!(result.errors[0].0.ends_with("broken.mp3"));
     assert!(scan(&source(&dir.path().join("absent"), false), &mut |_| {}).is_err());
 }
+
+#[test]
+fn a_listing_stops_at_its_limit_and_keeps_the_first_files_in_name_order() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["e.mp3", "c.mp3", "a.mp3", "d.mp3", "b.mp3", "notes.txt"] {
+        std::fs::write(dir.path().join(name), b"").unwrap();
+    }
+    let limits = radio_library::Limits {
+        max_files: 3,
+        ..radio_library::Limits::DEFAULT
+    };
+    let list = radio_library::list_audio(dir.path(), false, limits);
+    let names: Vec<String> = list
+        .files
+        .iter()
+        .map(|f| {
+            Path::new(f)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        list.truncated,
+        "a limit that the folder passes marks the listing"
+    );
+    assert_eq!(
+        names,
+        ["a.mp3", "b.mp3", "c.mp3"],
+        "the first files by name stay"
+    );
+    let all = radio_library::list_audio(dir.path(), false, radio_library::Limits::DEFAULT);
+    assert!(!all.truncated);
+    assert_eq!(all.files.len(), 5, "only audio files count");
+    let gone = radio_library::list_audio(&dir.path().join("missing"), false, limits);
+    assert!(
+        !gone.errors.is_empty(),
+        "an unreadable folder reports an error"
+    );
+}
+
+#[test]
+fn a_probe_reads_the_length_without_decoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.wav");
+    tone(&path, 0.3, 1);
+    let (len, _) = radio_library::probe(&path).unwrap();
+    assert!(
+        len.abs_diff(Duration::from_secs(4)) < Duration::from_millis(50),
+        "{len:?}"
+    );
+}

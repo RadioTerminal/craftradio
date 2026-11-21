@@ -32,7 +32,7 @@ impl RadioApp {
         };
         let note = skipped_note(imported.skipped);
         if imported.ids.is_empty() {
-            self.toast(ctx, format!("preview — no audio files to add{note}"));
+            self.toast(ctx, format!("No audio files to add{note}"));
             return;
         }
         let place = match &target {
@@ -77,7 +77,7 @@ impl RadioApp {
             FileTarget::Library => Ok(imported.ids.len()),
         };
         let text = match result {
-            Ok(n) => format!("preview — added {n} files to {place} (not saved){note}"),
+            Ok(n) => format!("{}{note}", self.done(format!("added {n} files to {place}"))),
             Err(e) => format!("{e}{note}"),
         };
         self.toast(ctx, text);

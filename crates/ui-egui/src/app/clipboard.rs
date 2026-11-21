@@ -46,7 +46,7 @@ impl RadioApp {
 
     pub(super) fn paste(&mut self, ctx: &egui::Context, to: PasteTo) {
         if self.clip.items.is_empty() {
-            self.toast(ctx, "preview — the clipboard is empty".to_owned());
+            self.toast(ctx, "The clipboard is empty".to_owned());
             return;
         }
         let items = self.clip.items.clone();
@@ -69,7 +69,7 @@ impl RadioApp {
             ),
         };
         let mut text = match &result {
-            Ok(n) => format!("preview — pasted {n} items into {place} (not saved)"),
+            Ok(n) => self.done(format!("pasted {n} items into {place}")),
             Err(e) => e.clone(),
         };
         // A cut removes its source only after the paste worked.

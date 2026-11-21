@@ -3,7 +3,9 @@
 //! Opus uses bundled libopus through the Symphonia adapter. Building requires
 //! CMake and a C compiler. AAC support is AAC-LC; unsupported profiles return errors.
 //! Keep scan results in station data and cache `Analysis` separately for gain and hashes.
+mod listing;
 mod watch;
+pub use listing::{Limits, Listing, list_audio, probe};
 use lofty::{
     file::TaggedFileExt,
     tag::{Accessor, ItemKey, Tag, TagExt},

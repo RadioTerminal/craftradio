@@ -266,7 +266,7 @@ fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Ve
     });
     if menu_item(ui, "Move to…", None) {
         actions.push(Action::Toast(
-            "preview — moving a fixed event needs the scheduler".to_owned(),
+            "Move the event in the rules of its playlist".to_owned(),
         ));
     }
     if menu_item(ui, "Skip this occurrence", None) {

@@ -13,6 +13,24 @@ pub enum Mode {
     Manual,
 }
 
+/// How a cart plays when somebody fires it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CartMode {
+    #[default]
+    OneShot,
+    Loop,
+    Restart,
+}
+
+/// Where a mixer strip sends its sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Route {
+    #[default]
+    Out,
+    OutAndCue,
+    CueOnly,
+}
+
 /// Who may run a command (spec 6.14). MCP gets `ReadOnly` by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tier {
@@ -135,6 +153,61 @@ pub enum Command {
     HistoryList { since: Timestamp, limit: u32 },
     #[serde(rename = "history.export_csv")]
     HistoryExportCsv { since: Timestamp, until: Timestamp },
+    /// Takes back the last playlist or cart edit.
+    #[serde(rename = "history.undo")]
+    HistoryUndo,
+    /// Does again the last edit that `history.undo` took back.
+    #[serde(rename = "history.redo")]
+    HistoryRedo,
+    /// Runs station edits as one step: all of them, or none. Undo takes them back together.
+    #[serde(rename = "station.batch")]
+    StationBatch { commands: Vec<Command> },
+    /// Clears a stop-after-current, so the station plays on.
+    #[serde(rename = "station.continue")]
+    StationContinue,
+    /// Stores one setting of one part of the UI.
+    #[serde(rename = "settings.set")]
+    SettingsSet {
+        part: String,
+        key: String,
+        value: Value,
+    },
+    #[serde(rename = "playlist.set_color")]
+    PlaylistSetColor {
+        playlist: PlaylistId,
+        color: [u8; 3],
+    },
+    #[serde(rename = "playlist.set_pick")]
+    PlaylistSetPick {
+        playlist: PlaylistId,
+        pick: radio_model::PickOrder,
+    },
+    /// Copies a playlist with new item ids. The data is the id of the copy.
+    #[serde(rename = "playlist.duplicate")]
+    PlaylistDuplicate { playlist: PlaylistId, name: String },
+    #[serde(rename = "cart.clear")]
+    CartClear { page: u32, slot: u32 },
+    /// Sets the duck depth and the play mode of a cart.
+    #[serde(rename = "cart.set")]
+    CartSet {
+        page: u32,
+        slot: u32,
+        duck_db: f32,
+        mode: CartMode,
+    },
+    /// Sets the fader, mute, PFL or route of a mixer strip (A–D, Cart, Live, Out).
+    #[serde(rename = "mixer.set_strip")]
+    MixerSetStrip {
+        strip: String,
+        #[serde(default)]
+        gain_db: Option<f32>,
+        #[serde(default)]
+        mute: Option<bool>,
+        #[serde(default)]
+        pfl: Option<bool>,
+        #[serde(default)]
+        route: Option<Route>,
+    },
 }
 
 impl Command {
@@ -172,6 +245,17 @@ impl Command {
             Self::StationGet => "station.get",
             Self::HistoryList { .. } => "history.list",
             Self::HistoryExportCsv { .. } => "history.export_csv",
+            Self::HistoryUndo => "history.undo",
+            Self::HistoryRedo => "history.redo",
+            Self::StationBatch { .. } => "station.batch",
+            Self::StationContinue => "station.continue",
+            Self::SettingsSet { .. } => "settings.set",
+            Self::PlaylistSetColor { .. } => "playlist.set_color",
+            Self::PlaylistSetPick { .. } => "playlist.set_pick",
+            Self::PlaylistDuplicate { .. } => "playlist.duplicate",
+            Self::CartClear { .. } => "cart.clear",
+            Self::CartSet { .. } => "cart.set",
+            Self::MixerSetStrip { .. } => "mixer.set_strip",
         }
     }
 
@@ -208,7 +292,18 @@ impl Command {
             | Self::CartFire { .. }
             | Self::CartStopAll
             | Self::LibraryAddFolder { .. }
-            | Self::LibraryRemoveFolder { .. } => Tier::OnAir,
+            | Self::LibraryRemoveFolder { .. }
+            | Self::HistoryUndo
+            | Self::HistoryRedo
+            | Self::StationBatch { .. }
+            | Self::StationContinue
+            | Self::SettingsSet { .. }
+            | Self::PlaylistSetColor { .. }
+            | Self::PlaylistSetPick { .. }
+            | Self::PlaylistDuplicate { .. }
+            | Self::CartClear { .. }
+            | Self::CartSet { .. }
+            | Self::MixerSetStrip { .. } => Tier::OnAir,
         }
     }
 }
@@ -395,6 +490,77 @@ pub fn registry() -> Vec<CommandSpec> {
             "Remove a folder from the library",
             A,
             &[("path", "string")],
+        ),
+        spec(
+            "history.undo",
+            "Take back the last playlist or cart edit",
+            A,
+            &[],
+        ),
+        spec(
+            "history.redo",
+            "Do again the edit that undo took back",
+            A,
+            &[],
+        ),
+        spec(
+            "station.batch",
+            "Run station edits as one step (all or none)",
+            A,
+            &[("commands", "array")],
+        ),
+        spec(
+            "station.continue",
+            "Clear stop-after-current; play on",
+            A,
+            &[],
+        ),
+        spec(
+            "settings.set",
+            "Store one setting of one part of the UI",
+            A,
+            &[("part", "string"), ("key", "string"), ("value", "object")],
+        ),
+        spec(
+            "playlist.set_color",
+            "Set the colour of a playlist",
+            A,
+            &[p, ("color", "array")],
+        ),
+        spec(
+            "playlist.set_pick",
+            "Set the pick order (and weights) of a playlist",
+            A,
+            &[p, ("pick", "object")],
+        ),
+        spec(
+            "playlist.duplicate",
+            "Copy a playlist with new item ids",
+            A,
+            &[p, ("name", "string")],
+        ),
+        spec(
+            "cart.clear",
+            "Clear a cartwall slot",
+            A,
+            &[("page", "integer"), ("slot", "integer")],
+        ),
+        spec(
+            "cart.set",
+            "Set the duck depth and play mode of a cart",
+            A,
+            &[
+                ("page", "integer"),
+                ("slot", "integer"),
+                ("duck_db", "number"),
+                ("mode", "string"),
+            ],
+        ),
+        spec(
+            "mixer.set_strip",
+            "Set the fader, mute, PFL or route of a mixer strip",
+            A,
+            &[("strip", "string")],
         ),
         spec("station.get", "Read the station state", R, &[]),
         spec(

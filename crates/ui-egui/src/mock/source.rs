@@ -96,6 +96,7 @@ impl ViewSource for MockSource {
             folders: self.folder_views(),
             settings: self.settings.clone(),
             warnings: 0,
+            preview: true,
         }
     }
 

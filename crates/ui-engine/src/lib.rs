@@ -1,8 +1,12 @@
 //! The real station behind the desktop UI: a `ViewSource` over the engine and the playout.
 
+mod edit;
+mod fader;
+mod folders;
+mod icecast;
 mod map;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,9 +19,9 @@ use radio_playout::{DeckPhase, LocalOutput, Playout, PlayoutView};
 use radio_scheduler::Origin as SOrigin;
 use radio_stream::StreamStatus;
 use radio_ui_egui::view::{
-    CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles, FitView, IcecastView,
-    LibraryItem, MeterView, Origin, OutputStatus, PlayMode, PlaylistTab, Route, Row, StationView,
-    Status, StreamState, ViewSource,
+    CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles, DropTarget, Edit, FitView,
+    FolderSource, IcecastView, Imported, LibraryItem, MeterView, Origin, OutputStatus, PlayMode,
+    PlaylistTab, Route, Row, StationView, Status, StreamState, ViewSource,
 };
 
 use map::{display_title, effective_meta, item_len, view_meta};
@@ -67,8 +71,19 @@ pub struct EngineSource {
     previous: HashMap<u64, String>,
     /// The items on the decks in the last snapshot. Deck commands expect these items.
     decks: [Option<ItemId>; 4],
+    /// The states of the decks in the last snapshot.
+    deck_states: [DeckState; 4],
+    /// The rows on air in the last snapshot.
+    on_air_rows: HashSet<u64>,
+    /// The fixed rows of the last snapshot.
+    fixed_rows: HashSet<u64>,
     history: Vec<Row>,
     history_at: Option<(Timestamp, [Option<ItemId>; 4])>,
+    /// The next item id that the source gives out, or 0 to start after the largest id.
+    next_id: u64,
+    /// Library files that no playlist holds.
+    files: Vec<folders::LibFile>,
+    limits: radio_library::Limits,
 }
 
 /// What a timeline row stands for.
@@ -101,8 +116,14 @@ impl EngineSource {
             row_order: Vec::new(),
             previous: HashMap::new(),
             decks: [None; 4],
+            deck_states: [DeckState::Empty; 4],
+            on_air_rows: HashSet::new(),
+            fixed_rows: HashSet::new(),
             history: Vec::new(),
             history_at: None,
+            next_id: 0,
+            files: Vec::new(),
+            limits: radio_library::Limits::DEFAULT,
         }
     }
 
@@ -201,6 +222,8 @@ impl EngineSource {
         let mut rows = Vec::with_capacity(pv.timeline.entries.len());
         let mut refs = HashMap::new();
         let mut order = Vec::new();
+        self.on_air_rows.clear();
+        self.fixed_rows.clear();
         for e in &pv.timeline.entries {
             let Some((_, item)) = self.items.get(&e.item) else {
                 continue;
@@ -239,6 +262,16 @@ impl EngineSource {
                     item: e.item,
                 },
             );
+            let end = e
+                .start
+                .checked_add(SignedDuration::try_from(e.len).unwrap_or_default())
+                .unwrap_or(e.start);
+            if e.start <= pv.now && pv.now < end {
+                self.on_air_rows.insert(id);
+            }
+            if row.fixed.is_some() {
+                self.fixed_rows.insert(id);
+            }
             order.push(id);
             rows.push(row);
         }
@@ -453,7 +486,7 @@ pub(crate) fn strip_label(s: Strip) -> &'static str {
 }
 
 /// The text that identifies the source of an item in the library.
-fn source_text(s: &Source) -> String {
+pub(crate) fn source_text(s: &Source) -> String {
     match s {
         Source::File { path } => path.clone(),
         Source::Stream { url, .. } => url.clone(),
@@ -524,6 +557,7 @@ impl ViewSource for EngineSource {
         }
         let rows = self.timeline_rows(&pv);
         let decks = self.decks(&pv, now);
+        self.deck_states = std::array::from_fn(|i| decks[i].state);
         let history = self.history_rows(now);
         let (carts, cartwall) = self.cartwall();
         let main = self.main.clone().unwrap_or_else(|| map::empty_tab("Main"));
@@ -547,7 +581,12 @@ impl ViewSource for EngineSource {
             station: self.station.clone(),
             meters: Self::meters(&pv),
             history,
-            library: self.library.clone(),
+            library: self
+                .library
+                .iter()
+                .cloned()
+                .chain(self.files.iter().map(|f| f.view.clone()))
+                .collect(),
             devices: self.devices.clone(),
             device_roles: DeviceRoles {
                 out: match &pv.outputs.local {
@@ -564,7 +603,36 @@ impl ViewSource for EngineSource {
             folders: Vec::new(),
             settings: self.state.ui_settings().clone(),
             warnings: open_alarms + pv.timeline.warnings.len(),
+            preview: false,
         }
+    }
+
+    fn apply_rules(&mut self, tab: PlaylistTab) -> Result<(), String> {
+        self.rules(tab)
+    }
+
+    fn drop_item(&mut self, item: u64, target: DropTarget) -> Result<usize, String> {
+        self.drop_on(item, target)
+    }
+
+    fn import_files(&mut self, paths: Vec<String>, category: &str) -> Result<Imported, String> {
+        Ok(self.import(&paths, category))
+    }
+
+    fn playlist_from_folder(&mut self, folder: FolderSource) -> Result<String, String> {
+        self.folder_playlist(folder)
+    }
+
+    fn edit(&mut self, edit: Edit) -> Result<usize, String> {
+        self.apply(edit)
+    }
+
+    fn library_ref(&mut self, title: &str, _len: Duration) -> Option<u64> {
+        self.find_ref(title)
+    }
+
+    fn use_as_main(&mut self, name: &str) -> Result<(), String> {
+        self.set_main(name)
     }
 
     fn stream_title(&self, row: &Row) -> String {
