@@ -105,6 +105,11 @@ pub fn icecast_view(state: &State) -> IcecastView {
         password: String::new(),
         password_set: false,
         keychain_error: None,
+        // TLS is on for any host but this computer, unless a person turned it off.
+        tls: s
+            .and_then(|m| m.get("tls"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or_else(|| radio_stream::default_tls(&text("host"))),
         format: if text("format") == "mp3" {
             StreamFormat::Mp3
         } else {
@@ -146,7 +151,7 @@ pub fn icecast_config(
             StreamFormat::Opus => SFormat::Opus { kbps: ice.kbps },
             StreamFormat::Mp3 => SFormat::Mp3 { kbps: ice.kbps },
         },
-        tls: false,
+        tls: ice.tls,
     }))
 }
 
@@ -240,6 +245,7 @@ impl EngineSource {
             set("user", clean.user.clone().into()),
             set("format", format.into()),
             set("kbps", clean.kbps.into()),
+            set("tls", clean.tls.into()),
         ])?;
         Ok(1)
     }

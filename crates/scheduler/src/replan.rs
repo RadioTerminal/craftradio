@@ -289,6 +289,11 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         // The old stable sort put existing entries before leftovers at equal times.
         // Merge only the prefix the leftovers overlap; the rest is already ordered.
         if let Some(last) = leftover.last() {
+            // The partition points below need entries in start order.
+            debug_assert!(
+                raw.entries.windows(2).all(|w| w[0].start <= w[1].start),
+                "raw.entries is sorted by start"
+            );
             let start = raw.entries.partition_point(|e| e.start <= after);
             let end = start + raw.entries[start..].partition_point(|e| e.start <= last.start);
             let mut merged: Vec<Entry> = raw.entries[start..end].to_vec();

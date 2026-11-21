@@ -414,6 +414,9 @@ fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Actio
         });
 }
 
+/// The warning for a password that goes to another computer without TLS.
+pub(crate) const PASSWORD_IN_CLEAR: &str = "⚠ password sent unencrypted · turn on TLS";
+
 fn icecast_settings(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -463,6 +466,9 @@ fn icecast_settings(
             settings::label(ui, "Port", t);
             ui.add(DragValue::new(&mut ice.port).range(1..=u16::MAX));
             ui.end_row();
+            settings::label(ui, "TLS", t);
+            ui.checkbox(&mut ice.tls, "Encrypt (TLS)");
+            ui.end_row();
             settings::label(ui, "Mount", t);
             field(ui, &mut ice.mount, false);
             ui.end_row();
@@ -500,6 +506,18 @@ fn icecast_settings(
                 });
             ui.end_row();
         });
+    // The edited form decides: a typed password counts as a password.
+    let typed = IcecastView {
+        password_set: view.icecast.password_set || !ice.password.is_empty(),
+        ..ice.clone()
+    };
+    if typed.password_in_clear() {
+        ui.label(
+            RichText::new(PASSWORD_IN_CLEAR)
+                .font(theme::text(theme::CAPTION))
+                .color(t.warn),
+        );
+    }
     ui.horizontal(|ui| {
         let changed = *ice != view.icecast;
         if ui

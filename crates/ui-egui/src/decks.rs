@@ -631,8 +631,13 @@ fn live_chip(
         .output
         .listeners
         .map_or("listeners unknown".to_owned(), |n| format!("{n} listeners"));
+    let clear = if ice.password_in_clear() {
+        format!("\n{}", crate::mixer::PASSWORD_IN_CLEAR)
+    } else {
+        String::new()
+    };
     let hint = format!(
-        "{why}\nMount {} · {listeners} · {} {} kbps\nClick for the Icecast settings",
+        "{why}\nMount {} · {listeners} · {} {} kbps{clear}\nClick for the Icecast settings",
         ice.mount,
         ice.format.label(),
         ice.kbps

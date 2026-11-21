@@ -613,11 +613,29 @@ pub struct IcecastView {
     pub password_set: bool,
     /// Why the keychain could not answer, when it could not.
     pub keychain_error: Option<String>,
+    /// Encrypt the connection (TLS). Off sends the password in clear text.
+    pub tls: bool,
     pub format: StreamFormat,
     pub kbps: u32,
 }
 
 // The password never shows in a debug print.
+impl IcecastView {
+    /// True when the password goes over the network in clear text: TLS is off, a password
+    /// is set, and the host is not this computer.
+    pub fn password_in_clear(&self) -> bool {
+        !self.tls && self.password_set && !is_loopback(&self.host)
+    }
+}
+
+/// True for a host name or address of this computer.
+pub fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 impl std::fmt::Debug for IcecastView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IcecastView")
@@ -628,6 +646,7 @@ impl std::fmt::Debug for IcecastView {
             .field("password", &"…")
             .field("password_set", &self.password_set)
             .field("keychain_error", &self.keychain_error)
+            .field("tls", &self.tls)
             .field("format", &self.format)
             .field("kbps", &self.kbps)
             .finish()
@@ -1030,7 +1049,24 @@ pub const NOT_SUPPORTED: &str = "preview — this source cannot do that";
 
 #[cfg(test)]
 mod tests {
-    use super::check_stream_url;
+    use super::{IcecastView, check_stream_url};
+
+    /// The warning shows only when the password goes to another computer in clear text.
+    #[test]
+    fn the_clear_password_warning_needs_no_tls_a_password_and_a_remote_host() {
+        let ice = |host: &str, tls, password_set| IcecastView {
+            host: host.into(),
+            tls,
+            password_set,
+            ..IcecastView::default()
+        };
+        assert!(ice("stream.example.org", false, true).password_in_clear());
+        assert!(!ice("stream.example.org", true, true).password_in_clear());
+        assert!(!ice("stream.example.org", false, false).password_in_clear());
+        for local in ["localhost", "127.0.0.1", "::1"] {
+            assert!(!ice(local, false, true).password_in_clear(), "{local}");
+        }
+    }
 
     #[test]
     fn stream_addresses_need_a_scheme_and_a_host_and_no_credentials() {

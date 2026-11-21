@@ -198,6 +198,7 @@ impl MockSource {
                 password: String::new(),
                 password_set: false,
                 keychain_error: None,
+                tls: true,
                 format: StreamFormat::Opus,
                 kbps: ICECAST_KBPS,
             },
