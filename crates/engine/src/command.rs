@@ -48,6 +48,75 @@ pub enum Tier {
     OnAir,
 }
 
+/// A change of the compressor on Program. A field that is absent keeps its value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompressorPatch {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub threshold_db: Option<f32>,
+    #[serde(default)]
+    pub ratio: Option<f32>,
+    #[serde(default)]
+    pub attack_ms: Option<f32>,
+    #[serde(default)]
+    pub release_ms: Option<f32>,
+    #[serde(default)]
+    pub makeup_db: Option<f32>,
+}
+
+/// A change of the limiter on Program. A field that is absent keeps its value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LimiterPatch {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub ceiling_db: Option<f32>,
+    #[serde(default)]
+    pub release_ms: Option<f32>,
+}
+
+impl CompressorPatch {
+    /// Puts the values of the patch on `c`.
+    pub fn apply(&self, c: &mut radio_model::CompressorSettings) {
+        if let Some(v) = self.enabled {
+            c.enabled = v;
+        }
+        if let Some(v) = self.threshold_db {
+            c.threshold_db = v;
+        }
+        if let Some(v) = self.ratio {
+            c.ratio = v;
+        }
+        if let Some(v) = self.attack_ms {
+            c.attack_ms = v;
+        }
+        if let Some(v) = self.release_ms {
+            c.release_ms = v;
+        }
+        if let Some(v) = self.makeup_db {
+            c.makeup_db = v;
+        }
+    }
+}
+
+impl LimiterPatch {
+    /// Puts the values of the patch on `l`.
+    pub fn apply(&self, l: &mut radio_model::LimiterSettings) {
+        if let Some(v) = self.enabled {
+            l.enabled = v;
+        }
+        if let Some(v) = self.ceiling_db {
+            l.ceiling_db = v;
+        }
+        if let Some(v) = self.release_ms {
+            l.release_ms = v;
+        }
+    }
+}
+
 /// Every action on the station. Serialised as `{"id": "playlist.create", "args": {...}}`.
 ///
 /// `source` and `meta` carry JSON until the model's `FolderSource` and `ItemMeta` types land,
@@ -272,6 +341,14 @@ pub enum Command {
         #[serde(default)]
         route: Option<Route>,
     },
+    /// Sets the compressor and the limiter on Program. Absent fields keep their values.
+    #[serde(rename = "mixer.set_dynamics")]
+    MixerSetDynamics {
+        #[serde(default)]
+        compressor: Option<CompressorPatch>,
+        #[serde(default)]
+        limiter: Option<LimiterPatch>,
+    },
     /// Acknowledges one alarm or warning by its id: it stops counting as new.
     #[serde(rename = "alarm.ack")]
     AlarmAck { id: u64 },
@@ -336,6 +413,7 @@ impl Command {
             Self::CartClear { .. } => "cart.clear",
             Self::CartSet { .. } => "cart.set",
             Self::MixerSetStrip { .. } => "mixer.set_strip",
+            Self::MixerSetDynamics { .. } => "mixer.set_dynamics",
             Self::AlarmAck { .. } => "alarm.ack",
             Self::AlarmAckAll { .. } => "alarm.ack_all",
         }
@@ -395,6 +473,7 @@ impl Command {
             | Self::CartClear { .. }
             | Self::CartSet { .. }
             | Self::MixerSetStrip { .. }
+            | Self::MixerSetDynamics { .. }
             | Self::AlarmAck { .. }
             | Self::AlarmAckAll { .. } => Tier::OnAir,
         }
@@ -752,6 +831,12 @@ pub fn registry() -> Vec<CommandSpec> {
             "Set the fader, mute, PFL or route of a mixer strip",
             A,
             &[("strip", "string")],
+        ),
+        spec(
+            "mixer.set_dynamics",
+            "Set the compressor and the limiter on Program",
+            A,
+            &[("compressor", "object"), ("limiter", "object")],
         ),
         spec(
             "alarm.ack",

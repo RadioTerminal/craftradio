@@ -258,6 +258,9 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     for (name, st) in &s.strips {
         set(&tx, "mixer", name, &json(st)?)?;
     }
+    if let Some(d) = &s.dynamics {
+        set(&tx, "dynamics", crate::DYNAMICS_KEY, &json(d)?)?;
+    }
     tx.execute("DELETE FROM settings_by_part WHERE part = 'carts'", [])?;
     for c in &s.cart_settings {
         set(&tx, "carts", &format!("{}:{}", c.page, c.slot), &json(c)?)?;
@@ -363,6 +366,11 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
             .strips
             .insert(k, serde_json::from_str(&v).map_err(bad)?);
     }
+    // A row that does not parse or is out of range counts as no row: playout keeps its
+    // default, and the station still opens.
+    state.dynamics = get("dynamics", crate::DYNAMICS_KEY)?
+        .and_then(|v| serde_json::from_str::<radio_model::DynamicsSettings>(&v).ok())
+        .filter(|d| d.validate().is_ok());
     let mut stmt = conn.prepare("SELECT value FROM settings_by_part WHERE part = 'carts'")?;
     for v in stmt.query_map([], |r| r.get::<_, String>(0))? {
         state

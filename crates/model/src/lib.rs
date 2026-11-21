@@ -1,5 +1,6 @@
 //! Pure serde data model for the radio station: items, playlists, rules and constraints.
 
+mod dynamics;
 mod error;
 mod ids;
 mod item;
@@ -7,6 +8,9 @@ mod playlist;
 mod rule;
 mod station;
 
+pub use dynamics::{
+    CompressorSettings, DynamicsSettings, LimiterSettings, range as dynamics_range,
+};
 pub use error::ModelError;
 pub use ids::{ItemId, PlaylistId};
 pub use item::{Item, ItemMeta, PublishMode, Source, Timing, stream_title};

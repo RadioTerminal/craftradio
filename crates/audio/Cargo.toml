@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+radio-model.workspace = true
 symphonia.workspace = true
 symphonia-adapter-libopus.workspace = true
 rubato.workspace = true
@@ -14,7 +15,6 @@ rtrb.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-radio-model.workspace = true
 hound.workspace = true
 assert_no_alloc.workspace = true
 

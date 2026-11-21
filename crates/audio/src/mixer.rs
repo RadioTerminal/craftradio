@@ -129,14 +129,23 @@ fn sanitize(kind: CommandKind) -> Result<CommandKind, AudioError> {
 
 /// Items that go from the handle to the render thread, outside the sample clock.
 enum Control {
-    Load { deck: DeckId, source: DeckSource },
-    SetCart { slot: usize, clip: Option<Clip> },
+    Load {
+        deck: DeckId,
+        source: DeckSource,
+    },
+    SetCart {
+        slot: usize,
+        clip: Option<Clip>,
+    },
+    /// New processing on Program, prepared on the control side. `None` is the soft clip.
+    SetDynamics(Option<Box<Chain>>),
 }
 
 /// Heap items that the render thread gives back, so that the handle frees them.
 enum Retired {
     Deck(DeckSource),
     Clip(Clip),
+    Dynamics(Box<Chain>),
 }
 
 /// Atomics that the render thread and the handle share.
@@ -282,7 +291,7 @@ impl Mixer {
         let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_CAPACITY);
         let (ctl_tx, ctl_rx) = RingBuffer::new(CONTROL_CAPACITY);
         // The bound holds every heap item in the mixer and in the control ring.
-        let (ret_tx, ret_rx) = RingBuffer::new(CONTROL_CAPACITY + 4 + config.cart_slots + 1);
+        let (ret_tx, ret_rx) = RingBuffer::new(CONTROL_CAPACITY + 4 + config.cart_slots + 2);
         let (ev_tx, ev_rx) = RingBuffer::new(EVENT_CAPACITY);
         let (live_tx, live_rx) = RingBuffer::new(ring_samples(config.live_buffer));
         let board = Arc::new(MeterBoard::new());
@@ -310,7 +319,9 @@ impl Mixer {
             shared: Arc::clone(&shared),
             sample: 0,
             dynamics: None,
-            block: Vec::new(),
+            // The scratch block of the dynamics. It exists from the start, so a chain that
+            // arrives while the mixer runs needs no allocation.
+            block: vec![[0.0; CHANNELS]; Chain::MAX_BLOCK],
         };
         let handle = MixerHandle {
             commands: cmd_tx,
@@ -334,11 +345,9 @@ impl Mixer {
         match dynamics {
             Some(config) => {
                 self.dynamics = Some(Box::new(Chain::new(config)?));
-                self.block = vec![[0.0; CHANNELS]; Chain::MAX_BLOCK];
             }
             None => {
                 self.dynamics = None;
-                self.block = Vec::new();
             }
         }
         Ok(())
@@ -399,9 +408,12 @@ impl Mixer {
                     self.sample += 1;
                 }
                 chain.process(pre);
+                let clip = !chain.has_limiter();
                 for (i, (out, y)) in outs.iter_mut().zip(pre.iter()).enumerate() {
-                    *out = *y;
-                    self.finish(start + i as u64, *y);
+                    // Without a limiter, the soft clip keeps Program in range.
+                    let y = if clip { [limit(y[0]), limit(y[1])] } else { *y };
+                    *out = y;
+                    self.finish(start + i as u64, y);
                 }
             }
             self.block = block;
@@ -452,6 +464,12 @@ impl Mixer {
         while let Ok(item) = self.control.pop() {
             match item {
                 Control::Load { deck, source } => self.take_load(deck, source),
+                Control::SetDynamics(chain) => {
+                    let old = std::mem::replace(&mut self.dynamics, chain);
+                    if let Some(old) = old {
+                        self.retire(Retired::Dynamics(old));
+                    }
+                }
                 Control::SetCart { slot, clip } => match self.carts.get_mut(slot) {
                     Some(entry) => {
                         let old = std::mem::replace(entry, clip);
@@ -980,6 +998,20 @@ impl MixerHandle {
             .map_err(|_| AudioError::QueueFull)
     }
 
+    /// Puts new processing on Program while the mixer runs: a compressor and a limiter, or
+    /// the soft clip with `None`. It prepares the processors here, on the control side, and
+    /// the mixer takes them at its next block. It fails if a setting is out of range, or
+    /// when the control queue is full, and then the mixer keeps the processing it had.
+    ///
+    /// The change drops the audio in the lookahead of the old processors, a few ms.
+    pub fn set_dynamics(&mut self, dynamics: Option<ProgramDynamics>) -> Result<(), AudioError> {
+        let chain = dynamics.map(Chain::new).transpose()?.map(Box::new);
+        self.collect();
+        self.control
+            .push(Control::SetDynamics(chain))
+            .map_err(|_| AudioError::QueueFull)
+    }
+
     /// Routes a strip to PFL, or takes it off. Program out has no PFL.
     pub fn set_pfl(&self, strip: Strip, on: bool) {
         if strip == Strip::Out {
@@ -1053,6 +1085,7 @@ impl MixerHandle {
             match item {
                 Retired::Deck(source) => drop(source),
                 Retired::Clip(clip) => drop(clip),
+                Retired::Dynamics(chain) => drop(chain),
             }
         }
         for items in &mut self.items {

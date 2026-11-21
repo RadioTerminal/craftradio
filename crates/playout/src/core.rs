@@ -456,7 +456,14 @@ impl Core {
             .icecast
             .as_ref()
             .map(|_| 4 * SAMPLE_RATE as usize * CHANNELS);
-        let mut opened = open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap)?;
+        // The setting that a person stored wins over the default of the config. A stored
+        // setting that the processors refuse falls back to that default.
+        let stored = engine.state().dynamics.map(|d| ProgramDynamics::from(&d));
+        let mut opened = match stored {
+            Some(d) => open_output(&cfg.output, cfg.mixer, Some(d), tap)
+                .or_else(|_| open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap))?,
+            None => open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap)?,
+        };
         let icecast = cfg
             .icecast
             .clone()

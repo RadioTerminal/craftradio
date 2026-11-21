@@ -3,6 +3,8 @@ use radio_engine::{Command, Engine, EngineError, LogEntry, LogStatus, Tier, regi
 use radio_model::{Item, ItemId, PlaylistId, Source};
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
+mod dynamics;
+
 const MAIN: PlaylistId = PlaylistId(1);
 
 fn item(id: u64, title: &str) -> Item {

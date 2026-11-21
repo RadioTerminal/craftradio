@@ -195,13 +195,71 @@ fn the_mixer_refuses_an_out_of_range_setting() {
     mixer.set_dynamics(Some(limiter_only())).expect("dynamics");
     let before = mixer.latency_frames();
     let bad = ProgramDynamics {
-        limiter: LimiterConfig {
+        limiter: Some(LimiterConfig {
             lookahead_ms: 0.01,
             ..LimiterConfig::default()
-        },
+        }),
         ..ProgramDynamics::default()
     };
     let result = mixer.set_dynamics(Some(bad));
     assert!(matches!(result, Err(AudioError::Dynamics(_))), "{result:?}");
     assert_eq!(mixer.latency_frames(), before);
+}
+
+/// New processing from the handle reaches a running mixer: the limiter starts to hold the
+/// ceiling at the next block, and the swap does not allocate in `render`.
+#[test]
+fn the_handle_changes_the_processing_while_the_mixer_runs() {
+    let tone = tone_samples(1.0, 1_000.0, -3.0);
+    let (mut mixer, mut handle, _live) = ring_mixer(&tone, limiter_only());
+    mixer.set_dynamics(None).expect("soft clip");
+    out_gain(&mut handle, 12.0);
+    let _ = render_offline(&mut mixer, SR / 8);
+    assert_eq!(mixer.latency_frames(), 0, "the soft clip has no lookahead");
+    handle.set_dynamics(Some(limiter_only())).expect("limiter");
+    let mut program = vec![0.0f32; 480 * 2];
+    assert_no_alloc::reset_violation_count();
+    assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut []));
+    assert_eq!(assert_no_alloc::violation_count(), 0, "the swap allocated");
+    assert!(mixer.latency_frames() > 0, "the mixer took the limiter");
+    let limited = render_offline(&mut mixer, SR / 8);
+    assert!(
+        peak_db(frames(&limited, SR / 16, SR / 8)) <= -0.99,
+        "the limiter holds the ceiling after the swap"
+    );
+}
+
+/// The handle refuses an out-of-range setting, and the mixer keeps its processing.
+#[test]
+fn the_handle_refuses_an_out_of_range_setting() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    mixer.set_dynamics(Some(limiter_only())).expect("dynamics");
+    let before = mixer.latency_frames();
+    let bad = ProgramDynamics {
+        limiter: Some(LimiterConfig {
+            lookahead_ms: 0.01,
+            ..LimiterConfig::default()
+        }),
+        ..ProgramDynamics::default()
+    };
+    let result = handle.set_dynamics(Some(bad));
+    assert!(matches!(result, Err(AudioError::Dynamics(_))), "{result:?}");
+    let _ = render_offline(&mut mixer, 256);
+    assert_eq!(mixer.latency_frames(), before);
+}
+
+/// Without a limiter, the compressor still runs and the soft clip keeps Program finite and
+/// under full scale.
+#[test]
+fn a_compressor_without_a_limiter_still_soft_clips() {
+    let tone = tone_samples(0.5, 1_000.0, -3.0);
+    let dynamics = ProgramDynamics {
+        compressor: Some(CompressorConfig::default()),
+        limiter: None,
+    };
+    let (mut mixer, mut handle, _live) = ring_mixer(&tone, dynamics);
+    out_gain(&mut handle, 12.0);
+    let out = render_offline(&mut mixer, SR / 4);
+    assert!(out.iter().all(|s| s.is_finite()));
+    assert!(peak_db(&out) <= 0.0, "peak {} dBFS", peak_db(&out));
 }
