@@ -503,6 +503,8 @@ pub struct StationView {
     /// Pages and settings of the carts in `carts`.
     pub cartwall: CartwallView,
     pub icecast: IcecastView,
+    /// The compressor and the limiter on Program.
+    pub dynamics: radio_model::DynamicsSettings,
     pub output: OutputStatus,
     /// Folders in the library.
     pub folders: Vec<FolderView>,
@@ -1010,6 +1012,8 @@ pub enum Edit {
         change: StripChange,
     },
     SetIcecast(IcecastView),
+    /// The compressor and the limiter on Program, whole.
+    SetDynamics(radio_model::DynamicsSettings),
     SetDevice {
         role: DeviceRole,
         device: String,

@@ -85,6 +85,7 @@ pub struct MockSource {
     fade: Option<(Timestamp, f32)>,
     strips: HashMap<String, Strip>,
     icecast: IcecastView,
+    dynamics: radio_model::DynamicsSettings,
     device_roles: DeviceRoles,
     folders: Vec<Folder>,
     limits: Limits,
@@ -212,6 +213,7 @@ impl MockSource {
                 format: StreamFormat::Opus,
                 kbps: ICECAST_KBPS,
             },
+            dynamics: radio_model::DynamicsSettings::default(),
             device_roles: DeviceRoles {
                 out: DEVICES[0].to_owned(),
                 pfl: DEVICES[3].to_owned(),

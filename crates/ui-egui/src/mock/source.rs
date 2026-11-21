@@ -98,6 +98,7 @@ impl ViewSource for MockSource {
             carts: self.carts.clone(),
             cartwall: self.cartwall.clone(),
             icecast: self.icecast.clone(),
+            dynamics: self.dynamics,
             output: OutputStatus {
                 local: Status::Preview,
                 icecast: Status::NotConnected,

@@ -948,6 +948,7 @@ impl ViewSource for EngineSource {
             carts,
             cartwall,
             icecast: self.icecast(),
+            dynamics: self.state.dynamics.unwrap_or_default(),
             output: Self::output(&pv),
             folders: self.folder_views(),
             settings: self.settings(),
