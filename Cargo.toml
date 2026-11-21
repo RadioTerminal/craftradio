@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+jiff = { version = "0.2", features = ["serde"] }
+thiserror = "2"
+rand_chacha = "0.9"
+clap = { version = "4", features = ["derive"] }
+proptest = "1"
+radio-model = { path = "crates/model" }
+radio-testkit = { path = "crates/testkit" }
