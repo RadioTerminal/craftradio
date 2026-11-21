@@ -152,6 +152,16 @@ const LOOKAHEAD: usize = 10;
 /// The least a trimmed entry may still play; shorter, it is dropped instead.
 const MIN_PLAY: Duration = Duration::from_secs(1);
 
+/// Before a hard event, a fill item faded at the target must still play at least this long,
+/// and at least [`OVERRUN_MIN_SHARE_PERCENT`] of its length.
+const OVERRUN_MIN_PLAY: Duration = Duration::from_secs(5);
+
+/// The least share of its length, in percent, an overrunning fill item must still play.
+const OVERRUN_MIN_SHARE_PERCENT: u32 = 50;
+
+/// An overrunning fill is only preferred when the nearest fill leaves more dead air than this.
+const OVERRUN_DEAD_AIR: Duration = Duration::from_millis(500);
+
 /// How often the reorder and fill steps re-run after a rotation rule rejects their choice.
 const RETRIES: usize = 3;
 
@@ -650,9 +660,10 @@ impl Fit<'_, '_> {
     /// `seg` and after each other. A rejected item is banned and the search re-run.
     ///
     /// Before a `Hard` event an early finish is dead air that nothing later can close, while
-    /// a late one is faded to the target by the trim step. So when the nearest fill ends
-    /// early, a fill that runs over by about as much is tried too, and wins when its last
-    /// item can be faded by the overrun.
+    /// a late one is faded to the target by the trim step. So when the nearest fill (or no
+    /// fill) leaves more than [`OVERRUN_DEAD_AIR`] of dead air, a fill that runs over by about
+    /// as much is tried too. It wins only if its last item, faded at the target, still plays
+    /// at least [`OVERRUN_MIN_PLAY`] and [`OVERRUN_MIN_SHARE_PERCENT`] of its length.
     fn fill(&self, seg: &[Entry]) -> Option<Vec<Entry>> {
         let f = self.f;
         let arr = f.arrival(self.base, seg, self.ev);
@@ -671,18 +682,21 @@ impl Fit<'_, '_> {
         let gap = apart(self.target, arr);
         let leftover = apart(self.target, start);
         let nearest = self.fill_for(seg, start, leftover);
-        let early = nearest
-            .as_ref()
-            .filter(|(_, reached)| self.hard && *reached < self.target)
-            .map(|(_, reached)| apart(self.target, *reached));
-        if let Some(early) = early {
+        // The dead air the nearest fill leaves, or the whole gap without one.
+        let early = match &nearest {
+            Some((_, reached)) if *reached < self.target => apart(self.target, *reached),
+            Some(_) => Duration::ZERO,
+            None => leftover,
+        };
+        if self.hard && early > OVERRUN_DEAD_AIR {
             let over = self.fill_for(seg, start, leftover.saturating_add(early));
             if let Some((fills, reached)) = over
                 && reached >= self.target
                 && fills.last().is_some_and(|last| {
-                    f.trimmable(last)
-                        && f.step(last, Some(self.ev))
-                            >= apart(reached, self.target).saturating_add(MIN_PLAY)
+                    let len = f.step(last, Some(self.ev));
+                    let play = len.saturating_sub(apart(reached, self.target));
+                    let share = len * OVERRUN_MIN_SHARE_PERCENT / 100;
+                    f.trimmable(last) && play >= OVERRUN_MIN_PLAY.max(share).max(MIN_PLAY)
                 })
             {
                 return Some(fills);

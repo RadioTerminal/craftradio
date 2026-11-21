@@ -542,3 +542,58 @@ fn hard_event_fill_prefers_a_fadeable_overrun_to_dead_air() {
     assert_eq!(tl.entries[event_index(&tl, 100)].start, target);
     no_overlap_with_fixed(&st, &tl);
 }
+
+fn fadeable_bed(id: u64, secs: u32) -> Item {
+    let mut item = jingle(id, secs);
+    item.trimmable = true;
+    item
+}
+
+fn dead_air_before(tl: &Timeline, target: Timestamp) -> Duration {
+    tl.warnings
+        .iter()
+        .filter_map(|w| match w {
+            Warning::DeadAir { at, gap } if *at < target && *at + *gap >= target => Some(*gap),
+            _ => None,
+        })
+        .sum()
+}
+
+#[test]
+fn hard_event_fill_does_not_cut_a_long_bed_to_a_scrap() {
+    // The third track plays to its end at +536 s before the hard event at +539 s. Only a
+    // 60 s bed could fill those 3 s; faded at the target it would play a few seconds of 60,
+    // so the gap stays dead air.
+    let st = make_station(
+        tracks(1, 12, 180),
+        vec![(jingle(100, 60), 0)],
+        vec![fadeable_bed(201, 60)],
+    );
+    let target = at(2 * 178 + 180 + 3);
+    let mut tl = timeline(&st, &[(target, FixMode::Hard)]);
+    fit(&st, &mut tl);
+    assert!(
+        filled_items(fit_for(&tl, target)).is_empty(),
+        "{:?}",
+        tl.fits
+    );
+    assert_eq!(dead_air_before(&tl, target), Duration::from_secs(3));
+    assert_eq!(tl.entries[event_index(&tl, 100)].start, target);
+}
+
+#[test]
+fn hard_event_fill_overrun_must_keep_half_the_bed() {
+    // A 7 s gap. A 4 s bed ends 3 s early; a 15 s bed would run 8 s over and play only 7 s
+    // of 15, under half, so the 4 s bed plays and 3 s of dead air is reported.
+    let st = make_station(
+        tracks(1, 12, 180),
+        vec![(jingle(100, 60), 0)],
+        vec![fadeable_bed(201, 4), fadeable_bed(202, 15)],
+    );
+    let target = at(3 * 178 + 7);
+    let mut tl = timeline(&st, &[(target, FixMode::Hard)]);
+    fit(&st, &mut tl);
+    assert_eq!(filled_items(fit_for(&tl, target)), vec![ItemId(201)]);
+    assert_eq!(dead_air_before(&tl, target), Duration::from_secs(3));
+    assert_eq!(tl.entries[event_index(&tl, 100)].start, target);
+}

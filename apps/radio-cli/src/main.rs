@@ -3,7 +3,7 @@
 use clap::{Parser, Subcommand};
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, Zoned};
-use radio_model::{Item, ItemId, ModelError, PlaylistId, Station};
+use radio_model::{Item, ItemId, ModelError, Station};
 use radio_scheduler::{
     DropReason, Entry, PlanInput, PlanOptions, PlayHistory, Timeline, Warning, plan,
 };
@@ -136,75 +136,32 @@ fn print_text(station: &Station, timeline: &Timeline) {
     }
 }
 
-fn playlist_name(station: &Station, id: PlaylistId) -> String {
-    station
-        .playlists
-        .iter()
-        .find(|p| p.id == id)
-        .map_or_else(|| format!("{id:?}"), |p| p.name.clone())
-}
-
-fn item_name(station: &Station, id: ItemId) -> String {
-    find_item(station, id).map_or_else(|| format!("{id:?}"), |i| i.title.clone())
-}
-
-/// A warning in words, with local times and playlist / item names.
+/// A warning in words. Only `EntryDropped` has its own text so far; the rest print as data.
 fn warning_text(station: &Station, tz: &TimeZone, w: &Warning) -> String {
-    let time = |t: &Timestamp| t.to_zoned(tz.clone()).strftime("%H:%M:%S").to_string();
-    let secs = |d: &Duration| d.as_secs_f64();
     match w {
-        Warning::NoEligibleItem { playlist, at } => format!(
-            "{}: no eligible item at {}",
-            playlist_name(station, *playlist),
-            time(at)
-        ),
-        Warning::DeadAir { at, gap } => {
-            format!("dead air at {} for {:.1} s", time(at), secs(gap))
-        }
-        Warning::FixedConflict {
-            playlist,
-            wanted,
-            got,
-        } => format!(
-            "{}: wanted {}, starts {} (another fixed event has the slot)",
-            playlist_name(station, *playlist),
-            time(wanted),
-            time(got)
-        ),
-        Warning::OutsideTolerance { playlist, error } => format!(
-            "{}: fit {:+.1} s is outside its tolerance",
-            playlist_name(station, *playlist),
-            error.as_secs_f64()
-        ),
-        Warning::LockedMoved { item, by } => format!(
-            "locked \"{}\" starts {:.1} s late",
-            item_name(station, *item),
-            secs(by)
-        ),
-        Warning::UnknownTimeZone { tz } => {
-            format!("unknown time zone \"{tz}\"; local-time rules use UTC")
-        }
         Warning::EntryDropped {
             at,
             playlist,
             item,
             reason,
         } => {
+            let playlist = station
+                .playlists
+                .iter()
+                .find(|p| p.id == *playlist)
+                .map_or_else(|| format!("{playlist:?}"), |p| p.name.clone());
+            let item =
+                find_item(station, *item).map_or_else(|| format!("{item:?}"), |i| i.title.clone());
             let why = match reason {
-                DropReason::AdjacencyAfterMove => {
-                    "moved across a fixed event, it would break an adjacency rule"
-                }
-                DropReason::AdjacencyAfterReplan => {
-                    "after the re-plan, it would break an adjacency rule"
-                }
+                DropReason::AdjacencyAfterMove => "moved across a fixed event",
+                DropReason::AdjacencyAfterReplan => "left next to its kind by a re-plan",
             };
             format!(
-                "{}: dropped \"{}\" planned at {} ({why})",
-                playlist_name(station, *playlist),
-                item_name(station, *item),
-                time(at)
+                "{playlist}: dropped \"{item}\" planned at {} ({why}, it would break an adjacency rule)",
+                at.to_zoned(tz.clone()).strftime("%H:%M:%S")
             )
         }
+        other => format!("{other:?}"),
     }
 }
 
