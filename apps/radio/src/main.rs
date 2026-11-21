@@ -19,10 +19,14 @@ struct Args {
     /// The station time zone (IANA name).
     #[arg(long, default_value = "Europe/Ljubljana")]
     tz: String,
+    /// Show tool windows inside the main window, so that drag and drop works between all of them.
+    #[arg(long)]
+    single_window: bool,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    let single_window = args.single_window;
     let tz = match TimeZone::get(&args.tz) {
         Ok(tz) => tz,
         Err(e) => {
@@ -52,7 +56,8 @@ fn main() -> ExitCode {
     let result = eframe::run_native(
         "radio",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            cc.egui_ctx.set_embed_viewports(single_window);
             Ok(Box::new(RadioApp::new(
                 Box::new(MockSource::new(tz)),
                 clock,

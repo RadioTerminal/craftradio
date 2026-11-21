@@ -4,22 +4,28 @@
 use egui::{Align, Layout, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{Linked, hms, is_on_air, mmss};
+use crate::app::{Action, Linked, hms, is_on_air, mmss};
+use crate::library::LibraryDrag;
+use crate::rules_editor;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{Row, StationView};
+use crate::view::{DropTarget, Row, StationView};
 
-pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, link: &mut Linked, t: &Tokens) {
-    let main = view
-        .rows
-        .iter()
-        .find(|r| r.is_main)
-        .map_or("Music", |r| r.playlist.as_str());
+/// Show the main pane. It returns true when the ⚙ rules button was clicked.
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    link: &mut Linked,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) -> bool {
+    let mut cog = false;
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!("Main: {main}"))
+            RichText::new(format!("Main: {}", view.main.name))
                 .font(theme::text(theme::SECTION))
                 .strong(),
         );
+        cog = rules_editor::cog(ui, &view.main.name);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let n = view.rows.iter().filter(|r| r.is_main).count();
             let caption = format!("{n} tracks · next 6 hours");
@@ -83,11 +89,30 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, link: &mut Linked, t: 
                 } else {
                     divider_row(&mut row, r, on_air, t);
                 }
-                if row.response().clicked() {
+                let resp = row.response();
+                if resp.clicked() {
                     link.pick_in_main(r.id);
+                }
+                // A library item dropped on a row goes in after that row.
+                if resp.dnd_hover_payload::<LibraryDrag>().is_some() {
+                    let layer =
+                        egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dnd_insert"));
+                    let line = Stroke::new(size::ON_AIR_BAR, t.accent);
+                    resp.ctx.layer_painter(layer).hline(
+                        resp.rect.x_range(),
+                        resp.rect.bottom(),
+                        line,
+                    );
+                }
+                if let Some(drag) = resp.dnd_release_payload::<LibraryDrag>() {
+                    actions.push(Action::Drop {
+                        item: drag.0,
+                        target: DropTarget::Main { after: r.id },
+                    });
                 }
             });
         });
+    cog
 }
 
 /// Paint the on-air background behind a cell, over the gaps between cells too.

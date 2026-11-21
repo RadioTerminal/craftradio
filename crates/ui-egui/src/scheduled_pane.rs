@@ -3,9 +3,11 @@
 use egui::{Align, Layout, RichText, Sense, Stroke, UiBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Linked, hms, mmss};
+use crate::app::{Action, Linked, hms, mmss};
+use crate::library::LibraryDrag;
+use crate::rules_editor;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{PlaylistTab, Row, StationView};
+use crate::view::{DropTarget, PlaylistTab, Row, StationView};
 
 /// The tab that the pane shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,22 +21,29 @@ pub(crate) fn show(
     view: &StationView,
     tab: &mut Tab,
     link: &mut Linked,
+    actions: &mut Vec<Action>,
     t: &Tokens,
-) {
-    tab_bar(ui, view, tab);
+) -> Option<usize> {
+    tab_bar(ui, view, tab, actions);
     ui.add_space(space::S);
     ui.separator();
     ui.add_space(space::XS);
     match *tab {
-        Tab::Upcoming => upcoming(ui, view, link, t),
+        Tab::Upcoming => {
+            upcoming(ui, view, link, t);
+            None
+        }
         Tab::Playlist(i) => match view.tabs.get(i) {
-            Some(p) => playlist(ui, p, t),
-            None => *tab = Tab::Upcoming,
+            Some(p) => playlist(ui, p, actions, t).then_some(i),
+            None => {
+                *tab = Tab::Upcoming;
+                None
+            }
         },
     }
 }
 
-fn tab_bar(ui: &mut egui::Ui, view: &StationView, tab: &mut Tab) {
+fn tab_bar(ui: &mut egui::Ui, view: &StationView, tab: &mut Tab, actions: &mut Vec<Action>) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         let label = |s: &str| RichText::new(s).font(theme::text(theme::LABEL));
@@ -53,6 +62,13 @@ fn tab_bar(ui: &mut egui::Ui, view: &StationView, tab: &mut Tab) {
             let dot = egui::pos2(r.rect.left() + space::S + size::DOT_R, r.rect.center().y);
             ui.painter()
                 .circle_filled(dot, size::DOT_R, Tokens::playlist(p.color));
+            // A library item dropped on a tab joins that playlist.
+            if let Some(drag) = r.dnd_release_payload::<LibraryDrag>() {
+                actions.push(Action::Drop {
+                    item: drag.0,
+                    target: DropTarget::Playlist(p.name.clone()),
+                });
+            }
             if r.clicked() {
                 *tab = Tab::Playlist(i);
             }
@@ -177,7 +193,9 @@ fn upcoming_row(
     res.response
 }
 
-fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, t: &Tokens) {
+/// Show one playlist tab. It returns true when the ⚙ rules button was clicked.
+fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &Tokens) -> bool {
+    let mut cog = false;
     egui::ScrollArea::vertical()
         .id_salt(("playlist_tab", &p.name))
         .auto_shrink(false)
@@ -192,6 +210,7 @@ fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, t: &Tokens) {
                         .font(theme::text(theme::SECTION))
                         .strong(),
                 );
+                cog = rules_editor::cog(ui, &p.name);
             });
             ui.add_space(space::S);
             caption(ui, "PICK", t);
@@ -203,24 +222,31 @@ fn playlist(ui: &mut egui::Ui, p: &PlaylistTab, t: &Tokens) {
             }
             ui.add_space(space::M);
             caption(ui, &format!("ITEMS ({})", p.items.len()), t);
-            theme::card_frame(t)
-                .inner_margin(pad::TIGHT)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    for (name, len) in &p.items {
-                        egui::Frame::new().inner_margin(pad::ROW).show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(name).font(theme::text(theme::SMALL)));
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let len =
-                                        RichText::new(mmss(*len)).font(theme::mono(theme::CODE));
-                                    ui.label(len.color(t.text_muted));
-                                });
+            let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
+            let (_, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
+                ui.set_width(ui.available_width());
+                for (name, len) in &p.items {
+                    egui::Frame::new().inner_margin(pad::ROW).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(name).font(theme::text(theme::SMALL)));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let len = RichText::new(mmss(*len)).font(theme::mono(theme::CODE));
+                                ui.label(len.color(t.text_muted));
                             });
                         });
-                    }
+                    });
+                }
+                let hint = RichText::new("Drop a library title here to add it");
+                ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
+            });
+            if let Some(drag) = dropped {
+                actions.push(Action::Drop {
+                    item: drag.0,
+                    target: DropTarget::Playlist(p.name.clone()),
                 });
+            }
         });
+    cog
 }
 
 fn caption(ui: &mut egui::Ui, text: &str, t: &Tokens) {

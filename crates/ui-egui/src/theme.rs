@@ -85,6 +85,56 @@ pub mod size {
     /// The time that a pressed cart flashes, in seconds.
     pub const CART_FLASH_S: f64 = 1.0;
 
+    /// Tool windows: cartwall, mixer, clock and history.
+    pub const CART_PAGE: usize = 16;
+    pub const CARTWALL_W: f32 = 640.0;
+    pub const CARTWALL_H: f32 = 300.0;
+    pub const MIXER_W: f32 = 760.0;
+    pub const MIXER_H: f32 = 440.0;
+    pub const CLOCK_WIN_W: f32 = 520.0;
+    pub const CLOCK_WIN_H: f32 = 520.0;
+    pub const HISTORY_W: f32 = 820.0;
+    pub const HISTORY_H: f32 = 540.0;
+
+    /// Library window.
+    pub const LIBRARY_W: f32 = 900.0;
+    pub const LIBRARY_H: f32 = 520.0;
+    pub const TREE_W: f32 = 180.0;
+    pub const DOCK_H: f32 = 260.0;
+    pub const COL_TITLE: f32 = 240.0;
+    pub const COL_ARTIST: f32 = 150.0;
+    pub const COL_CATEGORY: f32 = 90.0;
+    pub const COL_ORIGIN: f32 = 70.0;
+    /// A text field in a settings section.
+    pub const FIELD_W: f32 = 220.0;
+    /// The time that a toast stays, in seconds.
+    pub const TOAST_S: f64 = 4.0;
+
+    /// Mixer strips.
+    pub const STRIP_W: f32 = 88.0;
+    pub const METER_H: f32 = 220.0;
+    pub const METER_BAR_W: f32 = 8.0;
+    pub const FADER_W: f32 = 20.0;
+    /// The meter scale in dB.
+    pub const METER_MIN_DB: f32 = -60.0;
+    pub const METER_MAX_DB: f32 = 6.0;
+    /// Levels above these show in the amber and red zones.
+    pub const METER_AMBER_DB: f32 = -18.0;
+    pub const METER_RED_DB: f32 = -6.0;
+
+    /// Clock window: the share of the window that the ring takes, and the digit size per point of ring.
+    pub const CLOCK_RING_SHARE: f32 = 0.62;
+    pub const CLOCK_DIGITS_PER_RING: f32 = 0.16;
+    pub const CLOCK_TICK_R: f32 = 3.0;
+    pub const CLOCK_LINE_PER_RING: f32 = 0.06;
+
+    /// The rules editor window.
+    pub const EDITOR_W: f32 = 760.0;
+    pub const EDITOR_H: f32 = 460.0;
+    pub const EDITOR_ROWS_H: f32 = 300.0;
+    pub const COMBO_W: f32 = 150.0;
+    pub const SCRIPT_ROWS: usize = 14;
+
     /// The window.
     pub const WINDOW_W: f32 = 1440.0;
     pub const WINDOW_H: f32 = 860.0;
@@ -123,6 +173,10 @@ pub struct Tokens {
     /// A cart while it flashes.
     pub flash: Color32,
     pub flash_ink: Color32,
+    /// Meter zones: normal, loud and too loud.
+    pub meter_low: Color32,
+    pub meter_mid: Color32,
+    pub meter_high: Color32,
     pub radius_sm: CornerRadius,
     pub radius: CornerRadius,
     pub radius_lg: CornerRadius,
@@ -150,6 +204,9 @@ impl Tokens {
         danger_fill: Color32::from_rgb(0x8E, 0x22, 0x2A),
         flash: Color32::from_rgb(0xF5, 0xB9, 0x42),
         flash_ink: Color32::from_rgb(0x1A, 0x14, 0x05),
+        meter_low: Color32::from_rgb(0x4C, 0xC3, 0x8A),
+        meter_mid: Color32::from_rgb(0xF5, 0xB9, 0x42),
+        meter_high: Color32::from_rgb(0xFF, 0x5A, 0x5F),
         radius_sm: CornerRadius::same(4),
         radius: CornerRadius::same(6),
         radius_lg: CornerRadius::same(8),
