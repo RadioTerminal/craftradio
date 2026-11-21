@@ -232,7 +232,12 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     }
     for (part, keys) in &s.settings {
         for (key, value) in keys {
-            set(&tx, part, key, &json(value)?)?;
+            set(
+                &tx,
+                &format!("{}{part}", crate::UI_PREFIX),
+                key,
+                &json(value)?,
+            )?;
         }
     }
     tx.commit()
@@ -303,10 +308,8 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
         String,
         std::collections::BTreeMap<String, serde_json::Value>,
     > = std::collections::BTreeMap::new();
-    let mut stmt = conn.prepare(
-        "SELECT part, key, value FROM settings_by_part
-         WHERE part NOT IN ('engine', 'library', 'item_meta', 'runtime', 'mixer', 'carts')",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT part, key, value FROM settings_by_part WHERE part LIKE 'ui:%'")?;
     for row in stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -315,6 +318,7 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
         ))
     })? {
         let (part, key, value) = row?;
+        let part = part.trim_start_matches(crate::UI_PREFIX).to_owned();
         let value = serde_json::from_str(&value).map_err(bad)?;
         settings.entry(part).or_default().insert(key, value);
     }

@@ -24,7 +24,7 @@ const PLAN_WAIT: Duration = Duration::from_millis(500);
 /// The name of the playlist that holds library files for carts.
 const CART_ITEMS: &str = "Cart items";
 /// The part of `settings_by_part` for the audio devices.
-pub(crate) const AUDIO_PART: &str = "audio";
+pub const AUDIO_PART: &str = "audio";
 
 impl EngineSource {
     /// Runs one engine command and waits for its answer.
@@ -589,12 +589,16 @@ impl EngineSource {
                 return Ok(1);
             }
         }
-        let out = self.run_edit(Command::CartSet {
+        let cmd = Command::CartSet {
             page,
             slot,
             duck_db,
             mode,
-        })?;
+        };
+        if matches!(change, CartChange::Duck(_)) {
+            return self.merged(format!("cart:{cart}"), cmd);
+        }
+        let out = self.run_edit(cmd)?;
         match out.note {
             Some(note) => Err(format!("Saved, but {note}")),
             None => Ok(1),
@@ -607,12 +611,23 @@ impl EngineSource {
         key: String,
         value: serde_json::Value,
     ) -> Result<usize, String> {
+        let grid = part == CARTWALL_PART && (key == "cols" || key == "rows");
+        if !grid {
+            let cmd = Command::SettingsSet {
+                part: part.clone(),
+                key: key.clone(),
+                value: value.clone(),
+            };
+            self.pending_settings
+                .insert((part.clone(), key.clone()), value);
+            return self.merged(format!("part:{part}:{key}"), cmd);
+        }
         let mut cmds = vec![Command::SettingsSet {
             part: part.clone(),
             key: key.clone(),
             value: value.clone(),
         }];
-        if part == CARTWALL_PART && (key == "cols" || key == "rows") {
+        {
             let num = |k: &str| {
                 if k == key {
                     value.as_u64()

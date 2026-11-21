@@ -1,6 +1,8 @@
 //! The real station behind the desktop UI: a `ViewSource` over the engine and the playout.
 
 mod edit;
+
+pub use edit::AUDIO_PART;
 mod fader;
 mod folders;
 mod icecast;
@@ -57,6 +59,8 @@ pub struct SourceOptions {
 
 /// The real station as a [`ViewSource`].
 pub struct EngineSource {
+    /// The fader thread holds a sender of the playout, so it drops first.
+    merger: Option<fader::Merger>,
     playout: Playout,
     tz: TimeZone,
     station: String,
@@ -99,6 +103,10 @@ pub struct EngineSource {
     secrets: Box<dyn SecretStore>,
     /// The keychain entry of the mount and whether it holds a password.
     secret_known: Option<(String, bool)>,
+    /// Fader values on their way to the engine, by strip.
+    strip_gain: HashMap<String, f32>,
+    /// Part settings on their way to the engine.
+    pending_settings: HashMap<(String, String), serde_json::Value>,
 }
 
 /// What a timeline row stands for.
@@ -116,7 +124,13 @@ impl EngineSource {
             .map(|d| d.name)
             .collect();
         let state = playout.snapshot().state;
+        let merger = playout.command_sender().and_then(|s| {
+            fader::Merger::start(move |c| {
+                let _ = s.send(c);
+            })
+        });
         Self {
+            merger,
             playout,
             tz: opts.tz,
             station: opts.station_name,
@@ -146,6 +160,8 @@ impl EngineSource {
             watch_errors: Vec::new(),
             secrets: Box::new(MemoryStore::default()),
             secret_known: None,
+            strip_gain: HashMap::new(),
+            pending_settings: HashMap::new(),
         }
     }
 
@@ -493,22 +509,49 @@ impl EngineSource {
         }
     }
 
-    fn meters(pv: &PlayoutView) -> Vec<MeterView> {
+    fn meters(&mut self, pv: &PlayoutView) -> Vec<MeterView> {
+        let strips = &pv.state.strips;
+        // A fader value leaves the overlay once the engine state shows it.
+        self.strip_gain.retain(|k, g| {
+            strips
+                .get(k)
+                .is_none_or(|s| (s.gain_db - *g).abs() > f32::EPSILON)
+        });
         Strip::ALL
             .iter()
             .map(|s| {
                 let m = pv.meters.strip(*s);
+                let label = strip_label(*s);
+                let st = strips.get(label).copied().unwrap_or_default();
                 MeterView {
-                    label: strip_label(*s).to_owned(),
+                    label: label.to_owned(),
                     level_db: m.rms_db,
                     peak_db: m.peak_hold_db,
-                    gain_db: 0.0,
-                    mute: false,
-                    pfl: false,
-                    route: Route::Out,
+                    gain_db: self.strip_gain.get(label).copied().unwrap_or(st.gain_db),
+                    mute: st.mute,
+                    pfl: st.pfl,
+                    route: match st.route {
+                        radio_engine::Route::Out => Route::Out,
+                        radio_engine::Route::OutAndCue => Route::OutAndCue,
+                        radio_engine::Route::CueOnly => Route::CueOnly,
+                    },
                 }
             })
             .collect()
+    }
+
+    /// The part settings, with the values on their way to the engine.
+    fn settings(&mut self) -> radio_ui_egui::view::Settings {
+        let mut out = self.state.ui_settings().clone();
+        let state = &self.state;
+        self.pending_settings
+            .retain(|(p, k), v| state.settings(p).and_then(|s| s.get(k)) != Some(v));
+        for ((p, k), v) in &self.pending_settings {
+            out.entry(p.clone())
+                .or_default()
+                .insert(k.clone(), v.clone());
+        }
+        out
     }
 }
 
@@ -618,7 +661,7 @@ impl ViewSource for EngineSource {
             main_playlist: main.name.clone(),
             main,
             station: self.station.clone(),
-            meters: Self::meters(&pv),
+            meters: self.meters(&pv),
             history,
             library: self
                 .library
@@ -640,7 +683,7 @@ impl ViewSource for EngineSource {
             icecast: self.icecast(),
             output: Self::output(&pv),
             folders: self.folder_views(),
-            settings: self.state.ui_settings().clone(),
+            settings: self.settings(),
             warnings: open_alarms + pv.timeline.warnings.len() + self.watch_errors.len(),
             preview: false,
         }

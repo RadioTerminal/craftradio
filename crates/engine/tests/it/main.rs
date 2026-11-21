@@ -291,3 +291,53 @@ fn a_failed_batch_changes_nothing_and_undoes_as_one_step() {
     e.dispatch(Command::HistoryUndo).unwrap();
     assert!(ids(&e).is_empty(), "one undo takes back the whole batch");
 }
+
+#[test]
+fn an_imported_station_replaces_the_playlists_and_survives_a_reopen() {
+    let path = temp_db("import");
+    let mut station = Engine::open_in_memory().unwrap().state().station.clone();
+    station.tz = "Europe/Ljubljana".into();
+    station.playlists[0].name = "Imported".into();
+    station.playlists[0].items.push(item(7, "seven"));
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.dispatch(Command::StationImport { station }).unwrap();
+        e.flush().unwrap();
+    }
+    let e = Engine::open(&path).unwrap();
+    assert_eq!(e.state().station.main().name, "Imported");
+    assert_eq!(e.state().station.tz, "Europe/Ljubljana");
+    assert_eq!(ids(&e), [7]);
+}
+
+#[test]
+fn ui_settings_survive_a_reopen_beside_the_engine_parts() {
+    let path = temp_db("ui-settings");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.dispatch(Command::SettingsSet {
+            part: "library".into(),
+            key: "docked".into(),
+            value: serde_json::json!(true),
+        })
+        .unwrap();
+        e.dispatch(Command::LibraryAddFolder {
+            path: "/music".into(),
+        })
+        .unwrap();
+        e.dispatch(Command::PlaylistAddItems {
+            playlist: radio_model::PlaylistId(1),
+            items: vec![item(1, "one")],
+            at: None,
+        })
+        .unwrap();
+        e.flush().unwrap();
+    }
+    let e = Engine::open(&path).unwrap();
+    let docked = e.state().settings("library").and_then(|s| s.get("docked"));
+    assert_eq!(docked, Some(&serde_json::json!(true)));
+    assert!(
+        e.state().folders.contains("/music"),
+        "the engine part stays apart"
+    );
+}

@@ -144,6 +144,19 @@ pub(crate) enum Request {
     Alarms(mpsc::SyncSender<RaisedAlarm>),
 }
 
+/// Sends commands to a playout from another thread. It ignores the answers.
+#[derive(Clone)]
+pub struct CommandSender(Sender<Request>);
+
+impl CommandSender {
+    pub fn send(&self, cmd: Command) -> Result<(), PlayoutError> {
+        let (tx, _rx) = mpsc::channel();
+        self.0
+            .send(Request::Dispatch(cmd, tx))
+            .map_err(|_| PlayoutError::Stopped)
+    }
+}
+
 /// The running playout. A drop stops the control thread, ends the open log rows as
 /// interrupted and closes the outputs.
 pub struct Playout {
@@ -230,6 +243,12 @@ impl Playout {
             view.meters = m.read();
         }
         view
+    }
+
+    /// A handle that sends commands from another thread, without their answers. Drop every
+    /// handle before the playout, or the drop of the playout waits for them.
+    pub fn command_sender(&self) -> Option<CommandSender> {
+        self.tx.clone().map(CommandSender)
     }
 
     /// The revision of the engine state in the snapshot. It costs no copy.

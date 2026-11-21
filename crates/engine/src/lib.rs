@@ -28,15 +28,8 @@ const DECKS: u8 = 4;
 const UNDO_STEPS: usize = 100;
 /// The names of the mixer strips.
 pub const STRIPS: [&str; 7] = ["A", "B", "C", "D", "Cart", "Live", "Out"];
-/// Parts of `settings_by_part` that the engine keeps for itself.
-pub const RESERVED_PARTS: [&str; 6] = [
-    "engine",
-    "library",
-    "item_meta",
-    "runtime",
-    "mixer",
-    "carts",
-];
+/// UI parts in `settings_by_part` start with this prefix, so they never meet the parts of the engine.
+pub(crate) const UI_PREFIX: &str = "ui:";
 
 /// The settings of one mixer strip.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -815,16 +808,26 @@ impl Engine {
                 Ok(Outcome::default())
             }
             C::StationBatch { commands } => self.batch(commands),
+            C::StationImport { station } => {
+                station.validate()?;
+                self.state.station = station;
+                self.state.scripts.clear();
+                self.state.sources.clear();
+                self.state.prune_orphans();
+                self.undo.clear();
+                self.redo.clear();
+                Ok(Outcome::default())
+            }
             C::StationContinue => {
                 self.state.stop_after_current = false;
                 self.emit(EngineEvent::AudioIntent(AudioIntent::Continue));
                 Ok(Outcome::default())
             }
             C::SettingsSet { part, key, value } => {
-                if part.is_empty() || RESERVED_PARTS.contains(&part.as_str()) {
-                    return Err(EngineError::BadArgument(format!(
-                        "the settings part {part:?} is not for the UI"
-                    )));
+                if part.is_empty() {
+                    return Err(EngineError::BadArgument(
+                        "the settings part is empty".into(),
+                    ));
                 }
                 self.state
                     .settings
