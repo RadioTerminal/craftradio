@@ -508,7 +508,8 @@ pub struct StationView {
     pub folders: Vec<FolderView>,
     /// Settings of each part of the app, by part and key.
     pub settings: Settings,
-    pub warnings: usize,
+    /// The current alarms and warnings, in any order. The Alarms window sorts them.
+    pub alarms: Vec<AlarmView>,
     /// True for the UI preview. The preview plays no audio and saves nothing.
     pub preview: bool,
 }
@@ -518,6 +519,94 @@ impl StationView {
     pub fn say<'a>(&self, preview: &'a str, real: &'a str) -> &'a str {
         if self.preview { preview } else { real }
     }
+
+    /// The alarms and warnings that nobody acknowledged yet.
+    pub fn open_alarms(&self) -> impl Iterator<Item = &AlarmView> {
+        self.alarms.iter().filter(|a| !a.acked)
+    }
+
+    /// The highest severity of the alarms that nobody acknowledged yet.
+    pub fn worst_open(&self) -> Option<Severity> {
+        self.open_alarms().map(|a| a.severity).max()
+    }
+}
+
+/// How serious an alarm is. The order runs from the least to the most serious.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Severity {
+    Info,
+    Warning,
+    Alarm,
+}
+
+impl Severity {
+    /// From the most to the least serious.
+    pub const ALL: [Self; 3] = [Self::Alarm, Self::Warning, Self::Info];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Alarm => "Alarm",
+            Self::Warning => "Warning",
+            Self::Info => "Info",
+        }
+    }
+
+    /// The word for a count of `n`.
+    pub fn count_label(self, n: usize) -> String {
+        let word = match (self, n) {
+            (Self::Alarm, 1) => "alarm",
+            (Self::Alarm, _) => "alarms",
+            (Self::Warning, 1) => "warning",
+            (Self::Warning, _) => "warnings",
+            (Self::Info, _) => "info",
+        };
+        format!("{n} {word}")
+    }
+}
+
+/// The part of the station that raised an alarm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AlarmSource {
+    Playout,
+    Scheduler,
+    Icecast,
+    Device,
+    Library,
+    Engine,
+    Script,
+}
+
+impl AlarmSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Playout => "Playout",
+            Self::Scheduler => "Scheduler",
+            Self::Icecast => "Icecast",
+            Self::Device => "Device",
+            Self::Library => "Library",
+            Self::Engine => "Engine",
+            Self::Script => "Script",
+        }
+    }
+}
+
+/// One alarm or warning, in plain words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlarmView {
+    /// A stable id: the same condition keeps it across snapshots and restarts, so an
+    /// acknowledgement sticks.
+    pub id: u64,
+    pub at: jiff::Zoned,
+    pub severity: Severity,
+    pub source: AlarmSource,
+    pub text: String,
+    /// The item that the alarm concerns, as a row id of `StationView::rows`.
+    pub item: Option<u64>,
+    /// The playlist that the alarm concerns, by the id of the source.
+    pub playlist: Option<u64>,
+    /// The name of that item or playlist, for the Concerns column.
+    pub concerns: Option<String>,
+    pub acked: bool,
 }
 
 /// Settings by part of the app, then by key.
@@ -1011,6 +1100,15 @@ pub enum Edit {
         channels: (u32, u32),
         planned_len: Duration,
         at: Option<usize>,
+    },
+    /// Acknowledge one alarm or warning by its id.
+    AckAlarm(u64),
+    /// Acknowledge the alarms and warnings with these ids.
+    AckAlarms(Vec<u64>),
+    /// Write the alarms with these ids as CSV to the file at `path`.
+    ExportAlarms {
+        path: String,
+        ids: Vec<u64>,
     },
 }
 

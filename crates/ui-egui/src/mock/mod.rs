@@ -2,6 +2,7 @@
 //!
 //! We invented all artists and titles.
 
+mod alarms;
 mod data;
 mod decks;
 mod edit;
@@ -97,6 +98,8 @@ pub struct MockSource {
     edit_depth: usize,
     play_mode: PlayMode,
     stop_after_current: bool,
+    /// The sample alarms that a person acknowledged.
+    acked_alarms: std::collections::HashSet<u64>,
 }
 
 impl MockSource {
@@ -224,6 +227,7 @@ impl MockSource {
             edit_depth: 0,
             play_mode: PlayMode::Auto,
             stop_after_current: false,
+            acked_alarms: std::collections::HashSet::new(),
         }
     }
 

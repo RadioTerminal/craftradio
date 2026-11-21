@@ -73,6 +73,8 @@ pub(crate) enum Action {
     ClearPlaylist(String),
     /// Count the duplicates of a playlist, then ask before removing them.
     RemoveDuplicates(String),
+    /// Select a timeline row in Main and Upcoming, and scroll both to it.
+    SelectRow(u64),
     /// Make a playlist from a folder of the library, and maybe make it main.
     FolderPlaylist {
         path: String,
@@ -159,6 +161,10 @@ fn describe_real(edit: &Edit, n: usize) -> String {
         }
         Edit::AddStream { playlist, .. } => format!("Added {n} stream to {playlist}"),
         Edit::AddLive { playlist, .. } => format!("Added {n} live input to {playlist}"),
+        Edit::AckAlarm(_) | Edit::AckAlarms(_) => {
+            format!("Acknowledged {n} alarms; they no longer count as new")
+        }
+        Edit::ExportAlarms { path, ids } => format!("Writing {} alarms to {path}…", ids.len()),
     }
 }
 
@@ -238,6 +244,8 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         }
         Edit::AddStream { playlist, .. } => format!("added {n} stream to {playlist}"),
         Edit::AddLive { playlist, .. } => format!("added {n} live input to {playlist}"),
+        Edit::AckAlarm(_) | Edit::AckAlarms(_) => format!("acknowledged {n} alarms"),
+        Edit::ExportAlarms { path, .. } => format!("wrote {n} alarms to {path}"),
     };
     format!("preview — {what} (not saved)")
 }
@@ -408,6 +416,18 @@ impl RadioApp {
                 if let Some(tab) = tab {
                     let folder = tab.source.as_ref().is_some_and(|s| s.watch);
                     self.clear = Some((name, tab.items.len(), true, folder));
+                }
+            }
+            Action::SelectRow(id) => {
+                if self.view.rows.iter().any(|r| r.id == id) {
+                    self.link.selected = vec![id];
+                    self.link.anchor = Some(id);
+                    self.link.focus = Pane::Main;
+                    self.link.follow = false;
+                    self.link.scroll_main = Some(id);
+                    self.link.scroll_scheduled = Some(id);
+                } else {
+                    self.toast(ctx, "That item is not in the timeline any more".to_owned());
                 }
             }
             Action::SelectAllRows => {

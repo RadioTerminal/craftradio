@@ -19,6 +19,7 @@
 //! - **Library**: the files the station knows, in categories.
 
 mod add_menu;
+mod alarms;
 mod app;
 mod cartwall;
 mod clock_window;
@@ -47,7 +48,10 @@ pub mod windows;
 
 pub use app::RadioApp;
 pub use mock::MockSource;
-pub use view::{DeckState, DeckView, FitView, PlaylistTab, Row, StationView, ViewSource};
+pub use view::{
+    AlarmSource, AlarmView, DeckState, DeckView, FitView, PlaylistTab, Row, Severity, StationView,
+    ViewSource,
+};
 pub use windows::ToolWindow;
 
 /// Where the card of deck `i` was drawn in the last frame. For tests.
