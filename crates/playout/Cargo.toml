@@ -8,13 +8,12 @@ license.workspace = true
 [dependencies]
 radio-model.workspace = true
 radio-scheduler.workspace = true
-radio-timing = { path = "../timing" }
-radio-engine = { path = "../engine" }
-radio-audio = { path = "../audio" }
-radio-audio-device = { path = "../audio-device" }
-# MP3 (LAME, LGPL) stays opt-in: the app enables `radio-stream/mp3` itself.
-radio-library = { path = "../library" }
-radio-stream = { path = "../stream", default-features = false }
+radio-timing.workspace = true
+radio-engine.workspace = true
+radio-audio.workspace = true
+radio-audio-device.workspace = true
+radio-library.workspace = true
+radio-stream.workspace = true
 jiff.workspace = true
 rtrb.workspace = true
 serde.workspace = true

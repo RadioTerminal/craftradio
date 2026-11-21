@@ -37,6 +37,13 @@ hound = "3.5"
 assert_no_alloc = { version = "1", default-features = false, features = ["warn_debug", "warn_release"] }
 radio-model = { path = "crates/model" }
 radio-scheduler = { path = "crates/scheduler" }
+radio-timing = { path = "crates/timing" }
+radio-engine = { path = "crates/engine" }
+radio-audio = { path = "crates/audio" }
+radio-audio-device = { path = "crates/audio-device" }
+radio-library = { path = "crates/library" }
+# MP3 (LAME, LGPL) stays opt-in: an app enables `radio-stream/mp3` itself.
+radio-stream = { path = "crates/stream", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
 schemars = "1"
 radio-testkit = { path = "crates/testkit" }
