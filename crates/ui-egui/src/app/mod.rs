@@ -25,8 +25,8 @@ use crate::shortcuts;
 
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
-    DeckCommand, DropTarget, Edit, FolderSource, MetaTarget, Place, Row, StationView, Status,
-    ViewSource,
+    Ballistics, DeckCommand, DropTarget, Edit, FolderSource, MetaTarget, Place, Row, StationView,
+    Status, ViewSource,
 };
 use crate::windows::{self, ToolWindow};
 use crate::{cartwall, clock_window, decks, history, library, main_pane, mixer, scheduled_pane};
@@ -168,8 +168,13 @@ pub struct RadioApp {
     perf: Option<Perf>,
     decks: decks::State,
     /// The levels that the meters show, after the ballistics, and when they last moved.
-    meter_shown: Vec<[f32; 2]>,
+    meter_shown: Vec<Ballistics>,
     meter_at: Option<std::time::Instant>,
+    /// Until when the meters ask for frames: a second after the last change.
+    meter_active_until: Option<std::time::Instant>,
+    /// The audio block that the meters last showed, when it first came, and how it went.
+    meter_block: (u64, Option<std::time::Instant>),
+    meter_stats: MeterStats,
     /// True while sound moves any meter, so the Mixer draws at about 30 fps.
     meters_moving: bool,
     /// True while sound moves the Out meter, the one meter of the main window.
@@ -218,13 +223,16 @@ impl RadioApp {
             decks: decks::State::default(),
             meter_shown: Vec::new(),
             meter_at: None,
+            meter_active_until: None,
+            meter_block: (0, None),
+            meter_stats: MeterStats::default(),
             meters_moving: false,
             out_moving: false,
         }
     }
 
     /// Reads the meters of this instant from the source, and gives them ballistics: a bar
-    /// rises at once and falls back over about 300 ms. The peaks hold as the source holds them.
+    /// rises at once and falls at a fixed rate in dB per second, by the real frame time.
     fn read_meters(&mut self) {
         let Some(frame) = self.source.meters() else {
             self.meters_moving = false;
@@ -236,35 +244,43 @@ impl RadioApp {
             .meter_at
             .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
         self.meter_at = Some(now);
-        let fall = 1.0 - (-dt / size::METER_RELEASE_S).exp();
+        if frame.at_sample != self.meter_block.0 || self.meter_block.1.is_none() {
+            self.meter_block = (frame.at_sample, Some(now));
+            self.meter_stats.blocks += 1;
+        }
+        // How long ago the block on show arrived here: at most one audio block plus this frame.
+        if let Some(came) = self.meter_block.1 {
+            let age = now.duration_since(came).as_secs_f32() * 1000.0;
+            self.meter_stats.age_sum_ms += age;
+            self.meter_stats.age_max_ms = self.meter_stats.age_max_ms.max(age);
+            self.meter_stats.reads += 1;
+        }
         self.meter_shown
-            .resize(frame.level_db.len(), [size::METER_MIN_DB; 2]);
+            .resize(frame.level_db.len(), Ballistics::default());
+        let mut changed = false;
         for (i, target) in frame.level_db.iter().enumerate() {
+            let held = frame.peak_db.get(i).copied().unwrap_or(*target);
             let shown = &mut self.meter_shown[i];
-            for ch in 0..2 {
-                shown[ch] = if target[ch] >= shown[ch] {
-                    target[ch]
-                } else {
-                    shown[ch] + (target[ch] - shown[ch]) * fall
-                };
-            }
+            changed |= shown.step(*target, held, dt);
             if let Some(m) = self.view.meters.get_mut(i) {
                 m.level_db = if m.mute {
                     [size::METER_MIN_DB; 2]
                 } else {
-                    *shown
+                    shown.level
                 };
-                if let Some(p) = frame.peak_db.get(i) {
-                    m.peak_db = *p;
-                }
+                m.peak_db = shown.hold;
             }
         }
         let loud = |l: &[f32; 2]| l[0].max(l[1]) > crate::view::METER_SILENT_DB;
-        self.meters_moving = frame.moving() || self.meter_shown.iter().any(loud);
+        self.meters_moving = frame.moving() || self.meter_shown.iter().any(|b| loud(&b.level));
         let out = self.view.meters.iter().position(|m| m.label == "Out");
         self.out_moving = out.is_some_and(|i| {
-            frame.level_db.get(i).is_some_and(loud) || self.meter_shown.get(i).is_some_and(loud)
+            frame.level_db.get(i).is_some_and(loud)
+                || self.meter_shown.get(i).is_some_and(|b| loud(&b.level))
         });
+        if changed || self.meters_moving {
+            self.meter_active_until = Some(now + Duration::from_secs_f32(size::METER_IDLE_S));
+        }
     }
 
     /// Show the time of each frame in the status line.
@@ -433,15 +449,17 @@ impl eframe::App for RadioApp {
                 self.toast(&ctx, last.clone());
             }
         }
-        // While sound moves a meter on show, draw at about 30 fps. Else once a second is
-        // enough. The main window shows only the Out meter, the Mixer window all of them.
+        // While a meter on show moves, draw at the display rate, and for a second after it
+        // stopped, so the fall is seen. Else once a second is enough. The main window shows only the Out meter, the Mixer window all of them.
         // Only the main window asks for frames: each of its frames draws the Mixer window too.
         // A request of the Mixer window itself adds a second clock, and doubles the frames.
-        let meters = self.out_moving || (self.meters_moving && self.open.get(ToolWindow::Mixer));
+        let active = self
+            .meter_active_until
+            .is_some_and(|until| std::time::Instant::now() < until);
+        let meters =
+            active && (self.out_moving || self.open.get(ToolWindow::Mixer) || self.meters_moving);
         if meters {
-            // egui starts a delayed frame one frame early. The added frame time undoes that.
-            let dt = ctx.input(|i| Duration::try_from_secs_f32(i.predicted_dt).unwrap_or_default());
-            ctx.request_repaint_after(size::METER_FRAME + dt);
+            ctx.request_repaint();
         } else {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
@@ -572,17 +590,30 @@ impl eframe::App for RadioApp {
                 .printed
                 .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
             if due {
+                let secs = perf
+                    .printed
+                    .map_or(1.0, |at| at.elapsed().as_secs_f64())
+                    .max(0.001);
                 eprintln!(
-                    "perf: frame {:.2} ms · mean {:.2} ms · {} frames · meters {}",
+                    "perf: frame {:.2} ms · mean {:.2} ms · {} frames ({:.1} fps) · audio blocks {:.0}/s · meter age mean {:.1} ms max {:.1} ms · meters {}",
                     perf.last_ms,
                     perf.mean_ms,
                     perf.frames,
+                    (perf.frames - perf.window_frames) as f64 / secs,
+                    (self.meter_stats.blocks - perf.window_blocks) as f64 / secs,
+                    self.meter_stats.age_sum_ms / self.meter_stats.reads.max(1) as f32,
+                    self.meter_stats.age_max_ms,
                     if self.meters_moving {
                         "moving"
                     } else {
                         "still"
                     }
                 );
+                perf.window_frames = perf.frames;
+                perf.window_blocks = self.meter_stats.blocks;
+                self.meter_stats.age_sum_ms = 0.0;
+                self.meter_stats.age_max_ms = 0.0;
+                self.meter_stats.reads = 0;
                 perf.printed = Some(std::time::Instant::now());
             }
         }
@@ -709,6 +740,19 @@ pub(crate) struct Perf {
     pub frames: u64,
     /// When the readout last went to stderr.
     pub printed: Option<std::time::Instant>,
+    /// The frame and block counts at that time, for the rates.
+    pub window_frames: u64,
+    pub window_blocks: u64,
+}
+
+/// How the meter values arrive, for the `--perf` readout.
+#[derive(Default)]
+pub(crate) struct MeterStats {
+    /// The audio blocks that the UI saw.
+    pub blocks: u64,
+    pub reads: u64,
+    pub age_sum_ms: f32,
+    pub age_max_ms: f32,
 }
 
 /// How much of the running mean a new frame takes.

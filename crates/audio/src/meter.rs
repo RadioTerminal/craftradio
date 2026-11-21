@@ -8,15 +8,19 @@ use crate::{SAMPLE_RATE, Strip};
 /// The lowest level that a meter shows, in dBFS. Silence reads as this value.
 pub const METER_FLOOR_DB: f32 = -120.0;
 
+/// The time constant of the RMS meter, in seconds.
+const RMS_WINDOW_S: f32 = 0.05;
+
 /// Ballistic values below this level become 0, so they never become denormals.
 const FLUSH: f32 = 1e-20;
 
 /// The levels of one strip, per channel (left, right), in dBFS.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct StripMeter {
-    /// The sample peak, with a fall of 20 dB/s.
+    /// The true sample peak of the last render block, with no fall: a loud block shows at once
+    /// and a quiet one right after it shows the lower level.
     pub peak_db: [f32; 2],
-    /// The RMS level over about 300 ms.
+    /// The RMS level over about 50 ms.
     pub rms_db: [f32; 2],
     /// The highest peak in the hold time.
     pub peak_hold_db: [f32; 2],
@@ -63,7 +67,8 @@ fn flush(x: f32) -> f32 {
 /// The ballistics of one channel. It runs on the render thread.
 #[derive(Copy, Clone, Debug, Default)]
 struct Channel {
-    peak: f32,
+    /// The largest absolute sample since the last snapshot.
+    block_peak: f32,
     mean_square: f32,
     hold: f32,
     hold_age: u64,
@@ -73,7 +78,6 @@ struct Channel {
 #[derive(Debug)]
 pub(crate) struct MeterBank {
     channels: [[Channel; 2]; Strip::COUNT],
-    peak_fall: f32,
     rms_coef: f32,
     hold_frames: u64,
 }
@@ -83,9 +87,7 @@ impl MeterBank {
         let rate = SAMPLE_RATE as f32;
         Self {
             channels: [[Channel::default(); 2]; Strip::COUNT],
-            // 20 dB per second.
-            peak_fall: 10f32.powf(-1.0 / rate),
-            rms_coef: 1.0 - (-1.0 / (0.3 * rate)).exp(),
+            rms_coef: 1.0 - (-1.0 / (RMS_WINDOW_S * rate)).exp(),
             hold_frames: (hold.as_secs_f64() * f64::from(SAMPLE_RATE)) as u64,
         }
     }
@@ -96,7 +98,7 @@ impl MeterBank {
         };
         for (ch, x) in chans.iter_mut().zip(frame) {
             let a = x.abs();
-            ch.peak = flush(a.max(ch.peak * self.peak_fall));
+            ch.block_peak = ch.block_peak.max(a);
             ch.mean_square = flush(ch.mean_square + self.rms_coef * (x * x - ch.mean_square));
             if a >= ch.hold {
                 ch.hold = a;
@@ -104,7 +106,7 @@ impl MeterBank {
             } else {
                 ch.hold_age += 1;
                 if ch.hold_age > self.hold_frames {
-                    ch.hold = ch.peak;
+                    ch.hold = a;
                     ch.hold_age = 0;
                 }
             }
@@ -112,14 +114,16 @@ impl MeterBank {
         }
     }
 
-    pub(crate) fn snapshot(&self, at_sample: u64) -> MeterSnapshot {
+    /// The levels now. The block peaks start again from zero.
+    pub(crate) fn snapshot(&mut self, at_sample: u64) -> MeterSnapshot {
         let mut snap = MeterSnapshot {
             at_sample,
             ..MeterSnapshot::default()
         };
-        for (meter, chans) in snap.strips.iter_mut().zip(&self.channels) {
-            for (i, ch) in chans.iter().enumerate() {
-                meter.peak_db[i] = to_db(ch.peak);
+        for (meter, chans) in snap.strips.iter_mut().zip(&mut self.channels) {
+            for (i, ch) in chans.iter_mut().enumerate() {
+                meter.peak_db[i] = to_db(ch.block_peak);
+                ch.block_peak = 0.0;
                 meter.rms_db[i] = to_db(ch.mean_square.max(0.0).sqrt());
                 meter.peak_hold_db[i] = to_db(ch.hold);
             }

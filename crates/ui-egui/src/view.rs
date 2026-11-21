@@ -538,8 +538,58 @@ pub struct MeterView {
 /// The meter levels of one instant, in the order of `StationView::meters`, in dBFS.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeterFrame {
+    /// The sample peak of the last audio block, per channel.
     pub level_db: Vec<[f32; 2]>,
+    /// The peaks that the source holds, per channel.
     pub peak_db: Vec<[f32; 2]>,
+    /// The audio frame count at the end of the block, to tell a new block from an old one.
+    /// 0 when the source has no such count.
+    pub at_sample: u64,
+}
+
+/// What one meter channel shows: a new level at once, a fall at a fixed rate in dB per
+/// second, and a peak mark that holds and then falls. It runs on the real frame time, so the
+/// look does not depend on the frame rate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ballistics {
+    pub level: [f32; 2],
+    pub hold: [f32; 2],
+    hold_age: [f32; 2],
+}
+
+impl Default for Ballistics {
+    fn default() -> Self {
+        Self {
+            level: [crate::theme::size::METER_MIN_DB; 2],
+            hold: [crate::theme::size::METER_MIN_DB; 2],
+            hold_age: [0.0; 2],
+        }
+    }
+}
+
+impl Ballistics {
+    /// Moves to the new `level` and `peak` (dBFS) after `dt` seconds. Returns true when
+    /// something shown changed.
+    pub fn step(&mut self, level: [f32; 2], peak: [f32; 2], dt: f32) -> bool {
+        use crate::theme::size;
+        let before = (self.level, self.hold);
+        let floor = size::METER_MIN_DB;
+        for ch in 0..2 {
+            let target = level[ch].max(floor);
+            self.level[ch] = target.max(self.level[ch] - size::METER_RELEASE_DB_S * dt);
+            let peak = peak[ch].max(target).max(floor);
+            if peak > self.hold[ch] {
+                self.hold[ch] = peak;
+                self.hold_age[ch] = 0.0;
+            } else {
+                self.hold_age[ch] += dt;
+                if self.hold_age[ch] > size::METER_HOLD_S {
+                    self.hold[ch] = peak.max(self.hold[ch] - size::METER_HOLD_FALL_DB_S * dt);
+                }
+            }
+        }
+        before != (self.level, self.hold)
+    }
 }
 
 impl MeterFrame {

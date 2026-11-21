@@ -278,10 +278,22 @@ fn a_library_column_changes_width_after_a_drag() {
     );
 }
 
+/// The header has no mode control, and the Out meter spans most of the cluster.
 #[test]
-fn header_shows_full_mode_names_at_1440() {
+fn header_has_no_mode_control_and_a_wide_out_meter() {
     let harness = harness();
-    assert!(harness.query_all_by_label("Assist").next().is_some());
+    for word in ["Assist", "Manual"] {
+        assert!(!shows(&harness, word), "{word} must not be in the UI");
+    }
+    let meter = harness.get_by_label("Out meter").rect();
+    let play = harness.get_by_label("Play next").rect();
+    // The cluster runs from the left edge of the transport to the right edge of the meter.
+    let cluster_w = meter.right() - play.left();
+    assert!(
+        meter.width() >= cluster_w / 2.0,
+        "the Out meter is {} wide in a cluster {cluster_w} wide",
+        meter.width()
+    );
 }
 
 /// One deck on air and three waiting: the four cards are as tall as each other.

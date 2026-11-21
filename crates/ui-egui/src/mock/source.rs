@@ -269,6 +269,7 @@ impl ViewSource for MockSource {
         Some(crate::view::MeterFrame {
             level_db: m.iter().map(|m| m.level_db).collect(),
             peak_db: m.iter().map(|m| m.peak_db).collect(),
+            at_sample: 0,
         })
     }
 
