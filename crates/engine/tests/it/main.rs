@@ -376,3 +376,67 @@ fn edited_tags_reach_the_item_that_playout_reads() {
         }
     ));
 }
+
+#[test]
+fn start_up_edits_leave_no_undo_steps() {
+    let mut e = Engine::open_in_memory().unwrap();
+    e.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![item(1, "seeded")],
+        at: None,
+    })
+    .unwrap();
+    e.clear_history();
+    assert!(e.dispatch(Command::HistoryUndo).is_err(), "nothing to undo");
+    // A system edit, such as a watched folder, is no undo step and ends the history.
+    e.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![item(2, "by hand")],
+        at: None,
+    })
+    .unwrap();
+    e.dispatch(Command::StationSystem {
+        commands: vec![Command::PlaylistAddItems {
+            playlist: radio_model::PlaylistId(1),
+            items: vec![item(3, "from the folder")],
+            at: None,
+        }],
+    })
+    .unwrap();
+    assert!(e.dispatch(Command::HistoryUndo).is_err());
+    assert_eq!(ids(&e), [1, 2, 3]);
+}
+
+#[test]
+fn undo_never_takes_an_item_off_a_deck() {
+    let mut e = Engine::open_in_memory().unwrap();
+    e.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: vec![item(1, "on deck")],
+        at: None,
+    })
+    .unwrap();
+    e.set_deck(0, Some(radio_model::ItemId(1)));
+    let refused = e.dispatch(Command::HistoryUndo);
+    assert!(refused.is_err(), "the undo would take the deck's item away");
+    assert_eq!(ids(&e), [1], "nothing changed");
+}
+
+#[test]
+fn quick_repeats_of_one_cart_make_one_undo_step() {
+    let mut e = Engine::open_in_memory().unwrap();
+    for db in [-3.0, -6.0, -9.0] {
+        e.dispatch(Command::CartSet {
+            page: 0,
+            slot: 0,
+            duck_db: db,
+            mode: radio_engine::CartMode::OneShot,
+        })
+        .unwrap();
+    }
+    e.dispatch(Command::HistoryUndo).unwrap();
+    assert!(
+        e.state().cart_settings.is_empty(),
+        "one undo takes back the drag"
+    );
+}

@@ -317,6 +317,19 @@ pub struct Engine {
     subscribers: Vec<Sender<EngineEvent>>,
     undo: Vec<Saved>,
     redo: Vec<Saved>,
+    /// The control of the last undo step and when it came, to merge quick repeats.
+    last_step: Option<(String, std::time::Instant)>,
+}
+
+/// Repeated edits of one control within this time make one undo step.
+const MERGE_STEPS: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The control that an edit changes, for edits that repeat while a person drags.
+fn control_of(cmd: &Command) -> Option<String> {
+    match cmd {
+        Command::CartSet { page, slot, .. } => Some(format!("cart:{page}:{slot}")),
+        _ => None,
+    }
 }
 
 /// True for a command that Undo can take back.
@@ -374,6 +387,7 @@ impl Engine {
             subscribers: vec![],
             undo: Vec::new(),
             redo: Vec::new(),
+            last_step: None,
         })
     }
 
@@ -413,7 +427,15 @@ impl Engine {
     /// Run a command. A failed command changes nothing.
     pub fn dispatch(&mut self, cmd: Command) -> Result<Outcome, EngineError> {
         let query = cmd.tier() == Tier::ReadOnly;
-        let before = undoable(&cmd).then(|| self.save());
+        let control = control_of(&cmd);
+        let merged = control.as_ref().is_some_and(|c| {
+            self.last_step
+                .as_ref()
+                .is_some_and(|(k, at)| k == c && at.elapsed() < MERGE_STEPS)
+        });
+        let is_undoable = undoable(&cmd);
+        let before = (is_undoable && !merged).then(|| self.save());
+        let system = matches!(cmd, Command::StationSystem { .. });
         let outcome = self.apply(cmd)?;
         if let Some(before) = before {
             self.undo.push(before);
@@ -422,11 +444,43 @@ impl Engine {
             }
             self.redo.clear();
         }
+        if is_undoable {
+            self.last_step = control.map(|c| (c, std::time::Instant::now()));
+        }
+        if system {
+            self.clear_history();
+        }
         if !query {
             self.store.snapshot(self.state.clone());
             self.emit(EngineEvent::StateChanged);
         }
         Ok(outcome)
+    }
+
+    /// Forgets the undo and redo steps, for example after the start-up edits of the app.
+    pub fn clear_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.last_step = None;
+    }
+
+    /// Refuses a restore that takes away an item that a deck holds.
+    fn check_decks(&self, saved: &Saved) -> Result<(), EngineError> {
+        for (d, item) in self.state.decks.iter().enumerate() {
+            let Some(item) = item else { continue };
+            let kept = saved
+                .station
+                .playlists
+                .iter()
+                .any(|p| p.items.iter().any(|i| i.id == *item));
+            if !kept {
+                let deck = ['A', 'B', 'C', 'D'].get(d).copied().unwrap_or('?');
+                return Err(EngineError::BadArgument(format!(
+                    "this step would remove an item that deck {deck} holds; skip or unload it first"
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn save(&self) -> Saved {
@@ -817,6 +871,11 @@ impl Engine {
             C::HistoryUndo => {
                 let saved = self
                     .undo
+                    .last()
+                    .ok_or_else(|| EngineError::BadArgument("nothing to undo".into()))?;
+                self.check_decks(saved)?;
+                let saved = self
+                    .undo
                     .pop()
                     .ok_or_else(|| EngineError::BadArgument("nothing to undo".into()))?;
                 self.redo.push(self.save());
@@ -826,13 +885,18 @@ impl Engine {
             C::HistoryRedo => {
                 let saved = self
                     .redo
+                    .last()
+                    .ok_or_else(|| EngineError::BadArgument("nothing to redo".into()))?;
+                self.check_decks(saved)?;
+                let saved = self
+                    .redo
                     .pop()
                     .ok_or_else(|| EngineError::BadArgument("nothing to redo".into()))?;
                 self.undo.push(self.save());
                 self.restore(saved);
                 Ok(Outcome::default())
             }
-            C::StationBatch { commands } => self.batch(commands),
+            C::StationBatch { commands } | C::StationSystem { commands } => self.batch(commands),
             C::StationImport { station } => {
                 station.validate()?;
                 self.state.station = station;

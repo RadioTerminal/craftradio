@@ -353,10 +353,12 @@ impl EngineSource {
                     let first = self.fresh_ids(1);
                     let mut item = item;
                     item.id = ItemId(first);
-                    let _ = self.run_edit(Command::PlaylistAddItems {
-                        playlist,
-                        items: vec![item],
-                        at: None,
+                    let _ = self.run_edit(Command::StationSystem {
+                        commands: vec![Command::PlaylistAddItems {
+                            playlist,
+                            items: vec![item],
+                            at: None,
+                        }],
                     });
                 }
                 WatchEvent::Removed(path) => {
@@ -372,9 +374,11 @@ impl EngineSource {
                         .map(|i| i.id)
                         .collect();
                     if !gone.is_empty() {
-                        let _ = self.run_edit(Command::PlaylistRemoveItems {
-                            playlist,
-                            items: gone,
+                        let _ = self.run_edit(Command::StationSystem {
+                            commands: vec![Command::PlaylistRemoveItems {
+                                playlist,
+                                items: gone,
+                            }],
                         });
                     }
                 }

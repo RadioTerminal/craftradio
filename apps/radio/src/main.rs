@@ -133,6 +133,8 @@ fn real(args: &Args) -> Result<(), String> {
     for line in station::reconcile(&mut engine) {
         println!("radio: {line}");
     }
+    // Seeding and catching up are no edits of a person, so Undo starts empty.
+    engine.clear_history();
     match &seeded {
         station::Seeded::No if args.station.is_some() => {
             eprintln!("radio: the station exists already; --station applies to a first run only");

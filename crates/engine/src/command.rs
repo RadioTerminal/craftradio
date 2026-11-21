@@ -168,6 +168,10 @@ pub enum Command {
     /// Replaces all playlists with those of a station file. Scripts and folder sources go.
     #[serde(rename = "station.import")]
     StationImport { station: radio_model::Station },
+    /// Station edits that the system makes, such as a watched folder. They run as one step
+    /// and are not undoable, so the undo history starts again after them.
+    #[serde(rename = "station.system")]
+    StationSystem { commands: Vec<Command> },
     /// Clears a stop-after-current, so the station plays on.
     #[serde(rename = "station.continue")]
     StationContinue,
@@ -256,6 +260,7 @@ impl Command {
             Self::HistoryRedo => "history.redo",
             Self::StationBatch { .. } => "station.batch",
             Self::StationContinue => "station.continue",
+            Self::StationSystem { .. } => "station.system",
             Self::StationImport { .. } => "station.import",
             Self::SettingsSet { .. } => "settings.set",
             Self::PlaylistSetColor { .. } => "playlist.set_color",
@@ -306,6 +311,7 @@ impl Command {
             | Self::HistoryRedo
             | Self::StationBatch { .. }
             | Self::StationContinue
+            | Self::StationSystem { .. }
             | Self::StationImport { .. }
             | Self::SettingsSet { .. }
             | Self::PlaylistSetColor { .. }
@@ -522,6 +528,12 @@ pub fn registry() -> Vec<CommandSpec> {
         spec(
             "station.batch",
             "Run station edits as one step (all or none)",
+            A,
+            &[("commands", "array")],
+        ),
+        spec(
+            "station.system",
+            "Run system edits as one step; the undo history starts again",
             A,
             &[("commands", "array")],
         ),
