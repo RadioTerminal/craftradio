@@ -17,6 +17,13 @@ blake3 = "1"
 notify = "8"
 hound = "3.5"
 tempfile = "3"
+mp3lame-encoder = "0.3"
+percent-encoding = "2"
+opus = "0.3"
+ogg = "0.9"
+rtrb = "0.3"
+base64 = "0.22"
+ureq = { version = "3", default-features = false }
 rquickjs = "0.14"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
@@ -24,7 +31,6 @@ toml = "0.9"
 jiff = { version = "0.2", features = ["serde"] }
 thiserror = "2"
 cpal = "0.18"
-rtrb = "0.4"
 rubato = "5"
 rand_chacha = "0.9"
 clap = { version = "4", features = ["derive"] }

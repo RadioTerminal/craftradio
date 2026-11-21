@@ -1,0 +1,24 @@
+[package]
+name = "radio-stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["mp3"]
+mp3 = ["dep:mp3lame-encoder"]
+
+[dependencies]
+mp3lame-encoder = { workspace = true, optional = true }
+percent-encoding.workspace = true
+opus.workspace = true
+ogg.workspace = true
+rtrb.workspace = true
+base64.workspace = true
+ureq.workspace = true
+symphonia.workspace = true
+jiff.workspace = true
+thiserror.workspace = true
