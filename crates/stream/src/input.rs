@@ -17,6 +17,9 @@ use symphonia::core::{
     meta::MetadataOptions,
     probe::Hint,
 };
+use ureq::unversioned::transport::{
+    Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
+};
 
 /// Incremental ICY parser state. Use one state for each connection.
 #[derive(Default)]
@@ -100,8 +103,17 @@ impl StreamInput {
     }
     pub fn open_with_timeout(
         url: impl Into<String>,
+        frames: rtrb::Producer<f32>,
+        timeout: Duration,
+    ) -> Result<StreamInputHandle, StreamError> {
+        Self::open_with_timeouts(url, frames, timeout, Duration::from_secs(10))
+    }
+    /// Opens an input with separate outage and audio-stall timeouts.
+    pub fn open_with_timeouts(
+        url: impl Into<String>,
         mut frames: rtrb::Producer<f32>,
         timeout: Duration,
+        stall_timeout: Duration,
     ) -> Result<StreamInputHandle, StreamError> {
         let url = url.into();
         if !url.starts_with("http://") {
@@ -127,6 +139,7 @@ impl StreamInput {
                         &metadata,
                         &mut last_audio,
                         &mut down,
+                        stall_timeout,
                     );
                     if last_audio.elapsed() >= timeout && !down {
                         let _ = tx.send(StreamInputEvent::Down);
@@ -150,6 +163,9 @@ impl StreamInput {
 struct IcyReader {
     reader: Box<dyn Read + Send + Sync>,
     metaint: usize,
+    last_audio: Instant,
+    stall_timeout: Duration,
+    deadline: Arc<Mutex<Option<Instant>>>,
     state: IcyState,
     pending: std::collections::VecDeque<u8>,
     title: Arc<Mutex<Option<String>>>,
@@ -164,12 +180,24 @@ impl Read for IcyReader {
             if self.stop.load(Ordering::Relaxed) {
                 return Ok(0);
             }
+            if self.last_audio.elapsed() >= self.stall_timeout {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "audio stream stalled",
+                ));
+            }
             let mut bytes = [0; 4096];
             let n = self.reader.read(&mut bytes)?;
             if n == 0 {
                 return Ok(0);
             }
             let (audio, title) = parse_icy(&bytes[..n], self.metaint, &mut self.state);
+            if !audio.is_empty() {
+                self.last_audio = Instant::now();
+                if let Ok(mut deadline) = self.deadline.lock() {
+                    *deadline = self.last_audio.checked_add(self.stall_timeout);
+                }
+            }
             self.pending.extend(audio);
             if let Some(title) = title
                 && let Ok(mut target) = self.title.lock()
@@ -206,13 +234,20 @@ fn decode(
     title: &Arc<Mutex<Option<String>>>,
     last_audio: &mut Instant,
     down: &mut bool,
+    stall_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let deadline = Arc::new(Mutex::new(None));
+    let config = ureq::Agent::config_builder()
         .timeout_global(None)
         .timeout_connect(Some(Duration::from_secs(2)))
-        .timeout_recv_body(Some(Duration::from_secs(2)))
-        .build()
-        .into();
+        .timeout_recv_response(Some(Duration::from_secs(2)))
+        .timeout_per_read(Some(stall_timeout))
+        .build();
+    let agent = ureq::Agent::with_parts(
+        config,
+        DefaultConnector::default().chain(StallConnector(deadline.clone())),
+        ureq::unversioned::resolver::DefaultResolver::default(),
+    );
     let response = agent.get(url).header("Icy-MetaData", "1").call()?;
     let metaint = response
         .headers()
@@ -220,9 +255,16 @@ fn decode(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    let received = Instant::now();
+    if let Ok(mut limit) = deadline.lock() {
+        *limit = received.checked_add(stall_timeout);
+    }
     let source = IcyReader {
         reader: Box::new(response.into_body().into_reader()),
         metaint,
+        last_audio: received,
+        stall_timeout,
+        deadline,
         state: IcyState::default(),
         pending: Default::default(),
         title: title.clone(),
@@ -280,4 +322,55 @@ fn decode(
         *down = false;
     }
     Ok(())
+}
+
+// A body read can perform several socket reads. Bound all of them by the
+// audio deadline, so metadata or partial HTTP chunks cannot keep a stall alive.
+
+#[derive(Debug)]
+struct StallConnector(Arc<Mutex<Option<Instant>>>);
+impl<T: Transport> Connector<T> for StallConnector {
+    type Out = StallTransport<T>;
+    fn connect(
+        &self,
+        _: &ConnectionDetails,
+        transport: Option<T>,
+    ) -> Result<Option<Self::Out>, ureq::Error> {
+        Ok(transport.map(|inner| StallTransport {
+            inner,
+            deadline: self.0.clone(),
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct StallTransport<T> {
+    inner: T,
+    deadline: Arc<Mutex<Option<Instant>>>,
+}
+impl<T: Transport> Transport for StallTransport<T> {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        self.inner.transmit_output(amount, timeout)
+    }
+    fn await_input(&mut self, mut timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        if let Ok(deadline) = self.deadline.lock()
+            && let Some(deadline) = *deadline
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(ureq::Error::Timeout(ureq::Timeout::PerRead));
+            }
+            timeout.per_read = Some(remaining.into());
+        }
+        self.inner.await_input(timeout)
+    }
+    fn is_open(&mut self) -> bool {
+        self.inner.is_open()
+    }
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
+    }
 }

@@ -137,8 +137,14 @@ pub struct IcecastConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamStatus {
     Connecting,
-    Connected { since: jiff::Timestamp },
-    Retrying { in_secs: u64, last_error: String },
+    Connected {
+        since: jiff::Timestamp,
+        last_metadata_error: Option<String>,
+    },
+    Retrying {
+        in_secs: u64,
+        last_error: String,
+    },
     Stopped,
 }
 enum Control {
@@ -152,7 +158,9 @@ pub struct IcecastHandle {
 }
 impl IcecastHandle {
     pub fn set_title(&self, title: String) {
-        let _ = self.control.send(Control::Title(title));
+        let _ = self
+            .control
+            .send(Control::Title(title.replace(['\r', '\n'], "")));
     }
     pub fn status(&self) -> StreamStatus {
         self.status
@@ -231,6 +239,14 @@ fn connect(cfg: &IcecastConfig, method: &str) -> Result<TcpStream, StreamError> 
     if cfg.tls {
         return Err(StreamError::Invalid("TLS output is unsupported".into()));
     }
+    if cfg.host.chars().any(char::is_whitespace) || cfg.mount.chars().any(char::is_whitespace) {
+        return Err(StreamError::Invalid(
+            "host and mount must not contain whitespace".into(),
+        ));
+    }
+    if cfg.user.contains(':') {
+        return Err(StreamError::Invalid("user must not contain ':'".into()));
+    }
     if !cfg.mount.starts_with('/')
         || [
             &cfg.host,
@@ -272,7 +288,11 @@ fn connect(cfg: &IcecastConfig, method: &str) -> Result<TcpStream, StreamError> 
         response.push(byte[0]);
     }
     let text = String::from_utf8_lossy(&response);
-    let code = text.split_whitespace().nth(1).unwrap_or("");
+    let code = text
+        .split_whitespace()
+        .nth(1)
+        .filter(|code| code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or("");
     if code == "405" && method == "PUT" {
         return connect(cfg, "SOURCE");
     }
@@ -291,21 +311,34 @@ fn send(
     title: &mut String,
     delay: &mut u64,
 ) -> Result<(), StreamError> {
+    // Discard audio collected during the outage before opening the source.
+    let stale = frames.slots();
+    for _ in 0..stale {
+        let _ = frames.pop();
+    }
     let mut output = SourceOutput::new(cfg, title)?;
+    let connected = std::time::Instant::now();
     status(
         state,
         StreamStatus::Connected {
             since: jiff::Timestamp::now(),
+            last_metadata_error: None,
         },
     );
-    *delay = 1;
+    #[cfg(feature = "mp3")]
+    if matches!(cfg.format, StreamFormat::Mp3 { .. }) && !title.is_empty() {
+        metadata_status(state, update_mp3_title(cfg, title));
+    }
     let mut samples = Vec::with_capacity(1920);
     loop {
+        if connected.elapsed() >= Duration::from_secs(10) {
+            *delay = 1;
+        }
         match rx.try_recv() {
             Ok(Control::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             Ok(Control::Title(t)) => {
                 *title = t;
-                output.set_title(cfg, title, &mut samples)?;
+                output.set_title(cfg, title, &mut samples, state)?;
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -355,9 +388,6 @@ impl SourceOutput {
                 {
                     let encoder = crate::mp3::Mp3Encoder::new(cfg.format.kbps())?;
                     let socket = connect(cfg, "PUT")?;
-                    if !title.is_empty() {
-                        update_mp3_title(cfg, title)?;
-                    }
                     Ok(Self::Mp3 { encoder, socket })
                 }
                 #[cfg(not(feature = "mp3"))]
@@ -382,6 +412,7 @@ impl SourceOutput {
         cfg: &IcecastConfig,
         title: &str,
         samples: &mut Vec<f32>,
+        _state: &Mutex<StreamStatus>,
     ) -> Result<(), StreamError> {
         match self {
             Self::Opus { encoder, muxer } => {
@@ -392,7 +423,10 @@ impl SourceOutput {
                 muxer.start(title, None, encoder.pre_skip()?)
             }
             #[cfg(feature = "mp3")]
-            Self::Mp3 { .. } => update_mp3_title(cfg, title),
+            Self::Mp3 { .. } => {
+                metadata_status(_state, update_mp3_title(cfg, title));
+                Ok(())
+            }
         }
     }
 }
@@ -427,4 +461,16 @@ fn update_mp3_title(cfg: &IcecastConfig, title: &str) -> Result<(), StreamError>
         return Err(StreamError::Invalid("MP3 metadata update rejected".into()));
     }
     Ok(())
+}
+
+#[cfg(feature = "mp3")]
+fn metadata_status(state: &Mutex<StreamStatus>, result: Result<(), StreamError>) {
+    if let Ok(mut state) = state.lock()
+        && let StreamStatus::Connected {
+            last_metadata_error,
+            ..
+        } = &mut *state
+    {
+        *last_metadata_error = result.err().map(|error| error.to_string());
+    }
 }

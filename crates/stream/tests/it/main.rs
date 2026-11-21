@@ -262,3 +262,217 @@ fn input_decodes_icy_wrapped_wav_to_stereo() {
 
 #[cfg(feature = "mp3")]
 mod mp3;
+
+fn request_header(socket: &mut std::net::TcpStream) -> String {
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        socket.read_exact(&mut byte).unwrap();
+        bytes.push(byte[0]);
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
+fn live_wav_header() -> Vec<u8> {
+    let mut wav = b"RIFF".to_vec();
+    wav.extend(1_000_036u32.to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    wav.extend(16u32.to_le_bytes());
+    wav.extend(1u16.to_le_bytes());
+    wav.extend(1u16.to_le_bytes());
+    wav.extend(24000u32.to_le_bytes());
+    wav.extend(48000u32.to_le_bytes());
+    wav.extend(2u16.to_le_bytes());
+    wav.extend(16u16.to_le_bytes());
+    wav.extend(b"data");
+    wav.extend(1_000_000u32.to_le_bytes());
+    wav
+}
+
+#[test]
+fn input_keeps_receiving_slow_live_audio() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        request_header(&mut socket);
+        socket.write_all(b"HTTP/1.0 200 OK\r\n\r\n").unwrap();
+        socket.write_all(&live_wav_header()).unwrap();
+        let start = std::time::Instant::now();
+        for _ in 0..24 {
+            socket.write_all(&[1; 4096]).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert!(start.elapsed() > Duration::from_secs(4));
+    });
+    let (producer, mut consumer) = rtrb::RingBuffer::new(24000);
+    let input = StreamInput::open(format!("http://127.0.0.1:{port}/live"), producer).unwrap();
+    let start = std::time::Instant::now();
+    let mut last_received = start;
+    while start.elapsed() < Duration::from_millis(4500) {
+        if consumer.pop().is_ok() {
+            last_received = std::time::Instant::now();
+            while consumer.pop().is_ok() {}
+        }
+        assert!(input.try_event().is_none());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(last_received.duration_since(start) > Duration::from_secs(4));
+    server.join().unwrap();
+    input.stop();
+}
+
+#[test]
+fn input_reconnects_after_audio_stalls() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        request_header(&mut first);
+        first.write_all(b"HTTP/1.0 200 OK\r\n\r\n").unwrap();
+        first.write_all(&live_wav_header()).unwrap();
+        first.write_all(&[1; 8192]).unwrap();
+        let (mut next, _) = listener.accept().unwrap();
+        request_header(&mut next);
+        tx.send(()).unwrap();
+    });
+    let (producer, _) = rtrb::RingBuffer::new(24000);
+    let input = StreamInput::open_with_timeouts(
+        format!("http://127.0.0.1:{port}/live"),
+        producer,
+        Duration::from_millis(100),
+        Duration::from_millis(300),
+    )
+    .unwrap();
+    rx.recv_timeout(Duration::from_secs(4)).unwrap();
+    input.stop();
+    server.join().unwrap();
+}
+
+#[test]
+fn source_discards_stale_ring_before_connecting() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        request_header(&mut socket);
+        socket.write_all(b"HTTP/1.0 200 OK\r\n\r\n").unwrap();
+        let mut magic = [0; 4];
+        socket.read_exact(&mut magic).unwrap();
+        assert_eq!(&magic, b"OggS");
+        tx.send(()).unwrap();
+        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    });
+    let (mut producer, consumer) = rtrb::RingBuffer::new(4096);
+    while producer.push(0.0).is_ok() {}
+    let handle = IcecastClient::start(config(port), consumer);
+    rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(matches!(handle.status(), StreamStatus::Connected { .. }));
+    handle.stop();
+    release.send(()).unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn invalid_source_settings_report_clear_errors() {
+    for (field, value, expected) in [
+        ("host", "bad host", "whitespace"),
+        ("mount", "/bad\tmount", "whitespace"),
+        ("user", "bad:user", "user"),
+    ] {
+        let mut cfg = config(1);
+        match field {
+            "host" => cfg.host = value.into(),
+            "mount" => cfg.mount = value.into(),
+            _ => cfg.user = value.into(),
+        }
+        let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+        let handle = IcecastClient::start(cfg, consumer);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let StreamStatus::Retrying { last_error, .. } = handle.status() {
+                assert!(last_error.contains(expected), "{last_error}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        handle.stop();
+    }
+}
+
+#[test]
+fn source_rejection_does_not_copy_status_text() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        request_header(&mut socket);
+        socket
+            .write_all(b"HTTP/1.0 private-text Rejected\r\n\r\n")
+            .unwrap();
+    });
+    let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+    let handle = IcecastClient::start(config(port), consumer);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if let StreamStatus::Retrying { last_error, .. } = handle.status() {
+            assert!(!last_error.contains("private-text"));
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    handle.stop();
+    server.join().unwrap();
+}
+
+#[test]
+fn short_source_connections_keep_increasing_backoff() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (ready, wait_ready) = mpsc::channel();
+    let (resume, wait_resume) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().unwrap();
+            request_header(&mut socket);
+            ready.send(()).unwrap();
+            wait_resume.recv_timeout(Duration::from_secs(3)).unwrap();
+            socket.write_all(b"HTTP/1.0 200 OK\r\n\r\n").unwrap();
+            let mut bytes = [0; 4096];
+            while socket.read(&mut bytes).is_ok_and(|n| n > 0) {}
+        }
+    });
+    let (mut producer, consumer) = rtrb::RingBuffer::new(4096);
+    let handle = IcecastClient::start(config(port), consumer);
+    for expected_delay in [1, 2] {
+        wait_ready.recv_timeout(Duration::from_secs(4)).unwrap();
+        // Fill after the stale-audio drain, while the handshake is pending.
+        while producer.push(0.0).is_ok() {}
+        resume.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let StreamStatus::Retrying {
+                in_secs,
+                last_error,
+            } = handle.status()
+            {
+                assert!(last_error.contains("ring full"));
+                assert_eq!(in_secs, expected_delay);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    handle.stop();
+    server.join().unwrap();
+}
