@@ -38,6 +38,64 @@ fn same_event(a: &Entry, b: &Entry) -> bool {
     a.playlist == b.playlist && a.item == b.item && target(a) == target(b)
 }
 
+fn is_hard_entry(e: &Entry) -> bool {
+    e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard)
+}
+
+/// Tells if two entries are the same occurrence of a rule: the same rule and target. The
+/// item may differ.
+fn same_occurrence(a: &Entry, b: &Entry) -> bool {
+    let target = |e: &Entry| e.fixed.as_ref().map(|f| f.target);
+    a.origin == b.origin && target(a).is_some() && target(a) == target(b)
+}
+
+/// The previous plan without what the fresh plan no longer has: fixed events and their
+/// fits, and the entries of rules that are gone.
+fn still_planned(prev: &Timeline, fresh: &Timeline) -> Timeline {
+    let mut kept = prev.clone();
+    kept.entries.retain(|e| match (&e.fixed, &e.origin) {
+        (Some(_), _) => fresh.entries.iter().any(|f| same_event(f, e)),
+        (None, Origin::Rule { .. }) => fresh.entries.iter().any(|f| f.origin == e.origin),
+        _ => true,
+    });
+    kept.fits.retain(|fit| {
+        fresh
+            .fits
+            .iter()
+            .any(|f| f.playlist == fit.playlist && f.target == fit.target)
+    });
+    kept
+}
+
+/// Takes the superseded occurrences out of a plan, with the rest of their take after them.
+fn drop_superseded(tl: &mut Timeline, superseded: &[Entry]) {
+    if superseded.is_empty() {
+        return;
+    }
+    let mut out = Vec::with_capacity(tl.entries.len());
+    let mut skipping: Option<Origin> = None;
+    for e in std::mem::take(&mut tl.entries) {
+        if skipping
+            .as_ref()
+            .is_some_and(|o| e.fixed.is_none() && e.origin == *o)
+        {
+            continue;
+        }
+        skipping = None;
+        if superseded.iter().any(|x| same_occurrence(x, &e)) {
+            skipping = Some(e.origin.clone());
+            continue;
+        }
+        out.push(e);
+    }
+    tl.entries = out;
+    tl.fits.retain(|fit| {
+        !superseded.iter().any(|x| {
+            x.playlist == fit.playlist && x.fixed.as_ref().is_some_and(|f| f.target == fit.target)
+        })
+    });
+}
+
 /// In the last 10 s before its target, and after it, planning never cancels a hard event.
 pub(crate) const HARD_LOCK: Duration = Duration::from_secs(10);
 
@@ -117,10 +175,17 @@ impl Slot {
             .is_some_and(|f| f.mode == FixMode::Hard)
     }
 
-    /// The planned end: the start plus the length, less the trim of the planner.
+    /// Where the item really started at its cue-in, once it is on air. A hard event keeps
+    /// its target in `entry.start`, so a late one starts after that.
+    pub(crate) fn real_start(&self) -> Timestamp {
+        self.started
+            .map_or(self.entry.start, |w| sub(w, self.offset))
+    }
+
+    /// The planned end: the real start plus the length, less the trim of the planner.
     pub(crate) fn planned_end(&self) -> Timestamp {
         add(
-            self.entry.start,
+            self.real_start(),
             self.entry.len.saturating_sub(self.entry.trim),
         )
     }
@@ -283,6 +348,9 @@ pub(crate) struct Core {
     last_station: Option<radio_model::Station>,
     /// Hard events that an operator cancelled. Playout keeps them for a day.
     cancelled: Vec<Entry>,
+    /// Occurrences that a late edit moved a locked hard event to. The locked event airs at
+    /// its old time instead, so these do not air. Kept until their target passes.
+    superseded: Vec<Entry>,
     out_clock: Option<SampleClock>,
 }
 
@@ -375,6 +443,7 @@ impl Core {
             blocked: Vec::new(),
             last_station: None,
             cancelled: Vec::new(),
+            superseded: Vec::new(),
             out_clock: opened.clock,
         })
     }
@@ -659,7 +728,13 @@ impl Core {
                     s.entry.start = s.entry.start.max(now);
                 }
             }
-            prev = Some((s.entry.start, s.item.clone(), s.entry.trim));
+            // The next item follows the real start: a late hard event plays in full.
+            let start = match s.started {
+                Some(_) => s.real_start(),
+                None if s.is_hard() => s.entry.start.max(now),
+                None => s.entry.start,
+            };
+            prev = Some((start, s.item.clone(), s.entry.trim));
         }
     }
 
@@ -697,20 +772,33 @@ impl Core {
         };
         let mut opts = self.cfg.plan;
         opts.resume_rotation = true;
-        // A station edit applies at once: the previous plan would keep stale fixed events.
         let edited = self.last_station.as_ref() != Some(&self.engine.state().station);
-        let prev = (self.planned && !edited).then_some(&self.timeline);
-        let tl = plan(&input, &opts, prev);
-        if tl != self.timeline {
-            self.timeline_changed = true;
-            self.save_due = true;
-        }
-        self.timeline = tl;
+        // After a station edit, the previous plan keeps only the events and rules that the
+        // station still has, so no stale fixed event survives. Its frozen windows stay.
+        let filtered = (self.planned && edited).then(|| {
+            let fresh = plan(&input, &opts, None);
+            still_planned(&self.timeline, &fresh)
+        });
+        let prev = match &filtered {
+            Some(f) => Some(f),
+            None => self.planned.then_some(&self.timeline),
+        };
+        let mut tl = plan(&input, &opts, prev);
+        self.superseded.retain(|e| e.start > now);
+        drop_superseded(&mut tl, &self.superseded);
+        let old = std::mem::replace(&mut self.timeline, tl);
         if edited {
             if self.planned {
-                self.warn_locked_hard(&station, &pinned, now);
+                self.warn_locked_hard(&station, &pinned, &old, now);
+                let superseded = std::mem::take(&mut self.superseded);
+                drop_superseded(&mut self.timeline, &superseded);
+                self.superseded = superseded;
             }
             self.last_station = Some(self.engine.state().station.clone());
+        }
+        if old != self.timeline {
+            self.timeline_changed = true;
+            self.save_due = true;
         }
         self.prune_hard(now);
         self.planned = true;
@@ -930,11 +1018,16 @@ impl Core {
             if s.not_started() || s.end_sent || s.phase == Phase::Paused {
                 continue;
             }
-            let start = s.entry.start;
+            // Until the mixer reports the start, a cued item starts at its cue frame. A
+            // hard event that is late or resumed starts after its target.
+            let start = match (s.started, s.phase) {
+                (None, Phase::Cued(at)) => sub(self.map.wall_at(at), s.offset),
+                _ => s.real_start(),
+            };
             let planned = matches!(s.role, DeckRole::Plan | DeckRole::Operator);
             // Beds and fallback files have no planned end; only a hard event ends them.
             let mut end = if planned {
-                s.planned_end()
+                add(start, s.entry.len.saturating_sub(s.entry.trim))
             } else {
                 Timestamp::MAX
             };
@@ -1208,11 +1301,14 @@ impl Core {
     }
 
     /// After a station change, warns about each hard event near its target that the
-    /// change moves or deletes. Such an event still airs, and the change applies after it.
+    /// change moves or deletes. Such an event still airs, and the change applies after it:
+    /// the occurrence it moved to does not air (see `superseded`). If the operator removed
+    /// the event's item, the event is cancelled instead.
     fn warn_locked_hard(
         &mut self,
         station: &radio_model::Station,
         pinned: &[Entry],
+        old: &Timeline,
         now: Timestamp,
     ) {
         let lock = add(now, HARD_LOCK);
@@ -1249,12 +1345,50 @@ impl Core {
         opts.resume_rotation = true;
         let check = plan(&input, &opts, None);
         for n in near {
-            if !check.entries.iter().any(|e| same_event(e, &n)) {
-                let alarm = Alarm::HardEventLocked {
+            if check.entries.iter().any(|e| same_event(e, &n)) {
+                continue;
+            }
+            // Removing the item is an operator cancel: `prune_hard` takes it off its deck.
+            // A broken file is not a removal, so this looks at the station itself.
+            let removed = !self
+                .engine
+                .state()
+                .station
+                .playlists
+                .iter()
+                .any(|p| p.items.iter().any(|i| i.id == n.item));
+            if removed {
+                let alarm = Alarm::HardEventCancelled {
                     item: n.item,
                     target: n.start,
                 };
                 self.alarms.raise_once(now, alarm);
+                continue;
+            }
+            let alarm = Alarm::HardEventLocked {
+                item: n.item,
+                target: n.start,
+            };
+            self.alarms.raise_once(now, alarm);
+            // The occurrence of the same rule that the edit moved this one to: new in this
+            // plan, and the nearest to the old target.
+            let target = |e: &Entry| e.fixed.as_ref().map(|f| f.target);
+            let moved_to = check
+                .entries
+                .iter()
+                .filter(|e| e.origin == n.origin && is_hard_entry(e))
+                .filter(|e| target(e) != target(&n))
+                .filter(|e| {
+                    !old.entries
+                        .iter()
+                        .any(|o| o.origin == e.origin && target(o) == target(e))
+                })
+                .min_by_key(|e| e.start.duration_since(n.start).unsigned_abs())
+                .cloned();
+            if let Some(m) = moved_to
+                && !self.superseded.iter().any(|x| same_occurrence(x, &m))
+            {
+                self.superseded.push(m);
             }
         }
     }
