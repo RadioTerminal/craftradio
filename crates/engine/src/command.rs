@@ -43,6 +43,12 @@ pub enum Command {
         playlist: PlaylistId,
         fill_pool: bool,
     },
+    /// What a restart does with an item of this playlist that a crash cut off.
+    #[serde(rename = "playlist.set_on_interrupt")]
+    PlaylistSetOnInterrupt {
+        playlist: PlaylistId,
+        on_interrupt: radio_model::OnInterrupt,
+    },
     /// Items added by hand are locked (spec 6.15).
     #[serde(rename = "playlist.add_items")]
     PlaylistAddItems {
@@ -121,6 +127,7 @@ impl Command {
             Self::PlaylistSetMain { .. } => "playlist.set_main",
             Self::PlaylistEnable { .. } => "playlist.enable",
             Self::PlaylistSetFillPool { .. } => "playlist.set_fill_pool",
+            Self::PlaylistSetOnInterrupt { .. } => "playlist.set_on_interrupt",
             Self::PlaylistAddItems { .. } => "playlist.add_items",
             Self::PlaylistRemoveItems { .. } => "playlist.remove_items",
             Self::PlaylistMoveItems { .. } => "playlist.move_items",
@@ -160,6 +167,7 @@ impl Command {
             | Self::PlaylistSetMain { .. }
             | Self::PlaylistEnable { .. }
             | Self::PlaylistSetFillPool { .. }
+            | Self::PlaylistSetOnInterrupt { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
             | Self::PlaylistMoveItems { .. }
@@ -246,6 +254,12 @@ pub fn registry() -> Vec<CommandSpec> {
             "Make a playlist a fill pool, or not",
             A,
             &[p, ("fill_pool", "boolean")],
+        ),
+        spec(
+            "playlist.set_on_interrupt",
+            "Resume, Replay or Skip an item that a crash cut off",
+            A,
+            &[p, ("on_interrupt", "string")],
         ),
         spec(
             "playlist.add_items",

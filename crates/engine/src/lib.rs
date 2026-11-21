@@ -398,6 +398,16 @@ impl Engine {
                 })?;
                 Ok(Outcome::default())
             }
+            C::PlaylistSetOnInterrupt {
+                playlist,
+                on_interrupt,
+            } => {
+                self.edit_station(|s| {
+                    playlist_mut(s, playlist)?.on_interrupt = on_interrupt;
+                    Ok(())
+                })?;
+                Ok(Outcome::default())
+            }
             C::PlaylistAddItems {
                 playlist,
                 items,
