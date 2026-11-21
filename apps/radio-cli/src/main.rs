@@ -13,7 +13,11 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "radio-cli", about = "Radio station manager command line")]
+#[command(
+    version,
+    name = "radio-cli",
+    about = "Radio station manager command line"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -213,6 +217,7 @@ fn warning_text(station: &Station, tz: &TimeZone, w: &Warning) -> String {
             reason,
         } => {
             let why = match reason {
+                DropReason::RotationAfterTrim => "moved by a trim and rejected by rotation rules",
                 DropReason::AdjacencyAfterMove => "moved across a fixed event",
                 DropReason::AdjacencyAfterReplan => "left next to its kind by a re-plan",
             };

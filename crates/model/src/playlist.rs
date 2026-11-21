@@ -5,7 +5,7 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum PickOrder {
     InOrder,
     Shuffle { seed: u64 },
@@ -13,7 +13,7 @@ pub enum PickOrder {
     LeastRecentlyPlayed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Playlist {
     pub id: PlaylistId,
     #[serde(default)]
@@ -35,7 +35,9 @@ pub struct Playlist {
 }
 
 /// What playout does after a restart with an item that the crash cut off (spec §6.11).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum OnInterrupt {
     /// Continue at the position that wall-clock time gives.
     #[default]
@@ -48,7 +50,7 @@ pub enum OnInterrupt {
 }
 
 /// A folder that supplies playlist files.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FolderSource {
     pub path: String,
     pub recursive: bool,

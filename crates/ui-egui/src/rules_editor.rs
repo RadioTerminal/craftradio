@@ -370,23 +370,31 @@ fn highlighted_script(ui: &egui::Ui, code: &str, t: &Tokens) -> egui::text::Layo
     job
 }
 
+fn script_job(ui: &egui::Ui, text: &str, width: f32, t: &Tokens) -> egui::text::LayoutJob {
+    let key = (
+        egui::util::hash(text),
+        width.to_bits(),
+        egui::util::hash((t.text, t.text_muted, t.field, t.ok, t.warn, t.accent_ink)),
+    );
+    let cache_id = ui.id().with("script_palette");
+    let cached = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<((u64, u32, u64), egui::text::LayoutJob)>(cache_id));
+    match cached {
+        Some((cached_key, job)) if cached_key == key => job,
+        _ => {
+            let mut job = highlighted_script(ui, text, t);
+            job.wrap.max_width = width;
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(cache_id, (key, job.clone())));
+            job
+        }
+    }
+}
+
 fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, preview: bool, t: &Tokens) {
     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
-        let key = (egui::util::hash(text.as_str()), width.to_bits());
-        let cache_id = ui.id().with("script_palette");
-        let cached = ui
-            .ctx()
-            .data_mut(|data| data.get_temp::<((u64, u32), egui::text::LayoutJob)>(cache_id));
-        let job = match cached {
-            Some((cached_key, job)) if cached_key == key => job,
-            _ => {
-                let mut job = highlighted_script(ui, text.as_str(), t);
-                job.wrap.max_width = width;
-                ui.ctx()
-                    .data_mut(|data| data.insert_temp(cache_id, (key, job.clone())));
-                job
-            }
-        };
+        let job = script_job(ui, text.as_str(), width, t);
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
     let edit = TextEdit::multiline(&mut tab.script)
@@ -485,6 +493,41 @@ fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, preview: b
 
 #[cfg(test)]
 mod highlighting_tests {
+    #[test]
+    fn cached_script_changes_colours_when_the_palette_changes() {
+        let ctx = egui::Context::default();
+        let mut colours = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let text = "const count = 3; rule({name: 'Test'});";
+            let dark = super::script_job(
+                ui,
+                text,
+                crate::theme::size::COMBO_W,
+                &crate::theme::Tokens::DARK,
+            );
+            let mut other_palette = crate::theme::Tokens::DARK;
+            std::mem::swap(&mut other_palette.ok, &mut other_palette.warn);
+            let light = super::script_job(ui, text, crate::theme::size::COMBO_W, &other_palette);
+            colours = Some((
+                dark.sections
+                    .iter()
+                    .map(|s| s.format.color)
+                    .collect::<Vec<_>>(),
+                light
+                    .sections
+                    .iter()
+                    .map(|s| s.format.color)
+                    .collect::<Vec<_>>(),
+            ));
+        });
+        output.textures_delta.clear();
+        let (dark, light) = colours.unwrap();
+        assert_ne!(
+            dark, light,
+            "cached colours must follow the current palette"
+        );
+    }
+
     #[test]
     fn javascript_has_multiple_colours() {
         let ctx = egui::Context::default();

@@ -77,6 +77,7 @@ impl ViewSource for MockSource {
         self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
         StationView {
+            cue_open: false,
             now: local,
             mode: self.play_mode.label().to_uppercase(),
             play_mode: self.play_mode,
@@ -90,6 +91,7 @@ impl ViewSource for MockSource {
             meters,
             history,
             library: self.library.clone(),
+            input_devices: Vec::new(),
             devices: DEVICES.iter().map(|d| (*d).to_owned()).collect(),
             device_roles: self.device_roles.clone(),
             carts: self.carts.clone(),

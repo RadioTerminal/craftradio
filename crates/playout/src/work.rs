@@ -22,6 +22,10 @@ type Job = Box<dyn FnOnce() + Send>;
 /// A result from a worker thread or from the log writer.
 pub(crate) enum Done {
     Query,
+    InputOpened {
+        tag: u64,
+        result: Result<(Box<dyn crate::Capture>, rtrb::Consumer<f32>), String>,
+    },
     Prepared(
         Result<radio_engine::Command, radio_engine::EngineError>,
         crate::Reply,

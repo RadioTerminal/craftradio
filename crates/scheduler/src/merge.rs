@@ -99,6 +99,8 @@ pub enum DropReason {
     /// A re-plan took out a duplicate between rule insertions, and this one would then
     /// have broken an adjacency rule.
     AdjacencyAfterReplan,
+    /// A trim moved an entry to a position where rotation rules cannot be met.
+    RotationAfterTrim,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,6 +264,16 @@ impl<'a> Walk<'a> {
         let pl = &station.playlists[pi];
         let rule = &pl.rules[ri];
         let done = done.min(rule.take);
+        if done > 0 {
+            let origin = Origin::Rule {
+                playlist: pl.id,
+                rule: ri,
+            };
+            if let Some(last) = self.entries.iter().rev().find(|e| e.origin == origin) {
+                self.pickers[pi].resume_after(pl, last.item);
+                self.resumed[pi] = true;
+            }
+        }
         let mut got = done;
         for k in done..rule.take {
             let start = match (&fixed, k) {
@@ -455,6 +467,36 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             while pinned.get(next_pinned).is_some_and(|e| e.start <= f.target) {
                 w.adopt(&pinned[next_pinned]);
                 next_pinned += 1;
+            }
+            if covered(f) > 0 {
+                let origin = Origin::Rule {
+                    playlist: station.playlists[f.playlist].id,
+                    rule: f.rule,
+                };
+                let until = fixed
+                    .iter()
+                    .filter(|g| g.playlist == f.playlist && g.rule == f.rule && g.target > f.target)
+                    .map(|g| g.target)
+                    .min()
+                    .unwrap_or(Timestamp::MAX);
+                let last = pinned
+                    .iter()
+                    .enumerate()
+                    .skip(next_pinned)
+                    .filter(|(_, e)| {
+                        e.origin == origin
+                            && e.fixed.is_none()
+                            && e.start >= f.target
+                            && e.start < until
+                    })
+                    .map(|(i, _)| i)
+                    .max();
+                if let Some(last) = last {
+                    while next_pinned <= last {
+                        w.adopt(&pinned[next_pinned]);
+                        next_pinned += 1;
+                    }
+                }
             }
             w.fire_fixed(f, covered(f));
             next_fixed += 1;

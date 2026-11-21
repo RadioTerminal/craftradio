@@ -127,6 +127,7 @@ impl Core {
             | AudioIntent::Fade {
                 deck: d,
                 expect_item,
+                ..
             }
             | AudioIntent::Skip {
                 deck: d,
@@ -139,7 +140,7 @@ impl Core {
                 self.op_play(deck(d), fade_in, now)
             }
             AudioIntent::Pause { deck: d, .. } => self.op_pause(deck(d)),
-            AudioIntent::Fade { deck: d, .. } => self.op_fade(deck(d)),
+            AudioIntent::Fade { deck: d, over, .. } => self.op_fade(deck(d), over),
             AudioIntent::Skip { deck: d, .. } => self.op_skip(deck(d), now),
             AudioIntent::SetMode(_) => {
                 self.leave_emergency(now);
@@ -159,10 +160,13 @@ impl Core {
                 strip,
                 gain_db,
                 mute,
+                pfl,
             } => {
                 let Some(strip) = strip_of(&strip) else {
                     return Check::Now(false);
                 };
+                self.mixer
+                    .set_pfl(strip, pfl && !self.cue_device().is_empty());
                 let db = if mute { f32::NEG_INFINITY } else { gain_db };
                 let at = self.mixer.now();
                 let cmd = Cmd::new(at, CommandKind::SetGain { strip, db });
@@ -219,7 +223,7 @@ impl Core {
     }
 
     /// Takes a deck item off the deck at once.
-    fn unload(&mut self, i: usize) {
+    pub(crate) fn unload(&mut self, i: usize) {
         if let Some(s) = self.slots[i].take() {
             let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
             let _ = self.mixer.send(cmd.for_item(s.tag));
@@ -403,12 +407,13 @@ impl Core {
         if own.is_zero() { CUT_FADE } else { own }
     }
 
-    fn op_fade(&mut self, i: usize) -> Check {
+    fn op_fade(&mut self, i: usize, over: Option<Duration>) -> Check {
         let Some(s) = &self.slots[i] else {
             return Check::Now(false);
         };
-        let (over, tag) = (Self::early_fade(s), s.tag);
+        let tag = s.tag;
         let at = self.mixer.now();
+        let over = over.unwrap_or_else(|| Self::early_fade(s));
         self.fade_at(i, at, over, true);
         Check::Fading { deck: i, tag }
     }
@@ -527,8 +532,17 @@ impl Core {
 
     /// Keeps the cartwall clips in the mixer in step with the engine's assignments.
     /// Sends the stored fader and mute of each mixer strip to the mixer.
+    pub(crate) fn cue_device(&self) -> &str {
+        self.engine
+            .state()
+            .settings("audio")
+            .and_then(|s| s.get("pfl"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    }
+
     pub(crate) fn sync_strips(&mut self) {
-        let strips: Vec<(String, f32, bool)> = self
+        let strips: Vec<(String, f32, bool, bool)> = self
             .engine
             .state()
             .strips
@@ -538,11 +552,14 @@ impl Core {
                     k.clone(),
                     s.gain_db,
                     s.mute || s.route == radio_engine::Route::CueOnly,
+                    s.pfl || s.route != radio_engine::Route::Out,
                 )
             })
             .collect();
-        for (name, gain, mute) in strips {
+        for (name, gain, mute, pfl) in strips {
             if let Some(strip) = strip_of(&name) {
+                self.mixer
+                    .set_pfl(strip, pfl && !self.cue_device().is_empty());
                 let db = if mute { f32::NEG_INFINITY } else { gain };
                 let cmd = Cmd::new(self.mixer.now(), CommandKind::SetGain { strip, db });
                 let _ = self.mixer.send(cmd);

@@ -269,3 +269,85 @@ fn ring_fed_deck_starts_on_its_sample_and_underruns_without_stalling() {
     }));
     assert!(events.contains(&AudioEvent::Underrun(DeckId::D)));
 }
+
+#[test]
+fn pfl_is_pre_fader_and_never_added_to_program() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    let (mut tx, rx) = rtrb::RingBuffer::new(4096);
+    while tx.slots() >= 2 {
+        tx.push(0.25).unwrap();
+        tx.push(0.25).unwrap();
+    }
+    handle
+        .load_ring(DeckId::A, rx, LoadOptions::default())
+        .unwrap();
+    handle
+        .send(Command::new(
+            0,
+            CommandKind::SetGain {
+                strip: Strip::Deck(DeckId::A),
+                db: f32::NEG_INFINITY,
+            },
+        ))
+        .unwrap();
+    handle.set_pfl(Strip::Deck(DeckId::A), true);
+    handle.send(play(0, DeckId::A)).unwrap();
+    let (program, pfl) = radio_audio::render_offline_buses(&mut mixer, 1024);
+    assert!(
+        pfl.iter().skip(512).all(|x| *x > 0.1),
+        "PFL must receive the pre-fader signal"
+    );
+    assert!(
+        program.iter().skip(512).all(|x| x.abs() < 0.001),
+        "PFL leaked into Program"
+    );
+    handle.set_pfl(Strip::Deck(DeckId::A), false);
+    let (_, pfl) = radio_audio::render_offline_buses(&mut mixer, 128);
+    assert!(pfl.iter().all(|x| *x == 0.0));
+}
+
+#[test]
+fn captured_deck_uses_live_strip() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    let (mut tx, rx) = rtrb::RingBuffer::new(4096);
+    while tx.slots() >= 2 {
+        tx.push(0.25).unwrap();
+        tx.push(0.25).unwrap();
+    }
+    handle
+        .load_ring(
+            DeckId::A,
+            rx,
+            LoadOptions {
+                live_bus: true,
+                ..LoadOptions::default()
+            },
+        )
+        .unwrap();
+    handle
+        .send(Command::new(
+            0,
+            CommandKind::SetGain {
+                strip: Strip::Deck(DeckId::A),
+                db: f32::NEG_INFINITY,
+            },
+        ))
+        .unwrap();
+    handle.set_pfl(Strip::Live, true);
+    handle.send(play(0, DeckId::A)).unwrap();
+    let (program, pfl) = radio_audio::render_offline_buses(&mut mixer, 512);
+    assert!(program.iter().skip(256).all(|x| *x > 0.1));
+    assert!(pfl.iter().all(|x| *x > 0.1));
+    handle
+        .send(Command::new(
+            handle.now(),
+            CommandKind::SetGain {
+                strip: Strip::Live,
+                db: f32::NEG_INFINITY,
+            },
+        ))
+        .unwrap();
+    let (program, pfl) = radio_audio::render_offline_buses(&mut mixer, 512);
+    assert!(program.iter().skip(512).all(|x| x.abs() < 0.001));
+    assert!(pfl.iter().all(|x| *x > 0.1));
+}

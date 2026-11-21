@@ -51,7 +51,9 @@ pub(crate) fn allowed_with(
         }
         Constraint::Daypart { from, to } => {
             let now = tz.to_datetime(at).time();
-            if from <= to {
+            if from == to {
+                true
+            } else if from < to {
                 *from <= now && now < *to
             } else {
                 now >= *from || now < *to

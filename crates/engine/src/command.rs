@@ -9,7 +9,9 @@ fn yes() -> bool {
 }
 
 /// Operating mode (spec 6.15).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum Mode {
     #[default]
     Auto,
@@ -18,7 +20,9 @@ pub enum Mode {
 }
 
 /// How a cart plays when somebody fires it again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum CartMode {
     #[default]
     OneShot,
@@ -27,7 +31,9 @@ pub enum CartMode {
 }
 
 /// Where a mixer strip sends its sound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum Route {
     #[default]
     Out,
@@ -36,7 +42,7 @@ pub enum Route {
 }
 
 /// Who may run a command (spec 6.14). MCP gets `ReadOnly` by default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Tier {
     ReadOnly,
     OnAir,
@@ -46,7 +52,7 @@ pub enum Tier {
 ///
 /// `source` and `meta` carry JSON until the model's `FolderSource` and `ItemMeta` types land,
 /// when they become typed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "id", content = "args")]
 pub enum Command {
     #[serde(rename = "playlist.create")]
@@ -168,6 +174,8 @@ pub enum Command {
         deck: u8,
         #[serde(default)]
         expect_item: Option<ItemId>,
+        #[serde(default)]
+        over: Option<std::time::Duration>,
     },
     /// With `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
     #[serde(rename = "deck.skip")]
@@ -451,7 +459,7 @@ pub fn registry() -> Vec<CommandSpec> {
     use Tier::{OnAir as A, ReadOnly as R};
     let p = ("playlist", "integer");
     let d = ("deck", "integer");
-    vec![
+    let mut specs = vec![
         spec(
             "playlist.create",
             "Create an empty named playlist",
@@ -594,7 +602,11 @@ pub fn registry() -> Vec<CommandSpec> {
             "expect_item",
         )),
         with_optional(spec("deck.pause", "Pause a deck", A, &[d]), "expect_item"),
-        with_optional(spec("deck.fade", "Fade a deck out", A, &[d]), "expect_item"),
+        with_optional_prop(
+            with_optional(spec("deck.fade", "Fade a deck out", A, &[d]), "expect_item"),
+            "over",
+            json!({"type": ["object", "null"], "properties": {"secs": {"type": "integer", "minimum": 0}, "nanos": {"type": "integer", "minimum": 0, "maximum": 999999999}}, "required": ["secs", "nanos"]}),
+        ),
         with_optional(
             spec("deck.skip", "Skip what a deck is playing", A, &[d]),
             "expect_item",
@@ -743,5 +755,25 @@ pub fn registry() -> Vec<CommandSpec> {
             R,
             &[("since", "string"), ("until", "string")],
         ),
-    ]
+    ];
+    let schema = schemars::schema_for!(Command).to_value();
+    if let Some(variants) = schema.get("oneOf").and_then(Value::as_array) {
+        for spec in &mut specs {
+            if let Some(variant) = variants
+                .iter()
+                .find(|v| v["properties"]["id"]["const"] == spec.id)
+            {
+                let mut args = variant["properties"].get("args").cloned().unwrap_or_else(
+                    || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+                );
+                if let Some(defs) = schema.get("$defs") {
+                    args["$defs"] = defs.clone();
+                }
+                if let Ok(args) = Schema::try_from(args) {
+                    spec.args_schema = args;
+                }
+            }
+        }
+    }
+    specs
 }

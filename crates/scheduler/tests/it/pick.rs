@@ -117,3 +117,25 @@ fn least_recently_played_picks_oldest_and_weighted_excludes_zero() {
             .all(|chunk| chunk.contains(&ItemId(2)))
     );
 }
+
+#[test]
+fn equal_daypart_boundaries_allow_the_whole_day() {
+    let time = jiff::civil::time(9, 0, 0, 0);
+    let constraint = radio_model::Constraint::Daypart {
+        from: time,
+        to: time,
+    };
+    let item = radio_testkit::track(1, "Test track", "Test artist", 60);
+    for hour in [0, 8, 9, 15, 23] {
+        let at: jiff::Timestamp = format!("2026-11-21T{hour:02}:00:00Z").parse().unwrap();
+        assert!(radio_scheduler::allowed(
+            &constraint,
+            &item,
+            radio_model::PlaylistId(1),
+            at,
+            None,
+            &PlayHistory::new(),
+            &jiff::tz::TimeZone::UTC
+        ));
+    }
+}

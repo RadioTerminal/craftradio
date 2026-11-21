@@ -100,3 +100,15 @@ constraints = []
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("dead air"), "stderr: {err}");
 }
+
+#[test]
+fn version_prints_without_a_subcommand() {
+    let out = Command::new(env!("CARGO_BIN_EXE_radio-cli"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains(env!("CARGO_PKG_VERSION")));
+    assert!(text.starts_with("radio-cli "));
+}

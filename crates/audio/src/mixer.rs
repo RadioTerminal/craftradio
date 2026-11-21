@@ -333,6 +333,21 @@ impl Mixer {
     pub fn render(&mut self, program: &mut [f32], pfl: &mut [f32]) {
         self.take_control();
         self.take_commands();
+        if self.sample >= self.next_due {
+            self.apply_due();
+        }
+        // A queued live deck must not retain audio from its preload interval.
+        for slot in &mut self.decks {
+            if (!slot.playing || slot.paused)
+                && let Some(source) = &mut slot.source
+                && source.live_bus
+            {
+                let old = source.consumer.slots().saturating_sub(512) / CHANNELS * CHANNELS;
+                for _ in 0..old {
+                    let _ = source.consumer.pop();
+                }
+            }
+        }
         let pfl_mask = self.shared.pfl.load(Ordering::Relaxed);
         let (cue_frames, cue_rest) = pfl.as_chunks_mut::<CHANNELS>();
         let (out_frames, out_rest) = program.as_chunks_mut::<CHANNELS>();
@@ -653,8 +668,10 @@ impl Mixer {
     fn frame(&mut self, pfl_mask: u8) -> ([f32; 2], [f32; 2]) {
         let mut bus = [0.0f32; 2];
         let mut cue = [0.0f32; 2];
+        let mut captured = [0.0; 2];
         for deck in DeckId::ALL {
             let i = deck.index();
+            let live_bus = self.decks[i].source.as_ref().is_some_and(|s| s.live_bus);
             let pre = match self.deck_step(i) {
                 DeckStep::Frame(f) => f,
                 DeckStep::Silent => [0.0; 2],
@@ -667,7 +684,12 @@ impl Mixer {
                     [0.0; 2]
                 }
             };
-            self.strip(i, pre, pfl_mask, &mut bus, &mut cue);
+            if live_bus {
+                captured[0] += pre[0];
+                captured[1] += pre[1];
+            } else {
+                self.strip(i, pre, pfl_mask, &mut bus, &mut cue);
+            }
         }
 
         let live = if self.live.slots() >= CHANNELS {
@@ -678,7 +700,13 @@ impl Mixer {
         } else {
             [0.0; 2]
         };
-        self.strip(Strip::Live.index(), live, pfl_mask, &mut bus, &mut cue);
+        self.strip(
+            Strip::Live.index(),
+            [live[0] + captured[0], live[1] + captured[1]],
+            pfl_mask,
+            &mut bus,
+            &mut cue,
+        );
 
         let mut carts = [0.0f32; 2];
         for v in self.voices.iter_mut().filter(|v| v.active) {
@@ -746,6 +774,20 @@ pub fn render_offline(mixer: &mut Mixer, frames: usize) -> Vec<f32> {
         mixer.render(chunk, &mut []);
     }
     out
+}
+
+/// Renders Program and PFL offline, waiting for file feeders between blocks.
+pub fn render_offline_buses(mixer: &mut Mixer, frames: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut program = vec![0.0; frames * CHANNELS];
+    let mut pfl = vec![0.0; frames * CHANNELS];
+    for (out, cue) in program
+        .chunks_mut(256 * CHANNELS)
+        .zip(pfl.chunks_mut(256 * CHANNELS))
+    {
+        mixer.wait_for_decks(out.len(), Duration::from_secs(2));
+        mixer.render(out, cue);
+    }
+    (program, pfl)
 }
 
 /// One load that the handle sent, with its decoder thread.
@@ -816,6 +858,7 @@ impl MixerHandle {
         let shared = Arc::new(DeckShared::new());
         let feeder = DeckFeeder::spawn(decoder, producer, Arc::clone(&shared))?;
         let source = DeckSource {
+            live_bus: options.live_bus,
             consumer,
             shared: Arc::clone(&shared),
             fade_in: duration_frames(options.fade_in),
@@ -847,6 +890,7 @@ impl MixerHandle {
         let shared = Arc::new(DeckShared::new());
         shared.set_state(DeckState::Ready);
         let source = DeckSource {
+            live_bus: options.live_bus,
             consumer: ring,
             shared: Arc::clone(&shared),
             fade_in: duration_frames(options.fade_in),

@@ -440,7 +440,26 @@ fn late_hard_event_plays_in_full_and_the_next_item_follows_it() {
             lock: true,
         })
         .unwrap();
-    program.extend(run(&p, &clock, 5.5));
+    program.extend(run(&p, &clock, 0.2));
+    let view = p.snapshot();
+    let late = view
+        .timeline
+        .entries
+        .iter()
+        .find(|e| e.item == radio_model::ItemId(10))
+        .expect("late event row");
+    let next = view
+        .timeline
+        .entries
+        .iter()
+        .find(|e| e.item == radio_model::ItemId(30))
+        .expect("following row");
+    assert!(late.start >= t0() + Duration::from_secs(6));
+    assert!(
+        next.start >= late.start + late.len.saturating_sub(late.trim),
+        "timeline overlaps late event"
+    );
+    program.extend(run(&p, &clock, 5.3));
 
     let target = 3 * SR;
     let start = first_audible(&program, 1, 0).expect("the late event sounds");
@@ -901,4 +920,118 @@ fn slow_rules_script_does_not_block_scheduled_play() {
     std::thread::sleep(Duration::from_millis(220));
     run(&p, &clock, 0.01);
     assert!(reply.recv_timeout(Duration::from_secs(1)).unwrap().is_err());
+}
+
+#[test]
+fn operator_fade_uses_requested_length() {
+    let item = file_item(
+        1,
+        "Long tone",
+        &wav("fade-length", 8.0, Side::Left),
+        8.0,
+        8.0,
+        0.1,
+    );
+    let (p, clock) = offline(engine_with(vec![item]), |_| {});
+    run(&p, &clock, 1.0);
+    let deck = p
+        .snapshot()
+        .decks
+        .iter()
+        .position(|d| d.phase == DeckPhase::Playing)
+        .unwrap();
+    let _answer = p
+        .send(Command::DeckFade {
+            deck: deck as u8,
+            expect_item: Some(radio_model::ItemId(1)),
+            over: Some(Duration::from_secs(2)),
+        })
+        .unwrap();
+    let sound = run(&p, &clock, 2.5);
+    assert!(
+        peak(&sound, 0, SR / 2, SR) > 0.02,
+        "fade ended before its requested length"
+    );
+    assert!(
+        peak(&sound, 0, SR * 22 / 10, SR * 24 / 10) < 0.01,
+        "fade did not end"
+    );
+}
+
+#[test]
+fn operator_fade_default_and_explicit_cut() {
+    for over in [None, Some(Duration::ZERO)] {
+        let item = file_item(
+            1,
+            "Long tone",
+            &wav("fade-default", 8.0, Side::Left),
+            8.0,
+            8.0,
+            2.0,
+        );
+        let (p, clock) = offline(engine_with(vec![item]), |_| {});
+        run(&p, &clock, 1.0);
+        let deck = p
+            .snapshot()
+            .decks
+            .iter()
+            .position(|d| d.phase == DeckPhase::Playing)
+            .unwrap();
+        let _answer = p
+            .send(Command::DeckFade {
+                deck: deck as u8,
+                expect_item: Some(radio_model::ItemId(1)),
+                over,
+            })
+            .unwrap();
+        let sound = run(&p, &clock, 2.5);
+        if over.is_none() {
+            assert!(peak(&sound, 0, SR / 2, SR) > 0.02, "default fade cut early");
+        } else {
+            assert!(
+                peak(&sound, 0, SR / 2, SR) < 0.01,
+                "explicit zero did not cut"
+            );
+        }
+        assert!(peak(&sound, 0, SR * 22 / 10, SR * 24 / 10) < 0.01);
+    }
+}
+
+#[test]
+fn pick_only_rule_edit_does_not_raise_hard_event_locked() {
+    let main = file_item(
+        1,
+        "Main tone",
+        &wav("pick-main", 10.0, Side::Left),
+        10.0,
+        10.0,
+        0.0,
+    );
+    let mut engine = engine_with(vec![main]);
+    let event = file_item(
+        10,
+        "Fixed tone",
+        &wav("pick-event", 1.0, Side::Right),
+        1.0,
+        1.0,
+        0.0,
+    );
+    let playlist = add_playlist(&mut engine, "Fixed", vec![event], &news_at("13:00:05"));
+    let (p, clock) = offline(engine, |_| {});
+    run(&p, &clock, 1.0);
+    let script = format!(
+        "pick('shuffle', {{seed: 7}}); {}",
+        news_at("13:00:05").replace("constraints: []", "constraints: [maxPerHour(20)]")
+    );
+    let reply = p
+        .send(Command::PlaylistSetRulesScript { playlist, script })
+        .unwrap();
+    run(&p, &clock, 0.3);
+    reply.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(
+        !p.snapshot()
+            .alarms
+            .iter()
+            .any(|a| matches!(a.alarm, radio_playout::Alarm::HardEventLocked { .. }))
+    );
 }

@@ -8,7 +8,7 @@ fn yes() -> bool {
 }
 
 /// Where an item's audio comes from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Source {
     File {
         path: String,
@@ -27,7 +27,7 @@ pub enum Source {
 }
 
 /// Cue points within a file, as offsets from its start.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Timing {
     pub cue_in: Duration,
     pub segue: Duration,
@@ -37,7 +37,7 @@ pub struct Timing {
     pub fade_out: Duration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Item {
     pub id: ItemId,
     #[serde(default)]
@@ -58,7 +58,7 @@ pub struct Item {
 }
 
 /// File tags and stream title settings. The year is text to preserve tag values.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ItemMeta {
     pub title: String,
@@ -72,7 +72,9 @@ pub struct ItemMeta {
 }
 
 /// Selects the text sent to the stream output.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum PublishMode {
     #[default]
     FromTags,

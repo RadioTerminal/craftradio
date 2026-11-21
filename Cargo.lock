@@ -3879,6 +3879,7 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "radio-testkit",
+ "schemars",
  "serde",
  "thiserror 2.0.21",
  "toml 0.9.12+spec-1.1.0",
@@ -4476,6 +4477,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
  "dyn-clone",
+ "jiff",
  "ref-cast",
  "schemars_derive",
  "serde",

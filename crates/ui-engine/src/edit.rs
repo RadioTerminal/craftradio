@@ -593,9 +593,10 @@ impl EngineSource {
                 expect_item,
                 fade_in: Duration::try_from_secs_f32(secs.max(0.0)).unwrap_or_default(),
             },
-            DeckCommand::Fade(_) => Command::DeckFade {
+            DeckCommand::Fade(secs) => Command::DeckFade {
                 deck: d,
                 expect_item,
+                over: Some(Duration::try_from_secs_f32(secs.max(0.0)).unwrap_or_default()),
             },
         };
         self.run_audio(cmd)
@@ -1194,7 +1195,7 @@ impl EngineSource {
                 if planned_len.is_zero() {
                     return Err("The planned length must be over 0".into());
                 }
-                let ch = |c: u32| u16::try_from(c).map_err(|_| "No such input channel".to_owned());
+                let ch = |c: u32| c.checked_sub(1).and_then(|c| u16::try_from(c).ok()).ok_or_else(|| "No such input channel".to_owned());
                 let title = format!("Live input · {device} ({}/{})", channels.0, channels.1);
                 let mut item = crate::plain_item(&title);
                 item.source = Source::LiveInput {

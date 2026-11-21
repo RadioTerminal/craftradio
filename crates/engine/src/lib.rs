@@ -296,6 +296,7 @@ pub enum AudioIntent {
     Fade {
         deck: u8,
         expect_item: Option<ItemId>,
+        over: Option<std::time::Duration>,
     },
     /// `expect_item` is the item the command meant, or else the item the engine believes
     /// is on the deck. Playout refuses the intent if its deck holds another item.
@@ -319,6 +320,7 @@ pub enum AudioIntent {
         strip: String,
         gain_db: f32,
         mute: bool,
+        pfl: bool,
     },
 }
 
@@ -643,16 +645,6 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let mut next = self.state.station.clone();
         f(&mut next)?;
-        if next
-            .playlists
-            .iter()
-            .flat_map(|p| &p.items)
-            .any(|i| matches!(i.source, radio_model::Source::LiveInput { .. }))
-        {
-            return Err(EngineError::BadArgument(
-                "Live input playback is not available in this build".into(),
-            ));
-        }
         next.validate()?;
         self.state.station = next;
         Ok(())
@@ -1007,10 +999,18 @@ impl Engine {
                 let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
                 Ok(self.audio(AudioIntent::Pause { deck, expect_item }))
             }
-            C::DeckFade { deck, expect_item } => {
+            C::DeckFade {
+                deck,
+                expect_item,
+                over,
+            } => {
                 self.loaded_with(deck, expect_item)?;
                 let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
-                Ok(self.audio(AudioIntent::Fade { deck, expect_item }))
+                Ok(self.audio(AudioIntent::Fade {
+                    deck,
+                    expect_item,
+                    over,
+                }))
             }
             C::DeckSkip { deck, expect_item } => {
                 self.loaded_with(deck, expect_item)?;
@@ -1103,16 +1103,6 @@ impl Engine {
             }
             C::StationBatch { commands } | C::StationSystem { commands } => self.batch(commands),
             C::StationImport { station } => {
-                if station
-                    .playlists
-                    .iter()
-                    .flat_map(|p| &p.items)
-                    .any(|i| matches!(i.source, radio_model::Source::LiveInput { .. }))
-                {
-                    return Err(EngineError::BadArgument(
-                        "Live input playback is not available in this build".into(),
-                    ));
-                }
                 station.validate()?;
                 self.state.station = station;
                 self.state.scripts.clear();
@@ -1207,9 +1197,16 @@ impl Engine {
                 if !STRIPS.contains(&strip.as_str()) {
                     return Err(EngineError::BadArgument(format!("no mixer strip {strip}")));
                 }
-                if pfl == Some(true) || route == Some(Route::OutAndCue) {
+                if (pfl == Some(true) || route == Some(Route::OutAndCue))
+                    && self
+                        .state
+                        .settings("audio")
+                        .and_then(|s| s.get("pfl"))
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                {
                     return Err(EngineError::BadArgument(
-                        "Cue output is not available in this build".into(),
+                        "Cue output is not available; choose a cue output device first".into(),
                     ));
                 }
                 // A fader all the way down is a mute; the stored gain stays finite.
@@ -1236,20 +1233,15 @@ impl Engine {
                     st.route = r;
                 }
                 let (gain_db, mute) = (st.gain_db, st.mute || st.route == Route::CueOnly);
-                let cue = pfl.is_some() || route.is_some();
-                let mut out = self.audio(AudioIntent::SetStrip {
+                let pfl = st.pfl || st.route != Route::Out;
+                Ok(self.audio(AudioIntent::SetStrip {
                     strip,
                     gain_db,
                     mute,
-                });
-                if cue {
-                    out.note = Some(
-                        "Cue output is unavailable; Cue only removes this strip from Program"
-                            .into(),
-                    );
-                }
-                Ok(out)
+                    pfl,
+                }))
             }
+
             C::StationGet => Ok(Outcome {
                 data: Some(to_value(&self.state)?),
                 ..Outcome::default()
@@ -1450,6 +1442,12 @@ fn to_value<T: Serialize>(v: &T) -> Result<Value, EngineError> {
 }
 
 fn csv_field(f: &str) -> String {
+    let safe = if f.trim_start().starts_with(['=', '+', '-', '@']) {
+        format!("'{f}")
+    } else {
+        f.to_owned()
+    };
+    let f = safe.as_str();
     if f.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", f.replace('"', "\"\""))
     } else {
