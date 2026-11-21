@@ -5,8 +5,9 @@ use crate::core::{Core, since, sub};
 use crate::view::DeckRole;
 use jiff::Timestamp;
 use radio_engine::{LogStatus, RowId};
-use radio_model::{ItemId, Source};
+use radio_model::{ItemId, OnInterrupt, Source};
 use radio_scheduler::Entry;
+use radio_scheduler::Played;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -15,6 +16,8 @@ const KEY: &str = "playout";
 const SAVE_EVERY: Duration = Duration::from_secs(1);
 /// The number of timeline entries that playout saves.
 const SAVED_ENTRIES: usize = 50;
+/// While something is on air, playout saves at least this often.
+const HEARTBEAT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
@@ -62,18 +65,27 @@ impl Core {
                 .collect(),
             rows,
         };
-        if let Ok(value) = serde_json::to_value(&saved)
-            && self.engine.save_runtime(KEY, &value).is_ok()
-        {
+        if let Ok(value) = serde_json::to_value(&saved) {
+            self.log.save_runtime_later(KEY, value);
             self.save_due = false;
             self.last_save = Some(now);
         }
     }
 
-    /// Puts the entry that the saved plan has on air now back on a deck. A trimmable item
-    /// continues at its position. An item that must not get shorter (an ad) plays from
-    /// the start again. Its cut-off row ends as interrupted. Streams and live items start
-    /// again at once, until their planned end.
+    /// Asks for a save every few seconds while something is on air. A crash then cuts
+    /// rows close to their real end.
+    pub(crate) fn heartbeat(&mut self, now: Timestamp) {
+        let on_air = self.slots.iter().flatten().any(|s| !s.not_started());
+        if on_air && self.last_save.is_none_or(|t| since(t, now) >= HEARTBEAT) {
+            self.save_due = true;
+        }
+    }
+
+    /// Puts the entry that the saved plan has on air now back on a deck. The
+    /// `on_interrupt` of its playlist decides: `Resume` continues at the position and in
+    /// the same log row. `Replay` plays it from the start in a new row. `Skip` drops it.
+    /// The cut-off row of a replay or a skip ends as interrupted. Streams and live items
+    /// start again at once, until their planned end.
     pub(crate) fn resume(&mut self, now: Timestamp) {
         let saved = self
             .engine
@@ -92,32 +104,49 @@ impl Core {
         else {
             return;
         };
-        let item = self
-            .engine
-            .state()
-            .station
-            .playlists
-            .iter()
-            .flat_map(|p| p.items.iter())
-            .find(|i| i.id == e.item)
-            .cloned();
-        let Some(item) = item else { return };
+        let station = &self.engine.state().station;
+        let found = station.playlists.iter().find_map(|p| {
+            p.items
+                .iter()
+                .find(|i| i.id == e.item)
+                .map(|i| (i.clone(), p.on_interrupt))
+        });
+        let Some((item, rule)) = found else { return };
         let row = saved
             .rows
             .iter()
             .find(|(id, start, _)| *id == e.item && *start == e.start)
             .map(|r| RowId(r.2));
         let mut entry = e.clone();
-        let offset = match item.source {
-            Source::File { .. } if item.trimmable => since(e.start, now),
-            Source::File { .. } => {
+        let mut keep_row = None;
+        let offset = match (&item.source, rule) {
+            (Source::File { .. }, OnInterrupt::Resume) => {
+                keep_row = row;
+                since(e.start, now)
+            }
+            (Source::File { .. }, OnInterrupt::Replay) => {
                 if let Some(row) = row {
                     self.end_cut_row(row, e.start, saved.at);
                 }
                 entry.start = now;
                 Duration::ZERO
             }
-            Source::Stream { .. } | Source::LiveInput { .. } => {
+            (_, OnInterrupt::Skip) => {
+                if let Some(row) = row {
+                    self.end_cut_row(row, e.start, saved.at);
+                }
+                // The rotation continues after the skipped item.
+                self.history.push(Played {
+                    item: item.id,
+                    playlist: e.playlist,
+                    at: e.start,
+                    artist: item.artist.clone(),
+                    title: item.title.clone(),
+                });
+                return;
+            }
+            (Source::Stream { .. } | Source::LiveInput { .. }, _) => {
+                keep_row = row;
                 entry.len = since(now, end(&e));
                 entry.trim = Duration::ZERO;
                 entry.start = now;
@@ -128,8 +157,13 @@ impl Core {
             entry.start = sub(now, offset);
         }
         let Some(i) = self.free_deck() else { return };
-        if let Err(reason) = self.load(i, entry, item.clone(), DeckRole::Plan, offset) {
-            self.skip_broken(&item, reason, now);
+        match self.load(i, entry, item.clone(), DeckRole::Plan, offset) {
+            Ok(_) => {
+                if let Some(s) = &mut self.slots[i] {
+                    s.row = keep_row;
+                }
+            }
+            Err(reason) => self.skip_broken(&item, reason, now),
         }
     }
 }

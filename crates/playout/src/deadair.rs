@@ -1,16 +1,19 @@
 //! Dead air (spec §6.14) and file analysis. On silence, playout skips to the next item.
-//! If Program stays silent, the emergency fallback folder plays until an operator acts.
+//! If Program stays silent, the emergency fallback folder plays. Playout goes back to the
+//! plan at the next fixed event, or when the next planned item is ready.
 
 use crate::alarm::Alarm;
-use crate::core::{Core, Phase, since};
+use crate::core::{Core, Phase, add, since, sub};
+use crate::ops::Check;
 use crate::view::DeckRole;
+use crate::work::Done;
 use jiff::Timestamp;
+use radio_audio::{DeckId, DeckState};
 use radio_engine::Mode;
 use radio_model::{Item, ItemId, ItemMeta, PlaylistId, Source, Timing};
 use radio_scheduler::{Entry, Origin};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The state of the dead-air logic and of the emergency fallback.
@@ -20,6 +23,8 @@ pub(crate) struct DeadAir {
     pub(crate) skipped_at: Option<Timestamp>,
     /// The emergency fallback plays.
     pub(crate) emergency: bool,
+    /// The fallback began, or last checked the plan, at this time.
+    checked_at: Option<Timestamp>,
     /// The files of the fallback folder, and the index of the next one.
     files: Vec<PathBuf>,
     next: usize,
@@ -27,25 +32,13 @@ pub(crate) struct DeadAir {
     failures: usize,
 }
 
-/// File analysis results, from worker threads.
+/// File analysis results by item. `None` means in progress or failed.
+#[derive(Default)]
 pub(crate) struct Analysis {
     done: BTreeMap<ItemId, Option<Timing>>,
-    tx: Sender<(ItemId, Option<Timing>)>,
-    rx: Receiver<(ItemId, Option<Timing>)>,
 }
 
-impl Default for Analysis {
-    fn default() -> Self {
-        let (tx, rx) = channel();
-        Self {
-            done: BTreeMap::new(),
-            tx,
-            rx,
-        }
-    }
-}
-
-fn audio_file(p: &std::path::Path) -> bool {
+fn audio_file(p: &Path) -> bool {
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
     matches!(
         ext.to_ascii_lowercase().as_str(),
@@ -53,21 +46,94 @@ fn audio_file(p: &std::path::Path) -> bool {
     )
 }
 
+fn list_folder(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    files.retain(|p| p.is_file() && audio_file(p));
+    files.sort();
+    files
+}
+
 impl Core {
+    /// Tells if the station is quiet on purpose: an operator holds it, or it waits for one.
+    fn quiet_on_purpose(&self) -> bool {
+        let mode = self.engine.state().mode;
+        if mode == Mode::Manual || self.hold {
+            return true;
+        }
+        let on_air = self
+            .slots
+            .iter()
+            .flatten()
+            .any(|s| matches!(s.role, DeckRole::Plan | DeckRole::Operator) && !s.not_started());
+        mode != Mode::Auto && !on_air
+    }
+
     /// Program has been silent for the detector time.
     pub(crate) fn on_silence(&mut self, now: Timestamp) {
-        if self.engine.state().mode == Mode::Manual || self.keep_alive_on_air() {
+        if self.quiet_on_purpose() || self.keep_alive_on_air() {
             return;
         }
         self.alarms.raise(now, Alarm::DeadAir);
         if self.dead_air.emergency {
             return;
         }
-        let fallback = matches!(self.start_next(None), crate::ops::Check::Now(false));
-        if fallback {
-            self.enter_emergency(now, "nothing to skip to");
-        } else {
+        let skipped = match self.start_next(None) {
+            Check::Now(false) => self.load_next_now(now),
+            _ => true,
+        };
+        if skipped {
             self.dead_air.skipped_at = Some(now);
+        } else {
+            self.enter_emergency(now, "nothing to skip to");
+        }
+    }
+
+    /// Fades out everything on air at once.
+    fn cut_all(&mut self) {
+        let at = self.mixer.now();
+        for d in 0..4 {
+            let fade = self.slots[d]
+                .as_ref()
+                .filter(|s| !s.not_started() && !s.end_sent)
+                .is_some();
+            if fade {
+                self.fade_at(d, at, Duration::ZERO, true);
+            }
+        }
+    }
+
+    /// Loads the next planned entry now and starts it once it is ready. It returns false
+    /// when the plan has no entry or no deck is free.
+    fn load_next_now(&mut self, now: Timestamp) -> bool {
+        let assigned = self.assigned();
+        let from = sub(now, Duration::from_secs(1));
+        let next = self
+            .timeline
+            .entries
+            .iter()
+            .find(|e| e.start >= from && !assigned.contains(&(e.item, e.start)))
+            .cloned();
+        let Some(entry) = next else { return false };
+        let Some(item) = self.items.get(&entry.item).cloned() else {
+            return false;
+        };
+        let Some(i) = self.free_deck() else {
+            return false;
+        };
+        self.cut_all();
+        match self.load(i, entry, item.clone(), DeckRole::Plan, Duration::ZERO) {
+            Ok(_) => {
+                if let Some(s) = &mut self.slots[i] {
+                    s.asap = true;
+                }
+                true
+            }
+            Err(reason) => {
+                self.skip_broken(&item, reason, now);
+                false
+            }
         }
     }
 
@@ -77,7 +143,8 @@ impl Core {
         self.alarms.clear(now, |a| *a == Alarm::DeadAir);
     }
 
-    /// Goes to the fallback when the skip did not bring audio back in time.
+    /// Goes to the fallback when the skip did not bring audio back in time. While the
+    /// fallback plays, it checks if the plan can play again.
     pub(crate) fn check_dead_air(&mut self, now: Timestamp) {
         let after = self.cfg.mixer.silence.after;
         if self
@@ -88,51 +155,102 @@ impl Core {
             self.dead_air.skipped_at = None;
             self.enter_emergency(now, "skipping did not end the silence");
         }
+        if !self.dead_air.emergency {
+            return;
+        }
+        self.return_from_emergency(now);
         if self.dead_air.emergency {
             self.play_emergency(now);
         }
     }
 
-    fn enter_emergency(&mut self, now: Timestamp, why: &str) {
-        let files = self.cfg.fallback_folder.as_ref().map(|dir| {
-            let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-                .map(|rd| rd.flatten().map(|e| e.path()).collect())
-                .unwrap_or_default();
-            files.retain(|p| p.is_file() && audio_file(p));
-            files.sort();
-            files
+    /// Goes back to the plan when a fixed event is due. At each retry, it also goes back
+    /// when the next planned item is ready on a deck.
+    fn return_from_emergency(&mut self, now: Timestamp) {
+        let soon = add(now, self.cfg.command_lead);
+        let fixed_due = self.slots.iter().flatten().any(|s| {
+            s.role == DeckRole::Plan
+                && s.not_started()
+                && s.entry.fixed.is_some()
+                && s.entry.start <= soon
         });
-        let files = files.unwrap_or_default();
-        let reason = if files.is_empty() {
-            format!("{why}; the emergency folder has no audio files")
-        } else {
-            why.to_string()
-        };
-        self.alarms.raise(now, Alarm::EmergencyFallback { reason });
-        let at = self.mixer.now();
-        for i in 0..4 {
-            let fade = self.slots[i]
-                .as_ref()
-                .filter(|s| !s.not_started() && !s.end_sent)
-                .is_some();
-            if fade {
-                self.fade_at(i, at, Duration::ZERO, true);
-            }
+        let retry = self
+            .dead_air
+            .checked_at
+            .is_none_or(|t| since(t, now) >= self.cfg.emergency_retry);
+        if !fixed_due && !retry {
+            return;
         }
+        self.dead_air.checked_at = Some(now);
+        let ready = (0..4).any(|i| {
+            self.slots[i].as_ref().is_some_and(|s| {
+                s.role == DeckRole::Plan
+                    && s.not_started()
+                    && self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Ready
+            })
+        });
+        if !fixed_due && !ready {
+            return;
+        }
+        self.leave_emergency(now);
+        if !fixed_due {
+            let _ = self.start_next(None);
+        }
+    }
+
+    fn enter_emergency(&mut self, now: Timestamp, why: &str) {
+        self.alarms.raise(
+            now,
+            Alarm::EmergencyFallback {
+                reason: why.to_string(),
+            },
+        );
+        if let Some(dir) = self.cfg.fallback_folder.clone() {
+            self.work.run(move || Done::Folder(list_folder(&dir)));
+        }
+        self.cut_all();
         self.dead_air = DeadAir {
             emergency: true,
-            files,
+            checked_at: Some(now),
             ..DeadAir::default()
         };
     }
 
-    /// Leaves the fallback. Operator commands call this.
-    pub(crate) fn leave_emergency(&mut self, now: Timestamp) {
-        if self.dead_air.emergency {
-            self.dead_air.emergency = false;
-            self.alarms
-                .clear(now, |a| matches!(a, Alarm::EmergencyFallback { .. }));
+    /// A worker listed the fallback folder.
+    pub(crate) fn on_folder(&mut self, files: Vec<PathBuf>, now: Timestamp) {
+        if !self.dead_air.emergency {
+            return;
         }
+        if files.is_empty() {
+            let reason = "the emergency folder has no audio files".to_string();
+            self.alarms.raise(now, Alarm::EmergencyFallback { reason });
+        }
+        self.dead_air.files = files;
+        self.dead_air.next = 0;
+    }
+
+    /// Leaves the fallback, and the fallback file fades out. Operator commands and the
+    /// return checks call this.
+    pub(crate) fn leave_emergency(&mut self, now: Timestamp) {
+        if !self.dead_air.emergency {
+            return;
+        }
+        self.dead_air.emergency = false;
+        self.alarms
+            .clear(now, |a| matches!(a, Alarm::EmergencyFallback { .. }));
+        let at = self.mixer.now();
+        for i in 0..4 {
+            let fade = self.slots[i]
+                .as_ref()
+                .is_some_and(|s| s.role == DeckRole::Emergency && !s.end_sent);
+            if fade {
+                self.fade_at(i, at, crate::core::CUT_FADE, true);
+            }
+        }
+    }
+
+    pub(crate) fn dead_air_file_failed(&mut self) {
+        self.dead_air.failures += 1;
     }
 
     /// Keeps one fallback file on air while the fallback plays.
@@ -182,8 +300,9 @@ impl Core {
         match self.load(i, entry, item, DeckRole::Emergency, Duration::ZERO) {
             Ok(_) => {
                 self.dead_air.failures = 0;
-                let at = self.mixer.now();
-                self.play_at(i, at);
+                if let Some(s) = &mut self.slots[i] {
+                    s.asap = true;
+                }
             }
             Err(_) => self.dead_air.failures += 1,
         }
@@ -202,12 +321,15 @@ impl Core {
         })
     }
 
-    /// Gives file items without cue points the timing that analysis found. It starts
-    /// analysis on a worker thread for each new file item without timing.
+    /// A worker finished the analysis of an item.
+    pub(crate) fn on_analysed(&mut self, id: ItemId, timing: Option<Timing>) {
+        self.analysis.done.insert(id, timing);
+        self.dirty = true;
+    }
+
+    /// Gives file items without cue points the timing that analysis found. It queues
+    /// analysis on the workers for each new file item without timing.
     pub(crate) fn apply_analysis(&mut self, station: &mut radio_model::Station) {
-        while let Ok((id, timing)) = self.analysis.rx.try_recv() {
-            self.analysis.done.insert(id, timing);
-        }
         for item in station
             .playlists
             .iter_mut()
@@ -223,13 +345,10 @@ impl Core {
                 Some(found) => item.timing.clone_from(found),
                 None => {
                     self.analysis.done.insert(item.id, None);
-                    let (tx, id, path) = (self.analysis.tx.clone(), item.id, path.clone());
-                    let _ = std::thread::Builder::new()
-                        .name("playout-analyse".into())
-                        .spawn(move || {
-                            let timing = radio_library::analyse(&path).ok().map(|a| a.timing);
-                            let _ = tx.send((id, timing));
-                        });
+                    let (id, path) = (item.id, path.clone());
+                    self.work.run(move || {
+                        Done::Analysed(id, radio_library::analyse(&path).ok().map(|a| a.timing))
+                    });
                 }
             }
         }

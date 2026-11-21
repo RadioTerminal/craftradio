@@ -14,6 +14,7 @@ mod output;
 mod resume;
 mod streams;
 mod view;
+mod work;
 
 pub use alarm::{Alarm, RaisedAlarm};
 pub use clock::{Clock, ManualClock, SystemClock};
@@ -23,7 +24,7 @@ pub use view::{
 
 use jiff::Timestamp;
 use radio_audio::{MeterReader, MixerConfig};
-use radio_engine::{AsPlayed, Command, Engine, EngineError, Outcome};
+use radio_engine::{AsPlayed, Command, Engine, EngineError, LogHandle, Outcome};
 use radio_scheduler::PlanOptions;
 use radio_stream::IcecastConfig;
 use std::path::PathBuf;
@@ -62,6 +63,9 @@ pub struct PlayoutConfig {
     pub plan: PlanOptions,
     /// Playout sends play and fade commands this long before their sample (default 300 ms).
     pub command_lead: Duration,
+    /// While the emergency fallback plays, playout checks this often if the plan can play
+    /// again (default 30 s).
+    pub emergency_retry: Duration,
     /// Playout skips a stream without keep-alive after this much downtime (default 10 s).
     pub stream_timeout: Duration,
     /// The emergency fallback playlist: all audio files in this folder, in name order.
@@ -89,6 +93,7 @@ impl PlayoutConfig {
             plan: PlanOptions::default(),
             command_lead: Duration::from_millis(300),
             stream_timeout: Duration::from_secs(10),
+            emergency_retry: Duration::from_secs(30),
             fallback_folder: None,
             icecast: None,
             station_name: String::new(),
@@ -126,8 +131,7 @@ pub(crate) type Reply = Sender<Result<Outcome, EngineError>>;
 pub(crate) enum Request {
     Dispatch(Command, Reply),
     Render(usize, Sender<Result<Vec<f32>, PlayoutError>>),
-    History(Timestamp, u32, Sender<Result<Vec<AsPlayed>, EngineError>>),
-    Alarms(Sender<RaisedAlarm>),
+    Alarms(mpsc::SyncSender<RaisedAlarm>),
 }
 
 /// The running playout. A drop stops the control thread, ends the open log rows as
@@ -137,14 +141,18 @@ pub struct Playout {
     thread: Option<JoinHandle<()>>,
     view: Arc<Mutex<PlayoutView>>,
     meters: Mutex<MeterReader>,
+    log: LogHandle,
 }
 
 /// The period of the control loop when a clock drives the mixer.
 const TICK: Duration = Duration::from_millis(20);
+/// The capacity of each alarm stream.
+const ALARM_QUEUE: usize = 256;
 
 impl Playout {
     /// Starts playout on the station of `engine`.
     pub fn start(engine: Engine, cfg: PlayoutConfig) -> Result<Playout, PlayoutError> {
+        let log = engine.log_handle()?;
         let (tx, rx) = mpsc::channel::<Request>();
         let (ready_tx, ready_rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -168,6 +176,7 @@ impl Playout {
             tx: Some(tx),
             thread: Some(thread),
             view,
+            log,
             meters: Mutex::new(meters),
         })
     }
@@ -221,20 +230,23 @@ impl Playout {
             .unwrap_or_else(|p| p.into_inner().clone())
     }
 
-    /// A new alarm stream. Each call gets its own receiver.
+    /// A new alarm stream. Each call gets its own receiver. It holds 256 alarms; when it
+    /// is full, playout drops the newest and counts them in [`PlayoutView::alarms_dropped`].
     pub fn alarms(&self) -> Result<Receiver<RaisedAlarm>, PlayoutError> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(ALARM_QUEUE);
         self.request(Request::Alarms(tx))?;
         Ok(rx)
     }
 
-    /// The as-played rows from `since`, oldest first.
+    /// The as-played rows from `since`, oldest first. It reads the log on the writer
+    /// thread of the engine, not on the control thread.
     pub fn history(&self, since: Timestamp, limit: u32) -> Result<Vec<AsPlayed>, PlayoutError> {
-        let (tx, rx) = mpsc::channel();
-        self.request(Request::History(since, limit, tx))?;
-        rx.recv()
-            .map_err(|_| PlayoutError::Stopped)?
-            .map_err(PlayoutError::from)
+        Ok(self.log.history(since, limit)?)
+    }
+
+    /// A handle to the as-played log for another thread, for example a UI.
+    pub fn log(&self) -> LogHandle {
+        self.log.clone()
     }
 
     /// Offline only: one control tick at the current clock time, then `frames` frames of
@@ -265,9 +277,6 @@ fn run(mut core: core::Core, rx: &Receiver<Request>) {
             Ok(Request::Dispatch(cmd, reply)) => core.dispatch(cmd, reply),
             Ok(Request::Render(frames, reply)) => {
                 let _ = reply.send(core.render(frames));
-            }
-            Ok(Request::History(since, limit, reply)) => {
-                let _ = reply.send(core.history(since, limit));
             }
             Ok(Request::Alarms(tx)) => core.subscribe(tx),
             Err(RecvTimeoutError::Timeout) => {}

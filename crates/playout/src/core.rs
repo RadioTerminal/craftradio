@@ -7,21 +7,21 @@ use crate::ops::{Carts, Check, Pending};
 use crate::output::{ProgramSource, feed_tap};
 use crate::streams::StreamSlot;
 use crate::view::{DeckPhase, DeckRole, DeckView, LocalOutput, OutputStatus, PlayoutView};
+use crate::work::{Done, Workers};
 use crate::{OutputChoice, PlayoutConfig, PlayoutError, Reply};
 use jiff::Timestamp;
+use radio_audio::Decoder;
 use radio_audio::{
     AudioEvent, CHANNELS, Command as Cmd, CommandKind, DeckId, DeckState, LiveInput, LoadOptions,
     MeterReader, Mixer, MixerConfig, MixerHandle, SAMPLE_RATE, render_offline,
 };
-use radio_audio_device::{NullOutput, Output};
-use radio_engine::{
-    AsPlayed, Command, Engine, EngineError, EngineEvent, LogEntry, LogStatus, RowId,
-};
+use radio_audio_device::{NullOutput, Output, SampleClock};
+use radio_engine::{Command, Engine, EngineEvent, LogEntry, LogHandle, LogStatus, RowId};
 use radio_model::{FixMode, Item, ItemId, Source};
 use radio_scheduler::{Entry, Origin, PlanInput, PlayHistory, Played, Timeline, plan};
 use radio_stream::{IcecastClient, IcecastHandle};
 use std::collections::BTreeMap;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -49,6 +49,8 @@ pub(crate) fn since(a: Timestamp, b: Timestamp) -> Duration {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
+    /// A worker opens the file.
+    Opening,
     Loading,
     Ready,
     /// `Play` waits in the mixer for this frame.
@@ -76,11 +78,27 @@ pub(crate) struct Slot {
     pub(crate) offset: Duration,
     /// The mixer reported that a fade-out began.
     pub(crate) fading: bool,
+    /// Start as soon as the deck is ready, whatever the plan says.
+    pub(crate) asap: bool,
+    pub(crate) options: LoadOptions,
 }
 
 impl Slot {
     pub(crate) fn not_started(&self) -> bool {
-        matches!(self.phase, Phase::Loading | Phase::Ready)
+        matches!(self.phase, Phase::Opening | Phase::Loading | Phase::Ready)
+    }
+
+    /// The plan keeps this entry where it is: a plan entry on a deck, or an operator item
+    /// on air.
+    pub(crate) fn pinned(&self) -> bool {
+        self.role == DeckRole::Plan || (self.role == DeckRole::Operator && !self.not_started())
+    }
+
+    pub(crate) fn is_hard(&self) -> bool {
+        self.entry
+            .fixed
+            .as_ref()
+            .is_some_and(|f| f.mode == FixMode::Hard)
     }
 
     /// The planned end: the start plus the length, less the trim of the planner.
@@ -106,6 +124,8 @@ enum Driver {
 }
 
 struct OpenedOutput {
+    /// The clock of a real or null output, for its latency.
+    clock: Option<SampleClock>,
     driver: Driver,
     handle: MixerHandle,
     live: LiveInput,
@@ -135,6 +155,7 @@ fn open_output(
     let (mixer, handle, live, tap_tx, tap_rx) = match choice {
         OutputChoice::Offline => {
             return Ok(OpenedOutput {
+                clock: None,
                 driver: Driver::Offline {
                     mixer: Box::new(mixer),
                     tap: tap_tx,
@@ -154,6 +175,7 @@ fn open_output(
                         name: out.device_name().to_string(),
                     };
                     return Ok(OpenedOutput {
+                        clock: Some(out.clock()),
                         driver: Driver::Device { _out: out },
                         handle,
                         live,
@@ -181,6 +203,7 @@ fn open_output(
     let null = NullOutput::start(SAMPLE_RATE, CHANNELS as u16, source)
         .map_err(|e| PlayoutError::Output(e.to_string()))?;
     Ok(OpenedOutput {
+        clock: Some(null.clock()),
         driver: Driver::Null { _out: null },
         handle,
         live,
@@ -231,6 +254,11 @@ pub(crate) struct Core {
     last_prune: Option<Timestamp>,
     pub(crate) last_save: Option<Timestamp>,
     pub(crate) analysis: Analysis,
+    pub(crate) log: LogHandle,
+    pub(crate) work: Workers,
+    /// Rows of items that ended before the writer returned their row id.
+    ended: BTreeMap<u64, (Timestamp, LogStatus)>,
+    out_clock: Option<SampleClock>,
 }
 
 fn empty_timeline() -> Timeline {
@@ -244,6 +272,7 @@ fn empty_timeline() -> Timeline {
 impl Core {
     pub(crate) fn new(mut engine: Engine, cfg: PlayoutConfig) -> Result<Core, PlayoutError> {
         let engine_rx = engine.events();
+        let log = engine.log_handle()?;
         let carts = Carts::new(cfg.mixer.cart_slots);
         // Four seconds of Program between the mixer and the encoder.
         let tap = cfg
@@ -276,6 +305,7 @@ impl Core {
             },
             stream_states: Vec::new(),
             alarms: Vec::new(),
+            alarms_dropped: 0,
         };
         Ok(Core {
             engine,
@@ -313,6 +343,10 @@ impl Core {
             last_prune: None,
             last_save: None,
             analysis: Analysis::default(),
+            log,
+            work: Workers::new(),
+            ended: BTreeMap::new(),
+            out_clock: opened.clock,
         })
     }
 
@@ -328,16 +362,8 @@ impl Core {
         matches!(self.driver, Driver::Offline { .. })
     }
 
-    pub(crate) fn subscribe(&mut self, tx: Sender<RaisedAlarm>) {
+    pub(crate) fn subscribe(&mut self, tx: std::sync::mpsc::SyncSender<RaisedAlarm>) {
         self.alarms.subscribe(tx);
-    }
-
-    pub(crate) fn history(
-        &self,
-        since: Timestamp,
-        limit: u32,
-    ) -> Result<Vec<AsPlayed>, EngineError> {
-        self.engine.history(since, limit)
     }
 
     pub(crate) fn render(&mut self, frames: usize) -> Result<Vec<f32>, PlayoutError> {
@@ -345,6 +371,7 @@ impl Core {
             return Err(PlayoutError::NotOffline);
         }
         self.tick();
+        self.settle_offline();
         let Driver::Offline { mixer, tap } = &mut self.driver else {
             return Err(PlayoutError::NotOffline);
         };
@@ -386,6 +413,9 @@ impl Core {
     /// One pass of the control loop.
     pub(crate) fn tick(&mut self) {
         let now = self.clock.now();
+        if let Some(c) = &self.out_clock {
+            self.map.latency = c.latency();
+        }
         if let Some(step) = self.map.observe(now, self.mixer.now())
             && self.ticks > 0
         {
@@ -397,8 +427,9 @@ impl Core {
             self.resume(now);
         }
         let _ = self.drain_engine();
+        self.take_done(now);
         if std::mem::take(&mut self.carts_dirty) || self.ticks == 1 {
-            self.sync_carts(now);
+            self.sync_carts();
         }
         let events: Vec<AudioEvent> = self.mixer.events().collect();
         for ev in events {
@@ -410,13 +441,17 @@ impl Core {
         if self.dirty || due {
             self.replan(now);
         }
+        // Hard events claim a deck first, so a queued item cannot take it back.
+        self.ensure_hard(now);
         self.load_ahead(now);
         self.cue_starts(now);
         self.cue_ends(now);
         self.check_streams(now);
         self.check_dead_air(now);
         self.poll_states();
+        self.stop_took_effect();
         self.publish(now);
+        self.heartbeat(now);
         self.save_state(now);
         self.expire_replies();
     }
@@ -480,7 +515,12 @@ impl Core {
         s.entry.start = sub(wall, s.offset);
         self.dirty = true;
         self.save_due = true;
-        self.log_start(deck.index(), wall);
+        if self.slots[deck.index()]
+            .as_ref()
+            .is_some_and(|s| s.row.is_none())
+        {
+            self.log_start(deck.index(), wall);
+        }
         let titled = self.slots[deck.index()]
             .as_ref()
             .filter(|s| matches!(s.role, DeckRole::Plan | DeckRole::Operator))
@@ -531,17 +571,11 @@ impl Core {
         if s.role != DeckRole::Bed {
             self.history.push(played);
         }
-        match self.engine.log_start(&entry) {
-            Ok(row) => {
-                if let Some(s) = &mut self.slots[i] {
-                    s.row = Some(row);
-                }
-            }
-            Err(e) => {
-                let reason = e.to_string();
-                self.alarms.raise(wall, Alarm::LogFailed { reason });
-            }
-        }
+        let (tag, done) = (s.tag, self.work.done_tx.clone());
+        self.log.log_start_later(&entry, move |result| {
+            let result = result.map_err(|e| e.to_string());
+            let _ = done.send(Done::Row { tag, result });
+        });
     }
 
     /// The deck is empty: complete its log row and free it.
@@ -552,16 +586,17 @@ impl Core {
         if let Some((deck, tag)) = s.stream.as_ref().and_then(|st| st.bed) {
             self.end_bed(deck, tag);
         }
-        if let Some(row) = s.row {
-            let status = if s.cut {
-                LogStatus::Interrupted
-            } else {
-                LogStatus::Aired
-            };
-            if let Err(e) = self.engine.log_end(row, now, status) {
-                let reason = e.to_string();
-                self.alarms.raise(now, Alarm::LogFailed { reason });
+        let status = if s.cut {
+            LogStatus::Interrupted
+        } else {
+            LogStatus::Aired
+        };
+        match s.row {
+            Some(row) => self.log.log_end_later(row, now, status),
+            None if s.started.is_some() => {
+                self.ended.insert(s.tag, (now, status));
             }
+            None => {}
         }
         self.dirty = true;
         self.save_due = true;
@@ -570,11 +605,7 @@ impl Core {
     /// Moves the starts of the queued entries behind the item before them.
     fn chain(&mut self, now: Timestamp) {
         let mut order: Vec<usize> = (0..4)
-            .filter(|&i| {
-                self.slots[i]
-                    .as_ref()
-                    .is_some_and(|s| s.role == DeckRole::Plan)
-            })
+            .filter(|&i| self.slots[i].as_ref().is_some_and(Slot::pinned))
             .collect();
         order.sort_by_key(|&i| self.slots[i].as_ref().map(|s| s.entry.start));
         let mut prev: Option<(Timestamp, Item, Duration)> = None;
@@ -615,7 +646,7 @@ impl Core {
             .slots
             .iter()
             .flatten()
-            .filter(|s| s.role == DeckRole::Plan)
+            .filter(|s| s.pinned())
             .map(|s| s.entry.clone())
             .collect();
         let input = PlanInput {
@@ -662,23 +693,23 @@ impl Core {
 
     /// Loads the next planned entries that start within the preload time.
     fn load_ahead(&mut self, now: Timestamp) {
-        let plan_slots = || {
-            self.slots
-                .iter()
-                .flatten()
-                .filter(|s| s.role == DeckRole::Plan)
-        };
-        let last = plan_slots().map(|s| s.entry.start).max();
-        let queued = plan_slots().filter(|s| s.not_started()).count();
-        let assigned: Vec<(ItemId, Timestamp)> = plan_slots()
-            .map(|s| (s.entry.item, s.entry.start))
-            .collect();
+        // Hard events load on their own (see `ensure_hard`) and do not count here.
+        let plan_slots = || self.slots.iter().flatten().filter(|s| s.pinned());
+        let last = plan_slots()
+            .filter(|s| !s.is_hard())
+            .map(|s| s.entry.start)
+            .max();
+        let queued = plan_slots()
+            .filter(|s| s.not_started() && !s.is_hard())
+            .count();
+        let assigned = self.assigned();
         let horizon = add(now, self.cfg.preload);
         let next: Vec<Entry> = self
             .timeline
             .entries
             .iter()
             .filter(|e| !assigned.contains(&(e.item, e.start)))
+            .filter(|e| !e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
             .filter(|e| last.is_none_or(|l| e.start > l))
             .take_while(|e| e.start <= horizon)
             .take(MAX_QUEUED.saturating_sub(queued))
@@ -701,6 +732,16 @@ impl Core {
                 break;
             }
         }
+    }
+
+    /// The (item, start) of each pinned entry on a deck.
+    pub(crate) fn assigned(&self) -> Vec<(ItemId, Timestamp)> {
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|s| s.pinned())
+            .map(|s| (s.entry.item, s.entry.start))
+            .collect()
     }
 
     /// Raises the alarm for an item that failed to load, and plans without it.
@@ -743,11 +784,16 @@ impl Core {
             item_tag: Some(tag),
         };
         let mut stream = None;
+        let mut phase = Phase::Loading;
         match &item.source {
-            Source::File { path } => self
-                .mixer
-                .load(deck, path, options)
-                .map_err(|e| e.to_string())?,
+            Source::File { path } => {
+                let (path, cue_in) = (path.clone(), options.cue_in);
+                self.work.run(move || Done::Opened {
+                    tag,
+                    result: Decoder::open_at(&path, cue_in).map_err(|e| e.to_string()),
+                });
+                phase = Phase::Opening;
+            }
             Source::Stream { url, keep_alive } => {
                 stream = Some(self.load_stream(deck, url, *keep_alive, options)?);
             }
@@ -758,7 +804,7 @@ impl Core {
             entry,
             item,
             role,
-            phase: Phase::Loading,
+            phase,
             started: None,
             end_sent: false,
             cut: false,
@@ -766,6 +812,8 @@ impl Core {
             stream,
             offset,
             fading: false,
+            asap: false,
+            options,
         });
         self.next_deck = (i + 1) % 4;
         Ok(tag)
@@ -776,11 +824,16 @@ impl Core {
         let soon = add(now, self.cfg.command_lead);
         for i in 0..4 {
             let Some(s) = &self.slots[i] else { continue };
+            // A deck whose ring is not full yet would start on silence: it starts late.
+            let ready = self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Ready;
+            if s.asap && s.not_started() && ready {
+                let at = self.mixer.now();
+                self.play_at(i, at);
+                continue;
+            }
             if s.role != DeckRole::Plan || !s.not_started() || s.entry.start > soon {
                 continue;
             }
-            // A deck whose ring is not full yet would start on silence: it starts late.
-            let ready = self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Ready;
             if !ready || !self.may_start(s) {
                 continue;
             }
@@ -792,6 +845,10 @@ impl Core {
     /// Sends `Play` for deck `i` at frame `at`.
     pub(crate) fn play_at(&mut self, i: usize, at: u64) {
         let Some(s) = &mut self.slots[i] else { return };
+        if s.phase == Phase::Opening {
+            s.asap = true;
+            return;
+        }
         let cmd = Cmd::new(at, CommandKind::Play(DeckId::ALL[i])).for_item(s.tag);
         if self.mixer.send(cmd).is_ok() {
             s.phase = Phase::Cued(at);
@@ -814,13 +871,21 @@ impl Core {
         let soon = add(now, self.cfg.command_lead);
         for i in 0..4 {
             let Some(s) = &self.slots[i] else { continue };
-            let ends = matches!(s.role, DeckRole::Plan | DeckRole::Operator);
-            if !ends || s.not_started() || s.end_sent || s.phase == Phase::Paused {
+            if s.not_started() || s.end_sent || s.phase == Phase::Paused {
                 continue;
             }
             let start = s.entry.start;
-            let mut end = s.planned_end();
+            let planned = matches!(s.role, DeckRole::Plan | DeckRole::Operator);
+            // Beds and fallback files have no planned end; only a hard event ends them.
+            let mut end = if planned {
+                s.planned_end()
+            } else {
+                Timestamp::MAX
+            };
             let hard = self.hard_between(start, end);
+            if !planned && hard.is_none() {
+                continue;
+            }
             if let Some(t) = hard {
                 end = t;
             }
@@ -873,7 +938,7 @@ impl Core {
                 item: Some(s.item.id),
                 title: s.item.title.clone(),
                 phase: match s.phase {
-                    Phase::Loading => DeckPhase::Loading,
+                    Phase::Opening | Phase::Loading => DeckPhase::Loading,
                     Phase::Ready => DeckPhase::Ready,
                     Phase::Cued(_) => DeckPhase::Cued,
                     Phase::Playing => DeckPhase::Playing,
@@ -895,6 +960,7 @@ impl Core {
         view.decks = decks;
         view.outputs.local = self.local.clone();
         view.alarms = self.alarms.recent.iter().cloned().collect();
+        view.alarms_dropped = self.alarms.dropped;
         view.stream_states = self.stream_states();
         view.outputs.icecast = self.icecast.as_ref().map(IcecastHandle::status);
         if self.timeline_changed {
@@ -912,6 +978,170 @@ impl Core {
             }
             self.finish(i, now);
         }
+        // Rows whose id arrives now still get their end.
         let _ = self.engine.flush();
+        self.take_done(now);
+        let _ = self.engine.flush();
+    }
+
+    /// Offline only: waits until no deck is still opening or filling, for 2 s at most.
+    /// Then a run does not depend on the speed of the disk. A real output never waits.
+    fn settle_offline(&mut self) {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            let busy = (0..4).any(|i| {
+                self.slots[i].as_ref().is_some_and(|s| {
+                    s.phase == Phase::Opening
+                        || (s.not_started()
+                            && self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Loading)
+                })
+            });
+            if !busy {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            let now = self.clock.now();
+            self.take_done(now);
+        }
+    }
+
+    /// Takes the results of the workers and of the log writer.
+    pub(crate) fn take_done(&mut self, now: Timestamp) {
+        while let Ok(done) = self.work.done_rx.try_recv() {
+            match done {
+                Done::Opened { tag, result } => self.on_opened(tag, result, now),
+                Done::Row { tag, result } => match result {
+                    Ok(row) => {
+                        let slot = self.slots.iter_mut().flatten().find(|s| s.tag == tag);
+                        match slot {
+                            Some(s) => {
+                                s.row = Some(row);
+                                // The saved state must know the row, for a resume.
+                                self.save_due = true;
+                            }
+                            None => {
+                                if let Some((end, status)) = self.ended.remove(&tag) {
+                                    self.log.log_end_later(row, end, status);
+                                }
+                            }
+                        }
+                    }
+                    Err(reason) => self.alarms.raise(now, Alarm::LogFailed { reason }),
+                },
+                Done::Folder(files) => self.on_folder(files, now),
+                Done::Analysed(id, timing) => self.on_analysed(id, timing),
+                Done::Cart(i, item, result) => self.on_cart(i, item, result, now),
+            }
+        }
+    }
+
+    /// A worker opened (or failed to open) the file of the load with `tag`.
+    fn on_opened(&mut self, tag: u64, result: Result<Decoder, String>, now: Timestamp) {
+        let Some(i) = (0..4).find(|&i| {
+            self.slots[i]
+                .as_ref()
+                .is_some_and(|s| s.tag == tag && s.phase == Phase::Opening)
+        }) else {
+            return;
+        };
+        let deck = DeckId::ALL[i];
+        let result = result.and_then(|dec| {
+            let options = self.slots[i]
+                .as_ref()
+                .map(|s| s.options)
+                .unwrap_or_default();
+            self.mixer
+                .load_decoder(deck, dec, options)
+                .map_err(|e| e.to_string())
+        });
+        match result {
+            Ok(()) => {
+                if let Some(s) = &mut self.slots[i] {
+                    s.phase = Phase::Loading;
+                }
+            }
+            Err(reason) => {
+                let Some(s) = self.slots[i].take() else {
+                    return;
+                };
+                match s.role {
+                    DeckRole::Plan => self.skip_broken(&s.item, reason, now),
+                    DeckRole::Emergency => self.dead_air_file_failed(),
+                    DeckRole::Operator | DeckRole::Bed => {
+                        let alarm = Alarm::ItemSkipped {
+                            item: s.item.id,
+                            title: s.item.title,
+                            reason,
+                        };
+                        self.alarms.raise(now, alarm);
+                    }
+                }
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Clears the engine flag once stop-after-current has stopped the station.
+    fn stop_took_effect(&mut self) {
+        if !self.hold || !self.engine.state().stop_after_current {
+            return;
+        }
+        let on_air = self
+            .slots
+            .iter()
+            .flatten()
+            .any(|s| matches!(s.role, DeckRole::Plan | DeckRole::Operator) && !s.not_started());
+        if !on_air {
+            self.engine.clear_stop_after_current();
+        }
+    }
+
+    /// Makes sure each hard event within the preload time is on a deck. When no deck is
+    /// free, it takes off a queued item that has not started.
+    fn ensure_hard(&mut self, now: Timestamp) {
+        let horizon = add(now, self.cfg.preload);
+        let assigned = self.assigned();
+        let due: Vec<Entry> = self
+            .timeline
+            .entries
+            .iter()
+            .filter(|e| e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
+            .filter(|e| e.start > now && e.start <= horizon)
+            .filter(|e| !assigned.contains(&(e.item, e.start)))
+            .cloned()
+            .collect();
+        for entry in due {
+            let Some(item) = self.items.get(&entry.item).cloned() else {
+                continue;
+            };
+            let Some(i) = self.free_deck() else {
+                if !self.evict_for_hard() {
+                    self.alarms
+                        .raise_once(now, Alarm::HardEventNotLoaded { item: item.id });
+                }
+                return;
+            };
+            if let Err(reason) = self.load(i, entry, item.clone(), DeckRole::Plan, Duration::ZERO) {
+                self.skip_broken(&item, reason, now);
+            }
+        }
+    }
+
+    /// Takes the latest queued item that has not started off its deck, plan items
+    /// first. It returns false when there is no such item.
+    fn evict_for_hard(&mut self) -> bool {
+        let victim = (0..4)
+            .filter_map(|i| self.slots[i].as_ref().map(|s| (i, s)))
+            .filter(|(_, s)| s.not_started() && !s.is_hard())
+            .filter(|(_, s)| matches!(s.role, DeckRole::Plan | DeckRole::Operator))
+            .max_by_key(|(_, s)| (s.role == DeckRole::Plan, s.entry.start))
+            .map(|(i, _)| i);
+        let Some(i) = victim else { return false };
+        if let Some(s) = self.slots[i].take() {
+            let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
+            let _ = self.mixer.send(cmd.for_item(s.tag));
+        }
+        self.dirty = true;
+        true
     }
 }

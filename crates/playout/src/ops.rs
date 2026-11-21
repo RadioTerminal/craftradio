@@ -5,12 +5,12 @@ use crate::Reply;
 use crate::alarm::Alarm;
 use crate::core::{CUT_FADE, Core, Phase, Slot};
 use crate::view::DeckRole;
+use crate::work::Done;
 use jiff::Timestamp;
 use radio_audio::{Clip, Command as Cmd, CommandKind, DeckId, DeckState};
 use radio_engine::{AudioIntent, Mode, Outcome};
 use radio_model::{FixMode, Item, ItemId, Source};
 use radio_scheduler::{Entry, Origin};
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 /// What must be true before a command counts as applied to audio.
@@ -26,6 +26,10 @@ pub(crate) enum Check {
     State { deck: usize, state: DeckState },
     /// The mixer rendered past this frame, so it applied a command due there.
     Passed(u64),
+    /// The item with this tag began to fade out, or left the deck.
+    Fading { deck: usize, tag: u64 },
+    /// The item with this tag left the deck.
+    Gone { deck: usize, tag: u64 },
 }
 
 pub(crate) struct Pending {
@@ -35,24 +39,17 @@ pub(crate) struct Pending {
     deadline: Instant,
 }
 
-type CartResult = (usize, ItemId, Result<Clip, String>);
-
-/// The cartwall clips in the mixer. Worker threads decode them.
+/// The cartwall clips in the mixer. The workers decode them.
 pub(crate) struct Carts {
     loaded: Vec<Option<ItemId>>,
     asked: Vec<Option<ItemId>>,
-    tx: Sender<CartResult>,
-    rx: Receiver<CartResult>,
 }
 
 impl Carts {
     pub(crate) fn new(slots: usize) -> Self {
-        let (tx, rx) = channel();
         Self {
             loaded: vec![None; slots],
             asked: vec![None; slots],
-            tx,
-            rx,
         }
     }
 }
@@ -103,10 +100,12 @@ impl Core {
             Check::Now(ok) => return Some(ok),
             Check::Started { deck, tag } => slot(deck, tag).is_some_and(|s| s.started.is_some()),
             Check::Loaded { deck, tag } => {
-                slot(deck, tag).is_some_and(|s| s.phase != Phase::Loading)
+                slot(deck, tag).is_some_and(|s| !matches!(s.phase, Phase::Opening | Phase::Loading))
             }
             Check::State { deck, state } => self.mixer.deck_state(DeckId::ALL[deck]) == state,
             Check::Passed(at) => self.mixer.now() > at,
+            Check::Fading { deck, tag } => slot(deck, tag).is_none_or(|s| s.fading),
+            Check::Gone { deck, tag } => slot(deck, tag).is_none(),
         };
         yes.then_some(true)
     }
@@ -157,7 +156,13 @@ impl Core {
         {
             return true;
         }
-        !self.hold && !self.dead_air.emergency && self.engine.state().mode == Mode::Auto
+        // A paused item holds back the item after it.
+        let paused = self
+            .slots
+            .iter()
+            .flatten()
+            .any(|o| o.phase == Phase::Paused);
+        !paused && !self.hold && !self.dead_air.emergency && self.engine.state().mode == Mode::Auto
     }
 
     /// The item with this id in the station, and the id of its playlist.
@@ -218,7 +223,7 @@ impl Core {
         };
         let tag = s.tag;
         match s.phase {
-            Phase::Loading | Phase::Ready => {
+            Phase::Opening | Phase::Loading | Phase::Ready => {
                 let at = self.mixer.now();
                 self.play_at(i, at);
                 Check::Started { deck: i, tag }
@@ -269,10 +274,10 @@ impl Core {
         let Some(s) = &self.slots[i] else {
             return Check::Now(false);
         };
-        let over = Self::early_fade(s);
+        let (over, tag) = (Self::early_fade(s), s.tag);
         let at = self.mixer.now();
         self.fade_at(i, at, over, true);
-        Check::Passed(at)
+        Check::Fading { deck: i, tag }
     }
 
     fn op_skip(&mut self, i: usize, _now: Timestamp) -> Check {
@@ -280,12 +285,17 @@ impl Core {
             return Check::Now(false);
         };
         let on_air_plan = s.role == DeckRole::Plan && !s.not_started();
+        let tag = s.tag;
         let at = self.mixer.now();
-        self.fade_at(i, at, Duration::ZERO, true);
+        if s.not_started() {
+            self.unload(i);
+        } else {
+            self.fade_at(i, at, Duration::ZERO, true);
+        }
         if on_air_plan && !self.hold && self.engine.state().mode == Mode::Auto {
             let _ = self.start_next(Some(i));
         }
-        Check::Passed(at)
+        Check::Gone { deck: i, tag }
     }
 
     /// Starts the earliest queued plan entry now, and fades out what plays. `except` is
@@ -332,12 +342,15 @@ impl Core {
         }
     }
 
-    /// Keeps the cartwall clips in the mixer in step with the engine's assignments.
-    pub(crate) fn sync_carts(&mut self, now: Timestamp) {
-        while let Ok((i, item, result)) = self.carts.rx.try_recv() {
-            if self.carts.asked.get(i) != Some(&Some(item)) {
-                continue;
-            }
+    /// Takes the result of a worker that decoded the clip for cart slot `i`.
+    pub(crate) fn on_cart(
+        &mut self,
+        i: usize,
+        item: ItemId,
+        result: Result<Clip, String>,
+        now: Timestamp,
+    ) {
+        if self.carts.asked.get(i) == Some(&Some(item)) {
             match result {
                 Ok(clip) => match self.mixer.set_cart(i, Some(clip)) {
                     Ok(()) => self.carts.loaded[i] = Some(item),
@@ -357,6 +370,10 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// Keeps the cartwall clips in the mixer in step with the engine's assignments.
+    pub(crate) fn sync_carts(&mut self) {
         let wanted: Vec<ItemId> = self.engine.state().carts.iter().map(|c| c.item).collect();
         for i in 0..self.carts.loaded.len() {
             let want = wanted.get(i).copied();
@@ -377,13 +394,9 @@ impl Core {
                 _ => None,
             });
             if let Some((id, path)) = path {
-                let tx = self.carts.tx.clone();
-                let _ = std::thread::Builder::new()
-                    .name("playout-cart".into())
-                    .spawn(move || {
-                        let clip = Clip::from_file(&path).map_err(|e| e.to_string());
-                        let _ = tx.send((i, id, clip));
-                    });
+                self.work.run(move || {
+                    Done::Cart(i, id, Clip::from_file(&path).map_err(|e| e.to_string()))
+                });
             }
         }
     }

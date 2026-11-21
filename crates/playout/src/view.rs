@@ -27,6 +27,8 @@ pub struct PlayoutView {
     pub stream_states: Vec<StreamState>,
     /// The most recent alarms, oldest first.
     pub alarms: Vec<RaisedAlarm>,
+    /// Alarms that a full alarm stream could not take.
+    pub alarms_dropped: u64,
 }
 
 /// One deck.

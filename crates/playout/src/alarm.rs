@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use radio_model::ItemId;
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::mpsc::{Sender, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::time::Duration;
 
 /// Something an operator should know about (spec §6.14).
@@ -29,6 +29,9 @@ pub enum Alarm {
     DeckUnderrun { deck: u8 },
     /// The wall clock and the sample clock stepped apart; the estimates re-anchored.
     ClockStep { by_ms: i64 },
+    /// A hard event is near, and each deck holds an item on air, so playout could not
+    /// load the event.
+    HardEventNotLoaded { item: ItemId },
     /// Playout could not use the local output as asked. It runs on the fallback.
     OutputFallback { reason: String },
     /// Writing the as-played log failed.
@@ -49,7 +52,9 @@ pub struct RaisedAlarm {
 const RECENT: usize = 50;
 
 pub(crate) struct Alarms {
-    subscribers: Vec<Sender<RaisedAlarm>>,
+    subscribers: Vec<SyncSender<RaisedAlarm>>,
+    /// Alarms that a full subscriber channel could not take.
+    pub(crate) dropped: u64,
     webhook: Option<SyncSender<String>>,
     pub(crate) recent: VecDeque<RaisedAlarm>,
 }
@@ -58,12 +63,13 @@ impl Alarms {
     pub(crate) fn new(webhook: Option<String>) -> Self {
         Self {
             subscribers: Vec::new(),
+            dropped: 0,
             webhook: webhook.and_then(spawn_webhook),
             recent: VecDeque::new(),
         }
     }
 
-    pub(crate) fn subscribe(&mut self, tx: Sender<RaisedAlarm>) {
+    pub(crate) fn subscribe(&mut self, tx: SyncSender<RaisedAlarm>) {
         self.subscribers.push(tx);
     }
 
@@ -93,7 +99,17 @@ impl Alarms {
             alarm,
             cleared: None,
         };
-        self.subscribers.retain(|s| s.send(raised.clone()).is_ok());
+        let mut dropped = 0;
+        self.subscribers
+            .retain(|s| match s.try_send(raised.clone()) {
+                Ok(()) => true,
+                Err(TrySendError::Full(_)) => {
+                    dropped += 1;
+                    true
+                }
+                Err(TrySendError::Disconnected(_)) => false,
+            });
+        self.dropped += dropped;
         if let Some(tx) = &self.webhook
             && let Ok(body) = serde_json::to_string(&raised)
             && let Err(TrySendError::Disconnected(_)) = tx.try_send(body)

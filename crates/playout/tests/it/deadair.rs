@@ -69,3 +69,40 @@ fn silence_falls_back_to_emergency_playlist() {
     let rows = p.history(t0(), 10).unwrap();
     assert!(rows.iter().any(|r| r.entry.origin == "emergency"));
 }
+
+/// The emergency folder gives way to the plan by itself once a planned item is ready.
+#[test]
+fn emergency_fallback_returns_to_the_plan() {
+    let quiet = file_item(
+        1,
+        "Quiet",
+        &wav("r-one", 10.0, Side::Silent),
+        10.0,
+        9.5,
+        0.0,
+    );
+    let hush = file_item(2, "Hush", &wav("r-two", 10.0, Side::Silent), 10.0, 9.5, 0.0);
+    let tune = file_item(3, "Tune", &wav("r-three", 3.0, Side::Right), 3.0, 2.5, 0.0);
+    let backup = wav("r-backup", 5.0, Side::Left);
+    let folder = std::path::Path::new(&backup)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (p, clock) = offline(engine_with(vec![quiet, hush, tune]), |cfg| {
+        cfg.mixer.silence.after = Duration::from_millis(500);
+        cfg.emergency_retry = Duration::from_secs(1);
+        cfg.fallback_folder = Some(folder);
+    });
+    let program = run(&p, &clock, 4.0);
+
+    let fallback = first_audible(&program, 0, 0).expect("the fallback sounds");
+    let planned = first_audible(&program, 1, 0).expect("the plan came back");
+    assert!(planned > fallback);
+    let view = p.snapshot();
+    assert!(!view.emergency);
+    assert!(
+        view.alarms.iter().all(|a| {
+            !matches!(a.alarm, Alarm::EmergencyFallback { .. }) || a.cleared.is_some()
+        })
+    );
+}

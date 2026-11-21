@@ -58,7 +58,8 @@ impl Core {
         for i in 0..4 {
             let Some(s) = &self.slots[i] else { continue };
             let Some(st) = &s.stream else { continue };
-            if s.phase != Phase::Playing {
+            // A stream that ends already needs no more checks.
+            if s.phase != Phase::Playing || s.end_sent {
                 continue;
             }
             let item = s.item.id;
@@ -110,7 +111,7 @@ impl Core {
     pub(crate) fn end_bed(&mut self, deck: usize, tag: u64) {
         if self.slots[deck].as_ref().is_some_and(|b| b.tag == tag) {
             let at = self.mixer.now();
-            self.fade_at(deck, at, CUT_FADE, false);
+            self.fade_at(deck, at, CUT_FADE, true);
         }
     }
 

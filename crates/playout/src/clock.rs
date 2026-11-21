@@ -70,6 +70,8 @@ pub(crate) struct ClockMap {
     /// Frames per nanosecond, and the line's centre (wall ns, frame).
     slope: f64,
     centre: (f64, f64),
+    /// The time from rendering a frame to hearing it, from the output device.
+    pub(crate) latency: Duration,
 }
 
 impl ClockMap {
@@ -131,20 +133,24 @@ impl ClockMap {
         self.centre.1 + (x as f64 - self.centre.0) * slope
     }
 
-    /// The mixer frame at which wall time `wall` happens.
+    /// The mixer frame that sounds at wall time `wall`. The mixer renders it one output
+    /// latency before that time.
     pub(crate) fn sample_at(&self, wall: Timestamp) -> u64 {
-        let y = self.predict(wall.as_nanosecond()).round();
+        let x = wall.as_nanosecond() - self.latency.as_nanos() as i128;
+        let y = self.predict(x).round();
         if y <= 0.0 { 0 } else { y as u64 }
     }
 
-    /// The wall time of mixer frame `sample`.
+    /// The wall time at which mixer frame `sample` sounds.
     pub(crate) fn wall_at(&self, sample: u64) -> Timestamp {
         let slope = if self.slope > 0.0 {
             self.slope
         } else {
             NOMINAL
         };
-        let x = self.centre.0 + (sample as f64 - self.centre.1) / slope;
+        let x = self.centre.0
+            + (sample as f64 - self.centre.1) / slope
+            + self.latency.as_nanos() as f64;
         Timestamp::from_nanosecond(x as i128).unwrap_or(Timestamp::UNIX_EPOCH)
     }
 }
