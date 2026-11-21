@@ -130,7 +130,7 @@ fn describe_real(edit: &Edit, n: usize) -> String {
         Edit::SetWeight { weight, .. } => format!("Set the weight to ×{weight}"),
         Edit::SetStrip { strip, .. } => format!("Changed strip {strip}"),
         Edit::SetIcecast(ice) => format!(
-            "Saved the mount {}:{}{}; it connects on the next start",
+            "Applied the mount {}:{}{}; it connects on the next start",
             ice.host, ice.port, ice.mount
         ),
         Edit::SetDevice { device, .. } => {

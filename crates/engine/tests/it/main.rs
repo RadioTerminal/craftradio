@@ -479,3 +479,43 @@ fn clear_keeps_the_item_on_air_and_undo_restores_the_rest_in_order() {
         "and their locks"
     );
 }
+
+#[test]
+fn checkpoint_failure_and_recovery_are_evented() {
+    use radio_engine::EngineEvent;
+    let path = temp_db("checkpoint-failure");
+    let mut engine = Engine::open(&path).unwrap();
+    let events = engine.events();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_checkpoint BEFORE INSERT ON playlists BEGIN SELECT RAISE(FAIL, 'write denied'); END;").unwrap();
+    engine
+        .dispatch(Command::PlaylistAddItems {
+            playlist: MAIN,
+            items: vec![item(991, "Checkpoint")],
+            at: None,
+        })
+        .unwrap();
+    assert!(engine.flush().is_err());
+    assert!(engine.persistence_error().is_some());
+    assert!(
+        events
+            .try_iter()
+            .any(|e| matches!(e, EngineEvent::PersistenceFailed { reason: Some(_) }))
+    );
+    conn.execute_batch("DROP TRIGGER reject_checkpoint")
+        .unwrap();
+    engine
+        .dispatch(Command::PlaylistAddItems {
+            playlist: MAIN,
+            items: vec![item(992, "Recovery")],
+            at: None,
+        })
+        .unwrap();
+    engine.flush().unwrap();
+    assert!(engine.persistence_error().is_none());
+    assert!(
+        events
+            .try_iter()
+            .any(|e| matches!(e, EngineEvent::PersistenceFailed { reason: None }))
+    );
+}

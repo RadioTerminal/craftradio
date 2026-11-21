@@ -62,3 +62,15 @@ fn a_forged_header_is_rejected() {
         ));
     }
 }
+
+/// Opus imports must have a playback decoder, even without an external encoder.
+#[test]
+fn opus_import_has_a_playback_decoder() {
+    use symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS;
+    assert!(radio_model::AUDIO_EXTENSIONS.contains(&"opus"));
+    assert!(
+        radio_audio::codecs()
+            .get_audio_decoder(CODEC_ID_OPUS)
+            .is_some()
+    );
+}

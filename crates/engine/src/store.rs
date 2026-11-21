@@ -1,7 +1,7 @@
 //! SQLite persistence behind a writer thread. The dispatch thread never touches the database:
 //! it sends state snapshots (written at most once a second) and requests (answered in order).
 
-use crate::{EngineError, State};
+use crate::{EngineError, EngineEvent, State};
 use rusqlite::{Connection, params};
 use std::{
     path::Path,
@@ -17,9 +17,14 @@ use std::{
 #[derive(Clone)]
 pub(crate) struct Writer {
     tx: Sender<Msg>,
+    last_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Writer {
+    pub(crate) fn persistence_error(&self) -> Option<String> {
+        self.last_error.lock().ok().and_then(|e| e.clone())
+    }
+
     /// Run `f` on the writer thread and wait for its result.
     pub(crate) fn call<R: Send + 'static>(
         &self,
@@ -58,6 +63,7 @@ pub(crate) struct Store {
     tx: Option<Sender<Msg>>,
     handle: Option<JoinHandle<()>>,
     last_error: Arc<Mutex<Option<String>>>,
+    subscribers: Arc<Mutex<Vec<Sender<EngineEvent>>>>,
 }
 
 const SCHEMA: &str = "
@@ -99,11 +105,14 @@ impl Store {
         let (tx, rx) = mpsc::channel::<Msg>();
         let last_error = Arc::new(Mutex::new(None));
         let errors = last_error.clone();
-        let handle = std::thread::spawn(move || writer(conn, rx, errors));
+        let subscribers = Arc::new(Mutex::new(Vec::new()));
+        let events = subscribers.clone();
+        let handle = std::thread::spawn(move || writer(conn, rx, errors, events));
         Self {
             tx: Some(tx),
             handle: Some(handle),
             last_error,
+            subscribers,
         }
     }
 
@@ -124,7 +133,10 @@ impl Store {
 
     /// A handle that sends jobs to the writer thread from any thread.
     pub(crate) fn writer(&self) -> Option<Writer> {
-        self.tx.clone().map(|tx| Writer { tx })
+        self.tx.clone().map(|tx| Writer {
+            tx,
+            last_error: self.last_error.clone(),
+        })
     }
 
     /// Write any pending snapshot now and wait until it is on disk.
@@ -132,7 +144,15 @@ impl Store {
         let (atx, arx) = mpsc::channel();
         let tx = self.tx.as_ref().ok_or_else(gone)?;
         tx.send(Msg::Flush(atx)).map_err(|_| gone())?;
-        arx.recv().map_err(|_| gone())
+        arx.recv().map_err(|_| gone())?;
+        self.last_error()
+            .map_or(Ok(()), |e| Err(EngineError::Store(e)))
+    }
+
+    pub(crate) fn subscribe(&self, tx: Sender<EngineEvent>) {
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.push(tx);
+        }
     }
 
     pub(crate) fn last_error(&self) -> Option<String> {
@@ -156,14 +176,29 @@ impl Drop for Store {
     }
 }
 
-fn writer(mut conn: Connection, rx: mpsc::Receiver<Msg>, errors: Arc<Mutex<Option<String>>>) {
+fn writer(
+    mut conn: Connection,
+    rx: mpsc::Receiver<Msg>,
+    errors: Arc<Mutex<Option<String>>>,
+    subscribers: Arc<Mutex<Vec<Sender<EngineEvent>>>>,
+) {
     let mut pending: Option<Box<State>> = None;
     let mut last_write = Instant::now() - CHECKPOINT_EVERY;
     let write = |conn: &mut Connection, pending: &mut Option<Box<State>>| {
         if let Some(s) = pending.take() {
             let result = write_state(conn, &s).err().map(|e| e.to_string());
-            if let Ok(mut g) = errors.lock() {
-                *g = result;
+            if let Ok(mut g) = errors.lock()
+                && *g != result
+            {
+                *g = result.clone();
+                if let Ok(mut subscribers) = subscribers.lock() {
+                    subscribers.retain(|s| {
+                        s.send(EngineEvent::PersistenceFailed {
+                            reason: result.clone(),
+                        })
+                        .is_ok()
+                    });
+                }
             }
         }
     };

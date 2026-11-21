@@ -8,7 +8,7 @@ use std::{
     cell::RefCell,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -362,12 +362,17 @@ pub fn eval_rules(
     let runtime = Runtime::new().map_err(|_| ScriptError::MemoryLimit)?;
     runtime.set_memory_limit(limits.memory_bytes);
     runtime.set_max_stack_size(512 * 1024);
-    let start = Instant::now();
+    let start = Arc::new(Mutex::new(None::<Instant>));
+    let clock = start.clone();
     let expired = Arc::new(AtomicBool::new(false));
     let flag = expired.clone();
     let budget = limits.time;
     runtime.set_interrupt_handler(Some(Box::new(move || {
-        let hit = start.elapsed() >= budget;
+        let hit = clock
+            .lock()
+            .ok()
+            .and_then(|s| *s)
+            .is_some_and(|s| s.elapsed() >= budget);
         if hit {
             flag.store(true, Ordering::Relaxed);
         }
@@ -545,6 +550,7 @@ pub fn eval_rules(
                 line: 1,
                 message: e.to_string(),
             })?;
+        *start.lock().map_err(|_| ScriptError::TimeLimit)? = Some(Instant::now());
         if let Err(e) = ctx.eval::<(), _>(src) {
             if expired.load(Ordering::Relaxed) {
                 return Err(ScriptError::TimeLimit);

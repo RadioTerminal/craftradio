@@ -20,6 +20,7 @@ serde_json.workspace = true
 keyring.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 hound.workspace = true
 
 [lints]

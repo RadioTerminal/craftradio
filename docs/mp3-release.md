@@ -1,0 +1,1 @@
+The radio app explicitly enables MP3 output through LAME. Release builds must meet the LGPL relinking terms: link LAME dynamically where possible, or supply the object files needed to relink the application.

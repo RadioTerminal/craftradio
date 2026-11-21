@@ -26,7 +26,7 @@ fn roundtrip() {
 #[test]
 fn infinite_loop_hits_time_limit() {
     let limits = Limits {
-        time: Duration::from_millis(10),
+        time: Duration::ZERO,
         ..Limits::default()
     };
     assert!(matches!(

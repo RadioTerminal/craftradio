@@ -49,12 +49,9 @@ pub struct Analysis {
     pub hash: [u8; 32],
 }
 fn audio_path(path: &Path) -> bool {
-    path.extension().and_then(|x| x.to_str()).is_some_and(|x| {
-        matches!(
-            x.to_ascii_lowercase().as_str(),
-            "mp3" | "flac" | "wav" | "ogg" | "opus" | "m4a" | "aac"
-        )
-    })
+    path.extension()
+        .and_then(|x| x.to_str())
+        .is_some_and(|x| radio_model::AUDIO_EXTENSIONS.contains(&x.to_ascii_lowercase().as_str()))
 }
 fn paths(src: &FolderSource) -> Result<Vec<PathBuf>, LibraryError> {
     collect_paths(src, &mut Vec::new())

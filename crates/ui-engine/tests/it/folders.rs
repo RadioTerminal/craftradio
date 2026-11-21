@@ -218,3 +218,41 @@ fn remove_duplicates_keeps_one_item_per_file_and_undoes() {
     let view = wait_for(&mut source, &clock, |v| v.main.items.len() == 3);
     assert_eq!(view.main.items.len(), 3, "undo brings them back");
 }
+
+#[test]
+fn shared_reconcile_assigns_distinct_ids_across_folder_playlists() {
+    use radio_engine::{Command, Engine};
+    use radio_model::PlaylistId;
+    let root = dir();
+    let mut engine = Engine::open_in_memory().unwrap();
+    engine
+        .dispatch(Command::PlaylistCreate {
+            name: "Second folder".into(),
+        })
+        .unwrap();
+    for id in [1, 2] {
+        let folder = root.join(format!("folder-{id}"));
+        std::fs::create_dir_all(&folder).unwrap();
+        wav(&folder, "new-file", 1.0);
+        engine
+            .dispatch(Command::PlaylistSetSource {
+                playlist: PlaylistId(id),
+                source: serde_json::json!({"path": folder, "recursive": false, "watch": true}),
+            })
+            .unwrap();
+    }
+    let state = engine.state().clone();
+    let lines = radio_ui_engine::folder_sync::reconcile(&state, |cmd| {
+        engine.dispatch(cmd).map(|_| ()).map_err(|e| e.to_string())
+    });
+    assert!(!lines.iter().any(|s| s.contains("cannot")), "{lines:?}");
+    let items: Vec<_> = engine
+        .state()
+        .station
+        .playlists
+        .iter()
+        .flat_map(|p| &p.items)
+        .collect();
+    assert_eq!(items.len(), 2);
+    assert_ne!(items[0].id, items[1].id);
+}

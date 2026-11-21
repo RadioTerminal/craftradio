@@ -217,3 +217,40 @@ planned_len = {{ secs = 5, nanos = 0 }}
     let text = run();
     assert!(text.contains("1 relinked"), "{text}");
 }
+
+/// A file added after headless startup is imported without a restart.
+#[test]
+fn headless_watches_files_added_after_startup() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = radio()
+        .args([
+            "--headless",
+            "--null-output",
+            "--run-for",
+            "4s",
+            "--data-dir",
+        ])
+        .arg(dir.path())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(
+            output.read_line(&mut line).unwrap() > 0,
+            "headless stopped before watches started"
+        );
+        if line.contains("folder watches started") {
+            break;
+        }
+    }
+    tone(&dir.path().join("Music").join("after-start.wav"));
+    assert!(child.wait().unwrap().success());
+    let engine = radio_engine::Engine::open(dir.path().join("station.db")).unwrap();
+    assert!(engine.state().station.playlists.iter().flat_map(|p| &p.items)
+        .any(|i| matches!(&i.source, radio_model::Source::File { path } if path.ends_with("after-start.wav"))));
+}

@@ -322,6 +322,10 @@ pub enum AudioIntent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineEvent {
+    /// Checkpoint failed, or recovered when reason is None.
+    PersistenceFailed {
+        reason: Option<String>,
+    },
     AudioIntent(AudioIntent),
     /// The station state changed after a command.
     StateChanged,
@@ -425,6 +429,7 @@ impl Engine {
     /// A new event stream. Each call gets its own receiver.
     pub fn events(&mut self) -> Receiver<EngineEvent> {
         let (tx, rx) = mpsc::channel();
+        self.store.subscribe(tx.clone());
         self.subscribers.push(tx);
         rx
     }
@@ -1464,6 +1469,11 @@ fn upsert_runtime(c: &mut rusqlite::Connection, key: &str, value: &str) -> rusql
 }
 
 impl LogHandle {
+    /// The current checkpoint failure, if writes have not recovered.
+    pub fn persistence_error(&self) -> Option<String> {
+        self.writer.persistence_error()
+    }
+
     /// Record that an item went to air, and wait for the row id.
     pub fn log_start(&self, entry: &LogEntry) -> Result<RowId, EngineError> {
         let e = entry.clone();

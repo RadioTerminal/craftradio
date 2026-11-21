@@ -46,10 +46,6 @@ pub(crate) enum ProbeAfter {
     Import {
         category: String,
     },
-    /// A file that appeared in a watched folder.
-    Watch {
-        playlist: PlaylistId,
-    },
 }
 /// The name of the playlist that holds library files for carts.
 const CART_ITEMS: &str = "Cart items";
@@ -96,11 +92,15 @@ impl EngineSource {
         self.pending.retain(|p| match p.rx.try_recv() {
             Ok(Ok(o)) => {
                 if let Some(note) = o.note {
-                    notices.push(format!("Saved, but {note}"));
+                    notices.push(format!("Applied, but {note}"));
                 } else if o.audio_required && !o.applied_to_audio {
                     notices.push("The mixer did not confirm the command".to_owned());
                 } else if !p.what.is_empty() {
-                    notices.push(p.what.clone());
+                    if let Some(reason) = self.playout.log().persistence_error() {
+                        notices.push(format!("Changes are not saved: {reason}"));
+                    } else {
+                        notices.push(p.what.replace("Saved", "Applied"));
+                    }
                 }
                 false
             }
@@ -434,36 +434,6 @@ impl EngineSource {
                     "Added {n} files to the library under {category}{skip}"
                 ));
                 Ok(())
-            }
-            ProbeAfter::Watch { playlist } => {
-                let held = |p: &str| {
-                    self.state
-                        .station
-                        .playlists
-                        .iter()
-                        .filter(|x| x.id == playlist)
-                        .flat_map(|x| x.items.iter())
-                        .any(|i| matches!(&i.source, Source::File { path } if path == p))
-                };
-                let fresh: Vec<Item> = items
-                    .into_iter()
-                    .filter(|i| !matches!(&i.source, Source::File { path } if held(path)))
-                    .collect();
-                if fresh.is_empty() {
-                    Ok(())
-                } else {
-                    let items = self.copies(fresh);
-                    self.send(
-                        "",
-                        Command::StationSystem {
-                            commands: vec![Command::PlaylistAddItems {
-                                playlist,
-                                items,
-                                at: None,
-                            }],
-                        },
-                    )
-                }
             }
         };
         if let Err(e) = result {

@@ -180,7 +180,7 @@ fn real(args: &Args) -> Result<(), String> {
     let playout = Playout::start(engine, cfg).map_err(|e| format!("the playout failed: {e}"))?;
     println!("radio: station at {}", dir.join("station.db").display());
     if args.headless {
-        return headless(playout, args.run_for);
+        return headless(playout, args.run_for, tz);
     }
     let source = EngineSource::new(
         playout,
@@ -194,12 +194,29 @@ fn real(args: &Args) -> Result<(), String> {
 }
 
 /// Runs the station without a window, and prints what an operator should know.
-fn headless(playout: Playout, run_for: Option<Duration>) -> Result<(), String> {
+fn headless(
+    playout: Playout,
+    run_for: Option<Duration>,
+    tz: jiff::tz::TimeZone,
+) -> Result<(), String> {
     let alarms = playout.alarms().map_err(|e| e.to_string())?;
     let view = playout.snapshot();
     println!("radio: output {:?}", view.outputs.local);
+    let mut source = EngineSource::new(
+        playout,
+        SourceOptions {
+            tz,
+            station_name: STATION_NAME.to_owned(),
+        },
+    );
+    let _ = source.snapshot(Timestamp::now());
+    println!("radio: folder watches started");
     let until = run_for.map(|d| Instant::now() + d);
     loop {
+        let _ = source.snapshot(Timestamp::now());
+        for notice in source.take_notices() {
+            println!("radio: {notice}");
+        }
         let wait = match until {
             Some(u) => match u.checked_duration_since(Instant::now()) {
                 Some(left) => left.min(Duration::from_millis(200)),
@@ -211,7 +228,7 @@ fn headless(playout: Playout, run_for: Option<Duration>) -> Result<(), String> {
             println!("radio: alarm {:?}", a.alarm);
         }
     }
-    let view = playout.snapshot();
+    let view = source.playout().snapshot();
     println!("radio: output {:?}", view.outputs.local);
     let playing = view
         .decks
@@ -222,7 +239,7 @@ fn headless(playout: Playout, run_for: Option<Duration>) -> Result<(), String> {
         "radio: {playing} decks playing, {} planned entries",
         view.timeline.entries.len()
     );
-    drop(playout);
+    drop(source);
     Ok(())
 }
 

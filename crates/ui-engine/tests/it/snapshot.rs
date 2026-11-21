@@ -69,3 +69,42 @@ fn cart_settings_come_back_in_the_snapshot() {
     assert!((view.cartwall.slots[0].duck_db + 9.0).abs() < 0.01);
     assert_eq!(view.carts[0], "Song");
 }
+
+#[test]
+fn failed_checkpoints_show_a_persistent_warning() {
+    use radio_engine::{Command, Engine};
+    use radio_model::PlaylistId;
+    use radio_playout::{ManualClock, OutputChoice, Playout, PlayoutConfig};
+    use radio_ui_egui::ViewSource;
+    use radio_ui_engine::{EngineSource, SourceOptions};
+    use std::sync::Arc;
+    let dir = super::fixtures::dir();
+    let path = dir.join("station.db");
+    let mut engine = Engine::open(&path).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_checkpoint BEFORE INSERT ON playlists BEGIN SELECT RAISE(FAIL, 'write denied'); END;").unwrap();
+    engine
+        .dispatch(Command::PlaylistRename {
+            playlist: PlaylistId(1),
+            name: "Unsaved playlist".into(),
+        })
+        .unwrap();
+    assert!(engine.flush().is_err());
+    let clock = ManualClock::new(super::fixtures::t0());
+    let playout = Playout::start(
+        engine,
+        PlayoutConfig::new(Arc::new(clock), OutputChoice::Null),
+    )
+    .unwrap();
+    let mut source = EngineSource::new(
+        playout,
+        SourceOptions {
+            tz: jiff::tz::TimeZone::UTC,
+            station_name: "Test Radio".into(),
+        },
+    );
+    let view = source.snapshot(super::fixtures::t0());
+    assert!(view.warnings > 0);
+    assert!(view.mode.contains("NOT SAVED"));
+    assert!(view.mode.contains("write denied"));
+}

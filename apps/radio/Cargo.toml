@@ -12,6 +12,7 @@ radio-engine.workspace = true
 radio-playout.workspace = true
 radio-model.workspace = true
 radio-library.workspace = true
+radio-stream = { workspace = true, features = ["mp3"] }
 eframe.workspace = true
 jiff.workspace = true
 clap.workspace = true

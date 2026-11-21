@@ -3792,6 +3792,7 @@ dependencies = [
  "radio-library",
  "radio-model",
  "radio-playout",
+ "radio-stream",
  "radio-ui-egui",
  "radio-ui-engine",
  "serde_json",
@@ -3805,9 +3806,11 @@ version = "0.1.0"
 dependencies = [
  "assert_no_alloc",
  "hound",
+ "radio-model",
  "rtrb",
  "rubato",
  "symphonia",
+ "symphonia-adapter-libopus",
  "thiserror 2.0.21",
 ]
 
@@ -3965,6 +3968,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "jiff",
+ "radio-model",
  "rfd",
  "serde_json",
 ]
@@ -3985,6 +3989,7 @@ dependencies = [
  "radio-scheduler",
  "radio-stream",
  "radio-ui-egui",
+ "rusqlite",
  "serde_json",
 ]
 

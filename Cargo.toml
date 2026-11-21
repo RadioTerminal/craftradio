@@ -46,7 +46,7 @@ radio-engine = { path = "crates/engine" }
 radio-audio = { path = "crates/audio" }
 radio-audio-device = { path = "crates/audio-device" }
 radio-library = { path = "crates/library" }
-# MP3 (LAME, LGPL) stays opt-in: an app enables `radio-stream/mp3` itself.
+# The radio app explicitly enables MP3 (LAME, LGPL); other consumers opt in.
 radio-stream = { path = "crates/stream", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
 schemars = "1"

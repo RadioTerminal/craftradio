@@ -2,12 +2,11 @@
 //!
 //! A worker thread lists and probes folders, so a large folder never stops the UI.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use radio_engine::Command;
-use radio_library::{Listing, WatchEvent, Watcher};
-use radio_model::{FolderSource as MFolder, Item, ItemId, PlaylistId, Source};
+use radio_library::Listing;
+use radio_model::{Item, PlaylistId};
 use radio_ui_egui::view::{FolderSource, FolderView, ItemMeta, LibraryItem};
 
 use crate::EngineSource;
@@ -119,6 +118,18 @@ impl EngineSource {
         };
         for d in done {
             match d {
+                crate::bg::Done::Reconciled { commands, lines } => {
+                    let mut failed = false;
+                    for command in commands {
+                        if let Err(e) = self.run_edit(command) {
+                            self.watch_errors.push(e);
+                            failed = true;
+                        }
+                    }
+                    if !failed {
+                        self.notices.extend(lines);
+                    }
+                }
                 crate::bg::Done::Scan {
                     path,
                     listing,
@@ -257,102 +268,12 @@ impl EngineSource {
         )?;
         Ok(name)
     }
-
-    /// Starts and stops the watches of the folder playlists that have `watch` on.
-    pub(crate) fn sync_watches(&mut self) {
-        let mut wanted: HashMap<PlaylistId, MFolder> = HashMap::new();
-        for p in &self.state.station.playlists {
-            let src = p.source.clone().or_else(|| {
-                self.state
-                    .source(p.id)
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-            });
-            if let Some(src) = src.filter(|s: &MFolder| s.watch) {
-                wanted.insert(p.id, src);
-            }
-        }
-        self.watches
-            .retain(|id, (src, _)| wanted.get(id).is_some_and(|w| w == src));
-        for (id, src) in wanted {
-            if self.watches.contains_key(&id) {
-                continue;
-            }
-            match Watcher::new(&src) {
-                Ok(w) => {
-                    self.watches.insert(id, (src, w));
-                }
-                Err(e) => push_bounded(
-                    &mut self.watch_errors,
-                    format!("cannot watch {}: {e}", src.path),
-                ),
-            }
-        }
-    }
-
-    /// Applies the settled changes of watched folders to their playlists.
-    pub(crate) fn poll_watches(&mut self) {
-        let mut changes: Vec<(PlaylistId, WatchEvent)> = Vec::new();
-        for (id, (_, w)) in &mut self.watches {
-            match w.events() {
-                Ok(events) => changes.extend(events.map(|e| (*id, e))),
-                Err(e) => push_bounded(&mut self.watch_errors, e.to_string()),
-            }
-        }
-        let mut added_now: Vec<(PlaylistId, String)> = Vec::new();
-        for (playlist, change) in changes {
-            match change {
-                WatchEvent::Added(path) => {
-                    let path = path.to_string_lossy().into_owned();
-                    // A path that the playlist holds already is no new item.
-                    let held = self
-                        .state
-                        .station
-                        .playlists
-                        .iter()
-                        .filter(|p| p.id == playlist)
-                        .flat_map(|p| p.items.iter())
-                        .any(|i| matches!(&i.source, Source::File { path: p } if *p == path));
-                    if held || added_now.contains(&(playlist, path.clone())) {
-                        continue;
-                    }
-                    added_now.push((playlist, path.clone()));
-                    let _ = self.queue_probe(
-                        vec![path],
-                        false,
-                        crate::edit::ProbeAfter::Watch { playlist },
-                    );
-                }
-                WatchEvent::Removed(path) => {
-                    let path = path.to_string_lossy().into_owned();
-                    let gone: Vec<ItemId> = self
-                        .state
-                        .station
-                        .playlists
-                        .iter()
-                        .filter(|p| p.id == playlist)
-                        .flat_map(|p| p.items.iter())
-                        .filter(|i| matches!(&i.source, Source::File { path: p } if *p == path))
-                        .map(|i| i.id)
-                        .collect();
-                    if !gone.is_empty() {
-                        let _ = self.run_edit(Command::StationSystem {
-                            commands: vec![Command::PlaylistRemoveItems {
-                                playlist,
-                                items: gone,
-                            }],
-                        });
-                    }
-                }
-                WatchEvent::Changed(_) => {}
-            }
-        }
-    }
 }
 
 /// Keeps at most this many watch problems, the newest ones.
 const WATCH_ERRORS: usize = 100;
 
-fn push_bounded(list: &mut Vec<String>, e: String) {
+pub(crate) fn push_bounded(list: &mut Vec<String>, e: String) {
     list.push(e);
     if list.len() > WATCH_ERRORS {
         let extra = list.len() - WATCH_ERRORS;

@@ -13,7 +13,7 @@ mod mixer;
 
 pub use command::{AudioEvent, Command, CommandKind, DeckId, Strip};
 pub use deck::{DeckFeeder, DeckState, LoadOptions};
-pub use decode::{Clip, Decoder, MAX_CHANNELS, MAX_RATE, MIN_RATE, Probe, probe};
+pub use decode::{Clip, Decoder, MAX_CHANNELS, MAX_RATE, MIN_RATE, Probe, codecs, probe};
 pub use error::AudioError;
 pub use meter::{METER_FLOOR_DB, MeterReader, MeterSnapshot, SilenceDetector, StripMeter};
 pub use mixer::{

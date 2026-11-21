@@ -136,7 +136,7 @@ impl Source {
         if !(1..=MAX_CHANNELS).contains(&channels) {
             return Err(unsupported(format!("{channels} channels is out of range")));
         }
-        let decoder = symphonia::default::get_codecs()
+        let decoder = codecs()
             .make_audio_decoder(params, &AudioDecoderOptions::default())
             .map_err(|e| unsupported(e.to_string()))?;
         let track_id = track.id;
@@ -456,4 +456,12 @@ impl Clip {
     pub(crate) fn samples(&self) -> &[f32] {
         &self.0
     }
+}
+
+/// Playback codecs, including Opus.
+pub fn codecs() -> symphonia::core::codecs::registry::CodecRegistry {
+    let mut registry = symphonia::core::codecs::registry::CodecRegistry::new();
+    symphonia::default::register_enabled_codecs(&mut registry);
+    registry.register_audio_decoder::<symphonia_adapter_libopus::OpusDecoder>();
+    registry
 }

@@ -15,8 +15,12 @@ use crate::edit::file_item;
 
 /// Work for the background lane.
 pub(crate) enum Job {
+    Reconcile(Arc<radio_engine::State>),
     /// List and probe a library folder.
-    Scan { path: String, limits: Limits },
+    Scan {
+        path: String,
+        limits: Limits,
+    },
     /// Probe files and folders (a folder brings its subfolders) for request `req`.
     Probe {
         req: u64,
@@ -40,6 +44,10 @@ pub(crate) enum Job {
 
 /// A result of the background lane.
 pub(crate) enum Done {
+    Reconciled {
+        commands: Vec<radio_engine::Command>,
+        lines: Vec<String>,
+    },
     Scan {
         path: String,
         listing: Listing,
@@ -87,6 +95,14 @@ impl Worker {
 
 fn run(job: Job) -> Done {
     match job {
+        Job::Reconcile(state) => {
+            let mut commands = Vec::new();
+            let lines = crate::folder_sync::reconcile(&state, |cmd| {
+                commands.push(cmd);
+                Ok(())
+            });
+            Done::Reconciled { commands, lines }
+        }
         Job::Scan { path, limits } => {
             let listing = radio_library::list_audio(Path::new(&path), true, limits);
             let mut items = Vec::new();

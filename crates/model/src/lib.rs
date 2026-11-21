@@ -13,3 +13,6 @@ pub use item::{Item, ItemMeta, PublishMode, Source, Timing, stream_title};
 pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist};
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
 pub use station::Station;
+
+/// Supported audio file extensions for imports and playback.
+pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "flac", "wav", "ogg", "m4a", "opus", "aac"];

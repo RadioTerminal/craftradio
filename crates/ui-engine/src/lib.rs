@@ -5,6 +5,7 @@ mod edit;
 
 pub use edit::{AUDIO_PART, file_item};
 mod fader;
+pub mod folder_sync;
 mod folders;
 mod icecast;
 
@@ -736,7 +737,10 @@ impl ViewSource for EngineSource {
         let (carts, cartwall) = self.cartwall();
         let main = self.main.clone().unwrap_or_else(|| map::empty_tab("Main"));
         let mode = play_mode(pv.mode);
-        let label = mode.label().to_uppercase();
+        let mut label = mode.label().to_uppercase();
+        if let Some(reason) = self.playout.log().persistence_error() {
+            label.push_str(&format!(" · NOT SAVED: {reason}"));
+        }
         let open_alarms = pv.alarms.iter().filter(|a| a.cleared.is_none()).count();
         StationView {
             now: self.zoned(now),
@@ -776,7 +780,10 @@ impl ViewSource for EngineSource {
             output: Self::output(&pv),
             folders: self.folder_views(),
             settings: self.settings(),
-            warnings: open_alarms + pv.timeline.warnings.len() + self.watch_errors.len(),
+            warnings: open_alarms
+                + pv.timeline.warnings.len()
+                + self.watch_errors.len()
+                + usize::from(self.playout.log().persistence_error().is_some()),
             preview: false,
         }
     }

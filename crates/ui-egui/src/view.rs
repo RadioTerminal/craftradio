@@ -956,7 +956,7 @@ pub enum Edit {
 }
 
 /// The file extensions that count as audio.
-pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "flac", "wav", "ogg", "m4a", "opus", "aac"];
+pub use radio_model::AUDIO_EXTENSIONS;
 
 /// Check a stream address. It returns why the address is not usable.
 /// It returns the host, which is also the default title of the stream.
