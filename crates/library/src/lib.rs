@@ -2,7 +2,8 @@
 //!
 //! Opus uses bundled libopus through the Symphonia adapter. Building requires
 //! CMake and a C compiler. AAC support is AAC-LC; unsupported profiles return errors.
-//! Keep scan results in station data and cache `Analysis` separately for gain and hashes.
+//! Keep scan results in station data. Playout keeps the loudness of each analysed file
+//! in station data, by content hash, so each file gets one measurement.
 mod listing;
 mod watch;
 pub use listing::{Limits, Listing, list_audio, probe};
@@ -10,7 +11,7 @@ use lofty::{
     file::TaggedFileExt,
     tag::{Accessor, ItemKey, Tag, TagExt},
 };
-use radio_model::{FolderSource, Item, ItemId, ItemMeta, Source, Timing};
+use radio_model::{FolderSource, Item, ItemId, ItemMeta, Loudness, Source, Timing};
 use std::{
     fs::{self, File},
     io::Read,
@@ -45,8 +46,12 @@ pub struct Analysis {
     pub len: Duration,
     pub timing: Timing,
     pub gain_db: f32,
+    /// The EBU R128 integrated loudness and the true peak. `None` for a silent file.
+    pub loudness: Option<Loudness>,
     pub meta: ItemMeta,
     pub hash: [u8; 32],
+    /// The file size in bytes, as [`content_hash`] gives it.
+    pub size: u64,
 }
 fn audio_path(path: &Path) -> bool {
     path.extension()
@@ -250,7 +255,12 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
                 return Err(media("audio has no channels"));
             }
             meter = Some(
-                ebur128::EbuR128::new(channels as u32, rate, ebur128::Mode::I).map_err(media)?,
+                ebur128::EbuR128::new(
+                    channels as u32,
+                    rate,
+                    ebur128::Mode::I | ebur128::Mode::TRUE_PEAK,
+                )
+                .map_err(media)?,
             );
         }
         if rate != spec.rate() || channels != spec.channels().count() {
@@ -282,11 +292,16 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
     if count > 0 {
         windows.push((frames, energy / f64::from(count)));
     }
-    let loudness = meter
-        .as_ref()
-        .ok_or_else(|| media("no loudness meter"))?
-        .loudness_global()
-        .map_err(media)?;
+    let meter = meter.as_ref().ok_or_else(|| media("no loudness meter"))?;
+    let loudness = meter.loudness_global().map_err(media)?;
+    let mut peak = 0.0f64;
+    for c in 0..channels as u32 {
+        peak = peak.max(meter.true_peak(c).map_err(media)?);
+    }
+    let measured = (loudness.is_finite() && peak > 0.0).then(|| Loudness {
+        lufs: loudness as f32,
+        peak_db: Some((20.0 * peak.log10()) as f32),
+    });
     let gain_db = if loudness.is_finite() {
         (-18.0 - loudness) as f32
     } else {
@@ -317,9 +332,53 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
             fade_out: Duration::ZERO,
         },
         gain_db,
+        loudness: measured,
         meta,
         hash,
+        size: fs::metadata(path)?.len(),
     })
+}
+/// The ReplayGain reference level, in LUFS (ReplayGain 2.0).
+const REPLAYGAIN_REF_LUFS: f32 = -18.0;
+/// The reference level of the Opus `R128_TRACK_GAIN` tag, in LUFS (RFC 7845).
+const R128_REF_LUFS: f32 = -23.0;
+
+/// Reads the loudness from the tags of a file: `REPLAYGAIN_TRACK_GAIN` and
+/// `REPLAYGAIN_TRACK_PEAK`, or `R128_TRACK_GAIN` (Opus, Q7.8 dB). It returns `None` when
+/// the file has no such tag, or the tag does not parse.
+pub fn read_loudness_tags(path: impl AsRef<Path>) -> Option<Loudness> {
+    let file = lofty::read_from_path(path.as_ref()).ok()?;
+    let number = |text: &str| -> Option<f32> {
+        let text = text.trim();
+        let text = text
+            .strip_suffix("dB")
+            .or_else(|| text.strip_suffix("db"))
+            .unwrap_or(text);
+        text.trim().parse::<f32>().ok().filter(|v| v.is_finite())
+    };
+    for tag in file.tags() {
+        if let Some(gain) = tag.get_string(&ItemKey::ReplayGainTrackGain).and_then(number) {
+            let peak_db = tag
+                .get_string(&ItemKey::ReplayGainTrackPeak)
+                .and_then(number)
+                .filter(|p| *p > 0.0)
+                .map(|p| 20.0 * p.log10());
+            return Some(Loudness {
+                lufs: REPLAYGAIN_REF_LUFS - gain,
+                peak_db,
+            });
+        }
+        let r128 = tag
+            .get_string(&ItemKey::Unknown("R128_TRACK_GAIN".into()))
+            .and_then(|v| v.trim().parse::<i32>().ok());
+        if let Some(q78) = r128 {
+            return Some(Loudness {
+                lufs: R128_REF_LUFS - q78 as f32 / 256.0,
+                peak_db: None,
+            });
+        }
+    }
+    None
 }
 /// Writes file tags. Publish settings stay in station data.
 pub fn write_tags(path: impl AsRef<Path>, meta: &ItemMeta) -> Result<(), LibraryError> {
