@@ -305,7 +305,10 @@ fn a_swap_between_two_chains_does_not_allocate_or_free_in_render() {
         .expect("compressor");
     let mut program = vec![0.0f32; 480 * 2];
     assert_no_alloc::reset_violation_count();
-    assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut []));
+    // Several blocks: the priming, the whole crossfade and the hand-back of the old chain.
+    for _ in 0..4 {
+        assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut []));
+    }
     assert_eq!(
         assert_no_alloc::violation_count(),
         0,
@@ -351,4 +354,95 @@ fn the_engine_ranges_sit_inside_the_processor_ranges() {
             }
         }
     }
+}
+
+/// Renders a steady 1 kHz tone, sends `changes` to the handle mid-stream (each one 5 ms
+/// after the last), and returns Program around the changes, with the steady peak before
+/// them and at the end.
+fn render_changes(changes: &[Option<ProgramDynamics>]) -> (Vec<f32>, f32, f32) {
+    let tone = tone_samples(1.5, 1_000.0, -3.0);
+    let (mut mixer, mut handle, _live) = ring_mixer(&tone, limiter_only());
+    let before = render_offline(&mut mixer, SR / 4);
+    let steady_before = peak_lin(frames(&before, SR / 8, SR / 4));
+    let mut around = before[(SR / 8) * 2..].to_vec();
+    for change in changes {
+        handle.set_dynamics(*change).expect("dynamics");
+        around.extend(render_offline(&mut mixer, SR / 200));
+    }
+    let after = render_offline(&mut mixer, SR / 4);
+    let steady_after = peak_lin(frames(&after, SR / 8, SR / 4));
+    around.extend(after);
+    (around, steady_before, steady_after)
+}
+
+fn peak_lin(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+/// No 1 ms run drops toward silence, and no sample jumps more than a sine at the louder of
+/// the two steady levels can move, plus a small margin.
+fn assert_smooth(program: &[f32], steady_before: f32, steady_after: f32) {
+    let quieter = steady_before.min(steady_after);
+    let louder = steady_before.max(steady_after);
+    let window = SR / 1000;
+    for (i, w) in program.chunks(window * 2).enumerate() {
+        if w.len() < window * 2 {
+            break;
+        }
+        let p = peak_lin(w);
+        assert!(
+            p > 0.5 * quieter,
+            "the 1 ms run {i} drops to {p} (steady {quieter})"
+        );
+    }
+    let step = louder * std::f32::consts::TAU * 1_000.0 / SR as f32;
+    for ch in 0..2 {
+        let worst = program
+            .chunks(2)
+            .zip(program.chunks(2).skip(1))
+            .map(|(a, b)| (b[ch] - a[ch]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst <= step * 1.25,
+            "channel {ch} jumps by {worst}; a sine moves at most {step}"
+        );
+    }
+}
+
+/// A change of the dynamics while a tone plays has no gap and no jump: the compressor on,
+/// a lower ceiling, the limiter off and back on.
+#[test]
+fn a_dynamics_change_mid_stream_has_no_gap_or_jump() {
+    let lower = ProgramDynamics {
+        compressor: Some(CompressorConfig::default()),
+        limiter: Some(LimiterConfig {
+            ceiling_db: -6.0,
+            ..LimiterConfig::default()
+        }),
+    };
+    for change in [Some(lower), Some(with_compressor()), None] {
+        let (program, before, after) = render_changes(&[change]);
+        assert_smooth(&program, before, after);
+    }
+}
+
+/// Changes that come faster than a fade still give smooth Program: each waits for the fade
+/// before it, and the last one wins.
+#[test]
+fn quick_dynamics_changes_stay_smooth_and_the_last_wins() {
+    let lower = |ceiling_db| ProgramDynamics {
+        compressor: None,
+        limiter: Some(LimiterConfig {
+            ceiling_db,
+            ..LimiterConfig::default()
+        }),
+    };
+    let changes = [Some(lower(-2.0)), Some(lower(-4.0)), Some(lower(-6.0))];
+    let (program, before, after) = render_changes(&changes);
+    assert_smooth(&program, before, after);
+    let ceiling = 10f32.powf(-6.0 / 20.0);
+    assert!(
+        after <= ceiling * 1.01,
+        "the last ceiling holds: peak {after}"
+    );
 }

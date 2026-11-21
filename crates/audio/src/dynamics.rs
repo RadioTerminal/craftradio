@@ -118,9 +118,16 @@ fn dsp_error(e: DspError) -> AudioError {
 }
 
 /// The prepared processors and their scratch planes. Only [`Chain::new`] allocates.
+///
+/// Every chain has the latency of the limiter lookahead, also without a limiter: a plain
+/// delay then takes its place. So two chains stay aligned, and the mixer can crossfade
+/// from one to the other.
 pub(crate) struct Chain {
     compressor: Option<Prepared<Compressor>>,
     limiter: Option<Prepared<Limiter>>,
+    /// The delay in place of the limiter, and its write position.
+    delay: Vec<[f32; CHANNELS]>,
+    delay_pos: usize,
     left: Vec<f32>,
     right: Vec<f32>,
 }
@@ -150,20 +157,25 @@ impl Chain {
             })
             .transpose()
             .map_err(dsp_error)?;
-        let limiter = config
-            .limiter
-            .map(|l| {
-                let settings = LimiterSettings::new()
-                    .threshold_db(f64::from(l.ceiling_db))
-                    .lookahead_ms(f64::from(l.lookahead_ms))
-                    .release_ms(f64::from(l.release_ms));
-                PreparedProcessor::prepare_kernel(Limiter::with_settings(settings), spec)
-            })
-            .transpose()
-            .map_err(dsp_error)?;
+        let prepare_limiter = |l: LimiterConfig| {
+            let settings = LimiterSettings::new()
+                .threshold_db(f64::from(l.ceiling_db))
+                .lookahead_ms(f64::from(l.lookahead_ms))
+                .release_ms(f64::from(l.release_ms));
+            PreparedProcessor::prepare_kernel(Limiter::with_settings(settings), spec)
+                .map_err(dsp_error)
+        };
+        let limiter = config.limiter.map(prepare_limiter).transpose()?;
+        // Without a limiter, a delay as long as the default lookahead keeps the latency.
+        let delay = match &limiter {
+            Some(_) => Vec::new(),
+            None => vec![[0.0; CHANNELS]; prepare_limiter(LimiterConfig::default())?.latency()],
+        };
         Ok(Self {
             compressor,
             limiter,
+            delay,
+            delay_pos: 0,
             left: vec![0.0; Self::MAX_BLOCK],
             right: vec![0.0; Self::MAX_BLOCK],
         })
@@ -172,16 +184,14 @@ impl Chain {
     /// How many frames late Program comes out.
     pub(crate) fn latency(&self) -> usize {
         self.compressor.as_ref().map_or(0, Prepared::latency)
-            + self.limiter.as_ref().map_or(0, Prepared::latency)
+            + self
+                .limiter
+                .as_ref()
+                .map_or(self.delay.len(), Prepared::latency)
     }
 
-    /// True when the chain has a limiter. Without one, the mixer soft-clips Program.
-    pub(crate) fn has_limiter(&self) -> bool {
-        self.limiter.is_some()
-    }
-
-    /// Processes stereo frames in place, in parts of at most [`Chain::MAX_BLOCK`]. It
-    /// does not allocate.
+    /// Processes stereo frames in place, in parts of at most [`Chain::MAX_BLOCK`]. Without
+    /// a limiter, the soft clip keeps the output in range. It does not allocate.
     pub(crate) fn process(&mut self, frames: &mut [[f32; CHANNELS]]) {
         for block in frames.chunks_mut(Self::MAX_BLOCK) {
             let n = block.len();
@@ -198,9 +208,18 @@ impl Chain {
             }
             if let Some(l) = &mut self.limiter {
                 l.process_in_place(&mut [&mut *left, &mut *right], &[]);
-            }
-            for ((l, r), f) in left.iter().zip(right.iter()).zip(block.iter_mut()) {
-                *f = [*l, *r];
+                for ((l, r), f) in left.iter().zip(right.iter()).zip(block.iter_mut()) {
+                    *f = [*l, *r];
+                }
+            } else {
+                for ((l, r), f) in left.iter().zip(right.iter()).zip(block.iter_mut()) {
+                    let y = match self.delay.get_mut(self.delay_pos) {
+                        Some(slot) => std::mem::replace(slot, [*l, *r]),
+                        None => [*l, *r],
+                    };
+                    self.delay_pos = (self.delay_pos + 1) % self.delay.len().max(1);
+                    *f = [crate::mixer::limit(y[0]), crate::mixer::limit(y[1])];
+                }
             }
         }
     }
