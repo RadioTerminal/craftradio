@@ -260,6 +260,15 @@ impl Playout {
         self.tx.clone().map(CommandSender)
     }
 
+    /// The items on the decks now. It costs no copy of the snapshot.
+    pub fn deck_items(&self) -> [Option<radio_model::ItemId>; 4] {
+        let read = |v: &PlayoutView| std::array::from_fn(|i| v.decks[i].item);
+        self.view
+            .lock()
+            .map(|v| read(&v))
+            .unwrap_or_else(|p| read(&p.into_inner()))
+    }
+
     /// The revision of the engine state in the snapshot. It costs no copy.
     pub fn revision(&self) -> u64 {
         self.view

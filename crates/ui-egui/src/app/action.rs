@@ -153,7 +153,7 @@ fn describe_real(edit: &Edit, n: usize) -> String {
         Edit::StopAfterCurrent(true) => "The station stops after the item on air".to_owned(),
         Edit::StopAfterCurrent(false) => "The station plays on after the item on air".to_owned(),
         Edit::AddFiles { playlist, .. } | Edit::AddFolderItems { playlist, .. } => {
-            format!("Added {n} files to {playlist}")
+            format!("Adding to {playlist}…")
         }
         Edit::AddStream { playlist, .. } => format!("Added {n} stream to {playlist}"),
         Edit::AddLive { playlist, .. } => format!("Added {n} live input to {playlist}"),
@@ -297,6 +297,10 @@ impl RadioApp {
             }
             Action::Import(paths) => {
                 let text = match self.source.import_files(paths, "Unsorted") {
+                    // A source that reads in the background reports the files later.
+                    Ok(i) if i.ids.is_empty() && i.skipped == 0 => {
+                        "Reading the files for the library…".to_owned()
+                    }
                     Ok(i) => format!(
                         "{}{}",
                         self.done(format!("added {} files to Unsorted", i.ids.len())),
@@ -442,10 +446,12 @@ impl RadioApp {
                             .iter()
                             .find(|t| t.name == name)
                             .map_or(0, |t| t.items.len());
-                        self.toast(
-                            ctx,
-                            self.done(format!("made playlist {name} from {n} files")),
-                        );
+                        let text = if n == 0 {
+                            format!("Reading the folder for the playlist {name}…")
+                        } else {
+                            self.done(format!("made playlist {name} from {n} files"))
+                        };
+                        self.toast(ctx, text);
                     }
                     Err(e) => self.toast(ctx, e),
                 }

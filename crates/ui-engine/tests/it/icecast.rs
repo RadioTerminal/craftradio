@@ -1,5 +1,4 @@
 use crate::fixtures::*;
-use radio_playout::Clock;
 use radio_ui_egui::view::{Edit, IcecastView, Status, StreamFormat, ViewSource};
 use radio_ui_engine::{MemoryStore, SecretStore, icecast_config};
 
@@ -21,7 +20,7 @@ impl SecretStore for Shared {
 fn the_icecast_password_stays_out_of_the_settings_and_the_snapshot() {
     let store = std::sync::Arc::new(MemoryStore::default());
     let (source, clock) = source(Vec::new());
-    let mut source = source.with_secrets(Box::new(Shared(store.clone())));
+    let mut source = source.with_secrets(std::sync::Arc::new(Shared(store.clone())));
     let secret = "hunter-test-only";
     let mount = IcecastView {
         host: "stream.example.org".into(),
@@ -30,11 +29,13 @@ fn the_icecast_password_stays_out_of_the_settings_and_the_snapshot() {
         user: "source".into(),
         password: secret.into(),
         password_set: false,
+        keychain_error: None,
         format: StreamFormat::Opus,
         kbps: 96,
     };
     assert_eq!(source.edit(Edit::SetIcecast(mount)), Ok(1));
-    let view = source.snapshot(clock.now());
+    // The keychain answers on the background lane.
+    let view = wait_for(&mut source, &clock, |v| v.icecast.password_set);
     assert!(
         view.icecast.password.is_empty(),
         "no password in the snapshot"
@@ -62,7 +63,7 @@ fn the_icecast_password_stays_out_of_the_settings_and_the_snapshot() {
 fn a_changed_host_gets_no_password_of_the_old_mount() {
     let store = std::sync::Arc::new(MemoryStore::default());
     let (source, clock) = source(Vec::new());
-    let mut source = source.with_secrets(Box::new(Shared(store.clone())));
+    let mut source = source.with_secrets(std::sync::Arc::new(Shared(store.clone())));
     let mut mount = IcecastView {
         host: "stream.example.org".into(),
         port: 8000,
@@ -70,10 +71,12 @@ fn a_changed_host_gets_no_password_of_the_old_mount() {
         user: "source".into(),
         password: "only-for-the-old-host".into(),
         password_set: false,
+        keychain_error: None,
         format: StreamFormat::Opus,
         kbps: 96,
     };
     assert_eq!(source.edit(Edit::SetIcecast(mount.clone())), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| v.icecast.password_set);
     // Another client (the CLI or MCP) changes only the host setting.
     let _ = &mut mount;
     let _ = source

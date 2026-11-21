@@ -611,6 +611,8 @@ pub struct IcecastView {
     pub password: String,
     /// True when the source keeps a password for the mount.
     pub password_set: bool,
+    /// Why the keychain could not answer, when it could not.
+    pub keychain_error: Option<String>,
     pub format: StreamFormat,
     pub kbps: u32,
 }
@@ -625,6 +627,7 @@ impl std::fmt::Debug for IcecastView {
             .field("user", &self.user)
             .field("password", &"…")
             .field("password_set", &self.password_set)
+            .field("keychain_error", &self.keychain_error)
             .field("format", &self.format)
             .field("kbps", &self.kbps)
             .finish()
@@ -1006,6 +1009,11 @@ pub trait ViewSource {
     fn duplicates(&self, playlist: &str) -> usize {
         let _ = playlist;
         0
+    }
+
+    /// Messages for the person: results and errors of work that finished after its edit.
+    fn take_notices(&mut self) -> Vec<String> {
+        Vec::new()
     }
 
     /// The meter levels now. It never blocks: the UI reads it on every frame.

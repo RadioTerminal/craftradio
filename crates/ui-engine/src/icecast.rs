@@ -20,7 +20,7 @@ const DEFAULT_PORT: u16 = 8000;
 const DEFAULT_KBPS: u32 = 128;
 
 /// A store for secrets, such as the OS keychain.
-pub trait SecretStore: Send {
+pub trait SecretStore: Send + Sync {
     /// The secret under `key`, or `None` when the store has none.
     fn get(&self, key: &str) -> Result<Option<String>, String>;
     /// Stores `secret` under `key`.
@@ -104,6 +104,7 @@ pub fn icecast_view(state: &State) -> IcecastView {
         },
         password: String::new(),
         password_set: false,
+        keychain_error: None,
         format: if text("format") == "mp3" {
             StreamFormat::Mp3
         } else {
@@ -150,20 +151,40 @@ pub fn icecast_config(
 }
 
 impl EngineSource {
-    /// The Icecast mount for the snapshot. The keychain answers once per mount.
+    /// The Icecast mount for the snapshot. The background lane asks the keychain once per
+    /// mount; until it answers, the password shows as not set.
     pub(crate) fn icecast(&mut self) -> IcecastView {
         let mut ice = icecast_view(&self.state);
         let key = secret_key(&ice);
         if self.secret_known.as_ref().is_none_or(|(k, _)| *k != key) {
-            let set = !ice.host.is_empty()
-                && self
-                    .secrets
-                    .get(&key)
-                    .is_ok_and(|p| p.is_some_and(|p| !p.is_empty()));
-            self.secret_known = Some((key, set));
+            self.secret_known = Some((key.clone(), None));
+            if !ice.host.is_empty()
+                && let Some(w) = &self.worker
+            {
+                let _ = w.jobs.send(crate::bg::Job::Secret {
+                    key,
+                    set: None,
+                    store: std::sync::Arc::clone(&self.secrets),
+                });
+            }
         }
-        ice.password_set = self.secret_known.as_ref().is_some_and(|(_, s)| *s);
+        match self.secret_known.as_ref().and_then(|(_, r)| r.as_ref()) {
+            Some(Ok(set)) => ice.password_set = *set,
+            Some(Err(e)) => ice.keychain_error = Some(e.clone()),
+            None => {}
+        }
         ice
+    }
+
+    /// An answer of the keychain from the background lane.
+    pub(crate) fn secret_answer(&mut self, key: String, wrote: bool, result: Result<bool, String>) {
+        if wrote && let Err(e) = &result {
+            self.notices
+                .push(format!("The keychain did not take the password: {e}"));
+        }
+        if self.secret_known.as_ref().is_some_and(|(k, _)| *k == key) {
+            self.secret_known = Some((key, Some(result)));
+        }
     }
 
     pub(crate) fn set_icecast(&mut self, ice: IcecastView) -> Result<usize, String> {
@@ -188,12 +209,21 @@ impl EngineSource {
             ..ice
         };
         let key = secret_key(&clean);
+        // The background lane writes the keychain; a failure comes back as a notice.
         if !clean.password.is_empty() {
-            self.secrets
-                .set(&key, &clean.password)
-                .map_err(|e| format!("The keychain did not take the password: {e}"))?;
+            let w = self
+                .worker
+                .as_ref()
+                .ok_or("The background lane could not start")?;
+            w.jobs
+                .send(crate::bg::Job::Secret {
+                    key: key.clone(),
+                    set: Some(clean.password.clone()),
+                    store: std::sync::Arc::clone(&self.secrets),
+                })
+                .map_err(|_| "The background lane has stopped".to_owned())?;
+            self.secret_known = Some((key, None));
         }
-        self.secret_known = None;
         let set = |k: &str, v: serde_json::Value| Command::SettingsSet {
             part: ICECAST_PART.into(),
             key: k.into(),

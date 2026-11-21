@@ -1,5 +1,6 @@
 //! The real station behind the desktop UI: a `ViewSource` over the engine and the playout.
 
+mod bg;
 mod edit;
 
 pub use edit::{AUDIO_PART, file_item};
@@ -98,15 +99,22 @@ pub struct EngineSource {
     files: Vec<folders::LibFile>,
     next_file: u64,
     limits: radio_library::Limits,
-    worker: Option<folders::Worker>,
+    worker: Option<bg::Worker>,
+    /// Commands on their way to the engine.
+    pending: Vec<edit::Pending>,
+    /// Messages for the UI: results and errors of work that ran later.
+    notices: Vec<String>,
+    /// What to do with the result of each probe on the background lane.
+    probes: HashMap<u64, edit::ProbeAfter>,
+    next_req: u64,
     folders: Vec<folders::Folder>,
     /// The watches of folder playlists, by playlist.
     watches: HashMap<PlaylistId, (radio_model::FolderSource, radio_library::Watcher)>,
     /// Watch problems, for the warnings.
     watch_errors: Vec<String>,
-    secrets: Box<dyn SecretStore>,
+    secrets: Arc<dyn SecretStore + Sync>,
     /// The keychain entry of the mount and whether it holds a password.
-    secret_known: Option<(String, bool)>,
+    secret_known: Option<(String, Option<Result<bool, String>>)>,
     /// Fader values on their way to the engine, by strip.
     strip_gain: HashMap<String, f32>,
     /// Part settings on their way to the engine.
@@ -167,11 +175,15 @@ impl EngineSource {
             files: Vec::new(),
             next_file: 0,
             limits: radio_library::Limits::DEFAULT,
-            worker: folders::Worker::start(),
+            worker: bg::Worker::start(),
+            pending: Vec::new(),
+            notices: Vec::new(),
+            probes: HashMap::new(),
+            next_req: 0,
             folders: Vec::new(),
             watches: HashMap::new(),
             watch_errors: Vec::new(),
-            secrets: Box::new(MemoryStore::default()),
+            secrets: Arc::new(MemoryStore::default()),
             secret_known: None,
             strip_gain: HashMap::new(),
             pending_settings: HashMap::new(),
@@ -179,7 +191,7 @@ impl EngineSource {
     }
 
     /// The same source with another store for the Icecast password.
-    pub fn with_secrets(mut self, secrets: Box<dyn SecretStore>) -> Self {
+    pub fn with_secrets(mut self, secrets: Arc<dyn SecretStore + Sync>) -> Self {
         self.secrets = secrets;
         self.secret_known = None;
         self
@@ -444,11 +456,14 @@ impl EngineSource {
         let since = now
             .checked_sub(SignedDuration::from_hours(HISTORY_HOURS))
             .unwrap_or(now);
-        let rows = self
-            .playout
-            .history(since, HISTORY_ROWS)
-            .unwrap_or_default();
-        self.history = rows.iter().map(|r| self.history_row(r, now)).collect();
+        // The background lane reads the log; a later snapshot shows the rows.
+        if let Some(w) = &self.worker {
+            let _ = w.jobs.send(bg::Job::History {
+                log: self.playout.log(),
+                since,
+                limit: HISTORY_ROWS,
+            });
+        }
         self.history.clone()
     }
 
@@ -710,7 +725,8 @@ impl ViewSource for EngineSource {
             self.rebuild(&pv.state);
             self.revision = Some(pv.revision);
         }
-        self.take_scans();
+        self.take_done(now);
+        self.poll_pending();
         self.poll_watches();
         let _ = self.fader_errors();
         let rows = self.timeline_rows(&pv);
@@ -774,7 +790,13 @@ impl ViewSource for EngineSource {
     }
 
     fn import_files(&mut self, paths: Vec<String>, category: &str) -> Result<Imported, String> {
-        Ok(self.import(&paths, category))
+        self.import(paths, category)
+    }
+
+    fn take_notices(&mut self) -> Vec<String> {
+        self.take_done(Timestamp::now());
+        self.poll_pending();
+        std::mem::take(&mut self.notices)
     }
 
     fn playlist_from_folder(&mut self, folder: FolderSource) -> Result<String, String> {

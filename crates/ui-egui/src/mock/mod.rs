@@ -197,6 +197,7 @@ impl MockSource {
                 user: "source".to_owned(),
                 password: String::new(),
                 password_set: false,
+                keychain_error: None,
                 format: StreamFormat::Opus,
                 kbps: ICECAST_KBPS,
             },

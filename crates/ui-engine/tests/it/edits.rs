@@ -32,6 +32,9 @@ fn added_files_show_in_the_timeline_and_undo_removes_them() {
         at: None,
     });
     assert_eq!(added, Ok(2));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.rows.iter().any(|r| r.title == "second-new")
+    });
     let rows = titles(&mut source, &clock);
     assert!(
         rows.iter().any(|t| t == "first-new") && rows.iter().any(|t| t == "second-new"),
@@ -39,12 +42,18 @@ fn added_files_show_in_the_timeline_and_undo_removes_them() {
     );
 
     assert_eq!(source.edit(Edit::Undo), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        !v.rows.iter().any(|r| r.title.ends_with("-new"))
+    });
     let rows = titles(&mut source, &clock);
     assert!(
         !rows.iter().any(|t| t.ends_with("-new")),
         "undo takes the files out: {rows:?}"
     );
     assert_eq!(source.edit(Edit::Redo), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.rows.iter().any(|r| r.title == "first-new")
+    });
     let rows = titles(&mut source, &clock);
     assert!(rows.iter().any(|t| t == "first-new"), "redo puts them back");
 }
@@ -154,4 +163,30 @@ fn a_failed_fader_change_reports_its_error() {
         answer.is_err(),
         "the error of the merged command comes back"
     );
+}
+
+/// An edit never waits on the files: adding a folder of 100 files returns at once, and the
+/// files arrive later.
+#[test]
+fn adding_a_folder_of_100_files_returns_at_once() {
+    let d = dir();
+    let big = d.join("Hundred");
+    std::fs::create_dir_all(&big).unwrap();
+    let first = wav(&big, "f000", 2.0);
+    for k in 1..100 {
+        std::fs::copy(&first, big.join(format!("f{k:03}.wav"))).unwrap();
+    }
+    let (mut source, clock) = source(Vec::new());
+    let view = wait_for(&mut source, &clock, |_| true);
+    let started = Instant::now();
+    let added = source.edit(Edit::AddFiles {
+        playlist: view.main_playlist.clone(),
+        paths: vec![big.to_string_lossy().into_owned()],
+        at: None,
+    });
+    let took = started.elapsed();
+    assert_eq!(added, Ok(1));
+    assert!(took < Duration::from_millis(5), "the edit took {took:?}");
+    let view = wait_for(&mut source, &clock, |v| v.main.items.len() == 100);
+    assert_eq!(view.main.items.len(), 100, "the files arrive later");
 }

@@ -59,6 +59,11 @@ fn a_watched_folder_playlist_takes_in_a_new_file() {
             .find(|t| t.name == name)
             .map_or(0, |t| t.items.len())
     };
+    // The background lane reads the folder; the playlist arrives on a later snapshot.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while count(&mut source) < 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(count(&mut source), 1);
     wav(&jingles, "second", 1.0);
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -91,6 +96,11 @@ fn one_new_file_in_a_watched_folder_adds_one_item() {
             .find(|t| t.name == name)
             .map_or(0, |t| t.items.len())
     };
+    // The background lane reads the folder; the playlist arrives on a later snapshot.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while count(&mut source) < 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(count(&mut source), 1);
     let second = wav(&jingles, "second", 1.0);
     for k in 0..200 {
@@ -131,6 +141,11 @@ fn one_file_added_to_a_watched_playlist_adds_one_item() {
     let elsewhere = d.join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let track = wav(&elsewhere, "track", 1.0);
+    // The background lane reads the folder; the playlist arrives on a later snapshot.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while count(&mut source) < 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(count(&mut source), 1);
     assert_eq!(
         source.edit(Edit::AddFiles {
@@ -163,7 +178,13 @@ fn adding_a_folder_brings_its_subfolders() {
         paths: vec![music.to_string_lossy().into_owned()],
         at: None,
     });
-    assert_eq!(added, Ok(2), "the file in the subfolder comes too");
+    assert_eq!(added, Ok(1), "one folder goes to the background lane");
+    let view = wait_for(&mut source, &clock, |v| v.main.items.len() == 2);
+    assert_eq!(
+        view.main.items.len(),
+        2,
+        "the file in the subfolder comes too"
+    );
 }
 
 /// Remove duplicates keeps the first item of each file and goes through undo.
@@ -175,14 +196,15 @@ fn remove_duplicates_keeps_one_item_per_file_and_undoes() {
     let (mut source, clock) = source(Vec::new());
     let view = wait_for(&mut source, &clock, |_| true);
     let main = view.main_playlist.clone();
-    for _ in 0..3 {
+    for k in 1..=3 {
         let _ = source.edit(Edit::AddFiles {
             playlist: main.clone(),
             paths: vec![path.clone()],
             at: None,
         });
-        let _ = source.snapshot(clock.now());
+        let _ = wait_for(&mut source, &clock, |v| v.main.items.len() == k);
     }
+    let _ = wait_for(&mut source, &clock, |v| v.main.items.len() == 3);
     assert_eq!(source.duplicates(&main), 2);
     assert_eq!(
         source.edit(Edit::RemoveDuplicates {

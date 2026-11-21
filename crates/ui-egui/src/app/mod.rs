@@ -436,6 +436,14 @@ impl eframe::App for RadioApp {
         }
         self.refresh(false);
         self.read_meters();
+        // Work that finished after its edit reports here, as a toast.
+        let notices = self.source.take_notices();
+        if !notices.is_empty() {
+            self.refresh(true);
+            if let Some(last) = notices.last() {
+                self.toast(&ctx, last.clone());
+            }
+        }
         // While sound moves a meter on show, draw at about 30 fps. Else once a second is
         // enough. The main window shows only the Out meter.
         ctx.request_repaint_after(if self.out_moving {

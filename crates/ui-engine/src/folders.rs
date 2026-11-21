@@ -4,15 +4,13 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender, channel};
 
 use radio_engine::Command;
-use radio_library::{Limits, Listing, WatchEvent, Watcher};
-use radio_model::{FolderSource as MFolder, Item, ItemId, PickOrder, PlaylistId, Source};
+use radio_library::{Listing, WatchEvent, Watcher};
+use radio_model::{FolderSource as MFolder, Item, ItemId, PlaylistId, Source};
 use radio_ui_egui::view::{FolderSource, FolderView, ItemMeta, LibraryItem};
 
 use crate::EngineSource;
-use crate::edit::file_item;
 use crate::map::{effective_meta, item_len, view_meta};
 
 /// Library ids of files that no playlist holds start here, above every item id.
@@ -34,59 +32,6 @@ pub(crate) struct Folder {
     pub(crate) path: String,
     pub(crate) listing: Listing,
     pub(crate) reading: bool,
-}
-
-/// A request to the folder worker.
-struct Job {
-    path: String,
-    limits: Limits,
-}
-
-/// The answer of the folder worker.
-pub(crate) struct Done {
-    path: String,
-    listing: Listing,
-    items: Vec<Item>,
-    unreadable: usize,
-}
-
-/// The folder worker: one thread that lists and probes folders in order.
-pub(crate) struct Worker {
-    jobs: Sender<Job>,
-    done: Receiver<Done>,
-}
-
-impl Worker {
-    pub(crate) fn start() -> Option<Self> {
-        let (jobs, rx) = channel::<Job>();
-        let (tx, done) = channel();
-        std::thread::Builder::new()
-            .name("library-folders".into())
-            .spawn(move || {
-                for job in rx {
-                    let listing = radio_library::list_audio(Path::new(&job.path), true, job.limits);
-                    let mut items = Vec::new();
-                    let mut unreadable = 0;
-                    for f in &listing.files {
-                        match file_item(f) {
-                            Some(i) => items.push(i),
-                            None => unreadable += 1,
-                        }
-                    }
-                    let done = Done {
-                        path: job.path,
-                        listing,
-                        items,
-                        unreadable,
-                    };
-                    if tx.send(done).is_err() {
-                        break;
-                    }
-                }
-            })
-            .ok()?;
-        Some(Self { jobs, done })
-    }
 }
 
 /// The name of a folder: its last path part.
@@ -149,7 +94,7 @@ impl EngineSource {
             .ok_or("The folder reader could not start")?;
         worker
             .jobs
-            .send(Job {
+            .send(crate::bg::Job::Scan {
                 path: path.to_owned(),
                 limits: self.limits,
             })
@@ -165,33 +110,61 @@ impl EngineSource {
         Ok(())
     }
 
-    /// Takes the finished folder reads.
-    pub(crate) fn take_scans(&mut self) {
-        let done: Vec<Done> = match &self.worker {
+    /// Takes the results of the background lane: folder reads, probes, keychain answers and
+    /// the as-played log.
+    pub(crate) fn take_done(&mut self, now: jiff::Timestamp) {
+        let done: Vec<crate::bg::Done> = match &self.worker {
             Some(w) => w.done.try_iter().collect(),
             None => Vec::new(),
         };
         for d in done {
-            // A folder that left the library meanwhile keeps no files.
-            let Some(i) = self.folders.iter().position(|f| f.path == d.path) else {
-                continue;
-            };
-            self.files
-                .retain(|f| f.folder.as_deref() != Some(d.path.as_str()));
-            let name = name_of(&d.path);
-            for item in d.items {
-                self.add_file_from(item, &name, Some(&d.path));
+            match d {
+                crate::bg::Done::Scan {
+                    path,
+                    listing,
+                    items,
+                    unreadable,
+                } => self.scanned(path, listing, items, unreadable),
+                crate::bg::Done::Probed {
+                    req,
+                    items,
+                    skipped,
+                    errors,
+                } => self.probed(req, items, skipped, &errors),
+                crate::bg::Done::Secret { key, wrote, result } => {
+                    self.secret_answer(key, wrote, result);
+                }
+                crate::bg::Done::History(rows) => match rows {
+                    Ok(rows) => {
+                        self.history = rows.iter().map(|r| self.history_row(r, now)).collect();
+                    }
+                    Err(e) => self
+                        .notices
+                        .push(format!("The as-played log did not read: {e}")),
+                },
             }
-            let mut listing = d.listing;
-            if d.unreadable > 0 {
-                listing.errors.push(format!(
-                    "{} files have no readable audio header",
-                    d.unreadable
-                ));
-            }
-            self.folders[i].listing = listing;
-            self.folders[i].reading = false;
         }
+    }
+
+    fn scanned(&mut self, path: String, listing: Listing, items: Vec<Item>, unreadable: usize) {
+        // A folder that left the library meanwhile keeps no files.
+        let Some(i) = self.folders.iter().position(|f| f.path == path) else {
+            return;
+        };
+        self.files
+            .retain(|f| f.folder.as_deref() != Some(path.as_str()));
+        let name = name_of(&path);
+        for item in items {
+            self.add_file_from(item, &name, Some(&path));
+        }
+        let mut listing = listing;
+        if unreadable > 0 {
+            listing
+                .errors
+                .push(format!("{unreadable} files have no readable audio header"));
+        }
+        self.folders[i].listing = listing;
+        self.folders[i].reading = false;
     }
 
     /// Reads the folders that the engine keeps and this source has not read yet.
@@ -259,48 +232,29 @@ impl EngineSource {
         Ok(0)
     }
 
-    /// Makes a playlist from the audio files of a folder. It returns the playlist name.
+    /// Makes a playlist from the audio files of a folder, on the background lane. It returns
+    /// the playlist name at once; a notice reports the result.
     pub(crate) fn folder_playlist(&mut self, folder: FolderSource) -> Result<String, String> {
-        let list =
-            radio_library::list_audio(Path::new(&folder.path), folder.recursive, self.limits);
-        let (items, _) = self.probe_paths(&list.files);
-        if items.is_empty() {
-            let why = list.errors.first().cloned().unwrap_or_default();
-            return Err(format!("No audio files in {} {why}", folder.path));
+        if !Path::new(&folder.path).is_dir() {
+            return Err(format!("{} is not a folder", folder.path));
         }
         let name = self.unique_name(&name_of(&folder.path));
         let max = self.state.station.playlists.iter().map(|p| p.id.0).max();
         let id = PlaylistId(max.unwrap_or(0) + 1);
-        let first = self.fresh_ids(items.len() as u64);
-        let items: Vec<Item> = items
-            .into_iter()
-            .enumerate()
-            .map(|(k, mut i)| {
-                i.id = ItemId(first + k as u64);
-                i
-            })
-            .collect();
         let source = serde_json::json!({
             "path": folder.path,
             "recursive": folder.recursive,
             "watch": folder.watch,
         });
-        self.run_batch(vec![
-            Command::PlaylistCreate { name: name.clone() },
-            Command::PlaylistSetPick {
-                playlist: id,
-                pick: PickOrder::Shuffle { seed: id.0 },
-            },
-            Command::PlaylistAddItems {
-                playlist: id,
-                items,
-                at: None,
-            },
-            Command::PlaylistSetSource {
-                playlist: id,
+        self.queue_probe(
+            vec![folder.path.clone()],
+            folder.recursive,
+            crate::edit::ProbeAfter::NewPlaylist {
+                id,
+                name: name.clone(),
                 source,
             },
-        ])?;
+        )?;
         Ok(name)
     }
 
@@ -362,19 +316,11 @@ impl EngineSource {
                         continue;
                     }
                     added_now.push((playlist, path.clone()));
-                    let Some(item) = file_item(&path) else {
-                        continue;
-                    };
-                    let first = self.fresh_ids(1);
-                    let mut item = item;
-                    item.id = ItemId(first);
-                    let _ = self.run_edit(Command::StationSystem {
-                        commands: vec![Command::PlaylistAddItems {
-                            playlist,
-                            items: vec![item],
-                            at: None,
-                        }],
-                    });
+                    let _ = self.queue_probe(
+                        vec![path],
+                        false,
+                        crate::edit::ProbeAfter::Watch { playlist },
+                    );
                 }
                 WatchEvent::Removed(path) => {
                     let path = path.to_string_lossy().into_owned();

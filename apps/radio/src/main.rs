@@ -189,7 +189,7 @@ fn real(args: &Args) -> Result<(), String> {
             station_name: STATION_NAME.to_owned(),
         },
     )
-    .with_secrets(Box::new(secrets));
+    .with_secrets(Arc::new(secrets));
     window(args, Box::new(source), Box::new(Timestamp::now), "Radio")
 }
 

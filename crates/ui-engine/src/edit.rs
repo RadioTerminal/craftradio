@@ -1,7 +1,7 @@
 //! Each [`Edit`] of the UI as engine commands.
 
 use std::path::Path;
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use radio_engine::{CartMode as ECartMode, Command, Mode, Outcome, Route as ERoute};
@@ -15,40 +15,67 @@ use radio_ui_egui::view::{
 use crate::map::{display_title, model_meta};
 use crate::{CARTWALL_PART, EngineSource};
 
-/// A station edit waits this long for the engine to answer.
-const EDIT_WAIT: Duration = Duration::from_secs(2);
-/// An audio command waits this long for a refusal. A later answer only confirms the audio.
-const AUDIO_WAIT: Duration = Duration::from_millis(300);
-/// After an edit, the source waits this long for the plan that uses it.
-const PLAN_WAIT: Duration = Duration::from_millis(500);
+/// A command that has no answer after this time gets a notice.
+const ANSWER_WAIT: Duration = Duration::from_secs(30);
+
+/// A command on its way to the engine.
+pub(crate) struct Pending {
+    /// The notice when it worked, or empty for none.
+    what: String,
+    rx: Receiver<Result<Outcome, radio_engine::EngineError>>,
+    at: Instant,
+}
+
+/// Where probed files go.
+pub(crate) struct AddTarget {
+    pub(crate) playlist: PlaylistId,
+    pub(crate) name: String,
+    pub(crate) at: Option<usize>,
+    pub(crate) play_next: bool,
+}
+
+/// What to do with the items of a probe when they arrive.
+pub(crate) enum ProbeAfter {
+    Add(AddTarget),
+    /// A new folder playlist: its id, name and source.
+    NewPlaylist {
+        id: PlaylistId,
+        name: String,
+        source: serde_json::Value,
+    },
+    Import {
+        category: String,
+    },
+    /// A file that appeared in a watched folder.
+    Watch {
+        playlist: PlaylistId,
+    },
+}
 /// The name of the playlist that holds library files for carts.
 const CART_ITEMS: &str = "Cart items";
 /// The part of `settings_by_part` for the audio devices.
 pub const AUDIO_PART: &str = "audio";
 
 impl EngineSource {
-    /// Runs one engine command and waits for its answer.
-    pub(crate) fn run(&self, cmd: Command) -> Result<Outcome, String> {
+    /// Sends one engine command. It never waits: the answer comes back to a later snapshot,
+    /// and an error or a note becomes a notice for the UI.
+    pub(crate) fn send(&mut self, what: &str, cmd: Command) -> Result<(), String> {
         let rx = self.playout.send(cmd).map_err(|e| e.to_string())?;
-        match rx.recv_timeout(EDIT_WAIT) {
-            Ok(r) => r.map_err(|e| e.to_string()),
-            Err(RecvTimeoutError::Timeout) => Err("the playout did not answer in time".into()),
-            Err(RecvTimeoutError::Disconnected) => Err("the playout has stopped".into()),
-        }
+        self.pending.push(Pending {
+            what: what.to_owned(),
+            rx,
+            at: Instant::now(),
+        });
+        Ok(())
     }
 
-    /// Runs a station edit, then waits until the snapshot shows it.
+    /// Sends a station edit. The snapshot shows it once the engine took it.
     pub(crate) fn run_edit(&mut self, cmd: Command) -> Result<Outcome, String> {
-        let before = self.playout.revision();
-        let out = self.run(cmd)?;
-        let deadline = Instant::now() + PLAN_WAIT;
-        while self.playout.revision() == before && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        Ok(out)
+        self.send("", cmd)?;
+        Ok(Outcome::default())
     }
 
-    /// Runs station edits as one undo step.
+    /// Sends station edits as one undo step.
     pub(crate) fn run_batch(&mut self, mut commands: Vec<Command>) -> Result<Outcome, String> {
         match commands.len() {
             0 => Ok(Outcome::default()),
@@ -57,21 +84,41 @@ impl EngineSource {
         }
     }
 
-    /// Runs an audio command. A refusal comes back as an error.
-    fn run_audio(&self, cmd: Command) -> Result<usize, String> {
-        let rx = self.playout.send(cmd).map_err(|e| e.to_string())?;
-        match rx.recv_timeout(AUDIO_WAIT) {
-            Ok(Ok(o)) if o.audio_required && !o.applied_to_audio => Err(o
-                .note
-                .unwrap_or_else(|| "The deck holds another item now; try again".into())),
-            Ok(Ok(_)) => Ok(1),
-            Ok(Err(e)) => Err(e.to_string()),
-            // The engine took the command, but the mixer has not confirmed it yet.
-            Err(RecvTimeoutError::Timeout) => {
-                Err("Sent, but the mixer did not confirm it in time".into())
+    /// Sends an audio command. A refusal comes back as a notice.
+    fn run_audio(&mut self, cmd: Command) -> Result<usize, String> {
+        self.send("", cmd)?;
+        Ok(1)
+    }
+
+    /// Takes the answers that arrived. Errors and notes become notices.
+    pub(crate) fn poll_pending(&mut self) {
+        let mut notices = Vec::new();
+        self.pending.retain(|p| match p.rx.try_recv() {
+            Ok(Ok(o)) => {
+                if let Some(note) = o.note {
+                    notices.push(format!("Saved, but {note}"));
+                } else if o.audio_required && !o.applied_to_audio {
+                    notices.push("The mixer did not confirm the command".to_owned());
+                } else if !p.what.is_empty() {
+                    notices.push(p.what.clone());
+                }
+                false
             }
-            Err(RecvTimeoutError::Disconnected) => Err("the playout has stopped".into()),
-        }
+            Ok(Err(e)) => {
+                notices.push(e.to_string());
+                false
+            }
+            Err(TryRecvError::Disconnected) => false,
+            Err(TryRecvError::Empty) => {
+                if p.at.elapsed() > ANSWER_WAIT {
+                    notices.push("The playout did not answer a command".to_owned());
+                    false
+                } else {
+                    true
+                }
+            }
+        });
+        self.notices.extend(notices);
     }
 
     /// New item ids, `n` of them, that no item of the station has.
@@ -209,6 +256,44 @@ impl EngineSource {
             .collect()
     }
 
+    /// Where items for `playlist` go. For the main playlist, `at` is a row index.
+    pub(crate) fn add_target(
+        &self,
+        playlist: &str,
+        at: Option<usize>,
+    ) -> Result<AddTarget, String> {
+        let id = self.playlist_id(playlist)?;
+        let main = Some(id) == self.main_id();
+        // A row right after the item on air means "play next": the items join the end of the
+        // main playlist, and the play-next queue puts them on air next.
+        if main && at.is_some_and(|i| self.is_next_row(i)) {
+            return Ok(AddTarget {
+                playlist: id,
+                name: playlist.to_owned(),
+                at: None,
+                play_next: true,
+            });
+        }
+        let at = if main {
+            at.and_then(|i| self.main_index_at_row(i))
+        } else {
+            let len = self
+                .state
+                .station
+                .playlists
+                .iter()
+                .find(|p| p.id == id)
+                .map_or(0, |p| p.items.len());
+            at.map(|i| i.min(len))
+        };
+        Ok(AddTarget {
+            playlist: id,
+            name: playlist.to_owned(),
+            at,
+            play_next: false,
+        })
+    }
+
     /// Adds items to a playlist. For the main playlist, `at` is a row index.
     fn add_to(
         &mut self,
@@ -216,11 +301,20 @@ impl EngineSource {
         items: Vec<Item>,
         at: Option<usize>,
     ) -> Result<usize, String> {
-        let id = self.playlist_id(playlist)?;
-        let main = Some(id) == self.main_id();
-        // A row right after the item on air means "play next": the items join the end of the
-        // main playlist, and the play-next queue puts them on air next.
-        if main && at.is_some_and(|i| self.is_next_row(i)) {
+        let target = self.add_target(playlist, at)?;
+        self.finish_add(&target, items, "")
+    }
+
+    /// Sends the items to their target. `what` is the notice when the engine took them.
+    pub(crate) fn finish_add(
+        &mut self,
+        target: &AddTarget,
+        items: Vec<Item>,
+        what: &str,
+    ) -> Result<usize, String> {
+        let id = target.playlist;
+        let at = target.at;
+        if target.play_next {
             let n = items.len();
             let items = self.copies(items);
             let mut cmds: Vec<Command> = items
@@ -236,54 +330,145 @@ impl EngineSource {
                     at: None,
                 },
             );
-            self.run_batch(cmds)?;
+            self.send(what, Command::StationBatch { commands: cmds })?;
             return Ok(n);
         }
-        let at = if main {
-            at.and_then(|i| self.main_index_at_row(i))
-        } else {
-            let len = self
-                .state
-                .station
-                .playlists
-                .iter()
-                .find(|p| p.id == id)
-                .map_or(0, |p| p.items.len());
-            at.map(|i| i.min(len))
-        };
         let n = items.len();
         let items = self.copies(items);
-        self.run_edit(Command::PlaylistAddItems {
-            playlist: id,
-            items,
-            at,
-        })?;
+        self.send(
+            what,
+            Command::PlaylistAddItems {
+                playlist: id,
+                items,
+                at,
+            },
+        )?;
         Ok(n)
     }
 
-    /// Items for audio files and folders, each with the length and tags of its header.
-    pub(crate) fn probe_paths(&self, paths: &[String]) -> (Vec<Item>, usize) {
-        let mut files = Vec::new();
-        let mut skipped = 0;
-        for p in paths {
-            let path = Path::new(p);
-            if path.is_dir() {
-                let list = radio_library::list_audio(path, true, self.limits);
-                skipped += list.errors.len();
-                files.extend(list.files);
-            } else {
-                files.push(p.clone());
+    /// Asks the background lane to probe paths, then to do `after` with the items.
+    pub(crate) fn queue_probe(
+        &mut self,
+        paths: Vec<String>,
+        recursive: bool,
+        after: ProbeAfter,
+    ) -> Result<(), String> {
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or("The background reader could not start")?;
+        self.next_req += 1;
+        let req = self.next_req;
+        worker
+            .jobs
+            .send(crate::bg::Job::Probe {
+                req,
+                paths,
+                recursive,
+                limits: self.limits,
+            })
+            .map_err(|_| "The background reader has stopped".to_owned())?;
+        self.probes.insert(req, after);
+        Ok(())
+    }
+
+    /// Finishes a probe: its items go where the request said.
+    pub(crate) fn probed(&mut self, req: u64, items: Vec<Item>, skipped: usize, errors: &[String]) {
+        let Some(after) = self.probes.remove(&req) else {
+            return;
+        };
+        let skip = if skipped > 0 {
+            format!(" · skipped {skipped}")
+        } else {
+            String::new()
+        };
+        let result = match after {
+            ProbeAfter::Add(target) => {
+                if items.is_empty() {
+                    let why = errors.first().cloned().unwrap_or_default();
+                    Err(format!(
+                        "No audio files to add to {}{skip} {why}",
+                        target.name
+                    ))
+                } else {
+                    let what = format!("Added {} files to {}{skip}", items.len(), target.name);
+                    self.finish_add(&target, items, &what).map(|_| ())
+                }
             }
-        }
-        files.truncate(self.limits.max_files);
-        let mut items = Vec::new();
-        for f in files {
-            match file_item(&f) {
-                Some(item) => items.push(item),
-                None => skipped += 1,
+            ProbeAfter::NewPlaylist { id, name, source } => {
+                if items.is_empty() {
+                    let why = errors.first().cloned().unwrap_or_default();
+                    Err(format!("No audio files for the playlist {name} {why}"))
+                } else {
+                    let what = format!("Made the playlist {name} from {} files", items.len());
+                    let items = self.copies(items);
+                    self.send(
+                        &what,
+                        Command::StationBatch {
+                            commands: vec![
+                                Command::PlaylistCreate { name },
+                                Command::PlaylistSetPick {
+                                    playlist: id,
+                                    pick: PickOrder::Shuffle { seed: id.0 },
+                                },
+                                Command::PlaylistAddItems {
+                                    playlist: id,
+                                    items,
+                                    at: None,
+                                },
+                                Command::PlaylistSetSource {
+                                    playlist: id,
+                                    source,
+                                },
+                            ],
+                        },
+                    )
+                }
             }
+            ProbeAfter::Import { category } => {
+                let n = items.len();
+                for item in items {
+                    self.add_file(item, &category);
+                }
+                self.notices.push(format!(
+                    "Added {n} files to the library under {category}{skip}"
+                ));
+                Ok(())
+            }
+            ProbeAfter::Watch { playlist } => {
+                let held = |p: &str| {
+                    self.state
+                        .station
+                        .playlists
+                        .iter()
+                        .filter(|x| x.id == playlist)
+                        .flat_map(|x| x.items.iter())
+                        .any(|i| matches!(&i.source, Source::File { path } if path == p))
+                };
+                let fresh: Vec<Item> = items
+                    .into_iter()
+                    .filter(|i| !matches!(&i.source, Source::File { path } if held(path)))
+                    .collect();
+                if fresh.is_empty() {
+                    Ok(())
+                } else {
+                    let items = self.copies(fresh);
+                    self.send(
+                        "",
+                        Command::StationSystem {
+                            commands: vec![Command::PlaylistAddItems {
+                                playlist,
+                                items,
+                                at: None,
+                            }],
+                        },
+                    )
+                }
+            }
+        };
+        if let Err(e) = result {
+            self.notices.push(e);
         }
-        (items, skipped)
     }
 
     /// The cart index as page and slot.
@@ -400,7 +585,7 @@ impl EngineSource {
         cmds
     }
 
-    fn deck_command(&self, deck: usize, command: DeckCommand) -> Result<usize, String> {
+    fn deck_command(&mut self, deck: usize, command: DeckCommand) -> Result<usize, String> {
         let d = u8::try_from(deck).map_err(|_| "No such deck".to_owned())?;
         let name = ['A', 'B', 'C', 'D'].get(deck).copied().unwrap_or('?');
         let expect = self
@@ -409,6 +594,13 @@ impl EngineSource {
             .copied()
             .flatten()
             .ok_or_else(|| format!("Deck {name} is empty"))?;
+        // A cheap check against the playout now: a deck that changed since the snapshot
+        // refuses at once. The engine checks again when the command arrives.
+        if self.playout.deck_items().get(deck).copied().flatten() != Some(expect) {
+            return Err(format!(
+                "Deck {name} holds another item now; look again and try again"
+            ));
+        }
         let expect_item = Some(expect);
         let cmd = match command {
             DeckCommand::PlayPause if self.deck_states[deck] == DeckState::Playing => {
@@ -661,11 +853,8 @@ impl EngineSource {
         if matches!(change, CartChange::Duck(_)) {
             return self.merged(format!("cart:{cart}"), cmd);
         }
-        let out = self.run_edit(cmd)?;
-        match out.note {
-            Some(note) => Err(format!("Saved, but {note}")),
-            None => Ok(1),
-        }
+        self.run_edit(cmd)?;
+        Ok(1)
     }
 
     fn part_setting(
@@ -914,16 +1103,12 @@ impl EngineSource {
                 remove_locked,
             } => {
                 let p = self.playlist_id(&playlist)?;
-                let out = self.run_edit(Command::PlaylistClear {
+                self.run_edit(Command::PlaylistClear {
                     playlist: p,
                     expect_count,
                     remove_locked,
                 })?;
-                Ok(out
-                    .data
-                    .and_then(|v| v.as_u64())
-                    .and_then(|n| usize::try_from(n).ok())
-                    .unwrap_or(0))
+                Ok(expect_count)
             }
             Edit::RemoveDuplicates { playlist } => {
                 let p = self.playlist_id(&playlist)?;
@@ -972,24 +1157,20 @@ impl EngineSource {
                 paths,
                 at,
             } => {
-                let (items, skipped) = self.probe_paths(&paths);
-                if items.is_empty() {
-                    return Err(format!("No audio files to add · skipped {skipped}"));
-                }
-                self.add_to(&playlist, items, at)
+                // The background lane reads the files. The result comes back as a notice.
+                let n = paths.len();
+                let target = self.add_target(&playlist, at)?;
+                self.queue_probe(paths, true, ProbeAfter::Add(target))?;
+                Ok(n)
             }
             Edit::AddFolderItems {
                 playlist,
                 path,
                 recursive,
             } => {
-                let list = radio_library::list_audio(Path::new(&path), recursive, self.limits);
-                let (items, _) = self.probe_paths(&list.files);
-                if items.is_empty() {
-                    let why = list.errors.first().cloned().unwrap_or_default();
-                    return Err(format!("No audio files in {path} {why}"));
-                }
-                self.add_to(&playlist, items, None)
+                let target = self.add_target(&playlist, None)?;
+                self.queue_probe(vec![path], recursive, ProbeAfter::Add(target))?;
+                Ok(1)
             }
             Edit::AddStream {
                 playlist,
@@ -1065,11 +1246,8 @@ impl EngineSource {
         if gain_db.is_some() {
             return self.fader(cmd);
         }
-        let out = self.run(cmd)?;
-        match out.note {
-            Some(note) => Err(format!("Saved, but {note}")),
-            None => Ok(1),
-        }
+        self.run_edit(cmd)?;
+        Ok(1)
     }
 
     pub(crate) fn drop_on(&mut self, item: u64, target: DropTarget) -> Result<usize, String> {
@@ -1119,13 +1297,20 @@ impl EngineSource {
         Ok(())
     }
 
-    pub(crate) fn import(&mut self, paths: &[String], category: &str) -> Imported {
-        let (items, skipped) = self.probe_paths(paths);
-        let ids = items
-            .into_iter()
-            .map(|item| self.add_file(item, category))
-            .collect();
-        Imported { ids, skipped }
+    /// Adds files to the library on the background lane. A notice reports the result.
+    pub(crate) fn import(
+        &mut self,
+        paths: Vec<String>,
+        category: &str,
+    ) -> Result<Imported, String> {
+        self.queue_probe(
+            paths,
+            true,
+            ProbeAfter::Import {
+                category: category.to_owned(),
+            },
+        )?;
+        Ok(Imported::default())
     }
 
     /// The items of a playlist whose file an earlier item of it has already.
