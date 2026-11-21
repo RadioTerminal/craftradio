@@ -18,6 +18,10 @@ pub(crate) const SIZE_KEY: &str = "window_size";
 /// The temporary data that tells a settings section about its window.
 const USER_SIZED: &str = "tool_window_user_sized";
 const FIT_TARGET: &str = "tool_window_fit_target";
+/// The temporary data where a settings page puts its natural size each frame it draws.
+const PAGE_FIT: &str = "tool_window_page_fit";
+/// The temporary data that tells content whether its window has a definite size.
+const DEFINITE: &str = "tool_window_definite";
 
 /// A tool window that the deck strip can open and close.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +125,59 @@ struct Fit {
     measured: Option<std::time::Instant>,
     /// The size of the content in the last frame.
     content: Option<egui::Vec2>,
+    /// While a settings page shows: the size of the window before it.
+    page: Option<PageFit>,
+}
+
+/// The window size while a settings page shows in place of the window content.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PageFit {
+    /// The size of the window before the page. Done brings it back.
+    before: egui::Vec2,
+    /// True after a person resized the window by hand while the page showed. The window
+    /// then keeps that size until the page closes.
+    dragged: bool,
+}
+
+/// What the window does in a frame, from the page state of the last frame and of this one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PageStep {
+    /// No page, before or now.
+    None,
+    /// The page opened: keep the size of the window before it.
+    Open(PageFit),
+    /// The page shows: fit it, unless a person resized the window.
+    Show(PageFit),
+    /// The page closed: go back to this size.
+    Restore(egui::Vec2),
+}
+
+fn page_step(last: Option<PageFit>, natural: Option<egui::Vec2>, now: egui::Vec2) -> PageStep {
+    match (last, natural) {
+        (None, None) => PageStep::None,
+        (None, Some(_)) => PageStep::Open(PageFit {
+            before: now,
+            dragged: false,
+        }),
+        (Some(p), Some(_)) => PageStep::Show(p),
+        (Some(p), None) => PageStep::Restore(p.before),
+    }
+}
+
+/// A settings page calls this each frame it draws, with the size that it needs. Its tool
+/// window then fits the page, and goes back to its old size when the page closes.
+pub(crate) fn page_fits(ctx: &egui::Context, natural: egui::Vec2) {
+    ctx.data_mut(|d| d.insert_temp(Id::new(PAGE_FIT), natural));
+}
+
+/// True when the content area of the window has a definite size: a native window, or a
+/// floating window that a person sized. Content may then fill the width. In a window that
+/// fits its content, content that fills the width would keep the window from shrinking.
+pub(crate) fn definite_width(ui: &egui::Ui) -> bool {
+    !ui.is_sizing_pass()
+        && ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(Id::new(DEFINITE)).unwrap_or(false))
 }
 
 /// A sizing pass measures the natural width of the content this often.
@@ -261,8 +318,10 @@ pub(crate) fn show(
     let min = egui::Vec2::from(w.min_size());
     let max = max_size(ctx, min);
     let stays = if ctx.embed_viewports() {
+        ctx.data_mut(|d| d.insert_temp(Id::new(DEFINITE), user.is_some()));
         floating(ctx, w, user, (min, max), t, &mut add)
     } else {
+        ctx.data_mut(|d| d.insert_temp(Id::new(DEFINITE), true));
         let (stays, c) = native(ctx, w, &mut open.fit[i], (min, max), t, &mut add);
         change = c.or(change);
         stays
@@ -270,7 +329,11 @@ pub(crate) fn show(
     if !stays {
         open.set(w, false);
     }
-    ctx.data_mut(|d| d.insert_temp(Id::new(USER_SIZED), false));
+    ctx.data_mut(|d| {
+        d.insert_temp(Id::new(USER_SIZED), false);
+        d.insert_temp(Id::new(DEFINITE), false);
+        d.remove_temp::<egui::Vec2>(Id::new(PAGE_FIT));
+    });
     change
 }
 
@@ -310,6 +373,16 @@ fn floating(
         }
     });
     is_open
+}
+
+/// Asks the window system for `size`, and waits for its answer.
+fn request(ctx: &egui::Context, fit: &mut Fit, size: egui::Vec2) {
+    let same = fit.seen.is_some_and(|s| !differs(s, size));
+    ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
+    fit.applied = Some(size);
+    // A request for the size that the window has already brings no change.
+    fit.pending = !same;
+    fit.waited = 0;
 }
 
 /// The native form: a viewport that asks for the size of its content. It returns false when
@@ -381,7 +454,22 @@ fn native(
                 content.x = content.x.min(natural);
             }
             let want = desired(w, content, margin, min, max);
-            if let Some(now) = ui.input(|i| i.viewport().inner_rect.map(|r| r.size())) {
+            // A settings page in place of the content: the window fits the page, and goes
+            // back to its old size when the page closes.
+            let natural = ui
+                .ctx()
+                .data_mut(|d| d.remove_temp::<egui::Vec2>(Id::new(PAGE_FIT)));
+            let size_now = ui.input(|i| i.viewport().inner_rect.map(|r| r.size()));
+            let current = size_now.or(fit.seen).unwrap_or(start);
+            match page_step(fit.page, natural, current) {
+                PageStep::Open(p) => fit.page = Some(p),
+                PageStep::Restore(before) => {
+                    fit.page = None;
+                    request(ui.ctx(), fit, before);
+                }
+                PageStep::None | PageStep::Show(_) => {}
+            }
+            if let Some(now) = size_now {
                 // A size that changes by itself to another size than the asked size is a
                 // resize by hand.
                 // While a request waits, the first change is its answer, even when the
@@ -396,21 +484,62 @@ fn native(
                         fit.pending = false;
                     }
                 } else if moved && fit.applied.is_some_and(|a| differs(a, now)) {
-                    fit.user = Some(now);
-                    change = Some(SizeChange::Manual([now.x, now.y]));
+                    if let Some(p) = &mut fit.page {
+                        // A resize by hand on the page holds until the page closes. It is
+                        // not the size of the window, so the settings do not keep it.
+                        p.dragged = true;
+                    } else {
+                        fit.user = Some(now);
+                        change = Some(SizeChange::Manual([now.x, now.y]));
+                    }
                 }
                 fit.seen = Some(now);
             }
-            if fit.user.is_none() && fit.applied.is_none_or(|a| differs(a, want)) {
-                let same = fit.seen.is_some_and(|s| !differs(s, want));
-                ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(want));
-                fit.applied = Some(want);
-                // A request for the size that the window has already brings no change.
-                fit.pending = !same;
-                fit.waited = 0;
+            match (fit.page, natural) {
+                (Some(p), Some(natural)) => {
+                    let page = desired(w, natural, margin, min, max);
+                    if !p.dragged && fit.applied.is_none_or(|a| differs(a, page)) {
+                        request(ui.ctx(), fit, page);
+                    }
+                }
+                _ => {
+                    if fit.user.is_none() && fit.applied.is_none_or(|a| differs(a, want)) {
+                        request(ui.ctx(), fit, want);
+                    }
+                }
             }
             ui.input(|i| i.viewport().close_requested())
         },
     );
     (!closed, change)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_keeps_the_size_before_it_and_gives_it_back() {
+        let before = egui::vec2(1900.0, 600.0);
+        let page = egui::vec2(560.0, 480.0);
+        let PageStep::Open(open) = page_step(None, Some(page), before) else {
+            panic!("the page opens");
+        };
+        assert_eq!(open.before, before);
+        // A resize by hand while the page shows does not change the size to go back to.
+        let dragged = PageFit {
+            dragged: true,
+            ..open
+        };
+        let later = egui::vec2(800.0, 700.0);
+        assert_eq!(
+            page_step(Some(dragged), Some(page), later),
+            PageStep::Show(dragged)
+        );
+        assert_eq!(
+            page_step(Some(dragged), None, later),
+            PageStep::Restore(before)
+        );
+        assert_eq!(page_step(None, None, later), PageStep::None);
+    }
 }

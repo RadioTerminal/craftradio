@@ -771,10 +771,13 @@ fn icecast_tab(
             .font(theme::text(theme::LABEL))
             .color(status.ink),
     );
-    ui.horizontal_wrapped(|ui| {
+    // One line, in the font of the deck titles. A long title ends in "…", and the tooltip
+    // has all of it.
+    ui.horizontal(|ui| {
         ui.label(RichText::new("Now streaming:").color(t.text_muted));
-        let text = RichText::new(format!("“{streaming}”")).font(theme::mono(theme::CODE));
-        ui.label(text.color(t.accent_ink));
+        let full = format!("“{streaming}”");
+        let text = RichText::new(full.as_str()).font(theme::text(theme::BODY));
+        crate::widgets::truncated_label(ui, text.color(t.accent_ink)).on_hover_text(full);
     });
     let note = view.say(
         "The stream would carry this text. The preview sends nothing.",

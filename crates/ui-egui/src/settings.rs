@@ -179,11 +179,26 @@ pub(crate) fn page(
     let field_w = form_field_w(ui.available_width() - size::SETTINGS_RAIL - space::L - bar);
     let form_w = size::SETTINGS_LABEL + space::M + field_w;
     let page_w = size::SETTINGS_RAIL + space::L + form_w + bar;
+    // The size that the page needs: its tool window fits it while the page shows.
+    let natural_w = size::SETTINGS_RAIL
+        + space::L
+        + size::SETTINGS_LABEL
+        + space::M
+        + size::SETTINGS_FIELD
+        + bar;
+    crate::windows::page_fits(&ctx, egui::vec2(natural_w, size::SETTINGS_PAGE_H));
+    // The header row runs to the right edge of a window with a definite size, so Done sits
+    // at its end. A window that fits its content keeps the header at the page width.
+    let header_w = if crate::windows::definite_width(ui) {
+        ui.available_width().max(page_w)
+    } else {
+        page_w
+    };
     ui.allocate_ui_with_layout(
-        egui::vec2(page_w, size::CONTROL_SM),
+        egui::vec2(header_w, size::CONTROL_SM),
         Layout::left_to_right(Align::Center),
         |ui| {
-            ui.set_width(page_w);
+            ui.set_width(header_w);
             ui.label(RichText::new(title).font(theme::text(theme::CARD)).strong());
             if preview {
                 let note = RichText::new(NOT_SAVED).font(theme::text(theme::CAPTION));
