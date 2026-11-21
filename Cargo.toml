@@ -9,6 +9,9 @@ rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-native-certs = "0.8"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 symphonia-adapter-libopus = "0.3"
 lofty = "0.22"
 ebur128 = "0.1"

@@ -120,7 +120,7 @@ impl StreamFormat {
     }
 }
 
-/// Plain HTTP Icecast source settings. TLS is rejected until supported.
+/// Icecast source settings. TLS verifies the server certificate and host.
 #[derive(Clone)]
 pub struct IcecastConfig {
     pub host: String,
@@ -134,6 +134,86 @@ pub struct IcecastConfig {
     pub format: StreamFormat,
     pub tls: bool,
 }
+/// Use TLS except for numeric loopback addresses and localhost.
+pub fn default_tls(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+    !host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
+struct SourceConfig {
+    settings: IcecastConfig,
+    extra_roots: Vec<Vec<u8>>,
+}
+impl std::ops::Deref for SourceConfig {
+    type Target = IcecastConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.settings
+    }
+}
+
+trait Transport: Read + Write {}
+impl<T: Read + Write> Transport for T {}
+type SourceStream = Box<dyn Transport>;
+
+/// Open and verify TLS before any HTTP request or credentials are written.
+fn open_transport(cfg: &SourceConfig) -> Result<SourceStream, StreamError> {
+    let address = (cfg.host.as_str(), cfg.port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| StreamError::Invalid("host has no address".into()))?;
+    let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    if !cfg.tls {
+        return Ok(Box::new(socket));
+    }
+    let tls_error = |message: &str| {
+        // Do not include peer-supplied text or credentials in errors.
+        StreamError::Invalid(format!("TLS: {message} for {}", cfg.host))
+    };
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in rustls_native_certs::load_native_certs().certs {
+        roots
+            .add(cert)
+            .map_err(|_| tls_error("invalid system root"))?;
+    }
+    for der in &cfg.extra_roots {
+        roots
+            .add(der.clone().into())
+            .map_err(|_| tls_error("invalid extra root"))?;
+    }
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|_| tls_error("configuration failed"))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from(cfg.host.clone())
+        .map_err(|_| tls_error("invalid server name"))?;
+    let mut connection = rustls::ClientConnection::new(Arc::new(config), name)
+        .map_err(|_| tls_error("configuration failed"))?;
+    while connection.is_handshaking() {
+        connection.complete_io(&mut socket).map_err(|error| {
+            if matches!(
+                error
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+                Some(rustls::Error::InvalidCertificate(_))
+            ) {
+                tls_error("certificate not trusted")
+            } else {
+                tls_error("handshake failed")
+            }
+        })?;
+    }
+    Ok(Box::new(rustls::StreamOwned::new(connection, socket)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamStatus {
     Connecting,
@@ -184,7 +264,22 @@ fn status(shared: &Mutex<StreamStatus>, value: StreamStatus) {
     }
 }
 impl IcecastClient {
-    pub fn start(cfg: IcecastConfig, mut frames: rtrb::Consumer<f32>) -> IcecastHandle {
+    pub fn start(cfg: IcecastConfig, frames: rtrb::Consumer<f32>) -> IcecastHandle {
+        Self::start_with_extra_roots(cfg, frames, Vec::new())
+    }
+
+    /// Add DER trust anchors, for private servers and TLS integration tests.
+    /// Certificate and host verification remain enabled.
+    #[doc(hidden)]
+    pub fn start_with_extra_roots(
+        cfg: IcecastConfig,
+        mut frames: rtrb::Consumer<f32>,
+        extra_roots: Vec<Vec<u8>>,
+    ) -> IcecastHandle {
+        let cfg = SourceConfig {
+            settings: cfg,
+            extra_roots,
+        };
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Mutex::new(StreamStatus::Connecting));
         let state = shared.clone();
@@ -235,10 +330,7 @@ impl IcecastClient {
         }
     }
 }
-fn connect(cfg: &IcecastConfig, method: &str) -> Result<TcpStream, StreamError> {
-    if cfg.tls {
-        return Err(StreamError::Invalid("TLS output is unsupported".into()));
-    }
+fn connect(cfg: &SourceConfig, method: &str) -> Result<SourceStream, StreamError> {
     if cfg.host.chars().any(char::is_whitespace) || cfg.mount.chars().any(char::is_whitespace) {
         return Err(StreamError::Invalid(
             "host and mount must not contain whitespace".into(),
@@ -261,13 +353,7 @@ fn connect(cfg: &IcecastConfig, method: &str) -> Result<TcpStream, StreamError> 
     {
         return Err(StreamError::Invalid("invalid source settings".into()));
     }
-    let address = (cfg.host.as_str(), cfg.port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| StreamError::Invalid("host has no address".into()))?;
-    let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
-    socket.set_write_timeout(Some(Duration::from_secs(2)))?;
-    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut socket = open_transport(cfg)?;
     let auth =
         base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", cfg.user, cfg.password));
     write!(
@@ -304,7 +390,7 @@ fn connect(cfg: &IcecastConfig, method: &str) -> Result<TcpStream, StreamError> 
     Ok(socket)
 }
 fn send(
-    cfg: &IcecastConfig,
+    cfg: &SourceConfig,
     frames: &mut rtrb::Consumer<f32>,
     rx: &mpsc::Receiver<Control>,
     state: &Mutex<StreamStatus>,
@@ -366,16 +452,16 @@ fn send(
 enum SourceOutput {
     Opus {
         encoder: OpusEncoder,
-        muxer: OggMuxer<TcpStream>,
+        muxer: OggMuxer<SourceStream>,
     },
     #[cfg(feature = "mp3")]
     Mp3 {
         encoder: crate::mp3::Mp3Encoder,
-        socket: TcpStream,
+        socket: SourceStream,
     },
 }
 impl SourceOutput {
-    fn new(cfg: &IcecastConfig, title: &str) -> Result<Self, StreamError> {
+    fn new(cfg: &SourceConfig, title: &str) -> Result<Self, StreamError> {
         match cfg.format {
             StreamFormat::Opus { kbps } => {
                 let mut encoder = OpusEncoder::new(kbps)?;
@@ -409,7 +495,7 @@ impl SourceOutput {
     }
     fn set_title(
         &mut self,
-        cfg: &IcecastConfig,
+        cfg: &SourceConfig,
         title: &str,
         samples: &mut Vec<f32>,
         _state: &Mutex<StreamStatus>,
@@ -432,15 +518,9 @@ impl SourceOutput {
 }
 
 #[cfg(feature = "mp3")]
-fn update_mp3_title(cfg: &IcecastConfig, title: &str) -> Result<(), StreamError> {
+fn update_mp3_title(cfg: &SourceConfig, title: &str) -> Result<(), StreamError> {
     use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-    let address = (cfg.host.as_str(), cfg.port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| StreamError::Invalid("host has no address".into()))?;
-    let mut socket = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
-    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let mut socket = open_transport(cfg)?;
     let auth =
         base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", cfg.user, cfg.password));
     write!(
