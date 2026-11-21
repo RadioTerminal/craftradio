@@ -635,6 +635,34 @@ impl Engine {
         })
     }
 
+    /// Stores a runtime value under `key`, for example the playout state for a
+    /// resume. The value goes to disk at once. Station snapshots do not touch it.
+    pub fn save_runtime(&self, key: &str, value: &Value) -> Result<(), EngineError> {
+        let (key, value) = (key.to_string(), value.to_string());
+        self.store.call(move |c| {
+            c.execute(
+                "INSERT INTO settings_by_part (part, key, value) VALUES ('runtime', ?1, ?2)
+                 ON CONFLICT (part, key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The runtime value under `key`, if [`Engine::save_runtime`] stored one.
+    pub fn runtime(&self, key: &str) -> Result<Option<Value>, EngineError> {
+        let key = key.to_string();
+        let text: Option<String> = self.store.call(move |c| {
+            let mut stmt = c.prepare(
+                "SELECT value FROM settings_by_part WHERE part = 'runtime' AND key = ?1",
+            )?;
+            let mut rows = stmt.query_map(params![key], |r| r.get(0))?;
+            rows.next().transpose()
+        })?;
+        text.map(|t| serde_json::from_str(&t).map_err(|e| EngineError::Store(e.to_string())))
+            .transpose()
+    }
+
     /// Rows starting at or after `since`, oldest first, at most `limit`.
     pub fn history(&self, since: Timestamp, limit: u32) -> Result<Vec<AsPlayed>, EngineError> {
         self.rows(since, Timestamp::MAX, Some(limit))
