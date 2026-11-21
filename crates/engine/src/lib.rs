@@ -386,6 +386,16 @@ impl Engine {
                 })?;
                 Ok(Outcome::default())
             }
+            C::PlaylistSetFillPool {
+                playlist,
+                fill_pool,
+            } => {
+                self.edit_station(|s| {
+                    playlist_mut(s, playlist)?.is_fill_pool = fill_pool;
+                    Ok(())
+                })?;
+                Ok(Outcome::default())
+            }
             C::PlaylistAddItems {
                 playlist,
                 items,

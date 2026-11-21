@@ -37,6 +37,12 @@ pub enum Command {
     PlaylistSetMain { playlist: PlaylistId },
     #[serde(rename = "playlist.enable")]
     PlaylistEnable { playlist: PlaylistId, enabled: bool },
+    /// The fitter fills gaps from fill pools, and playout plays beds from them.
+    #[serde(rename = "playlist.set_fill_pool")]
+    PlaylistSetFillPool {
+        playlist: PlaylistId,
+        fill_pool: bool,
+    },
     /// Items added by hand are locked (spec 6.15).
     #[serde(rename = "playlist.add_items")]
     PlaylistAddItems {
@@ -114,6 +120,7 @@ impl Command {
             Self::PlaylistDelete { .. } => "playlist.delete",
             Self::PlaylistSetMain { .. } => "playlist.set_main",
             Self::PlaylistEnable { .. } => "playlist.enable",
+            Self::PlaylistSetFillPool { .. } => "playlist.set_fill_pool",
             Self::PlaylistAddItems { .. } => "playlist.add_items",
             Self::PlaylistRemoveItems { .. } => "playlist.remove_items",
             Self::PlaylistMoveItems { .. } => "playlist.move_items",
@@ -152,6 +159,7 @@ impl Command {
             | Self::PlaylistDelete { .. }
             | Self::PlaylistSetMain { .. }
             | Self::PlaylistEnable { .. }
+            | Self::PlaylistSetFillPool { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
             | Self::PlaylistMoveItems { .. }
@@ -232,6 +240,12 @@ pub fn registry() -> Vec<CommandSpec> {
             "Enable or disable a playlist",
             A,
             &[p, ("enabled", "boolean")],
+        ),
+        spec(
+            "playlist.set_fill_pool",
+            "Make a playlist a fill pool, or not",
+            A,
+            &[p, ("fill_pool", "boolean")],
         ),
         spec(
             "playlist.add_items",
