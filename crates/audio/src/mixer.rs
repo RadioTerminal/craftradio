@@ -79,7 +79,7 @@ fn db_to_gain(db: f32) -> f32 {
 
 /// A soft clip with a ceiling at −1 dBFS. It does not change levels below the knee. It
 /// changes NaN to silence.
-fn limit(x: f32) -> f32 {
+pub(crate) fn limit(x: f32) -> f32 {
     if x.is_nan() {
         return 0.0;
     }
@@ -137,8 +137,8 @@ enum Control {
         slot: usize,
         clip: Option<Clip>,
     },
-    /// New processing on Program, prepared on the control side. `None` is the soft clip.
-    SetDynamics(Option<Box<Chain>>),
+    /// New processing on Program, prepared on the control side. The mixer crossfades to it.
+    SetDynamics(Box<Chain>),
 }
 
 /// Heap items that the render thread gives back, so that the handle frees them.
@@ -283,7 +283,26 @@ pub struct Mixer {
     sample: u64,
     dynamics: Option<Box<Chain>>,
     block: Vec<[f32; CHANNELS]>,
+    /// The chain that Program fades to, and how many frames of the fade are done.
+    incoming: Option<Box<Chain>>,
+    fade: usize,
+    /// True once `incoming` heard the recent input, so its lookahead and envelopes match.
+    primed: bool,
+    /// A chain that came during a fade. It starts when the fade ends.
+    queued: Option<Box<Chain>>,
+    /// The last [`HISTORY_FRAMES`] frames before the dynamics, oldest at `history_pos`.
+    history: Vec<[f32; CHANNELS]>,
+    history_pos: usize,
+    /// Scratch blocks for the incoming chain and for its priming.
+    alt: Vec<[f32; CHANNELS]>,
+    prime: Vec<[f32; CHANNELS]>,
 }
+
+/// A change of the dynamics crossfades over this many frames: 15 ms.
+pub(crate) const FADE_FRAMES: usize = 720;
+/// A new chain hears this much of the recent input before the fade, 21 ms: enough to fill
+/// the lookahead and to let a compressor envelope settle near the level of the old chain.
+const HISTORY_FRAMES: usize = 1024;
 
 impl Mixer {
     /// Makes a mixer, the handle that controls it, and the producer of its live input.
@@ -291,7 +310,7 @@ impl Mixer {
         let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_CAPACITY);
         let (ctl_tx, ctl_rx) = RingBuffer::new(CONTROL_CAPACITY);
         // The bound holds every heap item in the mixer and in the control ring.
-        let (ret_tx, ret_rx) = RingBuffer::new(CONTROL_CAPACITY + 4 + config.cart_slots + 2);
+        let (ret_tx, ret_rx) = RingBuffer::new(CONTROL_CAPACITY + 4 + config.cart_slots + 3);
         let (ev_tx, ev_rx) = RingBuffer::new(EVENT_CAPACITY);
         let (live_tx, live_rx) = RingBuffer::new(ring_samples(config.live_buffer));
         let board = Arc::new(MeterBoard::new());
@@ -322,6 +341,14 @@ impl Mixer {
             // The scratch block of the dynamics. It exists from the start, so a chain that
             // arrives while the mixer runs needs no allocation.
             block: vec![[0.0; CHANNELS]; Chain::MAX_BLOCK],
+            incoming: None,
+            fade: 0,
+            primed: false,
+            queued: None,
+            history: vec![[0.0; CHANNELS]; HISTORY_FRAMES],
+            history_pos: 0,
+            alt: vec![[0.0; CHANNELS]; Chain::MAX_BLOCK],
+            prime: vec![[0.0; CHANNELS]; Chain::MAX_BLOCK],
         };
         let handle = MixerHandle {
             commands: cmd_tx,
@@ -356,7 +383,10 @@ impl Mixer {
     /// Returns how many frames Program comes out after the frame that the timeline is
     /// on. It is 0 without dynamics, and the limiter lookahead with dynamics.
     pub fn latency_frames(&self) -> usize {
-        self.dynamics.as_ref().map_or(0, |d| d.latency())
+        self.dynamics
+            .as_ref()
+            .or(self.incoming.as_ref())
+            .map_or(0, |d| d.latency())
     }
 
     /// Returns the absolute count of rendered frames.
@@ -389,11 +419,15 @@ impl Mixer {
         let (cue_frames, cue_rest) = pfl.as_chunks_mut::<CHANNELS>();
         let (out_frames, out_rest) = program.as_chunks_mut::<CHANNELS>();
         let mut cue_iter = cue_frames.iter_mut();
-        if let Some(mut chain) = self.dynamics.take() {
+        if self.dynamics.is_some() || self.incoming.is_some() {
+            let mut current = self.dynamics.take();
+            let mut incoming = self.incoming.take();
             let mut block = std::mem::take(&mut self.block);
+            let mut alt = std::mem::take(&mut self.alt);
             for outs in out_frames.chunks_mut(Chain::MAX_BLOCK) {
                 let start = self.sample;
-                let Some(pre) = block.get_mut(..outs.len()) else {
+                let n = outs.len();
+                let (Some(pre), Some(alt)) = (block.get_mut(..n), alt.get_mut(..n)) else {
                     break;
                 };
                 for y in pre.iter_mut() {
@@ -407,17 +441,51 @@ impl Mixer {
                     }
                     self.sample += 1;
                 }
-                chain.process(pre);
-                let clip = !chain.has_limiter();
+                if let Some(chain) = &mut incoming
+                    && !self.primed
+                {
+                    self.prime_chain(chain);
+                    self.primed = true;
+                }
+                self.remember(pre);
+                if let Some(chain) = &mut incoming {
+                    alt.copy_from_slice(pre);
+                    chain.process(alt);
+                }
+                match &mut current {
+                    Some(chain) => chain.process(pre),
+                    None => {
+                        for y in pre.iter_mut() {
+                            *y = [limit(y[0]), limit(y[1])];
+                        }
+                    }
+                }
+                if incoming.is_some() {
+                    // Both chains hear the same input with the same latency, so a linear
+                    // crossfade between them has no gap and no jump.
+                    for (i, (y, z)) in pre.iter_mut().zip(alt.iter()).enumerate() {
+                        let w = ((self.fade + i + 1) as f32 / FADE_FRAMES as f32).min(1.0);
+                        *y = [y[0] + (z[0] - y[0]) * w, y[1] + (z[1] - y[1]) * w];
+                    }
+                    self.fade += n;
+                    if self.fade >= FADE_FRAMES {
+                        if let Some(old) = std::mem::replace(&mut current, incoming.take()) {
+                            self.retire(Retired::Dynamics(old));
+                        }
+                        incoming = self.queued.take();
+                        self.fade = 0;
+                        self.primed = false;
+                    }
+                }
                 for (i, (out, y)) in outs.iter_mut().zip(pre.iter()).enumerate() {
-                    // Without a limiter, the soft clip keeps Program in range.
-                    let y = if clip { [limit(y[0]), limit(y[1])] } else { *y };
-                    *out = y;
-                    self.finish(start + i as u64, y);
+                    *out = *y;
+                    self.finish(start + i as u64, *y);
                 }
             }
             self.block = block;
-            self.dynamics = Some(chain);
+            self.alt = alt;
+            self.dynamics = current;
+            self.incoming = incoming;
         } else {
             for out in out_frames.iter_mut() {
                 if self.sample >= self.next_due {
@@ -465,9 +533,15 @@ impl Mixer {
             match item {
                 Control::Load { deck, source } => self.take_load(deck, source),
                 Control::SetDynamics(chain) => {
-                    let old = std::mem::replace(&mut self.dynamics, chain);
-                    if let Some(old) = old {
-                        self.retire(Retired::Dynamics(old));
+                    if self.incoming.is_some() {
+                        // A fade runs: the newest chain waits for its end.
+                        if let Some(old) = self.queued.replace(chain) {
+                            self.retire(Retired::Dynamics(old));
+                        }
+                    } else {
+                        self.incoming = Some(chain);
+                        self.fade = 0;
+                        self.primed = false;
                     }
                 }
                 Control::SetCart { slot, clip } => match self.carts.get_mut(slot) {
@@ -678,6 +752,34 @@ impl Mixer {
     fn end(&mut self, deck: DeckId) {
         self.unload(deck);
         self.emit(AudioEvent::DeckEnded(deck));
+    }
+
+    /// Keeps the frames before the dynamics in the history ring.
+    fn remember(&mut self, frames: &[[f32; CHANNELS]]) {
+        for f in frames {
+            if let Some(slot) = self.history.get_mut(self.history_pos) {
+                *slot = *f;
+            }
+            self.history_pos = (self.history_pos + 1) % HISTORY_FRAMES;
+        }
+    }
+
+    /// Plays the history into a new chain and drops its output, so its lookahead holds the
+    /// same frames as the old chain and its envelopes follow the recent level.
+    fn prime_chain(&mut self, chain: &mut Chain) {
+        let mut done = 0;
+        while done < HISTORY_FRAMES {
+            let n = (HISTORY_FRAMES - done).min(Chain::MAX_BLOCK);
+            let Some(scratch) = self.prime.get_mut(..n) else {
+                return;
+            };
+            for (k, f) in scratch.iter_mut().enumerate() {
+                let at = (self.history_pos + done + k) % HISTORY_FRAMES;
+                *f = self.history.get(at).copied().unwrap_or([0.0; CHANNELS]);
+            }
+            chain.process(scratch);
+            done += n;
+        }
     }
 
     fn retire(&mut self, item: Retired) {
@@ -1012,13 +1114,19 @@ impl MixerHandle {
     }
 
     /// Puts new processing on Program while the mixer runs: a compressor and a limiter, or
-    /// the soft clip with `None`. It prepares the processors here, on the control side, and
-    /// the mixer takes them at its next block. It fails if a setting is out of range, or
-    /// when the control queue is full, and then the mixer keeps the processing it had.
-    ///
-    /// The change drops the audio in the lookahead of the old processors, a few ms.
+    /// the soft clip with `None`. It prepares the processors here, on the control side. The
+    /// mixer plays the last 21 ms of input into them, then crossfades from the old chain to
+    /// the new one over 15 ms, with both running. Program has no gap and no jump. It fails
+    /// if a setting is out of range, or when the control queue is full, and then the mixer
+    /// keeps the processing it had.
     pub fn set_dynamics(&mut self, dynamics: Option<ProgramDynamics>) -> Result<(), AudioError> {
-        let chain = dynamics.map(Chain::new).transpose()?.map(Box::new);
+        // `None` is a chain without processors: a delay and the soft clip, so the latency
+        // stays and the mixer can crossfade to it.
+        let bypass = ProgramDynamics {
+            compressor: None,
+            limiter: None,
+        };
+        let chain = Box::new(Chain::new(dynamics.unwrap_or(bypass))?);
         self.collect();
         self.control
             .push(Control::SetDynamics(chain))

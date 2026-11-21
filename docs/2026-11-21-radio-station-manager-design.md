@@ -218,9 +218,12 @@ or silence detection (my call).
     `ratio`, `attack_ms`, `release_ms`, `makeup_db`} and `limiter` {`enabled`,
     `ceiling_db`, `release_ms`}; absent fields keep their values. The engine refuses
     values outside the ranges in `radio_model::dynamics_range` with an error. Playout
-    applies a change live: the control thread prepares the new processors and the audio
-    thread swaps them in at its next block, without allocating; the swap drops the few ms
-    in the old lookahead.
+    applies a change live and without a glitch: the control thread prepares the new
+    processors; the audio thread plays the last 21 ms of input into them, so their
+    lookahead and envelopes match, then crossfades old → new over 15 ms with both
+    running, without allocating. Every chain has the same latency (without a limiter, a
+    delay of the same length takes its place), so the two stay aligned. A change that
+    comes during a fade waits for its end, and the last one wins.
   - *Where it lives:* stored in SQLite as its own row (part `dynamics`, key `program`);
     without a row, playout uses its configured default. In the UI it is Mixer ⚙ →
     Processing (the Out strip's menu links there).

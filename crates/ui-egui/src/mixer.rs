@@ -603,7 +603,7 @@ fn processing_tab(
     let d = draft.get_or_insert(view.dynamics);
     let note = view.say(
         "Preview: nothing plays, so nothing is processed.",
-        "Changes apply to Program at once. A change resets the processors for a few ms.",
+        "Changes apply to Program at once, with a 15 ms crossfade.",
     );
     settings::form_note(
         ui,
