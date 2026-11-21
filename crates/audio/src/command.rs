@@ -149,6 +149,16 @@ pub enum CommandKind {
 pub enum AudioEvent {
     /// The mixer took the new item for the deck.
     Loaded(DeckId),
+    /// A `Play` started the item on the deck (not a continue after `Pause`). `at_sample` is
+    /// the frame where its first sample sounds; `item_tag` is the tag of its load.
+    Started {
+        /// The deck.
+        deck: DeckId,
+        /// The first frame of the item on Program.
+        at_sample: u64,
+        /// The tag from [`crate::LoadOptions`].
+        item_tag: Option<u64>,
+    },
     /// The mixer refused the new item, because the deck was on air. The deck keeps its item.
     LoadRejected(DeckId),
     /// The item on the deck came to its end, or its fade-out finished. The deck is empty.
