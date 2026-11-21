@@ -127,6 +127,8 @@ enum Due {
 
 struct TrackRule {
     playlist: usize,
+    /// The id of `playlist`, to match the origin of a pinned entry.
+    id: PlaylistId,
     rule: usize,
     priority: i32,
     due: Due,
@@ -176,6 +178,8 @@ struct Walk<'a> {
     resume: bool,
     /// The playlists whose picker continued its order already.
     resumed: Vec<bool>,
+    /// The between-tracks rules of the non-main playlists.
+    tracks: Vec<TrackRule>,
 }
 
 impl<'a> Walk<'a> {
@@ -219,7 +223,39 @@ impl<'a> Walk<'a> {
         self.next_at = self.next_at.max(end);
     }
 
+    /// Counts a placed or adopted entry toward the "every N tracks" rules.
+    /// A main entry adds one track. An entry of a rule restarts the count of that rule.
+    fn count(&mut self, origin: &Origin) {
+        for r in &mut self.tracks {
+            let Due::Tracks { seen, .. } = &mut r.due else {
+                continue;
+            };
+            match origin {
+                Origin::Main => *seen = seen.saturating_add(1),
+                Origin::Rule { playlist, rule } if *playlist == r.id && *rule == r.rule => {
+                    *seen = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether the history has this entry's airing already. The item on air is in the
+    /// history and is pinned too. Its start in the history is its wall-clock start, so the
+    /// check accepts a start within one item length.
+    fn aired(&self, e: &Entry) -> bool {
+        let len = e.len.max(MIN_STEP);
+        let from = e.start.checked_sub(len).unwrap_or(Timestamp::MIN);
+        let to = e.start.checked_add(len).unwrap_or(Timestamp::MAX);
+        self.hist.item_since(e.item, from).iter().any(|t| *t <= to)
+    }
+
     fn adopt(&mut self, e: &Entry) {
+        // Check before the record below adds this entry to the walk's history.
+        // An aired main entry counts in the history already.
+        if matches!(e.origin, Origin::Rule { .. }) || !self.aired(e) {
+            self.count(&e.origin);
+        }
         let known = self.items.get(&e.item).copied();
         let step = known.map_or(e.len.max(MIN_STEP), |(item, _)| Self::step(item));
         if let Some((item, _)) = known {
@@ -349,6 +385,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         next_at: now,
         resume,
         resumed: vec![false; station.playlists.len()],
+        tracks: Vec::new(),
     };
 
     let Some(main) = station.playlists.iter().position(|p| p.is_main) else {
@@ -361,6 +398,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         };
     };
 
+    let main_id = station.playlists[main].id;
     let mut rules = Vec::new();
     let mut fixed = Vec::new();
     for (pi, pl) in station.playlists.iter().enumerate() {
@@ -374,9 +412,11 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             );
             match (&rule.placement, &rule.trigger) {
                 (Placement::BetweenTracks, Trigger::EveryNTracks(n)) if *n > 0 => {
-                    let due = Due::Tracks { n: *n, seen: 0 };
+                    let seen = tracks_since(input.history, main_id, pl.id, *n);
+                    let due = Due::Tracks { n: *n, seen };
                     rules.push(TrackRule {
                         playlist: pi,
+                        id: pl.id,
                         rule: ri,
                         priority: pl.priority,
                         due,
@@ -387,6 +427,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
                     let due = Due::Times { at, next: 0 };
                     rules.push(TrackRule {
                         playlist: pi,
+                        id: pl.id,
                         rule: ri,
                         priority: pl.priority,
                         due,
@@ -417,6 +458,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             f.rule,
         )
     });
+    w.tracks = rules;
     let mut pinned = input.pinned.to_vec();
     pinned.sort_by_key(|e| e.start);
 
@@ -502,12 +544,12 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             next_fixed += 1;
         }
         let at = w.next_at;
-        let mut firing: Vec<usize> = (0..rules.len())
-            .filter(|&i| rules[i].take_due(at))
+        let mut firing: Vec<usize> = (0..w.tracks.len())
+            .filter(|&i| w.tracks[i].take_due(at))
             .collect();
-        firing.sort_by_key(|&i| Reverse(rules[i].priority));
+        firing.sort_by_key(|&i| Reverse(w.tracks[i].priority));
         for i in firing {
-            let (pi, ri) = (rules[i].playlist, rules[i].rule);
+            let (pi, ri) = (w.tracks[i].playlist, w.tracks[i].rule);
             w.fire(pi, ri, at, None, 0);
         }
         if w.next_at >= end {
@@ -537,11 +579,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             continue;
         }
         w.place(&station.playlists[main], item, at, Origin::Main, None);
-        for r in &mut rules {
-            if let Due::Tracks { seen, .. } = &mut r.due {
-                *seen = seen.saturating_add(1);
-            }
-        }
+        w.count(&Origin::Main);
     }
     for f in &fixed[next_fixed..] {
         // Adopt the pinned entries up to this target first, so the rest of a take follows them.
@@ -560,4 +598,17 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         fits: Vec::new(),
         warnings: w.warnings,
     }
+}
+
+/// The main tracks in `history` since the last play of `playlist`, at most `n`.
+/// A plan starts its "every N tracks" count here, so a re-plan keeps the cadence.
+fn tracks_since(history: &PlayHistory, main: PlaylistId, playlist: PlaylistId, n: u32) -> u32 {
+    let mains = match history.playlist_since(playlist, Timestamp::MIN).last() {
+        Some(last) => {
+            let after = history.playlist_since(main, *last);
+            after.iter().filter(|t| *t > last).count()
+        }
+        None => history.playlist_since(main, Timestamp::MIN).len(),
+    };
+    u32::try_from(mains).unwrap_or(u32::MAX).min(n)
 }
