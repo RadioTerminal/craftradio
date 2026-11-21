@@ -32,6 +32,7 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::PlayNext { .. }
             | Edit::SetStrip { .. }
             | Edit::SetIcecast(_)
+            | Edit::SetDynamics(_)
             | Edit::SetDevice { .. }
             | Edit::AddFolder { .. }
             | Edit::RemoveFolder { .. }
@@ -450,6 +451,11 @@ impl MockSource {
             }
             Edit::SetIcecast(ice) => {
                 self.icecast = ice;
+                Ok(1)
+            }
+            Edit::SetDynamics(d) => {
+                d.validate()?;
+                self.dynamics = d;
                 Ok(1)
             }
             Edit::SetDevice { role, device } => {

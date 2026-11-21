@@ -225,6 +225,19 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
             )
         };
         scenes.push((
+            "mixer-settings-processing".into(),
+            wide,
+            Scene::WindowClick(
+                ToolWindow::Mixer,
+                vec!["Toggle Mixer settings".into(), "Processing".into()],
+            ),
+        ));
+        scenes.push((
+            "mixer-settings-processing-short".into(),
+            wide,
+            wmc(&["Toggle Mixer settings", "Processing"]),
+        ));
+        scenes.push((
             "mixer-settings-short".into(),
             wide,
             wmc(&["Toggle Mixer settings"]),

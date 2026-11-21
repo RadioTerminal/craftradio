@@ -151,6 +151,7 @@ pub(crate) type Reply = Sender<Result<Outcome, EngineError>>;
 pub(crate) enum Request {
     Dispatch(Command, Reply),
     Render(usize, Sender<Result<Vec<f32>, PlayoutError>>),
+    Drain(Sender<Result<Vec<f32>, PlayoutError>>),
     Alarms(mpsc::SyncSender<RaisedAlarm>),
 }
 
@@ -324,6 +325,18 @@ impl Playout {
     }
 }
 
+impl Playout {
+    /// Offline only: ends an offline run. It renders the frames that the limiter lookahead
+    /// still holds, so the run keeps its last frames. Program is that many frames late, so a
+    /// run of `n` frames that ends has `n` plus the latency in all. Call it once, after the
+    /// last [`Playout::render`].
+    pub fn drain(&self) -> Result<Vec<f32>, PlayoutError> {
+        let (tx, rx) = mpsc::channel();
+        self.request(Request::Drain(tx))?;
+        rx.recv().map_err(|_| PlayoutError::Stopped)?
+    }
+}
+
 impl Drop for Playout {
     fn drop(&mut self) {
         self.tx = None;
@@ -342,6 +355,9 @@ fn run(mut core: core::Core, rx: &Receiver<Request>) {
             Ok(Request::Dispatch(cmd, reply)) => core.dispatch(cmd, reply),
             Ok(Request::Render(frames, reply)) => {
                 let _ = reply.send(core.render(frames));
+            }
+            Ok(Request::Drain(reply)) => {
+                let _ = reply.send(core.drain());
             }
             Ok(Request::Alarms(tx)) => core.subscribe(tx),
             Err(RecvTimeoutError::Timeout) => {}

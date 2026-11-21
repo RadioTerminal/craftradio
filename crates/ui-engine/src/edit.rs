@@ -1052,6 +1052,25 @@ impl EngineSource {
             } => self.set_weight(&playlist, index, weight),
             Edit::SetStrip { strip, change } => self.set_strip(strip, change),
             Edit::SetIcecast(ice) => self.set_icecast(ice),
+            Edit::SetDynamics(d) => {
+                let (c, l) = (d.compressor, d.limiter);
+                self.run_edit(Command::MixerSetDynamics {
+                    compressor: Some(radio_engine::CompressorPatch {
+                        enabled: Some(c.enabled),
+                        threshold_db: Some(c.threshold_db),
+                        ratio: Some(c.ratio),
+                        attack_ms: Some(c.attack_ms),
+                        release_ms: Some(c.release_ms),
+                        makeup_db: Some(c.makeup_db),
+                    }),
+                    limiter: Some(radio_engine::LimiterPatch {
+                        enabled: Some(l.enabled),
+                        ceiling_db: Some(l.ceiling_db),
+                        release_ms: Some(l.release_ms),
+                    }),
+                })?;
+                Ok(1)
+            }
             Edit::SetDevice { role, device } => {
                 let key = match role {
                     DeviceRole::Out => "out",

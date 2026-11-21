@@ -241,3 +241,24 @@ fn a_library_file_leaves_its_playlists_and_undo_brings_it_back() {
         "undo brings it back"
     );
 }
+
+/// A change on the Processing tab reaches the engine, and the next view reads it back.
+#[test]
+fn a_dynamics_edit_reaches_the_engine_and_the_view() {
+    let (mut source, clock) = source(Vec::new());
+    let before = wait_for(&mut source, &clock, |_| true).dynamics;
+    assert!(!before.compressor.enabled, "the compressor starts off");
+    let mut next = before;
+    next.compressor.enabled = true;
+    next.limiter.ceiling_db = -2.0;
+    assert_eq!(source.edit(Edit::SetDynamics(next)), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| v.dynamics == next);
+    assert_eq!(view.dynamics, next, "the view reads the stored setting");
+    let mut bad = next;
+    bad.compressor.ratio = 0.5;
+    let _ = source.edit(Edit::SetDynamics(bad));
+    // The engine answers later; the setting in force stays.
+    std::thread::sleep(Duration::from_millis(200));
+    let after = wait_for(&mut source, &clock, |_| true);
+    assert_eq!(after.dynamics, next, "a bad ratio changes nothing");
+}

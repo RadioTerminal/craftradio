@@ -11,6 +11,8 @@ use crate::icons::{self, Icon};
 use crate::parts;
 use crate::settings::{self, Dot, Tab};
 use crate::theme::{self, Tokens, pad, size, space};
+use radio_model::{DynamicsSettings, dynamics_range as range};
+
 use crate::view::{
     DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
 };
@@ -33,17 +35,25 @@ pub(crate) enum SettingsTab {
     #[default]
     Devices,
     Routing,
+    Processing,
     Meters,
     Icecast,
 }
 
 impl SettingsTab {
-    const ALL: [Self; 4] = [Self::Devices, Self::Routing, Self::Meters, Self::Icecast];
+    const ALL: [Self; 5] = [
+        Self::Devices,
+        Self::Routing,
+        Self::Processing,
+        Self::Meters,
+        Self::Icecast,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::Devices => "Devices",
             Self::Routing => "Routing",
+            Self::Processing => "Processing",
             Self::Meters => "Meters",
             Self::Icecast => "Icecast",
         }
@@ -62,6 +72,9 @@ pub(crate) struct State {
     /// The Icecast fields while a person edits them. Apply sends them. They stay while the
     /// page is open, across tabs.
     icecast: Option<IcecastView>,
+    /// The processing on Program while a person edits it. A field sends it when the edit
+    /// ends, so a drag does not rebuild the processors at each step.
+    dynamics: Option<DynamicsSettings>,
 }
 
 impl State {
@@ -77,6 +90,7 @@ impl State {
     fn close(&mut self) {
         self.page = None;
         self.icecast = None;
+        self.dynamics = None;
     }
 }
 
@@ -149,6 +163,7 @@ fn settings_page(
     });
     let mut selected = tab.index();
     let draft = &mut state.icecast;
+    let processing = &mut state.dynamics;
     let out = settings::page(
         ui,
         "Mixer settings",
@@ -159,6 +174,7 @@ fn settings_page(
         |ui, i| match SettingsTab::ALL.get(i).copied().unwrap_or_default() {
             SettingsTab::Devices => devices_tab(ui, view, actions, t),
             SettingsTab::Routing => routing_tab(ui, view, actions, t),
+            SettingsTab::Processing => processing_tab(ui, view, processing, actions, t),
             SettingsTab::Meters => meters_tab(ui, view, actions, t),
             SettingsTab::Icecast => {
                 let draft = draft.get_or_insert_with(|| view.icecast.clone());
@@ -181,7 +197,7 @@ fn strip_ui(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) -> Option<SettingsTab> {
-    let mut settings_wanted = false;
+    let mut settings_wanted: Option<SettingsTab> = None;
     let mut icecast = false;
     let mut gain = meter.gain_db;
     let mut mute = meter.mute;
@@ -201,7 +217,9 @@ fn strip_ui(
                     let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
                     let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
                     r.context_menu(|ui| {
-                        settings_wanted |= strip_menu(ui, meter, is_out, cue, actions)
+                        if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
+                            settings_wanted = Some(tab);
+                        }
                     });
                     if is_out {
                         settings::settings_button(ui, "Icecast", &mut icecast);
@@ -209,7 +227,9 @@ fn strip_ui(
                 });
                 ui.horizontal(|ui| {
                     meter_bars(ui, meter, t).context_menu(|ui| {
-                        settings_wanted |= strip_menu(ui, meter, is_out, cue, actions)
+                        if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
+                            settings_wanted = Some(tab);
+                        }
                     });
                     ui.spacing_mut().slider_width = size::METER_H;
                     let range = size::METER_MIN_DB..=size::METER_MAX_DB;
@@ -259,10 +279,10 @@ fn strip_ui(
     }
 
     // The Out ⚙ and the Settings item of Out open the Icecast tab; the others open Devices.
-    if icecast || (settings_wanted && is_out) {
+    if icecast {
         Some(SettingsTab::Icecast)
     } else {
-        settings_wanted.then_some(SettingsTab::Devices)
+        settings_wanted
     }
 }
 
@@ -305,14 +325,15 @@ pub(crate) fn frac(v: f32) -> f32 {
     ((v - size::METER_MIN_DB) / (size::METER_MAX_DB - size::METER_MIN_DB)).clamp(0.0, 1.0)
 }
 
-/// The right-click menu of a strip. It returns true when the person asks for the settings.
+/// The right-click menu of a strip. It returns the settings tab that the person asks for.
+/// Settings of Out opens Icecast, of another strip Devices; Out also links to Processing.
 fn strip_menu(
     ui: &mut egui::Ui,
     meter: &MeterView,
     is_out: bool,
     cue: bool,
     actions: &mut Vec<Action>,
-) -> bool {
+) -> Option<SettingsTab> {
     if check_item(ui, meter.mute, "Mute") {
         actions.push(mute_action(meter, is_out, !meter.mute));
     }
@@ -334,7 +355,21 @@ fn strip_menu(
         }
     });
     ui.separator();
-    menu_item(ui, &icons::lead(Icon::Settings, "Settings"), None)
+    if is_out
+        && menu_item(
+            ui,
+            &icons::lead(Icon::SlidersHorizontal, "Processing…"),
+            None,
+        )
+    {
+        return Some(SettingsTab::Processing);
+    }
+    let settings = menu_item(ui, &icons::lead(Icon::Settings, "Settings"), None);
+    settings.then_some(if is_out {
+        SettingsTab::Icecast
+    } else {
+        SettingsTab::Devices
+    })
 }
 
 /// Two meter bars (left and right) with green, amber and red zones and a peak line.
@@ -529,6 +564,160 @@ fn meters_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
     }
 }
 
+/// A number field of the Processing tab. It returns true when an edit ends: a drag stops,
+/// or a typed or keyed value changes.
+fn dyn_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    (lo, hi): (f32, f32),
+    speed: f64,
+    suffix: &str,
+    t: &Tokens,
+) -> bool {
+    let mut done = false;
+    settings::form_row(ui, label, t, |ui| {
+        let field = DragValue::new(value)
+            .range(lo..=hi)
+            .speed(speed)
+            .max_decimals(1)
+            .suffix(suffix)
+            // A typed value counts when the typing ends, not at each key.
+            .update_while_editing(false);
+        let r = ui.add_sized([ui.available_width(), size::CONTROL_SM], field);
+        done = r.drag_stopped() || (r.changed() && !r.dragged());
+        r
+    });
+    done
+}
+
+/// The compressor and the limiter on Program. In the preview, nothing plays, so nothing is
+/// processed. The meters carry no gain reduction, so the tab shows none.
+fn processing_tab(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    draft: &mut Option<DynamicsSettings>,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let d = draft.get_or_insert(view.dynamics);
+    let note = view.say(
+        "Preview: nothing plays, so nothing is processed.",
+        "Changes apply to Program at once. A change resets the processors for a few ms.",
+    );
+    settings::form_note(
+        ui,
+        RichText::new(note)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+    );
+    let heading = |ui: &mut egui::Ui, text: &str| {
+        ui.add_space(space::XS);
+        settings::form_note(
+            ui,
+            RichText::new(text).font(theme::text(theme::LABEL)).strong(),
+        );
+    };
+    let mut commit = false;
+    heading(ui, "Compressor");
+    let c = &mut d.compressor;
+    settings::form_row(ui, "Compressor", t, |ui| {
+        let on = c.enabled;
+        let r = ui.checkbox(&mut c.enabled, "On");
+        commit |= r.changed();
+        // The name says which switch it is: the row label, then "on".
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Compressor on")
+        });
+        r
+    });
+    ui.add_enabled_ui(c.enabled, |ui| {
+        commit |= dyn_field(
+            ui,
+            "Threshold",
+            &mut c.threshold_db,
+            range::THRESHOLD_DB,
+            0.1,
+            " dBFS",
+            t,
+        );
+        commit |= dyn_field(ui, "Ratio", &mut c.ratio, range::RATIO, 0.05, " : 1", t);
+        commit |= dyn_field(
+            ui,
+            "Attack",
+            &mut c.attack_ms,
+            range::ATTACK_MS,
+            0.5,
+            " ms",
+            t,
+        );
+        commit |= dyn_field(
+            ui,
+            "Compressor release",
+            &mut c.release_ms,
+            range::COMP_RELEASE_MS,
+            5.0,
+            " ms",
+            t,
+        );
+        commit |= dyn_field(
+            ui,
+            "Makeup gain",
+            &mut c.makeup_db,
+            range::MAKEUP_DB,
+            0.1,
+            " dB",
+            t,
+        );
+    });
+    heading(ui, "Limiter");
+    let l = &mut d.limiter;
+    settings::form_row(ui, "Limiter", t, |ui| {
+        let on = l.enabled;
+        let r = ui.checkbox(&mut l.enabled, "On");
+        commit |= r.changed();
+        // The name says which switch it is: the row label, then "on".
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Limiter on")
+        });
+        r
+    });
+    ui.add_enabled_ui(l.enabled, |ui| {
+        commit |= dyn_field(
+            ui,
+            "Ceiling",
+            &mut l.ceiling_db,
+            range::CEILING_DB,
+            0.1,
+            " dBFS",
+            t,
+        );
+        commit |= dyn_field(
+            ui,
+            "Limiter release",
+            &mut l.release_ms,
+            range::LIMIT_RELEASE_MS,
+            5.0,
+            " ms",
+            t,
+        );
+    });
+    if !l.enabled {
+        settings::form_note(
+            ui,
+            RichText::new(icons::lead(
+                Icon::TriangleAlert,
+                "Limiter off: a soft clip keeps Program under −1 dBFS",
+            ))
+            .font(theme::text(theme::CAPTION))
+            .color(t.warn),
+        );
+    }
+    if commit && *d != view.dynamics {
+        actions.push(Action::EditQuiet(Edit::SetDynamics(*d)));
+    }
+}
+
 /// The warning for a password that goes to another computer without TLS.
 pub(crate) const PASSWORD_IN_CLEAR: &str = "password sent unencrypted · turn on TLS";
 
@@ -584,10 +773,13 @@ fn icecast_tab(
             .font(theme::text(theme::LABEL))
             .color(status.ink),
     );
-    ui.horizontal_wrapped(|ui| {
+    // One line, in the font of the deck titles. A long title ends in "…", and the tooltip
+    // has all of it.
+    ui.horizontal(|ui| {
         ui.label(RichText::new("Now streaming:").color(t.text_muted));
-        let text = RichText::new(format!("“{streaming}”")).font(theme::mono(theme::CODE));
-        ui.label(text.color(t.accent_ink));
+        let full = format!("“{streaming}”");
+        let text = RichText::new(full.as_str()).font(theme::text(theme::BODY));
+        crate::widgets::truncated_label(ui, text.color(t.accent_ink)).on_hover_text(full);
     });
     let note = view.say(
         "The stream would carry this text. The preview sends nothing.",

@@ -456,7 +456,14 @@ impl Core {
             .icecast
             .as_ref()
             .map(|_| 4 * SAMPLE_RATE as usize * CHANNELS);
-        let mut opened = open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap)?;
+        // The setting that a person stored wins over the default of the config. A stored
+        // setting that the processors refuse falls back to that default.
+        let stored = engine.state().dynamics.map(|d| ProgramDynamics::from(&d));
+        let mut opened = match stored {
+            Some(d) => open_output(&cfg.output, cfg.mixer, Some(d), tap)
+                .or_else(|_| open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap))?,
+            None => open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap)?,
+        };
         let icecast = cfg
             .icecast
             .clone()
@@ -571,6 +578,16 @@ impl Core {
         };
         let (out, pfl) = radio_audio::render_offline_buses(mixer, frames);
         feed_tap(cue, &pfl);
+        feed_tap(tap, &out);
+        Ok(out)
+    }
+
+    /// Offline only: renders the tail that the lookahead holds, and feeds the taps.
+    pub(crate) fn drain(&mut self) -> Result<Vec<f32>, PlayoutError> {
+        let Driver::Offline { mixer, tap, .. } = &mut self.driver else {
+            return Err(PlayoutError::NotOffline);
+        };
+        let out = radio_audio::drain_offline(mixer);
         feed_tap(tap, &out);
         Ok(out)
     }

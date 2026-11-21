@@ -8,12 +8,14 @@ mod error;
 mod log;
 mod store;
 
-pub use command::{CartMode, Command, CommandSpec, Mode, Route, Tier, registry};
+pub use command::{
+    CartMode, Command, CommandSpec, CompressorPatch, LimiterPatch, Mode, Route, Tier, registry,
+};
 pub use error::EngineError;
 pub use log::{AsPlayed, LogEntry, LogStatus, Report, RowId};
 
 use jiff::{Timestamp, civil};
-use radio_model::{Item, ItemId, PickOrder, Playlist, PlaylistId, Station};
+use radio_model::{DynamicsSettings, Item, ItemId, PickOrder, Playlist, PlaylistId, Station};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,6 +28,9 @@ use std::{
 const DECKS: u8 = 4;
 /// The undo history keeps at least this many steps.
 const UNDO_STEPS: usize = 100;
+/// The settings key of the Program dynamics, in the part `dynamics`.
+pub(crate) const DYNAMICS_KEY: &str = "program";
+
 /// The names of the mixer strips.
 pub const STRIPS: [&str; 7] = ["A", "B", "C", "D", "Cart", "Live", "Out"];
 /// UI parts in `settings_by_part` start with this prefix, so they never meet the parts of the engine.
@@ -87,6 +92,9 @@ pub struct State {
     pub(crate) settings: BTreeMap<String, BTreeMap<String, Value>>,
     /// The mixer strips, by name.
     pub strips: BTreeMap<String, StripState>,
+    /// The compressor and the limiter on Program, or `None` when no one set them. Playout
+    /// then keeps its own default.
+    pub dynamics: Option<DynamicsSettings>,
     /// Items that play right after the item on air, in order. Playout takes each one off
     /// when it starts.
     pub queue: Vec<ItemId>,
@@ -160,6 +168,7 @@ impl State {
             folders: BTreeSet::new(),
             settings: BTreeMap::new(),
             strips: BTreeMap::new(),
+            dynamics: None,
             cart_settings: Vec::new(),
             queue: Vec::new(),
             missing: BTreeSet::new(),
@@ -348,6 +357,8 @@ pub enum AudioIntent {
         mute: bool,
         pfl: bool,
     },
+    /// The compressor and the limiter on Program.
+    SetDynamics(DynamicsSettings),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -505,6 +516,7 @@ impl Engine {
         // full checkpoint: one settings row goes to disk.
         let strip_row = match &cmd {
             Command::MixerSetStrip { strip, .. } => Some(("mixer", strip.clone())),
+            Command::MixerSetDynamics { .. } => Some(("dynamics", DYNAMICS_KEY.to_owned())),
             Command::CartSet { page, slot, .. } => Some(("carts", format!("{page}:{slot}"))),
             _ => None,
         };
@@ -538,6 +550,10 @@ impl Engine {
     /// Writes one row of the strip or cart settings, without a full checkpoint.
     fn write_row(&self, part: &'static str, key: &str) {
         let value = match part {
+            "dynamics" => self
+                .state
+                .dynamics
+                .and_then(|d| serde_json::to_string(&d).ok()),
             "mixer" => self
                 .state
                 .strips
@@ -1271,6 +1287,22 @@ impl Engine {
                     mute,
                     pfl,
                 }))
+            }
+            C::MixerSetDynamics {
+                compressor,
+                limiter,
+            } => {
+                // Merge onto the settings in force, check the whole result, then store it.
+                let mut next = self.state.dynamics.unwrap_or_default();
+                if let Some(c) = compressor {
+                    c.apply(&mut next.compressor);
+                }
+                if let Some(l) = limiter {
+                    l.apply(&mut next.limiter);
+                }
+                next.validate().map_err(EngineError::BadArgument)?;
+                self.state.dynamics = Some(next);
+                Ok(self.audio(AudioIntent::SetDynamics(next)))
             }
             C::AlarmAck { id } => Ok(Outcome {
                 data: Some(self.state.ack([id]).into()),

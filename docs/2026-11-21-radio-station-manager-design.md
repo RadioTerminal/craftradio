@@ -36,7 +36,7 @@ accuracy outrank features.
   dayparting, reconciliation with billing systems). Rules cover the common cases; scripts
   cover the rest.
 - HLS / DASH stream inputs, video, RDS hardware control.
-- Audio processing beyond gain, fades, ducking and a simple limiter on the output
+- Audio processing beyond gain, fades, ducking, and one compressor and limiter on Program
   (no multiband processing).
 
 ## 4. Anti-goals (failure even if it "works")
@@ -204,7 +204,32 @@ or silence detection (my call).
   - Cue/PFL: pre-listening on a separate device, never on air.
 - **Ducking:** a cart (or a voice input) can lower Program by a set dB, with attack and
   release times.
-- **Output limiter** on Program to prevent clipping.
+- **Program dynamics:** an optional compressor, then a lookahead limiter, on Program.
+  - *Signal flow:* decks, carts and live input mix into Program; Program goes through the
+    Out fader, then the compressor, then the limiter, and from there to the local output,
+    the Icecast encoder and the Out meter. PFL/Cue is not processed.
+  - *Defaults:* the limiter is on, with a −1 dBFS true-peak ceiling, 50 ms release and a
+    fixed 1.5 ms lookahead (72 frames at 48 kHz), so Program has one known latency. The
+    compressor is off; when turned on it starts at −18 dBFS threshold, 2.5:1, 15 ms
+    attack, 250 ms release and 0 dB makeup (gentle broadcast levelling; the reasons are in
+    `radio_model::CompressorSettings::default`). The compressor has a hard knee. With the
+    limiter off, a soft clip keeps Program under −1 dBFS.
+  - *Command:* `mixer.set_dynamics` with `compressor` {`enabled`, `threshold_db`,
+    `ratio`, `attack_ms`, `release_ms`, `makeup_db`} and `limiter` {`enabled`,
+    `ceiling_db`, `release_ms`}; absent fields keep their values. The engine refuses
+    values outside the ranges in `radio_model::dynamics_range` with an error. Playout
+    applies a change live: the control thread prepares the new processors and the audio
+    thread swaps them in at its next block, without allocating; the swap drops the few ms
+    in the old lookahead.
+  - *Where it lives:* stored in SQLite as its own row (part `dynamics`, key `program`);
+    without a row, playout uses its configured default. In the UI it is Mixer ⚙ →
+    Processing (the Out strip's menu links there).
+  - *Gain reduction:* the meters carry no gain-reduction data yet, so no window shows a GR
+    reading. A GR meter appears only when the processors report real values; the UI never
+    draws an estimated or fake one.
+  - *Offline renders:* Program is the lookahead late. An offline render of N timeline
+    frames that ends calls `drain_offline` once and has N + latency frames, ending with the
+    last input frame.
 - **Loudness:** files are measured with EBU R128 at import, and each item gets a gain to bring
   it to a target level (default −18 LUFS, my call), so the limiter isn't doing the leveling.
 - **Several devices:** one output device is the master clock. Every other device (live

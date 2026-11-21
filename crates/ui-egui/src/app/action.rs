@@ -136,6 +136,7 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             "Applied the mount {}:{}{}; it connects on the next start",
             ice.host, ice.port, ice.mount
         ),
+        Edit::SetDynamics(_) => "Changed the processing on Program".to_owned(),
         Edit::SetDevice { device, .. } => {
             format!("Picked {device}; the app uses it from its next start")
         }
@@ -216,6 +217,7 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
             "saved the mount {}:{}{} · Icecast stays not connected",
             ice.host, ice.port, ice.mount
         ),
+        Edit::SetDynamics(_) => "changed the processing · nothing plays here".to_owned(),
         Edit::SetDevice { device, .. } => format!("picked {device}"),
         Edit::AddCartPage { name } => format!("added the page {name}"),
         Edit::RenameCartPage { name, .. } => format!("renamed the page to {name}"),

@@ -172,6 +172,18 @@ impl Core {
                 let cmd = Cmd::new(at, CommandKind::SetGain { strip, db });
                 Check::Now(self.mixer.send(cmd).is_ok())
             }
+            AudioIntent::SetDynamics(settings) => {
+                // The handle prepares the processors here; the mixer swaps them in at its
+                // next block. A refused setting keeps the processing in force.
+                let at = self.mixer.now();
+                match self
+                    .mixer
+                    .set_dynamics(Some(radio_audio::ProgramDynamics::from(&settings)))
+                {
+                    Ok(()) => Check::Passed(at),
+                    Err(_) => Check::Now(false),
+                }
+            }
             AudioIntent::Next => {
                 self.leave_emergency(now);
                 self.hold = false;

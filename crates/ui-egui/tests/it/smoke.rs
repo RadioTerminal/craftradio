@@ -210,7 +210,7 @@ fn the_mixer_settings_page_replaces_the_strips_and_done_brings_them_back() {
         "the strips give the page their place"
     );
     let devices = size(&harness);
-    for tab in ["Routing", "Meters"] {
+    for tab in ["Routing", "Processing", "Meters"] {
         click(&mut harness, tab);
         let other = size(&harness);
         assert!(
@@ -500,13 +500,33 @@ fn the_arrow_keys_move_between_settings_tabs() {
     click(&mut harness, "Toggle Mixer settings");
     harness.get_by_label("Devices").focus();
     harness.run_steps(FRAMES);
-    for _ in 0..2 {
+    for _ in 0..3 {
         harness.key_press(egui::Key::ArrowDown);
         harness.run_steps(FRAMES);
     }
-    assert!(shows(&harness, "Peak hold"), "two steps down is Meters");
+    assert!(shows(&harness, "Peak hold"), "three steps down is Meters");
     assert!(!shows(&harness, "Output device (Out)"), "Devices is gone");
     harness.key_press(egui::Key::ArrowUp);
     harness.run_steps(FRAMES);
     assert!(!shows(&harness, "Peak hold"), "one step up leaves Meters");
+}
+
+/// The Processing tab sends its change to the view source: after Done and a new visit,
+/// the compressor that a person turned on is still on.
+#[test]
+fn the_processing_tab_turns_the_compressor_on() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Processing");
+    let compressor_on = |h: &Harness<'_, RadioApp>| {
+        h.get_by_label("Compressor on").accesskit_node().toggled()
+            == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(!compressor_on(&harness), "the compressor starts off");
+    click(&mut harness, "Compressor on");
+    click(&mut harness, "Done");
+    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Processing");
+    assert!(compressor_on(&harness), "the source kept the compressor on");
 }
