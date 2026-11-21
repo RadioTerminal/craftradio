@@ -5,12 +5,14 @@
 //! Nothing reaches a scheduler yet, and the window says so.
 
 use egui::{Align, ComboBox, DragValue, Layout, RichText, Stroke, TextEdit};
+use egui_extras::{Column, TableBuilder};
 
 use crate::app::{FileTarget, Linked, mmss};
 use crate::icons::{self, Icon};
 use crate::rules_script;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{Constraint, ConstraintKind, Pick, Placement, PlaylistTab, RuleView, Trigger};
+use crate::widgets;
 
 const NOT_APPLIED: &str = "preview — rules are not applied to the scheduler yet";
 const SCRIPT_NOTE: &str = "Scripts are stored but not run in this build. \
@@ -450,22 +452,42 @@ fn items(ui: &mut egui::Ui, tab: &mut PlaylistTab, link: &mut Linked, preview: b
     let zone = frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
         let mut remove = None;
-        egui::ScrollArea::vertical()
+        let side = size::CONTROL_SM;
+        TableBuilder::new(ui)
             .id_salt("editor_items")
-            .max_height(size::EDITOR_ITEMS_H)
-            .show(ui, |ui| {
-                for (i, (name, len)) in tab.items.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(name).font(theme::text(theme::SMALL)));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button(format!("Remove {name}")).clicked() {
-                                remove = Some(i);
-                            }
-                            let len = RichText::new(mmss(*len)).font(theme::mono(theme::CODE));
-                            ui.label(len.color(t.text_muted));
-                        });
+            .cell_layout(Layout::left_to_right(Align::Center))
+            .max_scroll_height(size::EDITOR_ITEMS_H)
+            .auto_shrink([false, true])
+            .column(Column::remainder().clip(true))
+            .column(Column::auto())
+            .column(Column::exact(side))
+            .body(|body| {
+                body.rows(side, tab.items.len(), |mut row| {
+                    let i = row.index();
+                    let (name, len) = &tab.items[i];
+                    row.col(|ui| {
+                        let title = RichText::new(name).font(theme::text(theme::SMALL));
+                        ui.add(egui::Label::new(title).truncate())
+                            .on_hover_text(name);
                     });
-                }
+                    row.col(|ui| {
+                        let len = RichText::new(mmss(*len)).font(theme::mono(theme::CODE));
+                        ui.label(len.color(t.text_muted));
+                    });
+                    row.col(|ui| {
+                        let resp = widgets::icon_button_sized(
+                            ui,
+                            Icon::X,
+                            false,
+                            &format!("Remove {name}"),
+                            &format!("Remove {name} from this playlist"),
+                            side,
+                        );
+                        if resp.clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
             });
         if let Some(i) = remove {
             tab.items.remove(i);
