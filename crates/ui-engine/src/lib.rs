@@ -1,8 +1,10 @@
 //! The real station behind the desktop UI: a `ViewSource` over the engine and the playout.
 
+mod alarms;
 mod bg;
 mod edit;
 
+pub use alarms::{alarm_id, warning_id};
 pub use edit::{AUDIO_PART, file_item};
 use lucide_icons::Icon;
 mod fader;
@@ -29,9 +31,10 @@ use radio_playout::{DeckPhase, LocalOutput, Playout, PlayoutView};
 use radio_scheduler::Origin as SOrigin;
 use radio_stream::StreamStatus;
 use radio_ui_egui::view::{
-    CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles, DropTarget, Edit, FitView,
-    FolderSource, Imported, LibraryItem, MeterView, Origin, OutputStatus, PlayMode, PlaylistTab,
-    Route, Row, StationView, Status, StreamState, ViewSource,
+    AlarmSource, AlarmView, CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles,
+    DropTarget, Edit, FitView, FolderSource, Imported, LibraryItem, MeterView, Origin,
+    OutputStatus, PlayMode, PlaylistTab, Route, Row, Severity, StationView, Status, StreamState,
+    ViewSource,
 };
 
 use map::{display_title, effective_meta, item_len, view_meta};
@@ -123,6 +126,12 @@ pub struct EngineSource {
     strip_gain: HashMap<String, f32>,
     /// Part settings on their way to the engine.
     pending_settings: HashMap<(String, String), serde_json::Value>,
+    /// The alarms of the last snapshot, for the export.
+    pub(crate) alarms: Vec<AlarmView>,
+    /// Acknowledgements on their way to the engine.
+    pub(crate) pending_acks: HashSet<u64>,
+    /// When the source first saw each alarm that has no time of its own.
+    first_seen: HashMap<u64, Timestamp>,
 }
 
 /// What a timeline row stands for.
@@ -193,6 +202,9 @@ impl EngineSource {
             secret_known: None,
             strip_gain: HashMap::new(),
             pending_settings: HashMap::new(),
+            alarms: Vec::new(),
+            pending_acks: HashSet::new(),
+            first_seen: HashMap::new(),
         };
         // The desktop UI always runs Auto and shows no mode control, so a saved Assist or
         // Manual station is put back to Auto through the same command the CLI uses.
@@ -660,6 +672,101 @@ impl EngineSource {
             .collect()
     }
 
+    /// The current alarms and warnings, from playout, the plan, the outputs and the store.
+    // Playout alarms that cleared are not in the list.
+    fn alarm_views(&mut self, pv: &PlayoutView, now: Timestamp) -> Vec<AlarmView> {
+        let names = alarms::Names {
+            station: &pv.state.station,
+            tz: &self.tz,
+        };
+        let here = self.zoned(now);
+        let mut out: Vec<AlarmView> = pv
+            .alarms
+            .iter()
+            .filter(|a| a.cleared.is_none())
+            .map(|a| alarms::from_alarm(&names, a))
+            .collect();
+        let mut seen = HashMap::new();
+        for w in &pv.timeline.warnings {
+            let fits = pv.timeline.fits.as_slice();
+            let id = alarms::warning_id(w, pv.now, fits);
+            let at = self.first_seen.get(&id).copied().unwrap_or(now);
+            seen.insert(id, at);
+            out.push(alarms::from_warning(&names, w, (pv.now, fits), at));
+        }
+        // The playout alarm of a lost device says it already.
+        let lost = pv.alarms.iter().any(|a| {
+            a.cleared.is_none() && matches!(a.alarm, radio_playout::Alarm::DeviceLost { .. })
+        });
+        match &pv.outputs.local {
+            LocalOutput::Lost { name } if !lost => out.push(alarms::from_state(
+                "device_lost",
+                name,
+                Severity::Alarm,
+                AlarmSource::Device,
+                format!("Output device lost: {name}"),
+                here.clone(),
+            )),
+            LocalOutput::Null => out.push(alarms::from_state(
+                "no_device",
+                "",
+                Severity::Warning,
+                AlarmSource::Device,
+                "No sound card: nothing plays the sound here".to_owned(),
+                here.clone(),
+            )),
+            _ => {}
+        }
+        if let Some(StreamStatus::Retrying { last_error, .. }) = &pv.outputs.icecast {
+            out.push(alarms::from_state(
+                "icecast_retrying",
+                "",
+                Severity::Alarm,
+                AlarmSource::Icecast,
+                format!("Icecast is not connected and tries again: {last_error}"),
+                here.clone(),
+            ));
+        }
+        for e in &self.watch_errors {
+            out.push(alarms::from_state(
+                "watch",
+                e,
+                Severity::Warning,
+                AlarmSource::Library,
+                e.clone(),
+                here.clone(),
+            ));
+        }
+        if let Some(reason) = self.playout.log().persistence_error() {
+            out.push(alarms::from_state(
+                "not_saved",
+                &reason,
+                Severity::Alarm,
+                AlarmSource::Engine,
+                format!("Changes are not saved: {reason}"),
+                here.clone(),
+            ));
+        }
+        // Alarms without a time of their own keep the time when the source first saw them.
+        for a in &mut out {
+            if a.source != AlarmSource::Scheduler
+                && !pv.alarms.iter().any(|r| alarms::alarm_id(r) == a.id)
+            {
+                let at = self.first_seen.get(&a.id).copied().unwrap_or(now);
+                seen.insert(a.id, at);
+                a.at = self.zoned(at);
+            }
+        }
+        self.first_seen = seen;
+        let state = &self.state;
+        self.pending_acks.retain(|id| !state.is_acked(*id));
+        for a in &mut out {
+            a.acked = self.state.is_acked(a.id) || self.pending_acks.contains(&a.id);
+        }
+        self.alarms.clone_from(&out);
+        out
+    }
+
     /// The part settings, with the values on their way to the engine.
     fn settings(&mut self) -> radio_ui_egui::view::Settings {
         let mut out = self.state.ui_settings().clone();
@@ -770,7 +877,7 @@ impl ViewSource for EngineSource {
         if let Some(reason) = self.playout.log().persistence_error() {
             label.push_str(&format!(" · NOT SAVED: {reason}"));
         }
-        let open_alarms = pv.alarms.iter().filter(|a| a.cleared.is_none()).count();
+        let alarms = self.alarm_views(&pv, now);
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {
@@ -809,10 +916,7 @@ impl ViewSource for EngineSource {
             output: Self::output(&pv),
             folders: self.folder_views(),
             settings: self.settings(),
-            warnings: open_alarms
-                + pv.timeline.warnings.len()
-                + self.watch_errors.len()
-                + usize::from(self.playout.log().persistence_error().is_some()),
+            alarms,
             preview: false,
         }
     }

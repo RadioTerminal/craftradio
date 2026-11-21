@@ -608,3 +608,27 @@ fn unavailable_cue_output_is_rejected_without_showing_pfl_on() {
     );
     assert!(!e.state().strips.get("A").is_some_and(|s| s.pfl));
 }
+
+#[test]
+fn acknowledged_alarms_survive_a_reopen_and_cannot_be_undone() {
+    let path = temp_db("alarm-ack");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        e.dispatch(Command::AlarmAck { id: 41 }).unwrap();
+        e.dispatch(Command::AlarmAckAll {
+            ids: vec![41, 7, 9],
+        })
+        .unwrap();
+        assert!(
+            e.dispatch(Command::HistoryUndo).is_err(),
+            "an acknowledgement is no undo step"
+        );
+        e.flush().unwrap();
+    }
+    let e = Engine::open(&path).unwrap();
+    for id in [41, 7, 9] {
+        assert!(e.state().is_acked(id), "alarm {id} stays acknowledged");
+    }
+    assert!(!e.state().is_acked(8), "other alarms stay new");
+    assert_eq!(e.state().acked_alarms.len(), 3, "each id is kept once");
+}

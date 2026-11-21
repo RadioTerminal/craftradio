@@ -180,6 +180,18 @@ pub mod size {
     pub const CLOCK_MIN_H: f32 = 240.0;
     pub const HISTORY_MIN_W: f32 = 520.0;
     pub const HISTORY_MIN_H: f32 = 300.0;
+    /// The Alarms window.
+    pub const ALARMS_W: f32 = 900.0;
+    pub const ALARMS_H: f32 = 480.0;
+    pub const ALARMS_MIN_W: f32 = 560.0;
+    pub const ALARMS_MIN_H: f32 = 280.0;
+    /// The width of the severity column and of the source column.
+    pub const COL_SEVERITY: f32 = 96.0;
+    pub const COL_SOURCE: f32 = 86.0;
+    /// The width of the message column. The columns of the Alarms window fit its width.
+    pub const COL_MESSAGE: f32 = 300.0;
+    /// The width of the column with the Acknowledge button.
+    pub const COL_ACK: f32 = 120.0;
     pub const LIBRARY_MIN_W: f32 = 640.0;
     pub const LIBRARY_MIN_H: f32 = 320.0;
 

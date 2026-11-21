@@ -96,7 +96,13 @@ pub struct State {
     pub hashes: BTreeMap<ItemId, (String, u64)>,
     /// Cart settings that differ from the defaults.
     pub cart_settings: Vec<CartSettings>,
+    /// The ids of the alarms and warnings that a person acknowledged, oldest first. It
+    /// keeps at most [`ACKED_MAX`] ids.
+    pub acked_alarms: Vec<u64>,
 }
+
+/// The acknowledged alarm ids that the engine keeps. Older ids go first.
+pub const ACKED_MAX: usize = 2000;
 
 /// What an undo step restores: playlists, scripts, sources, tags and carts.
 #[derive(Clone)]
@@ -158,6 +164,7 @@ impl State {
             queue: Vec::new(),
             missing: BTreeSet::new(),
             hashes: BTreeMap::new(),
+            acked_alarms: Vec::new(),
         }
     }
 
@@ -246,6 +253,25 @@ impl State {
     /// The metadata that `item.set_meta` stored for an item.
     pub fn item_meta(&self, item: ItemId) -> Option<&Value> {
         self.item_meta.get(&item)
+    }
+
+    /// True when a person acknowledged the alarm or warning `id`.
+    pub fn is_acked(&self, id: u64) -> bool {
+        self.acked_alarms.contains(&id)
+    }
+
+    /// Marks alarm ids as acknowledged. It returns how many were new.
+    fn ack(&mut self, ids: impl IntoIterator<Item = u64>) -> usize {
+        let mut added = 0;
+        for id in ids {
+            if !self.acked_alarms.contains(&id) {
+                self.acked_alarms.push(id);
+                added += 1;
+            }
+        }
+        let over = self.acked_alarms.len().saturating_sub(ACKED_MAX);
+        self.acked_alarms.drain(..over);
+        added
     }
 
     fn has_item(&self, id: ItemId) -> bool {
@@ -471,6 +497,8 @@ impl Engine {
         let is_undoable = undoable(&cmd);
         let before = (is_undoable && !merged).then(|| self.save());
         let system = matches!(cmd, Command::StationSystem { .. });
+        // An acknowledgement changes no station data, so it needs no new plan.
+        let ack = matches!(cmd, Command::AlarmAck { .. } | Command::AlarmAckAll { .. });
         // A fader, mute or cart duck changes no station data, so it needs no plan and no
         // full checkpoint: one settings row goes to disk.
         let strip_row = match &cmd {
@@ -494,6 +522,9 @@ impl Engine {
         }
         if let Some((part, key)) = strip_row {
             self.write_row(part, &key);
+            self.emit(EngineEvent::SettingsChanged);
+        } else if ack {
+            self.store.snapshot(self.state.clone());
             self.emit(EngineEvent::SettingsChanged);
         } else if !query {
             self.store.snapshot(self.state.clone());
@@ -1250,6 +1281,14 @@ impl Engine {
                 }
                 Ok(out)
             }
+            C::AlarmAck { id } => Ok(Outcome {
+                data: Some(self.state.ack([id]).into()),
+                ..Outcome::default()
+            }),
+            C::AlarmAckAll { ids } => Ok(Outcome {
+                data: Some(self.state.ack(ids).into()),
+                ..Outcome::default()
+            }),
             C::StationGet => Ok(Outcome {
                 data: Some(to_value(&self.state)?),
                 ..Outcome::default()

@@ -163,6 +163,14 @@ impl EngineSource {
                         .notices
                         .push(format!("The as-played log did not read: {e}")),
                 },
+                crate::bg::Done::Exported {
+                    path,
+                    count,
+                    result,
+                } => self.notices.push(match result {
+                    Ok(()) => format!("Wrote {count} alarms to {path}"),
+                    Err(e) => format!("The alarms were not written to {path}: {e}"),
+                }),
             }
         }
     }

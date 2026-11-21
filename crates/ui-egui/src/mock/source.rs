@@ -74,6 +74,7 @@ impl ViewSource for MockSource {
             }
         }
         let meters = meters(now, &decks, &self.strips);
+        let alarms = alarms::sample(&local, &rows, &self.acked_alarms);
         self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
         StationView {
@@ -102,7 +103,7 @@ impl ViewSource for MockSource {
             },
             folders: self.folder_views(),
             settings: self.settings.clone(),
-            warnings: 0,
+            alarms,
             preview: true,
         }
     }

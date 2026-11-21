@@ -104,7 +104,12 @@ fn failed_checkpoints_show_a_persistent_warning() {
         },
     );
     let view = source.snapshot(super::fixtures::t0());
-    assert!(view.warnings > 0);
+    assert!(view.open_alarms().count() > 0);
+    assert!(
+        view.open_alarms()
+            .any(|a| a.text.contains("not saved") && a.text.contains("write denied")),
+        "the Alarms window names the failed save"
+    );
     assert!(view.mode.contains("NOT SAVED"));
     assert!(view.mode.contains("write denied"));
 }
