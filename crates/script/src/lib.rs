@@ -24,10 +24,15 @@ pub struct RuleSet {
 pub enum ScriptError {
     #[error("syntax error on line {line}: {message}")]
     Syntax { line: u32, message: String },
-    #[error("script failed: {0}")]
-    Runtime(String),
-    #[error("invalid {call}: {reason}")]
-    Invalid { call: String, reason: String },
+    #[error("line {line}: script failed: {message}")]
+    Runtime { line: u32, message: String },
+    #[error("line {line}: {call}(): {field}: {reason}")]
+    Invalid {
+        line: u32,
+        call: String,
+        field: String,
+        reason: String,
+    },
     #[error("script time limit exceeded")]
     TimeLimit,
     #[error("script memory limit exceeded")]
@@ -46,37 +51,44 @@ impl Default for Limits {
         }
     }
 }
-fn invalid(call: &str, reason: impl ToString) -> ScriptError {
+fn invalid(call: &str, field: &str, reason: impl ToString) -> ScriptError {
     ScriptError::Invalid {
+        line: 1,
+        field: field.into(),
         call: call.into(),
         reason: reason.to_string(),
     }
 }
-fn number(v: &Json, call: &str, max: u64) -> Result<u64, ScriptError> {
+fn number(v: &Json, call: &str, field: &str, max: u64) -> Result<u64, ScriptError> {
     v.as_u64()
         .filter(|n| *n > 0 && *n <= max)
-        .ok_or_else(|| invalid(call, "expected a positive integer in range"))
+        .ok_or_else(|| invalid(call, field, "expected a positive integer in range"))
 }
-fn duration(v: &Json, scale: f64, call: &str) -> Result<Duration, ScriptError> {
+fn duration(v: &Json, scale: f64, call: &str, field: &str) -> Result<Duration, ScriptError> {
     let n = v
         .as_f64()
-        .ok_or_else(|| invalid(call, "expected a duration"))?
+        .ok_or_else(|| invalid(call, field, "expected a duration"))?
         * scale;
-    Duration::try_from_secs_f64(n)
-        .map_err(|_| invalid(call, "duration must be finite, nonnegative and in range"))
+    Duration::try_from_secs_f64(n).map_err(|_| {
+        invalid(
+            call,
+            field,
+            "duration must be finite, nonnegative and in range",
+        )
+    })
 }
-fn time(v: &Json) -> Result<jiff::civil::Time, ScriptError> {
+fn time(v: &Json, call: &str, field: &str) -> Result<jiff::civil::Time, ScriptError> {
     v.as_str()
         .unwrap_or("")
         .parse()
-        .map_err(|e| invalid("time", e))
+        .map_err(|e| invalid(call, field, e))
 }
 fn constraint(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Constraint, ScriptError> {
     let encoded = v
         .as_str()
-        .ok_or_else(|| invalid("constraint", "use a constraint helper"))?;
+        .ok_or_else(|| invalid("constraint", "argument", "use a constraint helper"))?;
     let (name, args): (String, Vec<Json>) =
-        serde_json::from_str(encoded).map_err(|e| invalid("constraint", e))?;
+        serde_json::from_str(encoded).map_err(|e| invalid("constraint", "argument", e))?;
     let a = args.first().unwrap_or(&Json::Null);
     Ok(match name.as_str() {
         "notAdjacentToSelf" => Constraint::NotAdjacentToSelf,
@@ -84,49 +96,108 @@ fn constraint(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Constraint
             playlists
                 .iter()
                 .find(|(n, _)| Some(n.as_str()) == a.as_str())
-                .ok_or_else(|| invalid(&name, "unknown playlist name"))?
+                .ok_or_else(|| invalid(&name, "playlist", "unknown playlist name"))?
                 .1,
         ),
-        "minGapSameItem" => Constraint::MinGapSameItem(duration(a, 60., &name)?),
-        "artistSeparation" => Constraint::ArtistSeparation(duration(a, 60., &name)?),
-        "titleSeparation" => Constraint::TitleSeparation(duration(a, 60., &name)?),
+        "minGapSameItem" => Constraint::MinGapSameItem(duration(a, 60., &name, "minutes")?),
+        "artistSeparation" => Constraint::ArtistSeparation(duration(a, 60., &name, "minutes")?),
+        "titleSeparation" => Constraint::TitleSeparation(duration(a, 60., &name, "minutes")?),
         "daypart" => Constraint::Daypart {
-            from: time(a)?,
-            to: time(args.get(1).unwrap_or(&Json::Null))?,
+            from: time(a, &name, "from")?,
+            to: time(args.get(1).unwrap_or(&Json::Null), &name, "to")?,
         },
-        "maxPerHour" => Constraint::MaxPerHour(number(a, &name, u32::MAX.into())? as u32),
-        "maxPerDay" => Constraint::MaxPerDay(number(a, &name, u32::MAX.into())? as u32),
-        _ => return Err(invalid(&name, "unknown constraint")),
+        "maxPerHour" => Constraint::MaxPerHour(number(a, &name, "count", u32::MAX.into())? as u32),
+        "maxPerDay" => Constraint::MaxPerDay(number(a, &name, "count", u32::MAX.into())? as u32),
+        _ => return Err(invalid(&name, "argument", "unknown constraint")),
     })
 }
+fn keys(v: &Json, allowed: &[&str], prefix: &str) -> Result<(), ScriptError> {
+    let object = v
+        .as_object()
+        .ok_or_else(|| invalid("rule", prefix, "expected an object"))?;
+    for key in object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            let field = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            return Err(invalid("rule", &field, "unknown key"));
+        }
+    }
+    Ok(())
+}
+fn stack_line(stack: &str) -> Option<u32> {
+    stack
+        .split("eval_script:")
+        .skip(1)
+        .filter_map(|s| s.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok())
+        .next()
+}
 fn rule(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Rule, ScriptError> {
+    keys(
+        v,
+        &[
+            "trigger",
+            "every",
+            "at",
+            "on",
+            "place",
+            "take",
+            "constraints",
+        ],
+        "",
+    )?;
     let t = v.get("trigger").unwrap_or(v);
+    if v.get("trigger").is_some() {
+        keys(t, &["every", "at", "on"], "trigger")?;
+        if ["every", "at", "on"]
+            .iter()
+            .any(|key| v.get(*key).is_some())
+        {
+            return Err(invalid("rule", "trigger", "one trigger is required"));
+        }
+    }
     if ["every", "at", "on"]
         .iter()
         .filter(|k| t.get(**k).is_some())
         .count()
         != 1
     {
-        return Err(invalid("rule", "one trigger is required"));
+        return Err(invalid("rule", "trigger", "one trigger is required"));
     }
     let trigger = if let Some(e) = t.get("every") {
+        keys(e, &["tracks", "minutes"], "every")?;
         match (e.get("tracks"), e.get("minutes")) {
-            (Some(n), None) => Trigger::EveryNTracks(number(n, "rule", u32::MAX.into())? as u32),
-            (None, Some(n)) => Trigger::EveryNMinutes(number(n, "rule", u32::MAX.into())? as u32),
-            _ => return Err(invalid("rule", "every needs tracks or minutes")),
+            (Some(n), None) => {
+                Trigger::EveryNTracks(number(n, "rule", "every.tracks", u32::MAX.into())? as u32)
+            }
+            (None, Some(n)) => {
+                Trigger::EveryNMinutes(number(n, "rule", "every.minutes", u32::MAX.into())? as u32)
+            }
+            _ => return Err(invalid("rule", "every", "every needs tracks or minutes")),
         }
     } else if let Some(a) = t.get("at") {
+        keys(
+            a,
+            if a.get("minutes").is_some() {
+                &["minutes"]
+            } else {
+                &["time", "date", "repeat"]
+            },
+            "at",
+        )?;
         if let Some(m) = a.get("minutes") {
             let minutes = m
                 .as_array()
                 .filter(|a| !a.is_empty())
-                .ok_or_else(|| invalid("rule", "minutes must be a nonempty array"))?
+                .ok_or_else(|| invalid("rule", "at.minutes", "minutes must be a nonempty array"))?
                 .iter()
                 .map(|n| {
                     n.as_u64()
                         .filter(|n| *n < 60)
                         .map(|n| n as u8)
-                        .ok_or_else(|| invalid("rule", "minute must be 0 through 59"))
+                        .ok_or_else(|| invalid("rule", "at.minutes", "minute must be 0 through 59"))
                 })
                 .collect::<Result<_, _>>()?;
             Trigger::AtMinutes(minutes)
@@ -136,16 +207,16 @@ fn rule(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Rule, ScriptErro
                 .and_then(Json::as_str)
                 .unwrap_or("1970-01-01")
                 .parse()
-                .map_err(|e| invalid("rule", e))?;
+                .map_err(|e| invalid("rule", "at.date", e))?;
             let repeat = match a["repeat"].as_str() {
                 Some("once") => Repeat::Once,
                 Some("daily") => Repeat::Daily,
                 Some("weekdays") => Repeat::Weekdays,
                 Some("weekly") => Repeat::Weekly,
-                _ => return Err(invalid("rule", "unknown repeat")),
+                _ => return Err(invalid("rule", "at.repeat", "unknown repeat")),
             };
             Trigger::At {
-                at: date.to_datetime(time(&a["time"])?),
+                at: date.to_datetime(time(&a["time"], "rule", "at.time")?),
                 repeat,
             }
         }
@@ -154,7 +225,7 @@ fn rule(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Rule, ScriptErro
             t["on"]
                 .as_str()
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| invalid("rule", "event name is required"))?
+                .ok_or_else(|| invalid("rule", "on", "event name is required"))?
                 .into(),
         )
     };
@@ -162,21 +233,24 @@ fn rule(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Rule, ScriptErro
         None | Some(Json::String(_)) if v.get("place").is_none_or(|p| p == "between") => {
             Placement::BetweenTracks
         }
-        Some(p) => Placement::Fixed {
-            mode: match p["fixed"].as_str() {
-                Some("soft") => FixMode::Soft,
-                Some("hard") => FixMode::Hard,
-                _ => return Err(invalid("rule", "unknown placement")),
-            },
-            tolerance: duration(&p["tolerance"], 1., "rule")?,
-        },
+        Some(p) => {
+            keys(p, &["fixed", "tolerance"], "place")?;
+            Placement::Fixed {
+                mode: match p["fixed"].as_str() {
+                    Some("soft") => FixMode::Soft,
+                    Some("hard") => FixMode::Hard,
+                    _ => return Err(invalid("rule", "place.fixed", "unknown placement")),
+                },
+                tolerance: duration(&p["tolerance"], 1., "rule", "place.tolerance")?,
+            }
+        }
         None => Placement::BetweenTracks,
     };
     let constraints = match v.get("constraints") {
         None => Vec::new(),
         Some(c) => c
             .as_array()
-            .ok_or_else(|| invalid("rule", "constraints must be an array"))?
+            .ok_or_else(|| invalid("rule", "constraints", "constraints must be an array"))?
             .iter()
             .map(|c| constraint(c, playlists))
             .collect::<Result<_, _>>()?,
@@ -186,7 +260,7 @@ fn rule(v: &Json, playlists: &[(String, PlaylistId)]) -> Result<Rule, ScriptErro
         placement,
         take: v
             .get("take")
-            .map(|n| number(n, "rule", 255))
+            .map(|n| number(n, "rule", "take", 255))
             .transpose()?
             .unwrap_or(1) as u8,
         constraints,
@@ -204,7 +278,7 @@ fn pick(args: &[Json]) -> Result<PickOrder, ScriptError> {
                 Some(s) => s
                     .as_u64()
                     .or_else(|| s.as_str().and_then(|s| s.parse().ok()))
-                    .ok_or_else(|| invalid("pick", "seed must be an unsigned integer"))?,
+                    .ok_or_else(|| invalid("pick", "seed", "seed must be an unsigned integer"))?,
             },
         },
         Some("weighted") => {
@@ -219,7 +293,7 @@ fn pick(args: &[Json]) -> Result<PickOrder, ScriptError> {
                     .iter()
                     .map(|pair| {
                         let id = pair[0].as_str().ok_or_else(|| {
-                            invalid("pick", "weight entry needs an item id string")
+                            invalid("pick", "weights", "weight entry needs an item id string")
                         })?;
                         Ok((id.to_owned(), pair[1].clone()))
                     })
@@ -227,6 +301,7 @@ fn pick(args: &[Json]) -> Result<PickOrder, ScriptError> {
             } else {
                 return Err(invalid(
                     "pick",
+                    "weights",
                     "weights must be an object or ordered pairs",
                 ));
             };
@@ -235,14 +310,17 @@ fn pick(args: &[Json]) -> Result<PickOrder, ScriptError> {
                     .into_iter()
                     .map(|(id, n)| {
                         Ok((
-                            ItemId(id.parse().map_err(|_| invalid("pick", "invalid item id"))?),
-                            number(&n, "pick", u32::MAX.into())? as u32,
+                            ItemId(
+                                id.parse()
+                                    .map_err(|_| invalid("pick", "weights", "invalid item id"))?,
+                            ),
+                            number(&n, "pick", "weights", u32::MAX.into())? as u32,
                         ))
                     })
                     .collect::<Result<_, ScriptError>>()?,
             }
         }
-        _ => return Err(invalid("pick", "unknown pick order")),
+        _ => return Err(invalid("pick", "argument", "unknown pick order")),
     })
 }
 
@@ -291,24 +369,33 @@ pub fn eval_rules(
             let playlists = playlists.to_vec();
             let f = Function::new(
                 ctx.clone(),
-                move |args: Rest<Value<'_>>| -> rquickjs::Result<String> {
-                    let ctx = match args.0.first() {
-                        Some(v) => v.ctx().clone(),
-                        None if name == "notAdjacentToSelf" => {
-                            return Ok(json!([name, []]).to_string());
+                move |ctx: rquickjs::Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<String> {
+                    let line = ctx
+                        .eval::<String, _>("new Error().stack")
+                        .ok()
+                        .and_then(|stack| {
+                            // The first frame belongs to this diagnostic evaluation.
+                            stack
+                                .split_once("\n")
+                                .and_then(|(_, frames)| stack_line(frames))
+                        })
+                        .unwrap_or(1);
+                    if args.0.is_empty() && name != "notAdjacentToSelf" {
+                        let mut error = invalid(name, "argument", "an argument is required");
+                        if let ScriptError::Invalid { line: at, .. } = &mut error {
+                            *at = line;
                         }
-                        None => {
-                            *failure.borrow_mut() = Some(invalid(name, "an argument is required"));
-                            return Err(rquickjs::Error::new_from_js_message(
-                                "undefined",
-                                "argument",
-                                "an argument is required",
-                            ));
-                        }
-                    };
+                        failure.borrow_mut().get_or_insert(error);
+                        return Err(rquickjs::Exception::throw_message(
+                            &ctx,
+                            "an argument is required",
+                        ));
+                    }
                     let mut values = Vec::new();
                     for v in args.0 {
-                        let s = ctx
+                        let s = v
+                            .ctx()
+                            .clone()
                             .json_stringify(v)?
                             .ok_or_else(|| {
                                 rquickjs::Exception::throw_message(&ctx, "argument is not JSON")
@@ -334,8 +421,11 @@ pub fn eval_rules(
                             }
                         }
                     };
-                    if let Err(e) = result {
-                        *failure.borrow_mut() = Some(e);
+                    if let Err(mut e) = result {
+                        if let ScriptError::Invalid { line: at, .. } = &mut e {
+                            *at = line;
+                        }
+                        failure.borrow_mut().get_or_insert(e);
                         return Err(rquickjs::Exception::throw_message(
                             &ctx,
                             "invalid script call",
@@ -344,14 +434,23 @@ pub fn eval_rules(
                     Ok(String::new())
                 },
             )
-            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+            .map_err(|e| ScriptError::Runtime {
+                line: 1,
+                message: e.to_string(),
+            })?;
             ctx.globals()
                 .set(name, f)
-                .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+                .map_err(|e| ScriptError::Runtime {
+                    line: 1,
+                    message: e.to_string(),
+                })?;
         }
         // Remove all clock and random entry points, including constructor access through prototypes.
         ctx.eval::<(), _>("delete globalThis.Date; delete Math.random;")
-            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+            .map_err(|e| ScriptError::Runtime {
+                line: 1,
+                message: e.to_string(),
+            })?;
         if let Err(e) = ctx.eval::<(), _>(src) {
             if expired.load(Ordering::Relaxed) {
                 return Err(ScriptError::TimeLimit);
@@ -367,27 +466,22 @@ pub fn eval_rules(
             if message.contains("out of memory") {
                 return Err(ScriptError::MemoryLimit);
             }
+            let line = object
+                .and_then(|o| o.get::<_, u32>("lineNumber").ok())
+                .or_else(|| {
+                    object
+                        .and_then(|o| o.get::<_, String>("stack").ok())
+                        .and_then(|s| stack_line(&s))
+                })
+                .unwrap_or(1);
             if object
                 .and_then(|o| o.get::<_, String>("name").ok())
                 .as_deref()
                 == Some("SyntaxError")
             {
-                let line = object
-                    .and_then(|o| o.get::<_, u32>("lineNumber").ok())
-                    .or_else(|| {
-                        object
-                            .and_then(|o| o.get::<_, String>("stack").ok())
-                            .and_then(|s| {
-                                s.split("eval_script:")
-                                    .nth(1)
-                                    .and_then(|s| s.split(':').next())
-                                    .and_then(|s| s.parse().ok())
-                            })
-                    })
-                    .unwrap_or(1);
                 return Err(ScriptError::Syntax { line, message });
             }
-            return Err(ScriptError::Runtime(message));
+            return Err(ScriptError::Runtime { line, message });
         }
         if let Some(e) = failure.borrow_mut().take() {
             return Err(e);

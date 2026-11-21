@@ -36,8 +36,15 @@ fn infinite_loop_hits_time_limit() {
 }
 #[test]
 fn bad_call_reports_reason() {
-    match eval_rules("rule({every: {tracks: 0}})", &[], &Limits::default()) {
-        Err(ScriptError::Invalid { call, reason }) => {
+    match eval_rules("\nrule({every: {tracks: 0}})", &[], &Limits::default()) {
+        Err(ScriptError::Invalid {
+            line,
+            call,
+            field,
+            reason,
+        }) => {
+            assert_eq!(line, 2);
+            assert!(field.contains("every.tracks"));
             assert_eq!(call, "rule");
             assert!(reason.contains("positive"));
         }
@@ -56,7 +63,7 @@ fn isolation() {
         assert!(
             matches!(
                 eval_rules(src, &[], &Limits::default()),
-                Err(ScriptError::Runtime(_))
+                Err(ScriptError::Runtime { .. })
             ),
             "{src}"
         );
@@ -161,4 +168,65 @@ fn syntax_error_has_source_line() {
         eval_rules("\n\nrule({", &[], &Limits::default()),
         Err(ScriptError::Syntax { line: 3, .. })
     ));
+}
+
+#[test]
+fn unknown_key_is_rejected() {
+    for (src, key) in [
+        ("rule({evry:{tracks:1}})", "evry"),
+        ("rule({every:{tracks:1, time:2}})", "every.time"),
+        ("rule({at:{minutes:[20],time:'12:00'}})", "at.time"),
+        ("rule({trigger:{every:{tracks:1}, typo:2}})", "trigger.typo"),
+        (
+            "rule({on:'pulse',place:{fixed:'hard',tolerance:1,typo:2}})",
+            "place.typo",
+        ),
+    ] {
+        match eval_rules(src, &[], &Limits::default()) {
+            Err(ScriptError::Invalid { field, .. }) => assert_eq!(field, key),
+            result => panic!("unexpected result: {result:?}"),
+        }
+    }
+}
+#[test]
+fn runtime_error_has_source_line() {
+    assert!(matches!(
+        eval_rules("\n\nmissing()", &[], &Limits::default()),
+        Err(ScriptError::Runtime { line: 3, .. })
+    ));
+}
+#[test]
+fn first_invalid_call_wins() {
+    assert!(
+        matches!(eval_rules("try {\nrule({every:{tracks:0}})\n} catch(e) {}\ntry {pick('bad')} catch(e) {}", &[], &Limits::default()), Err(ScriptError::Invalid { line: 2, call, .. }) if call == "rule")
+    );
+}
+
+#[test]
+fn invalid_helpers_report_call_line_and_field() {
+    for (src, expected_call, expected_field) in [
+        ("\nrule()", "rule", "argument"),
+        (
+            "\nrule({on:'pulse',place:{fixed:'hard',tolerance:-1}})",
+            "rule",
+            "place.tolerance",
+        ),
+        (
+            "\nrule({at:{time:'25:00',repeat:'daily'}})",
+            "rule",
+            "at.time",
+        ),
+        ("\nconstraint(daypart('08:00','25:00'))", "daypart", "to"),
+    ] {
+        match eval_rules(src, &[], &Limits::default()) {
+            Err(error @ ScriptError::Invalid { .. }) => {
+                assert!(
+                    error
+                        .to_string()
+                        .starts_with(&format!("line 2: {expected_call}(): {expected_field}:"))
+                );
+            }
+            result => panic!("unexpected result: {result:?}"),
+        }
+    }
 }
