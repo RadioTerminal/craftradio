@@ -67,8 +67,45 @@ fn still_planned(prev: &Timeline, fresh: &Timeline) -> Timeline {
     kept
 }
 
+/// An occurrence that a late edit moved a locked hard event to. It does not air, because
+/// the locked event (`stand_in`) airs at its old time instead.
+#[derive(Clone)]
+pub(crate) struct Superseded {
+    entry: Entry,
+    stand_in: Entry,
+}
+
+/// Tells if a station edit renumbered the rules of `origin`'s playlist, or changed any
+/// rule of it other than `origin`'s own. Then the rule index of `origin` may name another
+/// rule now, so an occurrence of that index is not a move of `origin`'s event.
+fn renumbered(
+    old: Option<&radio_model::Station>,
+    new: &radio_model::Station,
+    origin: &Origin,
+) -> bool {
+    let Origin::Rule { playlist, rule } = origin else {
+        return true;
+    };
+    let rules = |s: &radio_model::Station| {
+        s.playlists
+            .iter()
+            .find(|p| p.id == *playlist)
+            .map(|p| p.rules.clone())
+    };
+    match (old.and_then(rules), rules(new)) {
+        (Some(o), Some(n)) => {
+            o.len() != n.len()
+                || o.iter()
+                    .zip(&n)
+                    .enumerate()
+                    .any(|(i, (a, b))| i != *rule && a != b)
+        }
+        _ => true,
+    }
+}
+
 /// Takes the superseded occurrences out of a plan, with the rest of their take after them.
-fn drop_superseded(tl: &mut Timeline, superseded: &[Entry]) {
+fn drop_superseded(tl: &mut Timeline, superseded: &[Superseded]) {
     if superseded.is_empty() {
         return;
     }
@@ -82,7 +119,7 @@ fn drop_superseded(tl: &mut Timeline, superseded: &[Entry]) {
             continue;
         }
         skipping = None;
-        if superseded.iter().any(|x| same_occurrence(x, &e)) {
+        if superseded.iter().any(|x| same_occurrence(&x.entry, &e)) {
             skipping = Some(e.origin.clone());
             continue;
         }
@@ -91,7 +128,11 @@ fn drop_superseded(tl: &mut Timeline, superseded: &[Entry]) {
     tl.entries = out;
     tl.fits.retain(|fit| {
         !superseded.iter().any(|x| {
-            x.playlist == fit.playlist && x.fixed.as_ref().is_some_and(|f| f.target == fit.target)
+            x.entry.playlist == fit.playlist
+                && x.entry
+                    .fixed
+                    .as_ref()
+                    .is_some_and(|f| f.target == fit.target)
         })
     });
 }
@@ -350,7 +391,7 @@ pub(crate) struct Core {
     cancelled: Vec<Entry>,
     /// Occurrences that a late edit moved a locked hard event to. The locked event airs at
     /// its old time instead, so these do not air. Kept until their target passes.
-    superseded: Vec<Entry>,
+    superseded: Vec<Superseded>,
     out_clock: Option<SampleClock>,
 }
 
@@ -784,7 +825,7 @@ impl Core {
             None => self.planned.then_some(&self.timeline),
         };
         let mut tl = plan(&input, &opts, prev);
-        self.superseded.retain(|e| e.start > now);
+        self.expire_superseded(now);
         drop_superseded(&mut tl, &self.superseded);
         let old = std::mem::replace(&mut self.timeline, tl);
         if edited {
@@ -1385,10 +1426,45 @@ impl Core {
                 })
                 .min_by_key(|e| e.start.duration_since(n.start).unsigned_abs())
                 .cloned();
+            // When the edit renumbered the rules, the same rule index is another rule:
+            // its occurrence is no move of this event, and it airs.
+            if renumbered(self.last_station.as_ref(), station, &n.origin) {
+                continue;
+            }
             if let Some(m) = moved_to
-                && !self.superseded.iter().any(|x| same_occurrence(x, &m))
+                && !self
+                    .superseded
+                    .iter()
+                    .any(|x| same_occurrence(&x.entry, &m))
             {
-                self.superseded.push(m);
+                self.superseded.push(Superseded {
+                    entry: m,
+                    stand_in: n,
+                });
+            }
+        }
+    }
+
+    /// Forgets superseded occurrences whose target passed. If the locked event that stood
+    /// in for one did not air, the occurrence was suppressed without airing: that raises
+    /// `HardEventMissed` for it.
+    fn expire_superseded(&mut self, now: Timestamp) {
+        let (past, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.superseded)
+            .into_iter()
+            .partition(|x| x.entry.start <= now);
+        self.superseded = kept;
+        for x in past {
+            let from = sub(x.stand_in.start, HARD_LOCK);
+            let aired = self
+                .history
+                .iter_since(from)
+                .any(|p| p.item == x.stand_in.item);
+            if !aired {
+                let alarm = Alarm::HardEventMissed {
+                    item: x.entry.item,
+                    target: x.entry.start,
+                };
+                self.alarms.raise(now, alarm);
             }
         }
     }

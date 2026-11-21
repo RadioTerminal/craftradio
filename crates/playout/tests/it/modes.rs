@@ -502,3 +502,49 @@ fn removing_a_locked_hard_event_cancels_it() {
         .any(|a| matches!(a.alarm, radio_playout::Alarm::HardEventLocked { .. }));
     assert!(cancelled && !locked);
 }
+
+/// One playlist has two hard events, at :05 and :12. Inside the last 10 s before :05,
+/// an operator deletes the :05 rule, so the :12 rule takes its place in the rule list.
+/// The :05 event still airs (it is locked), and the :12 event airs too: the renumbering
+/// never passes for a move of the :05 event.
+#[test]
+fn deleting_a_hard_rule_near_its_target_keeps_the_other_hard_event() {
+    let main: Vec<_> = (1..=6)
+        .map(|i| {
+            let path = wav(&format!("dr{i}"), 4.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5)
+        })
+        .collect();
+    let mut engine = engine_with(main);
+    let mut news = file_item(10, "News", &wav("dr-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    news.movable = false;
+    news.trimmable = false;
+    let both = format!("{}\n{}", news_at("13:00:05"), news_at("13:00:12"));
+    let playlist = add_playlist(&mut engine, "News", vec![news], &both);
+    let (p, clock) = offline(engine, |_| {});
+    let before = run(&p, &clock, 1.0);
+    let _ = p
+        .send(Command::PlaylistSetRulesScript {
+            playlist,
+            script: news_at("13:00:12"),
+        })
+        .unwrap();
+    let after = run(&p, &clock, 13.5);
+    let program = [before, after].concat();
+
+    let first = first_audible(&program, 1, 0).expect("the :05 event sounds");
+    assert!(
+        first.abs_diff(5 * SR) <= SR / 200,
+        "the locked event at {first}, target {}",
+        5 * SR
+    );
+    let second = first_audible(&program, 1, first + SR + SR / 10).expect("the :12 event airs");
+    assert!(
+        second.abs_diff(12 * SR) <= SR / 200,
+        "the other event at {second}, target {}",
+        12 * SR
+    );
+    let rows = p.history(t0(), 40).unwrap();
+    let news = rows.iter().filter(|r| r.entry.title == "News").count();
+    assert_eq!(news, 2, "both hard events air");
+}
