@@ -108,14 +108,15 @@ fn strip_ui(
                 ui.horizontal(|ui| {
                     let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
                     let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
-                    r.context_menu(|ui| settings_wanted |= strip_menu(ui, meter, actions));
+                    r.context_menu(|ui| settings_wanted |= strip_menu(ui, meter, is_out, actions));
                     if is_out {
                         settings::settings_button(ui, "Icecast", icecast);
                     }
                 });
                 ui.horizontal(|ui| {
-                    meter_bars(ui, meter, t)
-                        .context_menu(|ui| settings_wanted |= strip_menu(ui, meter, actions));
+                    meter_bars(ui, meter, t).context_menu(|ui| {
+                        settings_wanted |= strip_menu(ui, meter, is_out, actions)
+                    });
                     ui.spacing_mut().slider_width = size::METER_H;
                     let range = size::METER_MIN_DB..=size::METER_MAX_DB;
                     let fader = egui::Slider::new(&mut gain, range)
@@ -131,9 +132,17 @@ fn strip_ui(
                 ui.label(small(format!("pk {}", db(peak))).color(t.text_muted));
                 ui.label(small(format!("gain {gain:+.1}")).color(t.text_muted));
                 ui.horizontal(|ui| {
-                    let cap = |s: &str| RichText::new(s).font(theme::text(theme::CAPTION));
-                    ui.toggle_value(&mut mute, cap("Mute"));
-                    ui.toggle_value(&mut pfl, cap("PFL"));
+                    // Framed toggles: the word and the fill change, so the state does not hang on colour.
+                    let word = if mute { "MUTED" } else { "Mute" };
+                    let fill = if mute { t.danger_fill } else { t.field };
+                    if toggle(ui, word, fill, t).clicked() {
+                        mute = !mute;
+                    }
+                    let word = if pfl { "PFL ON" } else { "PFL" };
+                    let fill = if pfl { t.warn_fill } else { t.field };
+                    if toggle(ui, word, fill, t).clicked() {
+                        pfl = !pfl;
+                    }
                 });
             });
         });
@@ -141,12 +150,37 @@ fn strip_ui(
         actions.push(strip_edit(&meter.label, StripChange::Gain(gain)));
     }
     if mute != meter.mute {
-        actions.push(strip_edit(&meter.label, StripChange::Mute(mute)));
+        actions.push(mute_action(meter, is_out, mute));
     }
     if pfl != meter.pfl {
         actions.push(strip_edit(&meter.label, StripChange::Pfl(pfl)));
     }
     settings_wanted
+}
+
+/// A framed toggle button with a fill that shows its state.
+fn toggle(ui: &mut egui::Ui, word: &str, fill: egui::Color32, t: &Tokens) -> egui::Response {
+    let text = RichText::new(word)
+        .font(theme::text(theme::CAPTION))
+        .color(t.text);
+    let button = egui::Button::new(text)
+        .fill(fill)
+        .stroke(Stroke::new(size::HAIRLINE, t.field_border));
+    ui.add(button)
+}
+
+/// The action for a Mute press. Muting Out silences the whole programme, so it asks first.
+fn mute_action(meter: &MeterView, is_out: bool, mute: bool) -> Action {
+    let edit = strip_edit(&meter.label, StripChange::Mute(mute));
+    if is_out && mute {
+        Action::Confirm {
+            text: "Mute Out? Listeners hear silence until you unmute it.".to_owned(),
+            yes: "Mute Out".to_owned(),
+            then: Box::new(edit),
+        }
+    } else {
+        edit
+    }
 }
 
 /// A level as text. Silence shows as "−∞ dB".
@@ -164,9 +198,14 @@ fn frac(v: f32) -> f32 {
 }
 
 /// The right-click menu of a strip. It returns true when the person asks for the settings.
-fn strip_menu(ui: &mut egui::Ui, meter: &MeterView, actions: &mut Vec<Action>) -> bool {
+fn strip_menu(
+    ui: &mut egui::Ui,
+    meter: &MeterView,
+    is_out: bool,
+    actions: &mut Vec<Action>,
+) -> bool {
     if check_item(ui, meter.mute, "Mute") {
-        actions.push(strip_edit(&meter.label, StripChange::Mute(!meter.mute)));
+        actions.push(mute_action(meter, is_out, !meter.mute));
     }
     if check_item(ui, meter.pfl, "PFL") {
         actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));

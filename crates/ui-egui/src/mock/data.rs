@@ -96,6 +96,8 @@ pub(super) const AD_NAMES: [&str; 6] = [
 ];
 /// Carts on one page of the cartwall.
 pub(super) const CARTS_PER_PAGE: usize = 16;
+/// The number of decks.
+pub(super) const DECKS: usize = 4;
 /// A new cart: ducking at -12 dB, one-shot, no colour.
 pub(super) const DEFAULT_SLOT: CartSlot = CartSlot {
     duck_db: -12.0,

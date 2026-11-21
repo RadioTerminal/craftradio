@@ -127,10 +127,8 @@ fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
     ui.separator();
     if context_menu::danger_item(ui, "Delete playlist…", t) {
         actions.push(Action::Confirm {
-            text: format!(
-                "Delete the playlist {}? The preview cannot undo this.",
-                p.name
-            ),
+            text: format!("Delete the playlist {}? Undo brings it back.", p.name),
+            yes: "Delete playlist".to_owned(),
             then: Box::new(Action::Edit(Edit::DeletePlaylist(p.name.clone()))),
         });
     }

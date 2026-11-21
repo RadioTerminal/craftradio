@@ -19,6 +19,7 @@ use jiff::{SignedDuration, Timestamp, ToSpan, Zoned};
 
 use crate::context_menu::NEEDS_ENGINE;
 use crate::rules_script;
+use crate::view::PlayMode;
 use crate::view::{
     CartChange, CartSlot, CartwallView, Constraint, ConstraintKind, DeckCommand, DeckState,
     DeckView, DeviceRole, DeviceRoles, DropTarget, Edit, FitView, FolderSource, FolderView,
@@ -85,6 +86,12 @@ pub struct MockSource {
     /// The timeline covers this many hours from the top of the current hour.
     hours: i64,
     next_item_id: u64,
+    undo: Vec<edit::Saved>,
+    redo: Vec<edit::Saved>,
+    /// How deep the current edit runs inside other edits.
+    edit_depth: usize,
+    play_mode: PlayMode,
+    stop_after_current: bool,
 }
 
 impl MockSource {
@@ -196,6 +203,11 @@ impl MockSource {
             settings: Settings::new(),
             hours: HOURS,
             next_item_id: 1,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            edit_depth: 0,
+            play_mode: PlayMode::Auto,
+            stop_after_current: false,
         }
     }
 

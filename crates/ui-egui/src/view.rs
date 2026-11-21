@@ -104,6 +104,27 @@ pub struct ItemMeta {
     pub keep_alive: Option<bool>,
 }
 
+/// Who starts the next item: the schedule, the operator with help, or the operator alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlayMode {
+    #[default]
+    Auto,
+    Assist,
+    Manual,
+}
+
+impl PlayMode {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Assist, Self::Manual];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Assist => "Assist",
+            Self::Manual => "Manual",
+        }
+    }
+}
+
 /// The state of a stream row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StreamState {
@@ -438,6 +459,10 @@ impl Default for RuleView {
 pub struct StationView {
     pub now: jiff::Zoned,
     pub mode: String,
+    /// The play mode as data. `mode` holds its label.
+    pub play_mode: PlayMode,
+    /// True when the station stops after the item on air.
+    pub stop_after_current: bool,
     pub decks: [DeckView; 4],
     pub rows: Vec<Row>,
     pub tabs: Vec<PlaylistTab>,
@@ -783,6 +808,13 @@ pub enum Edit {
     Rescan {
         folder: String,
     },
+    SetMode(PlayMode),
+    /// Stop after the item on air, or clear that stop.
+    StopAfterCurrent(bool),
+    /// Undo the last playlist edit.
+    Undo,
+    /// Do again the last edit that Undo took back.
+    Redo,
     /// Set one setting of one part of the app.
     SetPartSetting {
         part: String,

@@ -28,6 +28,9 @@ pub(crate) struct Prepared {
     pub main_count: usize,
 }
 
+/// The number of decks. The row on air and the next rows sit on them.
+const DECKS: usize = 4;
+
 fn divider_text(r: &Row) -> String {
     if r.title == r.playlist {
         format!("{} ({})", r.playlist, mmss(r.len))
@@ -42,6 +45,18 @@ fn start_text(r: &Row) -> String {
 }
 
 impl Prepared {
+    /// Why a row cannot be removed: it is on air, or on a deck. `None` for other rows.
+    pub fn protected(&self, id: u64) -> Option<String> {
+        let on_air = self.on_air?;
+        let i = *self.index.get(&id)?;
+        if i == on_air {
+            return Some("this row is on air; use Skip instead".to_owned());
+        }
+        let k = i.checked_sub(on_air).filter(|k| *k < DECKS)?;
+        let deck = u8::try_from(k).map_or('?', |k| char::from(b'A' + k));
+        Some(format!("this row is loaded on deck {deck}"))
+    }
+
     pub fn new(view: &StationView, generation: u64) -> Self {
         let now = view.now.timestamp();
         let rows = &view.rows;

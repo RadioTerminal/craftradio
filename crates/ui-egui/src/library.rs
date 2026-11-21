@@ -303,6 +303,7 @@ fn tree(
                                 "Remove the folder {} from the Library? The files stay on disk.",
                                 folder.path
                             ),
+                            yes: "Remove folder".to_owned(),
                             then: Box::new(Action::Edit(Edit::RemoveFolder {
                                 path: folder.path.clone(),
                             })),

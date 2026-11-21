@@ -10,9 +10,13 @@ use crate::context_menu;
 use crate::library::LibraryDrag;
 use crate::prepared::Prepared;
 use crate::rules_editor;
+use crate::shortcuts;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{DropTarget, Edit, MetaTarget, MoveTo, Place, Row, StationView, StreamState};
 use crate::windows::ToolWindow;
+
+/// More rows than this ask before a remove.
+const CONFIRM_REMOVE_OVER: usize = 5;
 
 /// Show the main pane.
 pub(crate) fn show(
@@ -115,7 +119,7 @@ pub(crate) fn show(
                 if resp.secondary_clicked() && !link.is_selected(r.id) {
                     link.click(Pane::Main, r.id, egui::Modifiers::NONE, order);
                 }
-                resp.context_menu(|ui| row_menu(ui, view, r, link, actions, t));
+                resp.context_menu(|ui| row_menu(ui, view, prep, r, link, actions, t));
                 // A library item or a file dropped on a row goes in after that row.
                 let over = files && pointer.is_some_and(|p| resp.rect.contains(p));
                 if over {
@@ -163,7 +167,7 @@ pub(crate) fn show(
     }
 
     if link.focus == Pane::Main {
-        shortcuts(ui.ctx(), view, link, actions);
+        shortcuts(view, prep, link, actions);
     }
 }
 
@@ -185,8 +189,8 @@ fn titles(view: &StationView, ids: &[u64]) -> Vec<(String, std::time::Duration)>
 }
 
 /// The clipboard shortcuts for the main pane selection.
-fn shortcuts(ctx: &egui::Context, view: &StationView, link: &Linked, actions: &mut Vec<Action>) {
-    let p = context_menu::pressed(ctx);
+fn shortcuts(view: &StationView, prep: &Prepared, link: &Linked, actions: &mut Vec<Action>) {
+    let p = link.keys;
     let sel = link.selected.clone();
     let last = sel.last().copied();
     if p.paste {
@@ -211,8 +215,24 @@ fn shortcuts(ctx: &egui::Context, view: &StationView, link: &Linked, actions: &m
         });
     }
     if p.delete {
-        actions.push(Action::Edit(Edit::Remove(sel)));
+        actions.push(remove_action(prep, sel));
     }
+}
+
+/// The action that removes rows. Rows on air or on a deck stay, with the reason.
+/// More than a few rows ask first. Every remove can be undone.
+pub(crate) fn remove_action(prep: &Prepared, rows: Vec<u64>) -> Action {
+    if let Some(why) = rows.iter().find_map(|id| prep.protected(*id)) {
+        return Action::Toast(format!("preview — {why}"));
+    }
+    if rows.len() > CONFIRM_REMOVE_OVER {
+        return Action::Confirm {
+            text: format!("Remove {} rows from Main? You can undo it.", rows.len()),
+            yes: "Remove".to_owned(),
+            then: Box::new(Action::Edit(Edit::Remove(rows))),
+        };
+    }
+    Action::Edit(Edit::Remove(rows))
 }
 
 fn empty_menu(ui: &mut egui::Ui, view: &StationView, link: &Linked, actions: &mut Vec<Action>) {
@@ -232,6 +252,7 @@ fn empty_menu(ui: &mut egui::Ui, view: &StationView, link: &Linked, actions: &mu
 fn row_menu(
     ui: &mut egui::Ui,
     view: &StationView,
+    prep: &Prepared,
     r: &Row,
     link: &Linked,
     actions: &mut Vec<Action>,
@@ -293,9 +314,6 @@ fn row_menu(
             after: Place::After(last),
         });
     }
-    if menu_item(ui, "Remove", Some(DELETE)) {
-        actions.push(Action::Edit(Edit::Remove(sel.clone())));
-    }
     ui.separator();
     let lock = if r.locked {
         "📌 Unlock position"
@@ -323,12 +341,25 @@ fn row_menu(
     if menu_item(ui, "Show in Library", None) {
         actions.push(Action::ShowInLibrary(r.title.clone()));
     }
-    if menu_item(ui, "Properties", None) {
+    if menu_item(ui, "Edit metadata…", None) {
         actions.push(Action::Metadata(
             sel.iter().map(|id| MetaTarget::Row(*id)).collect(),
         ));
     }
-    let _ = t;
+    // Remove sits last, alone, in the danger colour. A row on air or on a deck cannot go.
+    ui.separator();
+    match sel.iter().find_map(|id| prep.protected(*id)) {
+        Some(why) => {
+            let label = format!("Remove ({})", shortcuts::label(ui.ctx(), &DELETE));
+            ui.add_enabled(false, egui::Button::new(label))
+                .on_disabled_hover_text(why);
+        }
+        None => {
+            if context_menu::danger_item(ui, "Remove", t) {
+                actions.push(remove_action(prep, sel.clone()));
+            }
+        }
+    }
 }
 
 /// Paint the on-air background behind a cell, over the gaps between cells too.

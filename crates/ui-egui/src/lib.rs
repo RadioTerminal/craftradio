@@ -18,6 +18,7 @@ mod rules_editor;
 pub mod rules_script;
 mod scheduled_pane;
 mod settings;
+mod shortcuts;
 pub mod theme;
 pub mod view;
 mod widgets;

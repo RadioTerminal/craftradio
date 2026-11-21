@@ -12,8 +12,8 @@ use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{Constraint, ConstraintKind, Pick, Placement, PlaylistTab, RuleView, Trigger};
 
 const NOT_APPLIED: &str = "preview — rules are not applied to the scheduler yet";
-const SCRIPT_NOTE: &str = "Script edits take effect when the script engine lands. \
-Visual view shows the last generated rules.";
+const SCRIPT_NOTE: &str = "Scripts are stored but not run in this build. \
+The Visual rules are what plays.";
 /// The largest fit tolerance of a fixed rule, in seconds.
 const MAX_TOLERANCE_S: f32 = 10.0;
 const WATCH_NOTE: &str = "watching starts with the library engine";
@@ -86,9 +86,13 @@ pub(crate) fn show(
             ui.add_space(space::M);
             ui.separator();
             ui.horizontal(|ui| {
-                let apply = egui::Button::new(RichText::new("Apply").color(t.canvas))
-                    .fill(t.accent)
-                    .min_size(egui::vec2(0.0, size::CONTROL_MD));
+                // Scripts do not run yet, so the Script tab saves in a neutral style.
+                let apply = if editor.mode == Mode::Script {
+                    egui::Button::new("Save script (not run yet)")
+                } else {
+                    egui::Button::new(RichText::new("Apply").color(t.canvas)).fill(t.accent)
+                }
+                .min_size(egui::vec2(0.0, size::CONTROL_MD));
                 if ui.add(apply).clicked() {
                     applied = Some(editor.draft.clone());
                     editor.applied = true;
@@ -189,10 +193,27 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
                         .inner_margin(pad::ROW)
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            changed |= rule_row(ui, i, rule);
-                            if ui.button(format!("Delete rule {}", i + 1)).clicked() {
-                                remove = Some(i);
-                            }
+                            ui.horizontal(|ui| {
+                                changed |= rule_row(ui, i, rule);
+                                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                    let name = format!("🗑 Delete rule {}", i + 1);
+                                    let del = egui::Button::new(RichText::new("🗑").color(t.danger))
+                                        .frame(false);
+                                    let r = ui.add(del).on_hover_text(
+                                        "Delete this rule. Cancel throws the change away.",
+                                    );
+                                    r.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            &name,
+                                        )
+                                    });
+                                    if r.clicked() {
+                                        remove = Some(i);
+                                    }
+                                });
+                            });
                         });
                     ui.add_space(space::XS);
                 }
@@ -337,7 +358,16 @@ fn script(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
         tab.script_by_hand = true;
     }
     ui.add_space(space::XS);
-    caption(ui, SCRIPT_NOTE, t);
+    // A warning callout: the script is kept, but it does nothing yet.
+    egui::Frame::new()
+        .fill(t.warn_fill)
+        .stroke(Stroke::new(size::HAIRLINE, t.warn))
+        .corner_radius(t.radius)
+        .inner_margin(pad::ROW)
+        .show(ui, |ui| {
+            let note = RichText::new(format!("⚠ {SCRIPT_NOTE}")).font(theme::text(theme::LABEL));
+            ui.label(note.color(t.warn));
+        });
 }
 
 /// The items of the playlist, and the folder behind it. Files from the file manager drop here.

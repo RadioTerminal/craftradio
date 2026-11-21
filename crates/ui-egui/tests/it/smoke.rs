@@ -52,7 +52,7 @@ fn the_cog_opens_the_rules_editor_with_a_script_tab() {
     assert!(shows(&harness, "Music — rules"), "the editor window opens");
     click(&mut harness, "Script");
     assert!(
-        shows(&harness, "script engine lands"),
+        shows(&harness, "not run in this build"),
         "the script tab says edits are not applied"
     );
 }
@@ -142,7 +142,9 @@ fn skip_on_deck_a_starts_the_next_item() {
     let mut harness = harness();
     let on_air = "Halvard Pine – Harbours of Kelmora";
     let before = harness.query_all_by_label(on_air).count();
+    // Deck A is on air: the first press arms Skip, the second fires it.
     click(&mut harness, "⏭ Skip deck A");
+    click(&mut harness, "⏭ Skip deck A — press again");
     let after = harness.query_all_by_label(on_air).count();
     assert!(after < before, "deck A no longer shows the skipped item");
 }

@@ -50,6 +50,12 @@ pub mod size {
     pub const CONTROL_LG: f32 = 40.0;
     /// The square of an icon button. It is the same in every state.
     pub const ICON_BUTTON: f32 = 28.0;
+    /// An armed on-air button waits this long for the second press, in seconds.
+    pub const ARM_S: f64 = 3.0;
+    /// Line segments in the countdown ring of an armed button.
+    pub const RING_STEPS: usize = 32;
+    /// The edge of the card of the deck on air.
+    pub const ON_AIR_EDGE: f32 = 2.0;
 
     /// A row of the main timeline.
     pub const ROW: f32 = 26.0;
@@ -197,6 +203,8 @@ pub struct Tokens {
     pub warn: Color32,
     pub danger: Color32,
     pub danger_fill: Color32,
+    /// The fill of a warning callout and of a PFL that is on.
+    pub warn_fill: Color32,
     /// A cart while it flashes.
     pub flash: Color32,
     pub flash_ink: Color32,
@@ -229,6 +237,7 @@ impl Tokens {
         warn: Color32::from_rgb(0xF5, 0xB9, 0x42),
         danger: Color32::from_rgb(0xFF, 0x7A, 0x7A),
         danger_fill: Color32::from_rgb(0x8E, 0x22, 0x2A),
+        warn_fill: Color32::from_rgb(0x4A, 0x36, 0x0E),
         flash: Color32::from_rgb(0xF5, 0xB9, 0x42),
         flash_ink: Color32::from_rgb(0x1A, 0x14, 0x05),
         meter_low: Color32::from_rgb(0x4C, 0xC3, 0x8A),
@@ -407,5 +416,7 @@ mod tests {
         }
         assert!(contrast(t.flash_ink, t.flash) >= MIN_TEXT_CONTRAST);
         assert!(contrast(t.text, t.danger_fill) >= MIN_TEXT_CONTRAST);
+        assert!(contrast(t.text, t.warn_fill) >= MIN_TEXT_CONTRAST);
+        assert!(contrast(t.warn, t.warn_fill) >= MIN_TEXT_CONTRAST);
     }
 }

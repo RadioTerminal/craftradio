@@ -38,3 +38,44 @@ pub(crate) fn icon_button(
     }
     resp.on_hover_text(hint)
 }
+
+/// An icon button for a guarded action. While armed, it shows the danger colour and a ring.
+/// The ring shrinks as the time to press again runs out. `armed` is the part of the time left.
+pub(crate) fn guard_button(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    name: &str,
+    hint: &str,
+    armed: Option<f32>,
+) -> egui::Response {
+    let Some(left) = armed else {
+        return icon_button(ui, glyph, false, name, hint);
+    };
+    let t = Tokens::get(ui.ctx());
+    let side = egui::Vec2::splat(size::ICON_BUTTON);
+    let (rect, resp) = ui.allocate_exact_size(side, Sense::click());
+    let armed_name = format!("{name} — press again");
+    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, true, &armed_name));
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let stroke = Stroke::new(size::HAIRLINE, t.danger);
+        p.rect(rect, t.radius, t.danger_fill, stroke, StrokeKind::Inside);
+        let font = theme::text(theme::CARD);
+        p.text(rect.center(), Align2::CENTER_CENTER, glyph, font, t.text);
+        // The ring: a part of a circle around the button, as long as the time left.
+        let r = rect.width() / 2.0 + size::HAIRLINE * 2.0;
+        let steps = size::RING_STEPS;
+        let sweep = std::f32::consts::TAU * left.clamp(0.0, 1.0);
+        let points: Vec<egui::Pos2> = (0..=steps)
+            .map(|k| {
+                let a = -std::f32::consts::FRAC_PI_2 + sweep * k as f32 / steps as f32;
+                rect.center() + egui::vec2(a.cos(), a.sin()) * r
+            })
+            .collect();
+        p.add(egui::Shape::line(
+            points,
+            Stroke::new(size::HAIRLINE * 2.0, t.danger),
+        ));
+    }
+    resp.on_hover_text(format!("{hint} — press again to confirm"))
+}

@@ -5,8 +5,9 @@ use super::*;
 impl RadioApp {
     pub(super) fn dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>, t: &Tokens) {
         add_menu::dialog(ctx, &mut self.add_dialog, &self.view, actions, t);
-        if let Some((text, _)) = &self.confirm {
-            let text = text.clone();
+        if let Some(c) = &self.confirm {
+            let text = c.text.clone();
+            let yes_label = c.yes.clone();
             let mut answer = None;
             egui::Window::new("Confirm")
                 .collapsible(false)
@@ -16,7 +17,7 @@ impl RadioApp {
                     ui.label(text);
                     ui.add_space(space::S);
                     ui.horizontal(|ui| {
-                        let yes = egui::Button::new(RichText::new("Delete").color(t.text))
+                        let yes = egui::Button::new(RichText::new(yes_label).color(t.text))
                             .fill(t.danger_fill);
                         if ui.add(yes).clicked() {
                             answer = Some(true);
@@ -27,10 +28,10 @@ impl RadioApp {
                     });
                 });
             if let Some(yes) = answer
-                && let Some((_, then)) = self.confirm.take()
+                && let Some(c) = self.confirm.take()
                 && yes
             {
-                actions.push(then);
+                actions.push(c.then);
             }
         }
         if let Some((from, buffer)) = &mut self.rename {

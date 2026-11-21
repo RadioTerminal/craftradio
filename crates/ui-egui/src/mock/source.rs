@@ -71,7 +71,9 @@ impl ViewSource for MockSource {
 
         StationView {
             now: local,
-            mode: "AUTO".to_owned(),
+            mode: self.play_mode.label().to_uppercase(),
+            play_mode: self.play_mode,
+            stop_after_current: self.stop_after_current,
             decks,
             rows,
             tabs: self.tabs.clone(),

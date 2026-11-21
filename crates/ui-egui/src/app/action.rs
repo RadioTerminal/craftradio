@@ -57,6 +57,8 @@ pub(crate) enum Action {
     MetadataTitle(String, Duration),
     Confirm {
         text: String,
+        /// The label of the button that goes ahead, such as "Remove".
+        yes: String,
         then: Box<Action>,
     },
     Rename(String),
@@ -74,7 +76,7 @@ pub(crate) enum Action {
 fn describe(edit: &Edit, n: usize) -> String {
     let what = match edit {
         Edit::Insert { .. } => format!("added {n} items"),
-        Edit::Remove(_) => format!("removed {n} rows"),
+        Edit::Remove(_) => format!("Removed {n} rows"),
         Edit::Move { .. } => format!("moved {n} rows"),
         Edit::ToggleLock(_) => format!("changed the lock of {n} rows"),
         Edit::RenamePlaylist { from, to } => format!("renamed {from} to {to}"),
@@ -120,6 +122,16 @@ fn describe(edit: &Edit, n: usize) -> String {
         Edit::RemoveFolder { path } => format!("removed {path} from the Library"),
         Edit::Rescan { folder } => format!("read {n} audio files from {folder}"),
         Edit::SetPartSetting { part, key, .. } => format!("changed {part} {key}"),
+        Edit::Undo => "undid the last edit".to_owned(),
+        Edit::Redo => "did the edit again".to_owned(),
+        Edit::SetMode(mode) => format!(
+            "mode is {} here only; the scheduler is not connected",
+            mode.label()
+        ),
+        Edit::StopAfterCurrent(true) => {
+            "the station stops after the item on air (here only)".to_owned()
+        }
+        Edit::StopAfterCurrent(false) => "the station plays on after the item on air".to_owned(),
         Edit::AddFiles { playlist, .. } | Edit::AddFolderItems { playlist, .. } => {
             format!("added {n} files to {playlist}")
         }
@@ -144,7 +156,17 @@ impl RadioApp {
     /// Run an edit. A loud edit shows its message; a quiet edit shows only an error.
     pub(super) fn run_edit(&mut self, ctx: &egui::Context, edit: Edit, loud: bool) {
         match self.source.edit(edit.clone()) {
-            Ok(n) if loud => self.toast(ctx, describe(&edit, n)),
+            Ok(n) if loud => {
+                self.toast(ctx, describe(&edit, n));
+                // A remove offers Undo in the toast, next to what it removed.
+                self.toast_undo = matches!(
+                    edit,
+                    Edit::Remove(_)
+                        | Edit::RemovePlaylistItem { .. }
+                        | Edit::DeletePlaylist(_)
+                        | Edit::RemoveCartPage { .. }
+                );
+            }
             Ok(_) => {}
             Err(e) => self.toast(ctx, e),
         }
@@ -243,7 +265,13 @@ impl RadioApp {
                     self.open_meta(vec![MetaTarget::Library(id)]);
                 }
             }
-            Action::Confirm { text, then } => self.confirm = Some((text, *then)),
+            Action::Confirm { text, yes, then } => {
+                self.confirm = Some(Confirm {
+                    text,
+                    yes,
+                    then: *then,
+                })
+            }
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
             Action::AddDialog(d) => self.add_dialog = Some(d),
             Action::UseAsMain(name) => {

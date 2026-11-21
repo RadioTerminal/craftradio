@@ -3,18 +3,14 @@
 //! Each row of a menu is a `menu_item`. A row shows its keyboard shortcut on the right.
 //! The accessible name of each row starts with its label.
 
-use egui::{Event, Key, KeyboardShortcut, Modifiers, RichText};
+use egui::{KeyboardShortcut, RichText};
 
 use crate::theme::Tokens;
 
 /// The message for an action that needs the audio engine, which the preview does not have.
 pub(crate) const NEEDS_ENGINE: &str = "preview — needs the audio engine";
 
-pub(crate) const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::X);
-pub(crate) const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
-pub(crate) const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
-pub(crate) const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
-pub(crate) const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Delete);
+pub(crate) use crate::shortcuts::{COPY, CUT, DELETE, DUPLICATE, PASTE};
 
 /// A row of a menu. It returns true on a click, and then closes the menu.
 pub(crate) fn menu_item(
@@ -60,35 +56,4 @@ pub(crate) fn check_item(ui: &mut egui::Ui, on: bool, label: &str) -> bool {
         label.to_owned()
     };
     menu_item(ui, &text, None)
-}
-
-/// The clipboard and edit shortcuts that a person pressed in this frame.
-#[derive(Default, Clone, Copy)]
-pub(crate) struct Pressed {
-    pub cut: bool,
-    pub copy: bool,
-    pub paste: bool,
-    pub duplicate: bool,
-    pub delete: bool,
-}
-
-/// Read the shortcuts of this frame. A focused text field keeps them for itself.
-pub(crate) fn pressed(ctx: &egui::Context) -> Pressed {
-    if ctx.egui_wants_keyboard_input() {
-        return Pressed::default();
-    }
-    ctx.input_mut(|i| {
-        let mut p = Pressed::default();
-        for e in &i.events {
-            match e {
-                Event::Cut => p.cut = true,
-                Event::Copy => p.copy = true,
-                Event::Paste(_) => p.paste = true,
-                _ => {}
-            }
-        }
-        p.duplicate = i.consume_shortcut(&DUPLICATE);
-        p.delete = i.consume_shortcut(&DELETE) || i.consume_key(Modifiers::NONE, Key::Backspace);
-        p
-    })
 }

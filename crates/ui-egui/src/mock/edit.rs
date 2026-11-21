@@ -6,10 +6,152 @@ fn gone(what: &str) -> String {
     format!("preview — {what} is gone")
 }
 
+/// The undo stack keeps at least this many steps.
+const UNDO_STEPS: usize = 100;
+
+/// The state that an undo step restores.
+#[derive(Clone)]
+pub(super) struct Saved {
+    ops: Vec<Op>,
+    next_manual: u64,
+    tabs: Vec<PlaylistTab>,
+    main: PlaylistTab,
+    main_tracks: Option<Vec<(String, Duration)>>,
+    carts: Vec<String>,
+    cartwall: CartwallView,
+    row_meta: HashMap<u64, ItemMeta>,
+    row_timing: HashMap<u64, Timing>,
+    library: Vec<LibraryItem>,
+}
+
+/// True for an edit of playlists or carts that Undo can take back.
+fn undoable(edit: &Edit) -> bool {
+    !matches!(
+        edit,
+        Edit::Deck { .. }
+            | Edit::SetStrip { .. }
+            | Edit::SetIcecast(_)
+            | Edit::SetDevice { .. }
+            | Edit::AddFolder { .. }
+            | Edit::RemoveFolder { .. }
+            | Edit::Rescan { .. }
+            | Edit::SetPartSetting { .. }
+            | Edit::SetMode(_)
+            | Edit::StopAfterCurrent(_)
+            | Edit::Undo
+            | Edit::Redo
+    )
+}
+
 impl MockSource {
+    fn save(&self) -> Saved {
+        Saved {
+            ops: self.ops.clone(),
+            next_manual: self.next_manual,
+            tabs: self.tabs.clone(),
+            main: self.main.clone(),
+            main_tracks: self.main_tracks.clone(),
+            carts: self.carts.clone(),
+            cartwall: self.cartwall.clone(),
+            row_meta: self.row_meta.clone(),
+            row_timing: self.row_timing.clone(),
+            library: self.library.clone(),
+        }
+    }
+
+    fn restore(&mut self, s: Saved) {
+        let main_changed = s.main.name != self.main.name;
+        self.ops = s.ops;
+        self.next_manual = s.next_manual;
+        self.tabs = s.tabs;
+        self.main = s.main;
+        self.main_tracks = s.main_tracks;
+        self.carts = s.carts;
+        self.cartwall = s.cartwall;
+        self.row_meta = s.row_meta;
+        self.row_timing = s.row_timing;
+        self.library = s.library;
+        if main_changed {
+            self.cache = None;
+        }
+    }
+
+    /// Apply one edit. An undoable edit that works pushes the state before it onto the undo stack.
     pub(super) fn apply_edit(&mut self, edit: Edit) -> Result<usize, String> {
+        match edit {
+            Edit::Undo => {
+                let Some(before) = self.undo.pop() else {
+                    return Err("preview — nothing to undo".to_owned());
+                };
+                let now = self.save();
+                self.redo.push(now);
+                self.restore(before);
+                return Ok(1);
+            }
+            Edit::Redo => {
+                let Some(after) = self.redo.pop() else {
+                    return Err("preview — nothing to redo".to_owned());
+                };
+                let now = self.save();
+                self.undo.push(now);
+                self.restore(after);
+                return Ok(1);
+            }
+            _ => {}
+        }
+        // Edits inside another edit, such as each insert of Add files, make no step of their own.
+        let outer = self.edit_depth == 0 && undoable(&edit);
+        let before = outer.then(|| self.save());
+        self.edit_depth += 1;
+        let result = self.apply_edit_inner(edit);
+        self.edit_depth -= 1;
+        if let (Ok(_), Some(before)) = (&result, before) {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_STEPS {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+        result
+    }
+
+    /// The rows on air and on the decks, which a remove must not take.
+    fn protected_rows(&mut self) -> Vec<(u64, String)> {
+        let now = self.last_now;
+        let rows = self.current();
+        let Some(i) = rows
+            .iter()
+            .position(|r| r.start.timestamp() <= now && now < end_of(r))
+        else {
+            return Vec::new();
+        };
+        rows.iter()
+            .skip(i)
+            .take(DECKS)
+            .enumerate()
+            .map(|(k, r)| {
+                let why = if k == 0 {
+                    format!("{} is on air; use Skip instead", r.title)
+                } else {
+                    format!("{} is loaded on deck {}", r.title, ['A', 'B', 'C', 'D'][k])
+                };
+                (r.id, why)
+            })
+            .collect()
+    }
+
+    fn apply_edit_inner(&mut self, edit: Edit) -> Result<usize, String> {
         self.ensure_item_ids();
         match edit {
+            Edit::Undo | Edit::Redo => Err("preview — undo cannot nest".to_owned()),
+            Edit::SetMode(mode) => {
+                self.play_mode = mode;
+                Ok(1)
+            }
+            Edit::StopAfterCurrent(on) => {
+                self.stop_after_current = on;
+                Ok(1)
+            }
             Edit::Insert { item, at } => {
                 let Some(lib) = self.library_item(item) else {
                     return Err(gone("that library item"));
@@ -34,6 +176,10 @@ impl MockSource {
                 })
             }
             Edit::Remove(ids) => {
+                let protected = self.protected_rows();
+                if let Some((_, why)) = protected.iter().find(|(id, _)| ids.contains(id)) {
+                    return Err(format!("preview — {why}"));
+                }
                 let n = ids.len();
                 let Some(top) = self.last_top.clone() else {
                     return Err("preview — no timeline yet".to_owned());

@@ -19,6 +19,7 @@ use crate::add_menu::{self, AddDialog};
 use crate::meta_editor::{self, MetaEditor};
 use crate::prepared::Prepared;
 use crate::rules_editor::{self, Editor};
+use crate::shortcuts;
 
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
@@ -36,6 +37,13 @@ pub(crate) enum Pane {
     Scheduled,
 }
 
+/// A question that waits for a yes before its action runs.
+pub(crate) struct Confirm {
+    pub text: String,
+    pub yes: String,
+    pub then: Action,
+}
+
 /// State that the panes share: the selection, scroll requests and local preview changes.
 #[derive(Default)]
 pub(crate) struct Linked {
@@ -51,6 +59,8 @@ pub(crate) struct Linked {
     pub file_target: Option<FileTarget>,
     /// The last drop target that the pointer was over.
     pub last_file_target: Option<FileTarget>,
+    /// The shortcuts of this frame, read once before the panes draw.
+    pub keys: shortcuts::Pressed,
 }
 
 impl Linked {
@@ -118,7 +128,9 @@ pub struct RadioApp {
     library: library::State,
     editor: Option<Editor>,
     toast: Option<(String, f64)>,
-    confirm: Option<(String, Action)>,
+    /// The toast offers Undo: it reports a remove.
+    toast_undo: bool,
+    confirm: Option<Confirm>,
     rename: Option<(String, String)>,
     meta: Option<MetaEditor>,
     add_dialog: Option<AddDialog>,
@@ -158,6 +170,7 @@ impl RadioApp {
             library: library::State::default(),
             editor: None,
             toast: None,
+            toast_undo: false,
             confirm: None,
             rename: None,
             meta: None,
@@ -191,6 +204,7 @@ impl RadioApp {
     pub(super) fn toast(&mut self, ctx: &egui::Context, text: String) {
         let until = ctx.input(|i| i.time) + size::TOAST_S;
         self.toast = Some((text, until));
+        self.toast_undo = false;
     }
 
     /// Open the metadata editor for items of the timeline or the library.
@@ -283,6 +297,7 @@ impl eframe::App for RadioApp {
         let mut actions = Vec::new();
         self.link.has_clip = !self.clip.items.is_empty();
         self.link.file_target = None;
+        self.link.keys = shortcuts::read(&ctx);
 
         egui::Panel::top("decks")
             .resizable(false)
@@ -297,7 +312,11 @@ impl eframe::App for RadioApp {
             .resizable(false)
             .frame(theme::bar_frame(&t, pad::BAR))
             .show(ui, |ui| {
-                status_line(ui, &self.view, self.toast.as_ref(), self.perf.as_ref(), &t)
+                let toast = self
+                    .toast
+                    .as_ref()
+                    .map(|(text, _)| (text.as_str(), self.toast_undo));
+                status_line(ui, &self.view, toast, self.perf.as_ref(), &mut actions, &t)
             });
 
         if self.library.docked {
@@ -401,8 +420,9 @@ impl eframe::App for RadioApp {
 fn status_line(
     ui: &mut egui::Ui,
     view: &StationView,
-    toast: Option<&(String, f64)>,
+    toast: Option<(&str, bool)>,
     perf: Option<&Perf>,
+    actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
     ui.horizontal(|ui| {
@@ -441,8 +461,12 @@ fn status_line(
                 .font(theme::text(theme::LABEL))
                 .color(colour),
         );
-        if let Some((text, _)) = toast {
+        if let Some((text, undo)) = toast {
             ui.label(muted(text));
+            let label = format!("Undo ({})", shortcuts::label(ui.ctx(), &shortcuts::UNDO));
+            if undo && ui.small_button(label).clicked() {
+                actions.push(Action::Edit(Edit::Undo));
+            }
         }
         if let Some(p) = perf {
             let text = format!("frame {:.1} ms · mean {:.1} ms", p.last_ms, p.mean_ms);
