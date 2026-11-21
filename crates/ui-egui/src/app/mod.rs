@@ -381,7 +381,9 @@ impl RadioApp {
         note(
             w,
             windows::show(ctx, w, open, saved(w), t, |ui| {
+                let root = own_keys(ui, link);
                 history::show(ui, view, &mut self.history, link, actions, t);
+                link.keys = root;
             }),
         );
         if self.library.docked {
@@ -392,7 +394,9 @@ impl RadioApp {
             note(
                 w,
                 windows::show(ctx, w, open, saved(w), t, |ui| {
+                    let root = own_keys(ui, link);
                     library::show(ui, view, &mut self.library, link, actions, t);
+                    link.keys = root;
                 }),
             );
         }
@@ -672,6 +676,17 @@ fn status_line(
 
 /// Is `row` on air at `now`?
 /// The end instant of a row.
+/// A native tool window gets its own key presses: the main window does not see them.
+/// While the window draws, its keys stand in for the keys of the main window. It returns
+/// the keys of the main window, to put back after the window.
+fn own_keys(ui: &egui::Ui, link: &mut Linked) -> shortcuts::Pressed {
+    let root = link.keys;
+    if ui.ctx().viewport_id() != egui::ViewportId::ROOT {
+        link.keys = shortcuts::read(ui.ctx());
+    }
+    root
+}
+
 pub(crate) fn row_end(row: &Row) -> Timestamp {
     let start = row.start.timestamp();
     SignedDuration::try_from(row.len).map_or(start, |d| start + d)

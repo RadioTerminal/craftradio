@@ -621,8 +621,8 @@ pub struct IcecastView {
 
 // The password never shows in a debug print.
 impl IcecastView {
-    /// True when the password goes over the network in clear text: TLS is off, a password
-    /// is set, and the host is not this computer.
+    /// True when the password goes over the network in clear text. TLS is then off.
+    /// A password is set, and the host is not this computer.
     pub fn password_in_clear(&self) -> bool {
         !self.tls && self.password_set && !is_loopback(&self.host)
     }
@@ -818,8 +818,8 @@ pub enum Edit {
         playlist: String,
         ids: Vec<u64>,
     },
-    /// Remove library items from the playlists that hold them, as one undo step. The files
-    /// stay on disk. Files of a folder leave only with their folder.
+    /// Remove library files, as one undo step. Every playlist item of each file goes.
+    /// The files stay on disk. Files of a folder leave only with their folder.
     RemoveLibraryItems(Vec<u64>),
     MovePlaylistItem {
         playlist: String,

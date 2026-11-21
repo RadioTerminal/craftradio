@@ -175,7 +175,7 @@ fn the_library_selects_all_rows_and_delete_asks_before_it_removes() {
     h.key_press(egui::Key::Delete);
     h.run_steps(FRAMES);
     assert!(
-        shows(&h, "Remove 3 items from the Library?"),
+        shows(&h, "Remove 3 files from the Library?"),
         "Delete asks before the three beds leave their playlist"
     );
 }

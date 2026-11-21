@@ -350,7 +350,7 @@ fn table(
         }
         let sel = state.selected.in_order(&order);
         if link.keys.delete && !sel.is_empty() {
-            actions.push(remove_action(view, state, sel));
+            actions.push(remove_action(state, sel));
         }
     }
     let selected = &state.selected;
@@ -453,7 +453,7 @@ fn table(
         link.focus = Pane::Library;
     }
     if let Some(ids) = menu_remove {
-        actions.push(remove_action(view, state, ids));
+        actions.push(remove_action(state, ids));
     }
     if hover_now != state.hovered {
         state.hovered = hover_now;
@@ -461,28 +461,19 @@ fn table(
     }
 }
 
-/// The action that removes library items. They leave the playlists that hold them, and the
-/// files stay on disk. It always asks first, because a playlist that plays can lose items.
-fn remove_action(view: &StationView, state: &State, ids: Vec<u64>) -> Action {
+/// The action that removes library files. They leave every playlist that holds them, and
+/// the files stay on disk. It always asks first, because a playlist that plays loses items.
+fn remove_action(state: &State, ids: Vec<u64>) -> Action {
     if matches!(state.pick, Pick::Folder(_)) {
         return Action::Toast(
             "Files of a folder leave the Library with their folder. Remove the folder instead."
                 .to_owned(),
         );
     }
-    let mut from: Vec<&str> = view
-        .library
-        .iter()
-        .filter(|i| ids.contains(&i.id))
-        .map(|i| i.category.as_str())
-        .collect();
-    from.sort_unstable();
-    from.dedup();
     Action::Confirm {
         text: format!(
-            "Remove {} items from the Library? They leave {}. The files stay on disk. You can undo it.",
-            ids.len(),
-            from.join(", ")
+            "Remove {} files from the Library? Every playlist that holds them loses them, the main playlist too. The files stay on disk. You can undo it.",
+            ids.len()
         ),
         yes: "Remove".to_owned(),
         then: Box::new(Action::Edit(Edit::RemoveLibraryItems(ids))),

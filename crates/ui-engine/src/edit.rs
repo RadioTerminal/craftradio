@@ -1331,25 +1331,38 @@ impl EngineSource {
             .collect()
     }
 
-    /// Removes library items from the playlists that hold them, as one undo step. An id of
-    /// a folder file is in no playlist, so it stays; the folder brings it.
+    /// Removes library items, as one undo step. The library has one row per file, so every
+    /// playlist item of that file goes. A folder file is in no playlist; its folder brings it.
+    /// An item on a deck keeps them all.
     fn remove_library_items(&mut self, ids: &[u64]) -> Result<usize, String> {
+        let paths: Vec<&str> = self
+            .library
+            .iter()
+            .filter(|l| ids.contains(&l.id))
+            .map(|l| l.path.as_str())
+            .collect();
+        let on_deck = self.playout.deck_items();
         let mut cmds = Vec::new();
         let mut n = 0;
         for p in &self.state.station.playlists {
-            let items: Vec<ItemId> = p
+            let items: Vec<&radio_model::Item> = p
                 .items
                 .iter()
-                .filter(|i| ids.contains(&i.id.0))
-                .map(|i| i.id)
+                .filter(|i| paths.contains(&crate::source_text(&i.source).as_str()))
                 .collect();
+            if let Some(i) = items.iter().find(|i| on_deck.contains(&Some(i.id))) {
+                return Err(format!(
+                    "“{}” is on a deck, so the items stay. Select them without it.",
+                    i.title
+                ));
+            }
             if items.is_empty() {
                 continue;
             }
             n += items.len();
             cmds.push(Command::PlaylistRemoveItems {
                 playlist: p.id,
-                items,
+                items: items.iter().map(|i| i.id).collect(),
             });
         }
         if n == 0 {
