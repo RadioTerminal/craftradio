@@ -25,6 +25,20 @@ struct Saved {
 }
 
 impl Core {
+    /// Ends a row that a crash cut off, at the last save before the crash. A row that
+    /// already has an end (a clean stop) keeps it.
+    fn end_cut_row(&mut self, row: RowId, start: Timestamp, at: Timestamp) {
+        let open = self
+            .engine
+            .history(sub(start, Duration::from_secs(1)), 100)
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|r| r.id == row))
+            .is_some_and(|r| r.end.is_none());
+        if open {
+            let _ = self.engine.log_end(row, at, LogStatus::Interrupted);
+        }
+    }
+
     /// Saves the timeline and the open rows, at most once a second.
     pub(crate) fn save_state(&mut self, now: Timestamp) {
         if !self.save_due || self.last_save.is_some_and(|t| since(t, now) < SAVE_EVERY) {
@@ -69,10 +83,11 @@ impl Core {
             .and_then(|v| serde_json::from_value::<Saved>(v).ok());
         let Some(saved) = saved else { return };
         let end = |e: &Entry| crate::core::add(e.start, e.len.saturating_sub(e.trim));
+        // During a crossfade two entries overlap; the later one is the item on air.
         let Some(e) = saved
             .entries
             .iter()
-            .find(|e| e.start <= now && now < end(e))
+            .rfind(|e| e.start <= now && now < end(e))
             .cloned()
         else {
             return;
@@ -97,7 +112,7 @@ impl Core {
             Source::File { .. } if item.trimmable => since(e.start, now),
             Source::File { .. } => {
                 if let Some(row) = row {
-                    let _ = self.engine.log_end(row, now, LogStatus::Interrupted);
+                    self.end_cut_row(row, e.start, saved.at);
                 }
                 entry.start = now;
                 Duration::ZERO

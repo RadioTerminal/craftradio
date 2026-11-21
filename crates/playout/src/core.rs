@@ -226,6 +226,7 @@ pub(crate) struct Core {
     /// The last stream title sent.
     pub(crate) title: String,
     pub(crate) save_due: bool,
+    last_prune: Option<Timestamp>,
     pub(crate) last_save: Option<Timestamp>,
     pub(crate) analysis: Analysis,
 }
@@ -307,6 +308,7 @@ impl Core {
             icecast,
             title: String::new(),
             save_due: false,
+            last_prune: None,
             last_save: None,
             analysis: Analysis::default(),
         })
@@ -582,6 +584,7 @@ impl Core {
 
     fn replan(&mut self, now: Timestamp) {
         self.chain(now);
+        self.prune_history(now);
         let mut station = self.engine.state().station.clone();
         self.apply_analysis(&mut station);
         self.broken.retain(|_, at| since(*at, now) < RETRY_BROKEN);
@@ -619,6 +622,21 @@ impl Core {
         self.planned = true;
         self.dirty = false;
         self.last_plan = Some(now);
+    }
+
+    /// Keeps the play history to the last 48 h, checked once an hour, so plans stay cheap.
+    fn prune_history(&mut self, now: Timestamp) {
+        const KEEP: Duration = Duration::from_secs(48 * 3600);
+        const EVERY: Duration = Duration::from_secs(3600);
+        if self.last_prune.is_some_and(|t| since(t, now) < EVERY) {
+            return;
+        }
+        self.last_prune = Some(now);
+        let mut kept = PlayHistory::new();
+        for p in self.history.iter_since(sub(now, KEEP)) {
+            kept.push(p.clone());
+        }
+        self.history = kept;
     }
 
     pub(crate) fn free_deck(&self) -> Option<usize> {
