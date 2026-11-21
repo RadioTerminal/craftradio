@@ -4,9 +4,11 @@ use crate::alarm::RaisedAlarm;
 use jiff::Timestamp;
 use radio_audio::MeterSnapshot;
 use radio_engine::Mode;
+use radio_engine::State;
 use radio_model::ItemId;
 use radio_scheduler::Timeline;
 use radio_stream::StreamStatus;
+use std::sync::Arc;
 
 /// Everything a UI shows about playout, cheap to take once a second. Meters for 30 fps
 /// come from [`crate::Playout::meters`] instead.
@@ -29,6 +31,11 @@ pub struct PlayoutView {
     pub alarms: Vec<RaisedAlarm>,
     /// Alarms that a full alarm stream could not take.
     pub alarms_dropped: u64,
+    /// The station state of the engine, as the last plan used it.
+    pub state: Arc<State>,
+    /// Counts the changes of `state`, so a UI rebuilds what depends on it only when it
+    /// changed.
+    pub revision: u64,
 }
 
 /// One deck.

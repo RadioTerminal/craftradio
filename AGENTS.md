@@ -68,6 +68,7 @@ output. Spec: `docs/2026-11-21-radio-station-manager-design.md`. Roadmap and pla
 | L4 | `engine` | state, the command registry, persistence, as-played log |
 | L5 | `control`, `mcp` | local control socket, MCP server |
 | L6 | `ui-egui` | the only crate that uses egui / eframe / winit |
+| L6 | `ui-engine` | the adapter that maps the engine and playout to the `ui-egui` view-model; the only crate that depends on `ui-egui` and the engine both |
 | — | `testkit` | test helpers (dev-dependency only) |
 
 Apps: `apps/radio` (desktop, `--headless`) and `apps/radio-cli` (CLI and `mcp`).

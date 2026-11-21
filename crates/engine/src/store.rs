@@ -223,6 +223,11 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     set(&tx, "engine", "tz", &json(&s.station.tz)?)?;
     set(&tx, "engine", "mode", &json(&s.mode)?)?;
     set(&tx, "library", "folders", &json(&s.folders)?)?;
+    for (part, keys) in &s.settings {
+        for (key, value) in keys {
+            set(&tx, part, key, &json(value)?)?;
+        }
+    }
     tx.commit()
 }
 
@@ -287,5 +292,26 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
             serde_json::from_str(&v).map_err(bad)?,
         );
     }
-    State::from_parts(tz, records, mode, carts, folders, item_meta).map(Some)
+    let mut settings: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    > = std::collections::BTreeMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT part, key, value FROM settings_by_part
+         WHERE part NOT IN ('engine', 'library', 'item_meta', 'runtime')",
+    )?;
+    for row in stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })? {
+        let (part, key, value) = row?;
+        let value = serde_json::from_str(&value).map_err(bad)?;
+        settings.entry(part).or_default().insert(key, value);
+    }
+    let mut state = State::from_parts(tz, records, mode, carts, folders, item_meta)?;
+    state.settings = settings;
+    Ok(Some(state))
 }

@@ -57,6 +57,8 @@ pub struct State {
     pub carts: Vec<CartAssign>,
     pub decks: [Option<ItemId>; DECKS as usize],
     pub folders: BTreeSet<String>,
+    /// Settings of each part of the UI, by part and key (`settings_by_part`).
+    pub(crate) settings: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
 impl State {
@@ -101,6 +103,7 @@ impl State {
             carts: vec![],
             decks: [None; DECKS as usize],
             folders: BTreeSet::new(),
+            settings: BTreeMap::new(),
         }
     }
 
@@ -161,6 +164,31 @@ impl State {
                 *d = None;
             }
         }
+    }
+
+    /// The settings of one part of the UI.
+    pub fn settings(&self, part: &str) -> Option<&BTreeMap<String, Value>> {
+        self.settings.get(part)
+    }
+
+    /// The settings of all parts of the UI.
+    pub fn ui_settings(&self) -> &BTreeMap<String, BTreeMap<String, Value>> {
+        &self.settings
+    }
+
+    /// The rules script of a playlist, as a person wrote it.
+    pub fn script(&self, playlist: PlaylistId) -> Option<&str> {
+        self.scripts.get(&playlist).map(String::as_str)
+    }
+
+    /// The folder source of a playlist, as `playlist.set_source` stored it.
+    pub fn source(&self, playlist: PlaylistId) -> Option<&Value> {
+        self.sources.get(&playlist)
+    }
+
+    /// The metadata that `item.set_meta` stored for an item.
+    pub fn item_meta(&self, item: ItemId) -> Option<&Value> {
+        self.item_meta.get(&item)
     }
 
     fn has_item(&self, id: ItemId) -> bool {

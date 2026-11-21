@@ -3478,6 +3478,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "radio-ui-engine"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "jiff",
+ "radio-audio",
+ "radio-audio-device",
+ "radio-engine",
+ "radio-library",
+ "radio-model",
+ "radio-playout",
+ "radio-scheduler",
+ "radio-stream",
+ "radio-ui-egui",
+ "serde_json",
+]
+
+[[package]]
 name = "rand"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

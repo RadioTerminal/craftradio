@@ -367,6 +367,8 @@ pub(crate) struct Core {
     pub(crate) hold: bool,
     pub(crate) carts: Carts,
     carts_dirty: bool,
+    /// The engine state changed since the last publish.
+    state_dirty: bool,
     pub(crate) dead_air: DeadAir,
     pub(crate) next_bed: usize,
     pub(crate) icecast: Option<IcecastHandle>,
@@ -440,6 +442,8 @@ impl Core {
             stream_states: Vec::new(),
             alarms: Vec::new(),
             alarms_dropped: 0,
+            state: Arc::new(engine.state().clone()),
+            revision: 0,
         };
         Ok(Core {
             engine,
@@ -469,6 +473,7 @@ impl Core {
             hold: false,
             carts,
             carts_dirty: true,
+            state_dirty: false,
             dead_air: DeadAir::default(),
             next_bed: 0,
             icecast,
@@ -539,6 +544,7 @@ impl Core {
                 EngineEvent::StateChanged => {
                     self.dirty = true;
                     self.carts_dirty = true;
+                    self.state_dirty = true;
                 }
                 EngineEvent::AudioIntent(intent) => {
                     let now = self.clock.now();
@@ -1156,6 +1162,10 @@ impl Core {
         if self.timeline_changed {
             view.timeline = self.timeline.clone();
             self.timeline_changed = false;
+        }
+        if std::mem::take(&mut self.state_dirty) {
+            view.state = Arc::new(self.engine.state().clone());
+            view.revision += 1;
         }
     }
 
