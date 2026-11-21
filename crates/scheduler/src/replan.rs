@@ -140,15 +140,24 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
             .collect();
         let forced_len = forced.len();
         raw.entries.splice(raw_win.clone(), forced);
-        let ev = raw_win.start + forced_len;
+        let mut head = raw_win.start;
+        let mut ev = head + forced_len;
         // An item brought into the window from later must not air there twice. Items the
         // raw window had already were spliced out with it; their later airings are rotation.
         for id in forced_set.difference(&raw_ids) {
+            let is_dup = |e: &Entry| e.origin == Origin::Main && !is_anchor(e) && e.item == *id;
+            // The nearest later airing, else the nearest earlier one outside the window.
             let dup = raw.entries[ev + 1..]
                 .iter()
-                .position(|e| e.origin == Origin::Main && !is_anchor(e) && e.item == *id);
+                .position(is_dup)
+                .map(|d| ev + 1 + d)
+                .or_else(|| raw.entries[..head].iter().rposition(is_dup));
             if let Some(d) = dup {
-                raw.entries.remove(ev + 1 + d);
+                raw.entries.remove(d);
+                if d < head {
+                    head -= 1;
+                    ev -= 1;
+                }
             }
         }
         let Some(event) = raw.entries.get_mut(ev) else {

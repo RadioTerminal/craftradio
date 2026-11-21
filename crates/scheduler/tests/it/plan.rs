@@ -241,10 +241,10 @@ fn frozen_window_never_pulls_entries_across() {
 
 #[test]
 fn normal_event_before_frozen_window_leaves_it_untouched() {
-    let mut st = make_station(tracks(30), 5);
+    let mut st = make_station(tracks(30), 3);
     let mut second = st.playlists[1].rules[0].clone();
     second.trigger = Trigger::At {
-        at: date(2026, 11, 21).at(13, 9, 0, 0),
+        at: date(2026, 11, 21).at(13, 7, 0, 0),
         repeat: Repeat::Once,
     };
     let mut other = playlist(3, "event-2", vec![jingle(102, 30)]);
