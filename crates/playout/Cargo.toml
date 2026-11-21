@@ -1,0 +1,29 @@
+[package]
+name = "radio-playout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+radio-model.workspace = true
+radio-scheduler.workspace = true
+radio-timing = { path = "../timing" }
+radio-engine = { path = "../engine" }
+radio-audio = { path = "../audio" }
+radio-audio-device = { path = "../audio-device" }
+# MP3 (LAME, LGPL) stays opt-in: the app enables `radio-stream/mp3` itself.
+radio-stream = { path = "../stream", default-features = false }
+jiff.workspace = true
+rtrb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+hound.workspace = true
+radio-testkit.workspace = true
+
+[lints]
+workspace = true

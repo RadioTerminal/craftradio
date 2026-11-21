@@ -1,0 +1,110 @@
+//! Alarms: raised on the control thread, sent to subscribers and to an optional webhook.
+
+use jiff::Timestamp;
+use radio_model::ItemId;
+use serde::Serialize;
+use std::collections::VecDeque;
+use std::sync::mpsc::{Sender, SyncSender, TrySendError, sync_channel};
+use std::time::Duration;
+
+/// Something an operator should know about (spec §6.14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Alarm {
+    /// Playout could not load an item (missing or broken file). The plan skips it before air.
+    ItemSkipped {
+        item: ItemId,
+        title: String,
+        reason: String,
+    },
+    /// Program went silent; playout skipped to the next item.
+    DeadAir,
+    /// Skipping did not help: the emergency fallback folder is playing.
+    EmergencyFallback { reason: String },
+    /// A keep-alive stream on air has no audio and reconnects. A bed plays under it.
+    StreamReconnecting { item: ItemId },
+    /// A stream without keep-alive had no audio past the timeout. Playout skipped it.
+    StreamDown { item: ItemId },
+    /// A file deck ran out of decoded audio while on air.
+    DeckUnderrun { deck: u8 },
+    /// The wall clock and the sample clock stepped apart; the estimates re-anchored.
+    ClockStep { by_ms: i64 },
+    /// Playout could not use the local output as asked. It runs on the fallback.
+    OutputFallback { reason: String },
+    /// Writing the as-played log failed.
+    LogFailed { reason: String },
+    /// An item or command needs something this build does not do yet.
+    Unsupported { what: String },
+}
+
+/// One raised alarm, as the snapshot shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RaisedAlarm {
+    pub at: Timestamp,
+    pub alarm: Alarm,
+    /// When the condition went away, for alarms that describe a lasting condition.
+    pub cleared: Option<Timestamp>,
+}
+
+const RECENT: usize = 50;
+
+pub(crate) struct Alarms {
+    subscribers: Vec<Sender<RaisedAlarm>>,
+    webhook: Option<SyncSender<String>>,
+    pub(crate) recent: VecDeque<RaisedAlarm>,
+}
+
+impl Alarms {
+    pub(crate) fn new(webhook: Option<String>) -> Self {
+        Self {
+            subscribers: Vec::new(),
+            webhook: webhook.and_then(spawn_webhook),
+            recent: VecDeque::new(),
+        }
+    }
+
+    pub(crate) fn subscribe(&mut self, tx: Sender<RaisedAlarm>) {
+        self.subscribers.push(tx);
+    }
+
+    pub(crate) fn raise(&mut self, at: Timestamp, alarm: Alarm) {
+        let raised = RaisedAlarm {
+            at,
+            alarm,
+            cleared: None,
+        };
+        self.subscribers.retain(|s| s.send(raised.clone()).is_ok());
+        if let Some(tx) = &self.webhook
+            && let Ok(body) = serde_json::to_string(&raised)
+            && let Err(TrySendError::Disconnected(_)) = tx.try_send(body)
+        {
+            self.webhook = None;
+        }
+        if self.recent.len() >= RECENT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(raised);
+    }
+}
+
+/// A thread that POSTs each alarm as JSON. Best effort: a slow or failing hook drops alarms,
+/// and playout never waits for it.
+fn spawn_webhook(url: String) -> Option<SyncSender<String>> {
+    let (tx, rx) = sync_channel::<String>(64);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .build()
+        .into();
+    std::thread::Builder::new()
+        .name("playout-webhook".into())
+        .spawn(move || {
+            for body in rx {
+                let _ = agent
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .send(body.as_str());
+            }
+        })
+        .ok()?;
+    Some(tx)
+}
