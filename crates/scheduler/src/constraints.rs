@@ -36,6 +36,7 @@ pub(crate) fn allowed_with(
 ) -> bool {
     match c {
         Constraint::NotAdjacentToSelf => prev.is_none_or(|p| p.playlist != pl),
+        Constraint::OnlyItem(id) => cand.id == *id,
         Constraint::NotAdjacentTo(other) => prev.is_none_or(|p| p.playlist != *other),
         Constraint::MinGapSameItem(gap) => hist
             .last_played(cand.id)

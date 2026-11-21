@@ -308,3 +308,35 @@ fn json_bytes_have_a_running_budget() {
         Err(ScriptError::MemoryLimit)
     ));
 }
+
+#[test]
+fn a_one_off_rule_names_its_item_and_survives_a_round_trip() {
+    use radio_model::{Constraint, ItemId};
+    let set = eval_rules(
+        r#"rule({at: {time: "21:05", date: "2026-11-22", repeat: "once"},
+                 place: {fixed: "soft", tolerance: 1.5},
+                 constraints: [onlyItem("9007199254740993")]});"#,
+        &[],
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        set.rules[0].constraints,
+        vec![Constraint::OnlyItem(ItemId(9_007_199_254_740_993))],
+        "an id past the float range keeps every digit as a string"
+    );
+    assert_eq!(
+        eval_rules(&generate(&set, &[]), &[], &Limits::default()).unwrap(),
+        set
+    );
+    for bad in ["onlyItem(\"x\")", "onlyItem(0)", "onlyItem(-3)"] {
+        let src = format!("rule({{at: {{time: '06:00', repeat: 'daily'}}, constraints: [{bad}]}})");
+        assert!(
+            matches!(
+                eval_rules(&src, &[], &Limits::default()),
+                Err(ScriptError::Invalid { .. })
+            ),
+            "{bad}"
+        );
+    }
+}

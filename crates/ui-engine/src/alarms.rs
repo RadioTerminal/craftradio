@@ -510,6 +510,7 @@ mod tests {
                 enabled: true,
                 is_main: true,
                 is_fill_pool: false,
+                role: radio_model::PlaylistRole::User,
                 on_interrupt: OnInterrupt::Resume,
                 priority: 0,
                 pick: PickOrder::InOrder,

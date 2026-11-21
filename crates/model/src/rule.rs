@@ -1,4 +1,4 @@
-use crate::PlaylistId;
+use crate::{ItemId, PlaylistId};
 use jiff::civil;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -52,7 +52,12 @@ pub enum Constraint {
     MinGapSameItem(Duration),
     ArtistSeparation(Duration),
     TitleSeparation(Duration),
-    Daypart { from: civil::Time, to: civil::Time },
+    Daypart {
+        from: civil::Time,
+        to: civil::Time,
+    },
     MaxPerHour(u32),
     MaxPerDay(u32),
+    /// The rule plays this item and no other. A one-off rule names its own item this way.
+    OnlyItem(ItemId),
 }
