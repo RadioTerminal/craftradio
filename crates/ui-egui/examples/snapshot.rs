@@ -36,6 +36,8 @@ enum Scene {
     Click(Vec<String>),
     /// Open a window, then click labels in it.
     WindowClick(ToolWindow, Vec<String>),
+    /// Open a window at the minimum size of its kind, then click labels in it.
+    WindowMinClick(ToolWindow, Vec<String>),
     /// Right-click the lowest node with this label, then click the menu row, if any.
     Menu(String, String),
     /// Open a window, then right-click a node in it.
@@ -195,6 +197,29 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
             wc(ToolWindow::Mixer, "Toggle Mixer settings"),
         ));
         scenes.push((
+            "mixer-settings-icecast".into(),
+            wide,
+            wc(ToolWindow::Mixer, "Toggle Icecast settings"),
+        ));
+        // At the minimum size the Out strip scrolls out of view: the short Icecast scene goes
+        // through the window ⚙ and the Icecast tab.
+        let wmc = |labels: &[&str]| {
+            Scene::WindowMinClick(
+                ToolWindow::Mixer,
+                labels.iter().map(|l| (*l).to_owned()).collect(),
+            )
+        };
+        scenes.push((
+            "mixer-settings-short".into(),
+            wide,
+            wmc(&["Toggle Mixer settings"]),
+        ));
+        scenes.push((
+            "mixer-settings-icecast-short".into(),
+            wide,
+            wmc(&["Toggle Mixer settings", "Icecast — "]),
+        ));
+        scenes.push((
             "cartwall-settings".into(),
             wide,
             wc(ToolWindow::Cartwall, "Toggle Cartwall settings"),
@@ -263,7 +288,7 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
                 continue;
             }
             let min = match &scene {
-                Scene::WindowMin(w) => Some(*w),
+                Scene::WindowMin(w) | Scene::WindowMinClick(w, _) => Some(*w),
                 _ => None,
             };
             let out = format!("{dir}/{name}-{}-{data}.png", width as u32);
@@ -322,7 +347,7 @@ fn render(
     match scene {
         Scene::Main => {}
         Scene::Window(w) | Scene::WindowMin(w) => harness.state_mut().set_window(*w, true),
-        Scene::WindowClick(w, labels) => {
+        Scene::WindowClick(w, labels) | Scene::WindowMinClick(w, labels) => {
             harness.state_mut().set_window(*w, true);
             harness.run_steps(FRAMES);
             for label in labels {

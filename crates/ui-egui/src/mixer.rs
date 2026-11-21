@@ -1,6 +1,7 @@
 //! The mixer: one strip per deck, the cart bus, the live input and the output.
 //! Levels come from the view-model. In the preview, the mock simulates them, and nothing plays.
 //! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
+//! The ⚙ swaps the strips for the settings page: Devices, Routing, Meters and Icecast.
 
 use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
@@ -8,7 +9,7 @@ use crate::app::Action;
 use crate::context_menu::{check_item, menu_item};
 use crate::icons::{self, Icon};
 use crate::parts;
-use crate::settings;
+use crate::settings::{self, Dot, Tab};
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{
     DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
@@ -26,19 +27,56 @@ const MAX_PEAK_HOLD_S: f32 = 10.0;
 const MAX_INPUT_CHANNEL: u32 = 16;
 const HZ_PER_KHZ: f64 = 1000.0;
 
+/// The tabs of the settings page, in the order of the rail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SettingsTab {
+    #[default]
+    Devices,
+    Routing,
+    Meters,
+    Icecast,
+}
+
+impl SettingsTab {
+    const ALL: [Self; 4] = [Self::Devices, Self::Routing, Self::Meters, Self::Icecast];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Devices => "Devices",
+            Self::Routing => "Routing",
+            Self::Meters => "Meters",
+            Self::Icecast => "Icecast",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// The view state of the window. The mixer settings live in the view source.
 #[derive(Default)]
 pub(crate) struct State {
-    settings: bool,
-    icecast_open: bool,
-    /// The Icecast fields while a person edits them. Apply sends them.
+    /// The settings page shows in place of the strips, on this tab.
+    page: Option<SettingsTab>,
+    /// The Icecast fields while a person edits them. Apply sends them. They stay while the
+    /// page is open, across tabs.
     icecast: Option<IcecastView>,
 }
 
 impl State {
-    /// Open the Icecast settings of the Out strip.
+    /// Open the settings page on the Icecast tab, as the ⚙ of the Out strip does.
     pub(crate) fn open_icecast(&mut self) {
-        self.icecast_open = true;
+        self.open(SettingsTab::Icecast);
+    }
+
+    fn open(&mut self, tab: SettingsTab) {
+        self.page = Some(tab);
+    }
+
+    fn close(&mut self) {
+        self.page = None;
+        self.icecast = None;
     }
 }
 
@@ -57,7 +95,11 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let mut open = state.settings;
+    if let Some(tab) = state.page {
+        settings_page(ui, view, state, tab, streaming, actions, t);
+        return;
+    }
+    let mut open = false;
     settings::header(ui, "Mixer", &mut open, |ui| {
         if view.preview {
             ui.label(
@@ -67,55 +109,67 @@ pub(crate) fn show(
             );
         }
     });
-    state.settings = open;
+    let mut wanted = open.then_some(SettingsTab::Devices);
     ui.add_space(space::S);
-    // The strips stay in view while the settings are open: the settings sit beside them.
-    let mut open_settings = false;
     ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.horizontal_top(|ui| {
-                for meter in &view.meters {
-                    let is_out = meter.label == "Out";
-                    open_settings |= strip_ui(
-                        ui,
-                        meter,
-                        is_out,
-                        view.cue_open && view.devices.contains(&view.device_roles.pfl),
-                        &mut state.icecast_open,
-                        actions,
-                        t,
-                    );
-                }
-            });
-        });
-        if !state.settings && !state.icecast_open {
-            state.icecast = None;
-            return;
+        for meter in &view.meters {
+            let is_out = meter.label == "Out";
+            let cue = view.cue_open && view.devices.contains(&view.device_roles.pfl);
+            if let Some(tab) = strip_ui(ui, meter, is_out, cue, actions, t) {
+                wanted = Some(tab);
+            }
         }
-        egui::ScrollArea::vertical()
-            .id_salt("mixer_side")
-            .max_width(size::MIXER_SIDE_W)
-            .show(ui, |ui| {
-                ui.set_width(size::MIXER_SIDE_W);
-                ui.vertical(|ui| {
-                    if state.settings {
-                        settings::section(ui, "Mixer", view.preview, t, |ui| {
-                            mixer_settings(ui, view, actions, t)
-                        });
-                    }
-                    if state.icecast_open {
-                        let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
-                        settings::section(ui, "Icecast", view.preview, t, |ui| {
-                            icecast_settings(ui, view, draft, streaming, actions, t);
-                        });
-                    } else {
-                        state.icecast = None;
-                    }
-                });
-            });
     });
-    if open_settings {
-        state.settings = true;
+    if let Some(tab) = wanted {
+        state.open(tab);
+    }
+}
+
+/// The settings page in place of the strips.
+fn settings_page(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    tab: SettingsTab,
+    streaming: &str,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let ice = icecast_status(view, t);
+    let tabs = SettingsTab::ALL.map(|s| match s {
+        SettingsTab::Icecast => Tab {
+            label: s.label(),
+            dot: Some(if ice.connected {
+                Dot::Good(ice.word.clone())
+            } else {
+                Dot::Bad(ice.word.clone())
+            }),
+        },
+        _ => Tab::plain(s.label()),
+    });
+    let mut selected = tab.index();
+    let draft = &mut state.icecast;
+    let out = settings::page(
+        ui,
+        "Mixer settings",
+        view.preview,
+        &tabs,
+        &mut selected,
+        t,
+        |ui, i| match SettingsTab::ALL.get(i).copied().unwrap_or_default() {
+            SettingsTab::Devices => devices_tab(ui, view, actions, t),
+            SettingsTab::Routing => routing_tab(ui, view, actions, t),
+            SettingsTab::Meters => meters_tab(ui, view, actions, t),
+            SettingsTab::Icecast => {
+                let draft = draft.get_or_insert_with(|| view.icecast.clone());
+                icecast_tab(ui, view, draft, &ice, streaming, actions, t);
+            }
+        },
+    );
+    if out.done {
+        state.close();
+    } else if let Some(&s) = SettingsTab::ALL.get(selected) {
+        state.page = Some(s);
     }
 }
 
@@ -124,11 +178,11 @@ fn strip_ui(
     meter: &MeterView,
     is_out: bool,
     cue: bool,
-    icecast: &mut bool,
     actions: &mut Vec<Action>,
     t: &Tokens,
-) -> bool {
+) -> Option<SettingsTab> {
     let mut settings_wanted = false;
+    let mut icecast = false;
     let mut gain = meter.gain_db;
     let mut mute = meter.mute;
 
@@ -150,7 +204,7 @@ fn strip_ui(
                         settings_wanted |= strip_menu(ui, meter, is_out, cue, actions)
                     });
                     if is_out {
-                        settings::settings_button(ui, "Icecast", icecast);
+                        settings::settings_button(ui, "Icecast", &mut icecast);
                     }
                 });
                 ui.horizontal(|ui| {
@@ -204,7 +258,12 @@ fn strip_ui(
         actions.push(mute_action(meter, is_out, mute));
     }
 
-    settings_wanted
+    // The Out ⚙ and the Settings item of Out open the Icecast tab; the others open Devices.
+    if icecast || (settings_wanted && is_out) {
+        Some(SettingsTab::Icecast)
+    } else {
+        settings_wanted.then_some(SettingsTab::Devices)
+    }
 }
 
 /// A framed toggle button with a fill that shows its state.
@@ -329,172 +388,203 @@ fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) -> egui::Respons
     resp
 }
 
-/// A dropdown of devices by name. It returns the new name when a person picks one.
-fn device_pick(ui: &mut egui::Ui, id: &str, current: &str, devices: &[String]) -> Option<String> {
-    let mut picked = None;
+/// A dropdown of devices by name, as wide as its form cell. It returns the new name when a
+/// person picks one.
+fn device_pick(
+    ui: &mut egui::Ui,
+    id: &str,
+    current: &str,
+    devices: &[String],
+    picked: &mut Option<String>,
+) -> egui::Response {
     egui::ComboBox::from_id_salt(id)
-        .width(size::COMBO_W)
+        .width(ui.available_width())
+        .truncate()
         .selected_text(if current.is_empty() { "None" } else { current })
         .show_ui(ui, |ui| {
             if ui.selectable_label(current.is_empty(), "None").clicked() && !current.is_empty() {
-                picked = Some(String::new());
+                *picked = Some(String::new());
             }
             for d in devices {
                 if ui.selectable_label(d == current, d).clicked() && d != current {
-                    picked = Some(d.clone());
+                    *picked = Some(d.clone());
                 }
             }
-        });
-    picked
+        })
+        .response
 }
 
-fn mixer_settings(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+fn khz(rate: u32) -> String {
+    format!("{} kHz", f64::from(rate) / HZ_PER_KHZ)
+}
+
+fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
     let roles = &view.device_roles;
-    let rate = parts::u32(view, parts::MIXER, "sample_rate", DEFAULT_RATE);
+    for (label, id, role, current) in [
+        (
+            "Output device (Out)",
+            "out_device",
+            DeviceRole::Out,
+            &roles.out,
+        ),
+        (
+            "Cue device (PFL)",
+            "cue_device",
+            DeviceRole::Pfl,
+            &roles.pfl,
+        ),
+        (
+            "Live input device",
+            "live_device",
+            DeviceRole::Input,
+            &roles.input,
+        ),
+    ] {
+        let devices = if role == DeviceRole::Input {
+            &view.input_devices
+        } else {
+            &view.devices
+        };
+        let mut picked = None;
+        settings::form_row(ui, label, t, |ui| {
+            device_pick(ui, id, current, devices, &mut picked)
+        });
+        if let Some(device) = picked {
+            actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
+        }
+    }
     let mut left = parts::u32(view, parts::MIXER, "input_left", 1);
     let mut right = parts::u32(view, parts::MIXER, "input_right", 2);
-    let mut hold = parts::f32(view, parts::MIXER, "peak_hold_s", DEFAULT_PEAK_HOLD_S);
-    let (old_left, old_right, old_hold) = (left, right, hold);
-    egui::Grid::new("mixer_settings")
-        .spacing(egui::vec2(space::M, space::S))
-        .show(ui, |ui| {
-            for (label, id, role, current) in [
-                (
-                    "Output device (Out)",
-                    "out_device",
-                    DeviceRole::Out,
-                    &roles.out,
-                ),
-                (
-                    "Cue device (PFL)",
-                    "cue_device",
-                    DeviceRole::Pfl,
-                    &roles.pfl,
-                ),
-                (
-                    "Live input device",
-                    "live_device",
-                    DeviceRole::Input,
-                    &roles.input,
-                ),
-            ] {
-                settings::label(ui, label, t);
-                let picker = ui.add_enabled_ui(true, |ui| {
-                    device_pick(
-                        ui,
-                        id,
-                        current,
-                        if role == DeviceRole::Input {
-                            &view.input_devices
-                        } else {
-                            &view.devices
-                        },
-                    )
-                });
-                picker
-                    .response
-                    .on_disabled_hover_text("Choose an output device");
-                if let Some(device) = picker.inner {
-                    actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
-                }
-                ui.end_row();
-            }
-            settings::label(ui, "Live input channels", t);
-            ui.horizontal(|ui| {
-                let chans = 1..=MAX_INPUT_CHANNEL;
-                ui.add(DragValue::new(&mut left).range(chans.clone()).prefix("L "));
-                ui.add(DragValue::new(&mut right).range(chans).prefix("R "));
-            });
-            ui.end_row();
-            settings::label(ui, "Sample rate", t);
-            egui::ComboBox::from_id_salt("sample_rate")
-                .width(size::COMBO_W)
-                .selected_text(format!("{} kHz", f64::from(rate) / HZ_PER_KHZ))
-                .show_ui(ui, |ui| {
-                    for r in RATES {
-                        let label = format!("{} kHz", f64::from(r) / HZ_PER_KHZ);
-                        if ui.selectable_label(r == rate, label).clicked() && r != rate {
-                            actions.push(parts::set(parts::MIXER, "sample_rate", r));
-                        }
-                    }
-                });
-            ui.end_row();
-            settings::label(ui, "Peak hold", t);
-            let field = DragValue::new(&mut hold)
-                .range(0.0..=MAX_PEAK_HOLD_S)
-                .speed(0.1);
-            ui.add(field.suffix(" s"));
-            ui.end_row();
-        });
+    let (old_left, old_right) = (left, right);
+    settings::form_row(ui, "Live input channels", t, |ui| {
+        // Two halves of the one cell, with the gap of the theme between them.
+        ui.spacing_mut().item_spacing.x = space::S;
+        let half = (ui.available_width() - space::S) / 2.0;
+        let chans = 1..=MAX_INPUT_CHANNEL;
+        let h = size::CONTROL_SM;
+        let l = ui.add_sized(
+            [half, h],
+            DragValue::new(&mut left).range(chans.clone()).prefix("L "),
+        );
+        let r = ui.add_sized(
+            [half, h],
+            DragValue::new(&mut right).range(chans).prefix("R "),
+        );
+        l.union(r)
+    });
     if left != old_left {
         actions.push(parts::set(parts::MIXER, "input_left", left));
     }
     if right != old_right {
         actions.push(parts::set(parts::MIXER, "input_right", right));
     }
-    if hold != old_hold {
+    let rate = parts::u32(view, parts::MIXER, "sample_rate", DEFAULT_RATE);
+    settings::form_row(ui, "Sample rate", t, |ui| {
+        egui::ComboBox::from_id_salt("sample_rate")
+            .width(ui.available_width())
+            .selected_text(khz(rate))
+            .show_ui(ui, |ui| {
+                for r in RATES {
+                    if ui.selectable_label(r == rate, khz(r)).clicked() && r != rate {
+                        actions.push(parts::set(parts::MIXER, "sample_rate", r));
+                    }
+                }
+            })
+            .response
+    });
+}
+
+fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    for m in &view.meters {
+        settings::form_row(ui, &m.label, t, |ui| {
+            egui::ComboBox::from_id_salt(("route", &m.label))
+                .width(ui.available_width())
+                .selected_text(m.route.label())
+                .show_ui(ui, |ui| {
+                    for r in Route::ALL {
+                        if r != Route::OutAndCue
+                            && ui.selectable_label(r == m.route, r.label()).clicked()
+                        {
+                            actions.push(strip_edit(&m.label, StripChange::Route(r)));
+                        }
+                    }
+                })
+                .response
+        });
+    }
+}
+
+fn meters_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    let mut hold = parts::f32(view, parts::MIXER, "peak_hold_s", DEFAULT_PEAK_HOLD_S);
+    let old = hold;
+    settings::form_row(ui, "Peak hold", t, |ui| {
+        let field = DragValue::new(&mut hold)
+            .range(0.0..=MAX_PEAK_HOLD_S)
+            .speed(0.1)
+            .suffix(" s");
+        ui.add_sized([ui.available_width(), size::CONTROL_SM], field)
+    });
+    if hold != old {
         actions.push(parts::set(parts::MIXER, "peak_hold_s", f64::from(hold)));
     }
-    ui.add_space(space::S);
-    settings::label(ui, "Routing per strip", t);
-    egui::Grid::new("mixer_routing")
-        .spacing(egui::vec2(space::M, space::XS))
-        .show(ui, |ui| {
-            for m in &view.meters {
-                ui.label(RichText::new(&m.label).font(theme::mono(theme::CODE)));
-                egui::ComboBox::from_id_salt(("route", &m.label))
-                    .width(size::COMBO_W)
-                    .selected_text(m.route.label())
-                    .show_ui(ui, |ui| {
-                        for r in Route::ALL {
-                            if r != Route::OutAndCue
-                                && ui.selectable_label(r == m.route, r.label()).clicked()
-                            {
-                                actions.push(strip_edit(&m.label, StripChange::Route(r)));
-                            }
-                        }
-                    });
-                ui.end_row();
-            }
-        });
 }
 
 /// The warning for a password that goes to another computer without TLS.
 pub(crate) const PASSWORD_IN_CLEAR: &str = "password sent unencrypted · turn on TLS";
 
-fn icecast_settings(
+/// The Icecast status in words, its ink, and whether it counts as connected.
+struct IceStatus {
+    word: String,
+    icon: Icon,
+    ink: egui::Color32,
+    connected: bool,
+}
+
+fn icecast_status(view: &StationView, t: &Tokens) -> IceStatus {
+    let s = |icon, word: &str, ink, connected| IceStatus {
+        word: word.to_owned(),
+        icon,
+        ink,
+        connected,
+    };
+    match &view.output.icecast {
+        _ if view.preview => s(
+            Icon::Circle,
+            "Icecast not connected — preview",
+            t.text_muted,
+            false,
+        ),
+        Status::Connected => s(Icon::CircleDot, "Icecast connected", t.ok, true),
+        Status::Reconnecting { attempt } => s(
+            Icon::RefreshCw,
+            &format!("Icecast connecting, try {attempt}"),
+            t.warn,
+            false,
+        ),
+        Status::Failed(e) => s(Icon::Circle, &format!("Icecast down: {e}"), t.danger, false),
+        Status::NotConnected | Status::Preview => {
+            s(Icon::Circle, "Icecast not connected", t.text_muted, false)
+        }
+    }
+}
+
+fn icecast_tab(
     ui: &mut egui::Ui,
     view: &StationView,
     ice: &mut IcecastView,
+    status: &IceStatus,
     streaming: &str,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let (word, ink) = match &view.output.icecast {
-        _ if view.preview => (
-            icons::lead(Icon::Circle, "Icecast not connected — preview"),
-            t.text_muted,
-        ),
-        Status::Connected => (icons::lead(Icon::CircleDot, "Icecast connected"), t.ok),
-        Status::Reconnecting { attempt } => (
-            icons::lead(
-                Icon::RefreshCw,
-                &format!("Icecast connecting, try {attempt}"),
-            ),
-            t.warn,
-        ),
-        Status::Failed(e) => (
-            icons::lead(Icon::Circle, &format!("Icecast down: {e}")),
-            t.danger,
-        ),
-        Status::NotConnected | Status::Preview => (
-            icons::lead(Icon::Circle, "Icecast not connected"),
-            t.text_muted,
-        ),
-    };
-    let status = RichText::new(word).font(theme::text(theme::LABEL));
-    ui.label(status.color(ink));
-    ui.horizontal(|ui| {
+    let word = icons::lead(status.icon, &status.word);
+    settings::form_note(
+        ui,
+        RichText::new(word)
+            .font(theme::text(theme::LABEL))
+            .color(status.ink),
+    );
+    ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Now streaming:").color(t.text_muted));
         let text = RichText::new(format!("“{streaming}”")).font(theme::mono(theme::CODE));
         ui.label(text.color(t.accent_ink));
@@ -503,72 +593,81 @@ fn icecast_settings(
         "The stream would carry this text. The preview sends nothing.",
         "Changes to the mount apply on the next start of the app.",
     );
-    ui.label(
+    settings::form_note(
+        ui,
         RichText::new(note)
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted),
     );
-    ui.add_space(space::S);
-    let field = |ui: &mut egui::Ui, text: &mut String, secret: bool| {
-        let edit = egui::TextEdit::singleline(text).password(secret);
-        ui.add(edit.desired_width(size::FIELD_W));
+    ui.add_space(space::XS);
+    let field = |ui: &mut egui::Ui, text: &mut String| {
+        let edit = egui::TextEdit::singleline(text)
+            .desired_width(ui.available_width())
+            .min_size(egui::vec2(0.0, size::CONTROL_SM))
+            .vertical_align(Align::Center);
+        ui.add(edit)
     };
-    egui::Grid::new("icecast_settings")
-        .spacing(egui::vec2(space::M, space::S))
-        .show(ui, |ui| {
-            settings::label(ui, "Host", t);
-            field(ui, &mut ice.host, false);
-            ui.end_row();
-            settings::label(ui, "Port", t);
-            ui.add(DragValue::new(&mut ice.port).range(1..=u16::MAX));
-            ui.end_row();
-            settings::label(ui, "TLS", t);
-            ui.checkbox(&mut ice.tls, "Encrypt (TLS)");
-            ui.end_row();
-            settings::label(ui, "Mount", t);
-            field(ui, &mut ice.mount, false);
-            ui.end_row();
-            settings::label(ui, "User", t);
-            field(ui, &mut ice.user, false);
-            ui.end_row();
-            settings::label(ui, "Password", t);
-            let hint = if view.icecast.password_set {
-                "set · leave empty to keep it"
-            } else {
-                "not set"
-            };
-            let edit = egui::TextEdit::singleline(&mut ice.password)
-                .password(true)
-                .hint_text(hint);
-            ui.add(edit.desired_width(size::FIELD_W));
-            ui.end_row();
-            settings::label(ui, "Format", t);
-            ui.horizontal(|ui| {
-                for f in StreamFormat::ALL {
-                    if ui.selectable_label(ice.format == f, f.label()).clicked() {
-                        ice.format = f;
-                    }
-                }
+    settings::form_row(ui, "Host", t, |ui| field(ui, &mut ice.host));
+    settings::form_row(ui, "Port", t, |ui| {
+        let port = DragValue::new(&mut ice.port).range(1..=u16::MAX);
+        ui.add_sized([ui.available_width(), size::CONTROL_SM], port)
+    });
+    settings::form_row(ui, "TLS", t, |ui| {
+        ui.checkbox(&mut ice.tls, "Encrypt (TLS)")
+    });
+    settings::form_row(ui, "Mount", t, |ui| field(ui, &mut ice.mount));
+    settings::form_row(ui, "User", t, |ui| field(ui, &mut ice.user));
+    let hint = if view.icecast.password_set {
+        "set · leave empty to keep it"
+    } else {
+        "not set"
+    };
+    settings::form_row(ui, "Password", t, |ui| {
+        let edit = egui::TextEdit::singleline(&mut ice.password)
+            .password(true)
+            .hint_text(hint)
+            .min_size(egui::vec2(0.0, size::CONTROL_SM))
+            .vertical_align(Align::Center);
+        ui.add(edit.desired_width(ui.available_width()))
+    });
+    settings::form_row(ui, "Format", t, |ui| {
+        // One button per format, splitting the cell, as the input channels do.
+        ui.spacing_mut().item_spacing.x = space::S;
+        let n = StreamFormat::ALL.len() as f32;
+        let w = (ui.available_width() - space::S * (n - 1.0)) / n;
+        let mut all: Option<egui::Response> = None;
+        for f in StreamFormat::ALL {
+            let button = egui::Button::selectable(ice.format == f, f.label());
+            let r = ui.add_sized([w, size::CONTROL_SM], button);
+            if r.clicked() {
+                ice.format = f;
+            }
+            all = Some(match all {
+                Some(a) => a.union(r),
+                None => r,
             });
-            ui.end_row();
-            settings::label(ui, "Bitrate", t);
-            egui::ComboBox::from_id_salt("ice_kbps")
-                .width(size::COMBO_W)
-                .selected_text(format!("{} kbit/s", ice.kbps))
-                .show_ui(ui, |ui| {
-                    for b in BITRATES {
-                        ui.selectable_value(&mut ice.kbps, b, format!("{b} kbit/s"));
-                    }
-                });
-            ui.end_row();
-        });
+        }
+        all.unwrap_or_else(|| ui.label(""))
+    });
+    settings::form_row(ui, "Bitrate", t, |ui| {
+        egui::ComboBox::from_id_salt("ice_kbps")
+            .width(ui.available_width())
+            .selected_text(format!("{} kbit/s", ice.kbps))
+            .show_ui(ui, |ui| {
+                for b in BITRATES {
+                    ui.selectable_value(&mut ice.kbps, b, format!("{b} kbit/s"));
+                }
+            })
+            .response
+    });
     // The edited form decides: a typed password counts as a password.
     let typed = IcecastView {
         password_set: view.icecast.password_set || !ice.password.is_empty(),
         ..ice.clone()
     };
     if typed.password_in_clear() {
-        ui.label(
+        settings::form_note(
+            ui,
             RichText::new(icons::lead(Icon::TriangleAlert, PASSWORD_IN_CLEAR))
                 .font(theme::text(theme::CAPTION))
                 .color(t.warn),

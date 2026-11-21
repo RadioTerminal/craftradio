@@ -188,36 +188,113 @@ fn the_header_says_preview_and_never_live_with_the_mock() {
     assert!(!shows(&harness, "LIVE"), "the mock never claims to be live");
 }
 
-/// The floating Mixer grows when its section opens and shrinks back when it closes.
+/// The Mixer ⚙ swaps the strips for the settings page. The page keeps one size on every
+/// tab, and Done brings the strips back at their size.
 #[test]
-fn the_mixer_window_follows_the_size_of_its_content() {
+fn the_mixer_settings_page_replaces_the_strips_and_done_brings_them_back() {
     let mut harness = harness();
     harness.state_mut().set_window(ToolWindow::Mixer, true);
     harness.run_steps(FRAMES);
     let id = ToolWindow::Mixer.area_id();
-    let height = |h: &Harness<'_, RadioApp>| {
+    let size = |h: &Harness<'_, RadioApp>| {
         h.ctx
             .memory(|m| m.area_rect(id))
             .expect("the mixer floats as an egui window")
-            .height()
+            .size()
     };
-    let closed = height(&harness);
+    let strips = size(&harness);
     click(&mut harness, "Toggle Mixer settings");
-    let opened = height(&harness);
+    assert!(shows(&harness, "Done"), "the page opens");
     assert!(
-        opened > closed + 2.0,
-        "the window grows: {closed} → {opened}"
+        !shows(&harness, "Toggle Icecast settings"),
+        "the strips give the page their place"
     );
+    let devices = size(&harness);
+    for tab in ["Routing", "Meters"] {
+        click(&mut harness, tab);
+        let other = size(&harness);
+        assert!(
+            (other - devices).abs().max_elem() <= 2.0,
+            "the page keeps its size on {tab}: {devices:?} vs {other:?}"
+        );
+    }
+    click(&mut harness, "Done");
+    assert!(!shows(&harness, "Done"), "Done closes the page");
+    assert!(
+        shows(&harness, "Toggle Icecast settings"),
+        "the strips are back"
+    );
+    let again = size(&harness);
+    assert!(
+        (again - strips).abs().max_elem() <= 2.0,
+        "back to the size of the strips: {strips:?} vs {again:?}"
+    );
+}
+
+/// The ⚙ of the Out strip opens the settings page on its Icecast tab.
+#[test]
+fn the_out_cog_opens_the_settings_page_on_icecast() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Toggle Icecast settings");
+    assert!(shows(&harness, "Done"), "the page opens");
+    assert!(shows(&harness, "Password"), "on the Icecast tab");
+    assert!(
+        !shows(&harness, "Output device (Out)"),
+        "not on the Devices tab"
+    );
+}
+
+/// The output chip of the header opens the mixer on the Icecast tab of its settings.
+#[test]
+fn the_output_chip_opens_the_mixer_on_the_icecast_tab() {
+    let mut harness = harness();
+    assert!(!shows(&harness, "Done"));
+    // In the preview the chip says PREVIEW; it opens the Icecast settings all the same.
+    click(&mut harness, "PREVIEW");
+    assert!(shows(&harness, "Done"), "the mixer opens on its page");
+    assert!(shows(&harness, "Password"), "on the Icecast tab");
+}
+
+/// Escape over the settings page goes back to the strips, as Done does.
+#[test]
+fn escape_over_the_settings_page_goes_back_to_the_strips() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
     click(&mut harness, "Toggle Mixer settings");
-    let again = height(&harness);
+    harness.get_by_label("Done").hover();
+    harness.run_steps(FRAMES);
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(FRAMES);
+    assert!(!shows(&harness, "Done"), "Escape closes the page");
     assert!(
-        again < opened - 2.0,
-        "the window shrinks back: {opened} → {again}"
+        shows(&harness, "Toggle Icecast settings"),
+        "the strips are back"
     );
-    assert!(
-        (again - closed).abs() <= 2.0,
-        "back to its size: {closed} vs {again}"
-    );
+}
+
+/// Every control of a settings form has the one width of the form, whatever its kind.
+#[test]
+fn the_icecast_form_controls_share_one_width() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Toggle Icecast settings");
+    // The control is the widest node that a row label names; the label itself is narrower.
+    let width = |label: &str| {
+        harness
+            .query_all_by_label(label)
+            .map(|n| n.rect().width())
+            .fold(0.0_f32, f32::max)
+    };
+    let host = width("Host");
+    assert!(host > 0.0, "the Host field shows");
+    for label in ["Port", "Mount", "User", "Password", "Bitrate"] {
+        let w = width(label);
+        assert!(
+            (w - host).abs() <= 1.0,
+            "{label} is as wide as Host: {w} vs {host}"
+        );
+    }
 }
 
 /// Each deck card names the playlist of its item, and a waiting deck says when it starts.

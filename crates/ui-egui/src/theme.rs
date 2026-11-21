@@ -202,6 +202,14 @@ pub mod size {
     pub const COL_ORIGIN: f32 = 70.0;
     /// A text field in a settings section.
     pub const FIELD_W: f32 = 220.0;
+    /// A settings page: the tab rail, the label column and the one width of every control.
+    /// A narrow window shrinks the controls to the least width, never below it.
+    pub const SETTINGS_RAIL: f32 = 96.0;
+    pub const SETTINGS_LABEL: f32 = 124.0;
+    pub const SETTINGS_FIELD: f32 = FIELD_W;
+    pub const SETTINGS_FIELD_MIN: f32 = 132.0;
+    /// The height of a settings page with its header. A shorter window scrolls the form.
+    pub const SETTINGS_PAGE_H: f32 = 480.0;
     /// The cart colour bar at the left edge of a cart.
     pub const CART_BAR: f32 = 4.0;
     /// The longest list in the rules editor before it scrolls.
@@ -213,8 +221,6 @@ pub mod size {
     pub const STRIP_W: f32 = 104.0;
     /// The dB numbers beside a mixer meter.
     pub const METER_SCALE_W: f32 = 22.0;
-    /// The settings column beside the mixer strips.
-    pub const MIXER_SIDE_W: f32 = 340.0;
     pub const METER_H: f32 = 220.0;
     pub const METER_BAR_W: f32 = 8.0;
     pub const FADER_W: f32 = 20.0;
