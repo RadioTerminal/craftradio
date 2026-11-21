@@ -27,6 +27,8 @@ impl RadioApp {
         if p.stop_carts {
             self.carts.stop_all();
             actions.push(Action::EditQuiet(Edit::StopCarts));
+            // Escape also clears the selection of the lists.
+            self.link.selected.clear();
         }
         if let Some(d) = p.focus_deck {
             self.decks.focus(d);

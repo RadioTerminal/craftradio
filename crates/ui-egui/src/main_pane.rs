@@ -44,7 +44,15 @@ pub(crate) fn show(
             }
             let n = prep.main_count;
             let note = if folder { " · estimated lengths" } else { "" };
-            let caption = format!("{n} tracks · next 6 hours{note}");
+            let picked = link.selected.len();
+            let caption = if picked > 1 {
+                format!(
+                    "{} selected · {n} tracks · next 6 hours{note}",
+                    thousands(picked)
+                )
+            } else {
+                format!("{n} tracks · next 6 hours{note}")
+            };
             ui.label(
                 RichText::new(caption)
                     .font(theme::text(theme::CAPTION))
@@ -217,7 +225,11 @@ pub(crate) fn show(
         );
     }
 
-    if link.focus == Pane::Main {
+    // Main and Upcoming share one selection, so the list keys act on both.
+    if matches!(link.focus, Pane::Main | Pane::Scheduled) {
+        if link.keys.select_all {
+            link.selected.clone_from(&prep.ids);
+        }
         shortcuts(view, prep, link, actions);
     }
 }
@@ -349,6 +361,9 @@ fn row_menu(
             titles: titles(view, &sel),
             cut: Some(CutSource::Rows(ordered(view, &sel))),
         });
+    }
+    if menu_item(ui, "Select all", Some(crate::shortcuts::SELECT_ALL)) {
+        actions.push(Action::SelectAllRows);
     }
     if menu_item(ui, "Copy", Some(COPY)) {
         actions.push(Action::CopyTitles {
@@ -596,4 +611,17 @@ fn divider_row(
             );
         });
     });
+}
+
+/// A count with thin spaces between thousands, as "3 412".
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push('\u{2009}');
+        }
+        out.push(c);
+    }
+    out
 }

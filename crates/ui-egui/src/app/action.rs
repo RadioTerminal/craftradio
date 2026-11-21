@@ -67,6 +67,8 @@ pub(crate) enum Action {
     UseAsMain(String),
     /// Open a dialog that adds a stream or the live input.
     AddDialog(AddDialog),
+    /// Select every row of the Main list.
+    SelectAllRows,
     /// Count the duplicates of a playlist, then ask before removing them.
     RemoveDuplicates(String),
     /// Make a playlist from a folder of the library, and maybe make it main.
@@ -383,6 +385,10 @@ impl RadioApp {
             }
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
             Action::AddDialog(d) => self.add_dialog = Some(d),
+            Action::SelectAllRows => {
+                self.link.selected = self.view.rows.iter().map(|r| r.id).collect();
+                self.link.focus = Pane::Main;
+            }
             Action::RemoveDuplicates(name) => {
                 let n = self.source.duplicates(&name);
                 if n == 0 {

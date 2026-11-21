@@ -16,8 +16,12 @@ pub(crate) const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAN
 pub(crate) const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
 pub(crate) const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
 pub(crate) const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
-/// Remove the selected rows. Backspace does not remove, because it is too easy to hit.
+/// Remove the selected rows: Delete (Fn+Delete on a Mac) or Backspace (the Mac delete key).
 pub(crate) const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Delete);
+pub(crate) const BACKSPACE: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::NONE, Key::Backspace);
+/// Select every row of the focused list.
+pub(crate) const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::A);
 pub(crate) const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 pub(crate) const REDO: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::Z);
 /// Skip and Fade act on the focused deck. On the deck on air they arm first.
@@ -68,6 +72,7 @@ pub(crate) struct Pressed {
     pub paste: bool,
     pub duplicate: bool,
     pub delete: bool,
+    pub select_all: bool,
     pub undo: bool,
     pub redo: bool,
     pub skip: bool,
@@ -106,7 +111,8 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.skip = i.consume_shortcut(&SKIP);
         p.fade = i.consume_shortcut(&FADE);
         p.duplicate = i.consume_shortcut(&DUPLICATE);
-        p.delete = i.consume_shortcut(&DELETE);
+        p.delete = i.consume_shortcut(&DELETE) | i.consume_shortcut(&BACKSPACE);
+        p.select_all = i.consume_shortcut(&SELECT_ALL);
         p.play_pause = free && i.consume_shortcut(&PLAY_PAUSE);
         p.stop_carts = !menu && i.consume_shortcut(&STOP_CARTS);
         p.focus_deck = FOCUS_DECK.iter().position(|s| i.consume_shortcut(s));
