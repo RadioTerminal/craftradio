@@ -442,6 +442,20 @@ Every window and pane has its own ⚙ for that part only:
 
 The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§6.6).
 
+**Deck controls and metadata (user, 2026-11-21).**
+- **Deck controls:** each deck has Play/Pause, Fade (fade out over the deck's fade time) and
+  Skip (fade out and start the next item).
+- **Metadata editing:** any item's file tags (title, artist, album, year, genre, comment)
+  can be edited and written back to the file, via lofty.
+- **Exact control over the stream title:** every item also has a *publish mode* that
+  decides exactly what Icecast receives:
+  - From tags: "Artist – Title".
+  - Custom text: a template like `{artist} – {title}`.
+  - Keep previous: the default for jingles and ads.
+  - Hide: sends the station name.
+- **Where it's set:** the metadata window shows a live preview of the exact string.
+- **Model:** `Item.meta: ItemMeta { title, artist, album, year, genre, comment, publish, custom }`.
+
 ### 6.13 Testing
 
 - The `timing` and `scheduler` crates are pure and deterministic: they're tested with a fake
