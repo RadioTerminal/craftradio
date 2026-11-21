@@ -193,11 +193,20 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
             .filter(|e| input.pinned.contains(e))
             .cloned()
             .collect();
-        let held_ids: BTreeSet<ItemId> = held.iter().map(|e| e.item).collect();
+        // Each held entry stands for the first old entry of its item. A later airing of
+        // the same item stays, such as a rule insertion that repeats in the window.
+        let mut unmatched: Vec<ItemId> = held.iter().map(|e| e.item).collect();
         let keep: Vec<&Entry> = old_win
             .iter()
+            .filter(|e| match unmatched.iter().position(|h| *h == e.item) {
+                Some(k) => {
+                    unmatched.remove(k);
+                    false
+                }
+                None => true,
+            })
             .filter(|e| e.start >= input.now && e.origin != Origin::Manual)
-            .filter(|e| items.contains_key(&e.item) && !held_ids.contains(&e.item))
+            .filter(|e| items.contains_key(&e.item))
             .collect();
         let seq: Vec<&Item> = keep
             .iter()
