@@ -152,7 +152,8 @@ impl EngineSource {
             })
         });
         let meter_reader = std::sync::Mutex::new(playout.meters());
-        Self {
+        let mode = playout.snapshot().mode;
+        let mut source = Self {
             merger,
             replies,
             meter_reader,
@@ -192,7 +193,13 @@ impl EngineSource {
             secret_known: None,
             strip_gain: HashMap::new(),
             pending_settings: HashMap::new(),
+        };
+        // The desktop UI always runs Auto and shows no mode control, so a saved Assist or
+        // Manual station is put back to Auto through the same command the CLI uses.
+        if mode != Mode::Auto {
+            let _ = source.send("", radio_engine::Command::ModeSet { mode: Mode::Auto });
         }
+        source
     }
 
     /// The same source with another store for the Icecast password.

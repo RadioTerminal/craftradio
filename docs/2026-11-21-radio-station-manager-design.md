@@ -501,6 +501,7 @@ The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§
   fire on time.
 - **Manual:** nothing starts automatically except `hard` fixed events.
 - **Stop after current** works in every mode.
+- The desktop UI always runs Auto; Assist/Manual stay in the engine for the CLI/MCP.
 - **Hand edits are locked:** any item an operator adds or moves by hand is locked, and the
   fitting step (§6.3) never moves or drops it. The lock shows as a pin icon and can be removed.
 
