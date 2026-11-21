@@ -198,5 +198,6 @@ mod tests {
         )
         .unwrap();
         assert!(playlist.source.is_none());
+        assert_eq!(playlist.on_interrupt, crate::OnInterrupt::Resume);
     }
 }

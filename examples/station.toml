@@ -378,6 +378,7 @@ name = "Ads"
 color = [200, 70, 70]
 is_main = false
 is_fill_pool = false
+on_interrupt = "Replay"
 priority = 0
 pick = "InOrder"
 rules = [{ trigger = { AtMinutes = [20, 50] }, placement = "BetweenTracks", take = 3, constraints = [] }]
