@@ -9,6 +9,8 @@ pub mod folders;
 mod history;
 mod library;
 mod main_pane;
+pub mod meta;
+mod meta_editor;
 mod mixer;
 pub mod mock;
 mod rules_editor;

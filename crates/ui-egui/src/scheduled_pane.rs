@@ -3,12 +3,12 @@
 use egui::{Align, Layout, RichText, Sense, Stroke, UiBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Action, FileTarget, Linked, Pane, PasteTo, Timing, hms, mmss, row_fields};
+use crate::app::{Action, FileTarget, Linked, Pane, PasteTo, Timing, hms, mmss};
 use crate::context_menu::{self, COPY, CUT, DELETE, PASTE, menu_item, menu_item_if};
 use crate::library::LibraryDrag;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DropTarget, Edit, Pick, PlaylistTab, Row, StationView};
+use crate::view::{DropTarget, Edit, MetaTarget, Pick, PlaylistTab, Row, StationView};
 
 /// The tolerances that the Edit timing menu offers, in seconds.
 const TOLERANCES: [f32; 3] = [0.5, 1.0, 2.0];
@@ -243,11 +243,7 @@ fn upcoming_menu(ui: &mut egui::Ui, r: &Row, link: &mut Linked, actions: &mut Ve
         actions.push(Action::OpenRules(r.playlist.clone()));
     }
     if menu_item(ui, "Properties", None) {
-        let extra = [("Playlist", r.playlist.clone()), ("Starts", hms(&r.start))];
-        actions.push(Action::Properties {
-            title: r.title.clone(),
-            fields: row_fields(&r.title, r.len, &extra),
-        });
+        actions.push(Action::Metadata(vec![MetaTarget::Row(r.id)]));
     }
 }
 
@@ -473,10 +469,7 @@ fn item_menu(
         .on_disabled_hover_text("Only for the weighted pick order");
     });
     if menu_item(ui, "Properties", None) {
-        actions.push(Action::Properties {
-            title: name.to_owned(),
-            fields: row_fields(name, len, &[("Playlist", p.name.clone())]),
-        });
+        actions.push(Action::MetadataTitle(name.to_owned(), len));
     }
 }
 

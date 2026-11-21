@@ -1,101 +1,221 @@
-//! The top bar: four deck cards, the mode and the station clock.
+//! The top bar: four deck cards with their buttons, the mode and the station clock.
 
-use egui::{Align, Layout, RichText, Sense, Stroke};
+use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::{Action, hms, mmss};
 use crate::context_menu::{self, menu_item};
+use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DeckState, DeckView, StationView};
+use crate::view::{DeckCommand, DeckState, DeckView, Edit, StationView};
+use crate::widgets::icon_button;
 
-pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
-    ui.horizontal(|ui| {
+/// The fade time of a new deck, in seconds.
+const DEFAULT_FADE_S: f32 = 3.0;
+
+/// The deck settings. They are local to the window.
+pub(crate) struct State {
+    fade_s: [f32; 4],
+    settings: [bool; 4],
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            fade_s: [DEFAULT_FADE_S; 4],
+            settings: [false; 4],
+        }
+    }
+}
+
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::M;
         let gaps = space::M * view.decks.len() as f32;
         let free = ui.available_width() - size::CLOCK_W - gaps;
         let card_w = (free / view.decks.len() as f32).max(size::DECK_MIN_W);
-        for deck in &view.decks {
-            deck_card(ui, deck, card_w, t).context_menu(|ui| deck_menu(ui, actions));
+        for (i, deck) in view.decks.iter().enumerate() {
+            let card = deck_card(ui, i, deck, card_w, state, actions, t);
+            card.context_menu(|ui| deck_menu(ui, i, state, actions));
         }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            clock(ui, view, t)
-        });
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| clock(ui, view, t));
     });
 }
 
-fn deck_menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-    for label in ["Play / Pause", "Stop", "Eject", "Reload", "Cue to start"] {
+fn command(deck: usize, command: DeckCommand) -> Action {
+    Action::Edit(Edit::Deck { deck, command })
+}
+
+fn deck_menu(ui: &mut egui::Ui, i: usize, state: &State, actions: &mut Vec<Action>) {
+    if menu_item(ui, "Play / Pause", None) {
+        actions.push(command(i, DeckCommand::PlayPause));
+    }
+    if menu_item(ui, "Fade out", None) {
+        actions.push(command(i, DeckCommand::Fade(state.fade_s[i])));
+    }
+    if menu_item(ui, "Skip", None) {
+        actions.push(command(i, DeckCommand::Skip));
+    }
+    ui.separator();
+    for label in ["Stop", "Eject", "Reload", "Cue to start"] {
         if menu_item(ui, label, None) {
             actions.push(Action::Toast(context_menu::NEEDS_ENGINE.to_owned()));
         }
     }
 }
 
-fn deck_card(ui: &mut egui::Ui, deck: &DeckView, width: f32, t: &Tokens) -> egui::Response {
-    let playing = deck.state == DeckState::Playing;
-    let edge = if playing { t.on_air } else { t.card_border };
+fn deck_card(
+    ui: &mut egui::Ui,
+    i: usize,
+    deck: &DeckView,
+    width: f32,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) -> egui::Response {
+    let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
+    let edge = match deck.state {
+        DeckState::Playing => t.on_air,
+        DeckState::Fading => t.warn,
+        _ => t.card_border,
+    };
     let frame = theme::card_frame(t)
-        .fill(if playing { t.on_air_bg } else { t.field })
+        .fill(if live { t.on_air_bg } else { t.field })
         .stroke(Stroke::new(size::HAIRLINE, edge));
     let inner = width - frame.total_margin().sum().x - size::HAIRLINE * 2.0;
+    // The badge and the title take the right-click. A card-wide sensor would take the button clicks.
     frame
         .show(ui, |ui| {
             ui.set_width(inner);
-            ui.vertical(|ui| deck_body(ui, deck, playing, t));
+            ui.vertical(|ui| deck_body(ui, i, deck, state, actions, t))
+                .inner
         })
-        .response
-        .interact(Sense::click())
+        .inner
 }
 
-fn deck_body(ui: &mut egui::Ui, deck: &DeckView, playing: bool, t: &Tokens) {
-    {
-        ui.spacing_mut().item_spacing.y = space::XS;
-        ui.horizontal(|ui| {
-            badge(ui, deck.label, playing, t);
-            let (word, colour) = match deck.state {
-                DeckState::Playing => ("▶ ON AIR", t.on_air),
-                DeckState::Ready => ("⏸ READY", t.text_muted),
-                DeckState::Empty => ("EMPTY", t.text_muted),
-            };
-            ui.label(
-                RichText::new(word)
-                    .font(theme::text(theme::LABEL))
-                    .strong()
-                    .color(colour),
-            );
-            if playing {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let left = deck.len.saturating_sub(deck.elapsed);
-                    let text = format!("−{}", mmss(left));
-                    ui.label(
-                        RichText::new(text)
-                            .font(theme::mono(theme::SMALL))
-                            .color(t.text),
-                    );
-                });
-            }
+fn deck_body(
+    ui: &mut egui::Ui,
+    i: usize,
+    deck: &DeckView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) -> egui::Response {
+    ui.spacing_mut().item_spacing.y = space::XS;
+    let live = matches!(deck.state, DeckState::Playing | DeckState::Fading);
+    let head = ui.horizontal(|ui| {
+        let badge = badge(ui, deck.label, live, t);
+        let (word, colour) = match deck.state {
+            DeckState::Playing => ("▶ ON AIR", t.on_air),
+            DeckState::Fading => ("⤵ FADING", t.warn),
+            DeckState::Paused => ("⏸ PAUSED", t.warn),
+            DeckState::Ready => ("READY", t.text_muted),
+            DeckState::Empty => ("EMPTY", t.text_muted),
+        };
+        let word = RichText::new(word).font(theme::text(theme::LABEL)).strong();
+        ui.label(word.color(colour));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::XXS;
+            let name = deck.label;
+            let mut open = state.settings[i];
+            settings::settings_button(ui, &format!("Deck {name}"), &mut open);
+            state.settings[i] = open;
+            ui.add_enabled_ui(deck.state != DeckState::Empty, |ui| {
+                let skip = icon_button(
+                    ui,
+                    "⏭",
+                    false,
+                    &format!("⏭ Skip deck {name}"),
+                    "Skip: fade out and start the next item",
+                );
+                if skip.clicked() {
+                    actions.push(command(i, DeckCommand::Skip));
+                }
+                let hint = format!("Fade out over {:.1} s", state.fade_s[i]);
+                let fade = icon_button(
+                    ui,
+                    "⤵",
+                    deck.state == DeckState::Fading,
+                    &format!("⤵ Fade deck {name}"),
+                    &hint,
+                );
+                if fade.clicked() {
+                    actions.push(command(i, DeckCommand::Fade(state.fade_s[i])));
+                }
+                let (glyph, verb) = if deck.state == DeckState::Playing {
+                    ("⏸", "Pause")
+                } else {
+                    ("▶", "Play")
+                };
+                let play = icon_button(
+                    ui,
+                    glyph,
+                    false,
+                    &format!("{glyph} {verb} deck {name}"),
+                    verb,
+                );
+                if play.clicked() {
+                    actions.push(command(i, DeckCommand::PlayPause));
+                }
+            });
         });
-        let title = if deck.title.is_empty() {
-            "—"
-        } else {
-            deck.title.as_str()
-        };
-        ui.add(egui::Label::new(RichText::new(title).font(theme::text(theme::BODY))).truncate());
-        progress(ui, deck, t);
-        let times = match deck.state {
-            DeckState::Playing => format!("{} / {}", mmss(deck.elapsed), mmss(deck.len)),
-            DeckState::Ready => format!("ready · {}", mmss(deck.len)),
-            DeckState::Empty => "no item".to_owned(),
-        };
-        ui.label(
-            RichText::new(times)
-                .font(theme::mono(theme::CODE))
-                .color(t.text_muted),
-        );
+        badge
+    });
+    if state.settings[i] {
+        egui::Frame::new()
+            .fill(t.card)
+            .stroke(Stroke::new(size::HAIRLINE, t.accent))
+            .corner_radius(t.radius)
+            .inner_margin(pad::ROW)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let label = ui.label(RichText::new("Fade time").color(t.text_muted));
+                    let fade = DragValue::new(&mut state.fade_s[i])
+                        .range(0.5..=10.0)
+                        .speed(0.1)
+                        .suffix(" s");
+                    ui.add(fade).labelled_by(label.id);
+                });
+                let note = RichText::new(settings::NOT_SAVED).font(theme::text(theme::CAPTION));
+                ui.label(note.color(t.text_muted));
+            });
     }
+    let title = if deck.title.is_empty() {
+        "—"
+    } else {
+        deck.title.as_str()
+    };
+    let label = egui::Label::new(RichText::new(title).font(theme::text(theme::BODY)));
+    let title = ui.add(label.truncate().sense(Sense::click()));
+    progress(ui, deck, t);
+    let left = deck.len.saturating_sub(deck.elapsed);
+    let times = match deck.state {
+        DeckState::Playing | DeckState::Fading | DeckState::Paused => {
+            format!(
+                "{} / {} · −{}",
+                mmss(deck.elapsed),
+                mmss(deck.len),
+                mmss(left)
+            )
+        }
+        DeckState::Ready => format!("ready · {}", mmss(deck.len)),
+        DeckState::Empty => "no item".to_owned(),
+    };
+    ui.label(
+        RichText::new(times)
+            .font(theme::mono(theme::CODE))
+            .color(t.text_muted),
+    );
+    head.inner.union(title)
 }
 
-fn badge(ui: &mut egui::Ui, label: char, playing: bool, t: &Tokens) {
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size::BADGE), Sense::hover());
+fn badge(ui: &mut egui::Ui, label: char, playing: bool, t: &Tokens) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size::BADGE), Sense::click());
     let (fill, ink) = if playing {
         (t.on_air, t.canvas)
     } else {
@@ -109,6 +229,7 @@ fn badge(ui: &mut egui::Ui, label: char, playing: bool, t: &Tokens) {
         theme::mono(theme::CARD),
         ink,
     );
+    resp
 }
 
 fn progress(ui: &mut egui::Ui, deck: &DeckView, t: &Tokens) {
@@ -120,10 +241,10 @@ fn progress(ui: &mut egui::Ui, deck: &DeckView, t: &Tokens) {
         let frac = (deck.elapsed.as_secs_f32() / len).clamp(0.0, 1.0);
         let mut done = rect;
         done.set_width(rect.width() * frac);
-        let colour = if deck.state == DeckState::Playing {
-            t.on_air
-        } else {
-            t.field_border
+        let colour = match deck.state {
+            DeckState::Playing => t.on_air,
+            DeckState::Fading | DeckState::Paused => t.warn,
+            _ => t.field_border,
         };
         ui.painter().rect_filled(done, t.radius_sm, colour);
     }

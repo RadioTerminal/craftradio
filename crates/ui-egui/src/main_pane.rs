@@ -4,12 +4,12 @@
 use egui::{Align, Layout, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{Action, FileTarget, Linked, Pane, PasteTo, hms, is_on_air, mmss, row_fields};
+use crate::app::{Action, FileTarget, Linked, Pane, PasteTo, hms, is_on_air, mmss};
 use crate::context_menu;
 use crate::library::LibraryDrag;
 use crate::rules_editor;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{DropTarget, Edit, MoveTo, Place, Row, StationView};
+use crate::view::{DropTarget, Edit, MetaTarget, MoveTo, Place, Row, StationView};
 use crate::windows::ToolWindow;
 
 /// Show the main pane.
@@ -304,15 +304,9 @@ fn row_menu(
         actions.push(Action::ShowInLibrary(r.title.clone()));
     }
     if menu_item(ui, "Properties", None) {
-        let extra = [
-            ("Playlist", r.playlist.clone()),
-            ("Starts", hms(&r.start)),
-            ("Origin", r.origin.label().to_owned()),
-        ];
-        actions.push(Action::Properties {
-            title: r.title.clone(),
-            fields: row_fields(&r.title, r.len, &extra),
-        });
+        actions.push(Action::Metadata(
+            sel.iter().map(|id| MetaTarget::Row(*id)).collect(),
+        ));
     }
     let _ = t;
 }

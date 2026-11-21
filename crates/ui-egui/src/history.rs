@@ -5,10 +5,11 @@ use egui::{Align, DragValue, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use jiff::SignedDuration;
 
-use crate::app::{Action, hms, mmss, row_fields};
+use crate::app::{Action, hms, mmss};
 use crate::context_menu::{COPY, menu_item};
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
+use crate::view::MetaTarget;
 use crate::view::{Row, StationView};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -286,13 +287,11 @@ fn row_menu(
         actions.push(Action::ShowInLibrary(r.title.clone()));
     }
     if menu_item(ui, "Properties", None) {
-        let extra = [
-            ("Playlist", r.playlist.clone()),
-            ("Aired at", hms(&r.start)),
-        ];
-        actions.push(Action::Properties {
-            title: r.title.clone(),
-            fields: row_fields(&r.title, r.len, &extra),
-        });
+        let targets = if selected.contains(&r.id) {
+            selected.iter().map(|id| MetaTarget::Row(*id)).collect()
+        } else {
+            vec![MetaTarget::Row(r.id)]
+        };
+        actions.push(Action::Metadata(targets));
     }
 }

@@ -22,7 +22,11 @@ enum Scene {
     Main,
     Window(ToolWindow),
     Click(&'static [&'static str]),
+    /// Right-click the lowest node with this label, then click the menu row, if any.
+    Menu(&'static str, &'static str),
 }
+
+const ROW: &str = "Juniper Vale – Satellites of Ulvenik";
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -51,6 +55,8 @@ fn main() -> ExitCode {
         ("library", Scene::Window(ToolWindow::Library)),
         ("rules-editor", Scene::Click(&["⚙ Music rules"])),
         ("rules-script", Scene::Click(&["⚙ Music rules", "Script"])),
+        ("context-menu", Scene::Menu(ROW, "")),
+        ("metadata", Scene::Menu(ROW, "Properties")),
     ];
     for (name, scene) in scenes {
         let tz = tz.clone();
@@ -65,6 +71,19 @@ fn main() -> ExitCode {
         match scene {
             Scene::Main => {}
             Scene::Window(w) => harness.state_mut().set_window(w, true),
+            Scene::Menu(row, item) => {
+                let node = harness
+                    .query_all_by_label(row)
+                    .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()));
+                if let Some(node) = node {
+                    node.click_secondary();
+                }
+                harness.run_steps(FRAMES);
+                if !item.is_empty() {
+                    harness.get_by_label_contains(item).click();
+                    harness.run_steps(FRAMES);
+                }
+            }
             Scene::Click(labels) => {
                 for label in labels {
                     harness.get_by_label(label).click();

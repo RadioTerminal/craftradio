@@ -1,0 +1,215 @@
+//! The metadata editor: the tags of one or more items, and the exact stream title.
+//!
+//! With several items, a field shows a value only when all items share it.
+//! Apply changes only the fields that the person edited.
+
+use egui::{RichText, TextEdit};
+
+use crate::meta::{PLACEHOLDERS, stream_title};
+use crate::theme::{self, Tokens, pad, size, space};
+use crate::view::{ItemMeta, MetaTarget, PublishMode};
+
+const NOT_WRITTEN: &str = "preview — not written";
+const FIELDS: [&str; 6] = ["Title", "Artist", "Album", "Year", "Genre", "Comment"];
+
+fn field(m: &mut ItemMeta, i: usize) -> &mut String {
+    match i {
+        0 => &mut m.title,
+        1 => &mut m.artist,
+        2 => &mut m.album,
+        3 => &mut m.year,
+        4 => &mut m.genre,
+        _ => &mut m.comment,
+    }
+}
+
+/// An open metadata editor.
+pub(crate) struct MetaEditor {
+    targets: Vec<(MetaTarget, ItemMeta)>,
+    draft: ItemMeta,
+    /// True for each text field where the items do not agree.
+    mixed: [bool; 6],
+    touched: [bool; 6],
+    publish_touched: bool,
+    custom_touched: bool,
+    /// The stream title of the item before the first item.
+    previous: String,
+    station: String,
+    note: bool,
+}
+
+impl MetaEditor {
+    pub fn new(targets: Vec<(MetaTarget, ItemMeta)>, previous: String, station: String) -> Self {
+        let mut draft = targets.first().map(|(_, m)| m.clone()).unwrap_or_default();
+        let mut mixed = [false; 6];
+        for (i, m) in mixed.iter_mut().enumerate() {
+            let first = field(&mut draft, i).clone();
+            *m = targets
+                .iter()
+                .any(|(_, t)| *field(&mut t.clone(), i) != first);
+            if *m {
+                field(&mut draft, i).clear();
+            }
+        }
+        Self {
+            targets,
+            draft,
+            mixed,
+            touched: [false; 6],
+            publish_touched: false,
+            custom_touched: false,
+            previous,
+            station,
+            note: false,
+        }
+    }
+
+    fn title(&self) -> String {
+        match self.targets.as_slice() {
+            [(_, m)] => format!("{} — metadata", m.title),
+            many => format!("{} items — metadata", many.len()),
+        }
+    }
+
+    /// The tags of `meta` with the edited fields of the draft.
+    fn merged(&self, meta: &ItemMeta) -> ItemMeta {
+        let mut out = meta.clone();
+        let mut draft = self.draft.clone();
+        for (i, touched) in self.touched.iter().enumerate() {
+            if *touched {
+                *field(&mut out, i) = field(&mut draft, i).clone();
+            }
+        }
+        if self.publish_touched {
+            out.publish = self.draft.publish;
+        }
+        if self.custom_touched {
+            out.custom.clone_from(&self.draft.custom);
+        }
+        out
+    }
+}
+
+/// Show the editor while it is open. After Apply, it returns the new tags of each item.
+pub(crate) fn show(
+    ctx: &egui::Context,
+    slot: &mut Option<MetaEditor>,
+    t: &Tokens,
+) -> Option<Vec<(MetaTarget, ItemMeta)>> {
+    let ed = slot.as_mut()?;
+    let mut open = true;
+    let mut close = false;
+    let mut applied = None;
+    egui::Window::new(ed.title())
+        .id(egui::Id::new("meta_editor"))
+        .open(&mut open)
+        .collapsible(false)
+        .default_width(size::EDITOR_W)
+        .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
+        .show(ctx, |ui| {
+            caption(ui, "TAGS", t);
+            egui::Grid::new("meta_fields")
+                .spacing(egui::vec2(space::M, space::XS))
+                .show(ui, |ui| {
+                    for (i, name) in FIELDS.iter().enumerate() {
+                        let label = ui.label(RichText::new(*name).color(t.text_muted));
+                        let hint = if ed.mixed[i] && !ed.touched[i] {
+                            "(mixed)"
+                        } else {
+                            ""
+                        };
+                        let edit = TextEdit::singleline(field(&mut ed.draft, i))
+                            .hint_text(hint)
+                            .desired_width(size::FIELD_W * 2.0);
+                        if ui
+                            .add_sized([size::FIELD_W * 2.0, size::CONTROL_SM], edit)
+                            .labelled_by(label.id)
+                            .changed()
+                        {
+                            ed.touched[i] = true;
+                        }
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(space::M);
+            caption(ui, "STREAM TITLE", t);
+            ui.horizontal(|ui| {
+                for mode in PublishMode::ALL {
+                    if ui
+                        .selectable_label(ed.draft.publish == mode, mode.label())
+                        .clicked()
+                    {
+                        ed.draft.publish = mode;
+                        ed.publish_touched = true;
+                    }
+                }
+            });
+            ui.add_enabled_ui(ed.draft.publish == PublishMode::Custom, |ui| {
+                ui.horizontal(|ui| {
+                    let label = ui.label(RichText::new("Custom text").color(t.text_muted));
+                    let edit = TextEdit::singleline(&mut ed.draft.custom)
+                        .hint_text("{artist} – {title}")
+                        .desired_width(size::FIELD_W * 2.0);
+                    if ui
+                        .add_sized([size::FIELD_W * 2.0, size::CONTROL_SM], edit)
+                        .labelled_by(label.id)
+                        .changed()
+                    {
+                        ed.custom_touched = true;
+                    }
+                });
+                caption(ui, &format!("Placeholders: {}", PLACEHOLDERS.join(" ")), t);
+            });
+            let first = ed
+                .targets
+                .first()
+                .map(|(_, m)| ed.merged(m))
+                .unwrap_or_default();
+            let text = stream_title(&first, &ed.previous, &ed.station);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Icecast gets:").color(t.text_muted));
+                let shown = RichText::new(format!("“{text}”")).font(theme::mono(theme::CODE));
+                ui.label(shown.color(t.accent_ink));
+            });
+            if ed.targets.len() > 1 {
+                caption(ui, "The line shows the first selected item.", t);
+            }
+            ui.add_space(space::S);
+            caption(
+                ui,
+                "Cue points: read-only until the library engine decodes files.",
+                t,
+            );
+            ui.separator();
+            ui.horizontal(|ui| {
+                let apply =
+                    egui::Button::new(RichText::new("Apply").color(t.canvas)).fill(t.accent);
+                if ui.add(apply).clicked() {
+                    let out = ed.targets.iter().map(|(k, m)| (*k, ed.merged(m))).collect();
+                    applied = Some(out);
+                    close = true;
+                }
+                if ui.button("Save to file").clicked() {
+                    ed.note = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+                if ed.note {
+                    ui.label(RichText::new(NOT_WRITTEN).color(t.warn));
+                }
+            });
+        });
+    if close || !open {
+        *slot = None;
+    }
+    applied
+}
+
+fn caption(ui: &mut egui::Ui, text: &str, t: &Tokens) {
+    ui.label(
+        RichText::new(text)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+    );
+}

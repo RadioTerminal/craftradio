@@ -7,12 +7,12 @@ use std::path::Path;
 use egui::{Align, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
-use crate::app::{Action, FileTarget, Linked, mmss, row_fields};
+use crate::app::{Action, FileTarget, Linked, mmss};
 use crate::context_menu::{self, COPY, menu_item};
 use crate::folders;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DropTarget, Edit, LibraryItem, Place, StationView};
+use crate::view::{DropTarget, Edit, LibraryItem, MetaTarget, Place, StationView};
 
 /// The drag payload: the id of a library item.
 #[derive(Clone, Copy, Debug)]
@@ -474,16 +474,7 @@ fn item_menu(ui: &mut egui::Ui, view: &StationView, item: &LibraryItem, actions:
         actions.push(Action::Toast(text));
     }
     if menu_item(ui, "Properties", None) {
-        let artist = item.artist.clone().unwrap_or_else(|| "—".to_owned());
-        let extra = [
-            ("Artist", artist),
-            ("Category", item.category.clone()),
-            ("Path", item.path.clone()),
-        ];
-        actions.push(Action::Properties {
-            title: item.title.clone(),
-            fields: row_fields(&item.title, item.len, &extra),
-        });
+        actions.push(Action::Metadata(vec![MetaTarget::Library(item.id)]));
     }
 }
 

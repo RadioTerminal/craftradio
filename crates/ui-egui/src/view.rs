@@ -7,6 +7,10 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckState {
     Playing,
+    /// Stopped in the middle of the item.
+    Paused,
+    /// Fading out. The next item follows.
+    Fading,
     Ready,
     Empty,
 }
@@ -43,6 +47,65 @@ pub struct Row {
     pub origin: Origin,
     /// True when a person locked the row in place.
     pub locked: bool,
+    /// The tags and the stream title of the item.
+    pub meta: ItemMeta,
+}
+
+/// What Icecast gets as the stream title for an item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PublishMode {
+    /// "Artist – Title" from the tags.
+    #[default]
+    FromTags,
+    /// The custom text, with placeholders such as `{artist}`.
+    Custom,
+    /// The title of the item before stays. Jingles and ads use this.
+    KeepPrevious,
+    /// The station name.
+    Hide,
+}
+
+impl PublishMode {
+    pub const ALL: [Self; 4] = [Self::FromTags, Self::Custom, Self::KeepPrevious, Self::Hide];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FromTags => "From tags",
+            Self::Custom => "Custom text",
+            Self::KeepPrevious => "Keep previous",
+            Self::Hide => "Hide",
+        }
+    }
+}
+
+/// The tags of an item, and how its stream title is made.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemMeta {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub year: String,
+    pub genre: String,
+    pub comment: String,
+    pub publish: PublishMode,
+    pub custom: String,
+}
+
+/// An item whose tags a person can edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetaTarget {
+    Row(u64),
+    Library(u64),
+}
+
+/// A command for a deck.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DeckCommand {
+    PlayPause,
+    /// Fade out over this many seconds, then start the next item.
+    Fade(f32),
+    /// Fade out at once and start the next item.
+    Skip,
 }
 
 /// What put a row in the timeline.
@@ -76,6 +139,8 @@ pub struct LibraryItem {
     pub len: Duration,
     pub category: String,
     pub path: String,
+    /// The tags and the stream title of the item.
+    pub meta: ItemMeta,
 }
 
 /// Where a library item was dropped.
@@ -348,6 +413,8 @@ pub struct StationView {
     pub main: PlaylistTab,
     /// The name of the main playlist.
     pub main_playlist: String,
+    /// The station name. A hidden stream title shows this.
+    pub station: String,
     /// Level meters: one per deck, then the cart bus, the live input and the output.
     pub meters: Vec<MeterView>,
     /// The as-played log, oldest first.
@@ -424,6 +491,13 @@ pub enum Edit {
     AssignCart {
         cart: usize,
         item: Option<u64>,
+    },
+    /// Set the tags of items.
+    SetMeta(Vec<(MetaTarget, ItemMeta)>),
+    /// Control a deck by its index (0 is deck A).
+    Deck {
+        deck: usize,
+        command: DeckCommand,
     },
 }
 

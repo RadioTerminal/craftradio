@@ -8,12 +8,16 @@ use std::time::Duration;
 use egui::RichText;
 use jiff::{SignedDuration, Timestamp};
 
+use crate::meta_editor::{self, MetaEditor};
 use crate::rules_editor::{self, Editor};
 use crate::theme::{self, Tokens, pad, size, space};
-use crate::view::{DropTarget, Edit, FolderSource, Place, Row, StationView, ViewSource};
+use crate::view::{
+    DropTarget, Edit, FolderSource, MetaTarget, Place, Row, StationView, ViewSource,
+};
 use crate::windows::{self, ToolWindow};
 use crate::{
-    cartwall, clock_window, decks, folders, history, library, main_pane, mixer, scheduled_pane,
+    cartwall, clock_window, decks, folders, history, library, main_pane, meta, mixer,
+    scheduled_pane,
 };
 
 /// Where a paste goes.
@@ -61,10 +65,10 @@ pub(crate) enum Action {
     OpenRules(String),
     OpenWindow(ToolWindow),
     ShowInLibrary(String),
-    Properties {
-        title: String,
-        fields: Vec<(String, String)>,
-    },
+    /// Open the metadata editor for these items.
+    Metadata(Vec<MetaTarget>),
+    /// Open the metadata editor for a playlist item, by title.
+    MetadataTitle(String, Duration),
     Confirm {
         text: String,
         then: Box<Action>,
@@ -193,7 +197,8 @@ pub struct RadioApp {
     toast: Option<(String, f64)>,
     confirm: Option<(String, Action)>,
     rename: Option<(String, String)>,
-    properties: Option<(String, Vec<(String, String)>)>,
+    meta: Option<MetaEditor>,
+    decks: decks::State,
 }
 
 impl RadioApp {
@@ -226,7 +231,8 @@ impl RadioApp {
             toast: None,
             confirm: None,
             rename: None,
-            properties: None,
+            meta: None,
+            decks: decks::State::default(),
         }
     }
 
@@ -457,7 +463,13 @@ impl RadioApp {
                     self.open.set(ToolWindow::Library, true);
                 }
             }
-            Action::Properties { title, fields } => self.properties = Some((title, fields)),
+            Action::Metadata(targets) => self.open_meta(targets),
+            Action::MetadataTitle(title, len) => {
+                if let Some(id) = self.source.library_ref(&title, len) {
+                    self.refresh(true);
+                    self.open_meta(vec![MetaTarget::Library(id)]);
+                }
+            }
             Action::Confirm { text, then } => self.confirm = Some((text, *then)),
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
             Action::UseAsMain(name) => {
@@ -498,6 +510,39 @@ impl RadioApp {
                 );
             }
         }
+    }
+
+    fn open_meta(&mut self, targets: Vec<MetaTarget>) {
+        let rows = self.view.history.iter().chain(&self.view.rows);
+        let mut list = Vec::new();
+        for t in &targets {
+            let meta = match t {
+                MetaTarget::Row(id) => rows.clone().find(|r| r.id == *id).map(|r| r.meta.clone()),
+                MetaTarget::Library(id) => self
+                    .view
+                    .library
+                    .iter()
+                    .find(|l| l.id == *id)
+                    .map(|l| l.meta.clone()),
+            };
+            if let Some(m) = meta {
+                list.push((*t, m));
+            }
+        }
+        if list.is_empty() {
+            return;
+        }
+        let station = self.view.station.clone();
+        let stop = match targets.first() {
+            Some(MetaTarget::Row(id)) => Some(*id),
+            _ => None,
+        };
+        let previous = if stop.is_some() {
+            meta::streaming_before(rows, stop, &station)
+        } else {
+            "(the stream title before it)".to_owned()
+        };
+        self.meta = Some(MetaEditor::new(list, previous, station));
     }
 
     fn tool_windows(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>, t: &Tokens) {
@@ -583,35 +628,6 @@ impl RadioApp {
                 actions.push(Action::Edit(Edit::RenamePlaylist { from, to }));
             }
         }
-        if let Some((title, fields)) = &self.properties {
-            let mut close = false;
-            egui::Window::new(format!("{title} — properties"))
-                .collapsible(false)
-                .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
-                .show(ctx, |ui| {
-                    egui::Grid::new("properties")
-                        .spacing(egui::vec2(space::M, space::XS))
-                        .show(ui, |ui| {
-                            for (k, v) in fields {
-                                ui.label(RichText::new(k).color(t.text_muted));
-                                ui.label(v);
-                                ui.end_row();
-                            }
-                        });
-                    let note = "Cue points are read-only until the library engine decodes files.";
-                    ui.label(
-                        RichText::new(note)
-                            .font(theme::text(theme::CAPTION))
-                            .color(t.text_muted),
-                    );
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
-            if close {
-                self.properties = None;
-            }
-        }
     }
 }
 
@@ -635,7 +651,7 @@ impl eframe::App for RadioApp {
             .show(ui, |ui| {
                 windows::toggles(ui, &mut self.open, &t);
                 ui.add_space(space::S);
-                decks::show(ui, &self.view, &mut actions, &t);
+                decks::show(ui, &self.view, &mut self.decks, &mut actions, &t);
             });
 
         egui::Panel::bottom("status")
@@ -701,6 +717,15 @@ impl eframe::App for RadioApp {
                 }
             }
             self.source.apply_rules(tab);
+            self.refresh(true);
+        }
+
+        if let Some(list) = meta_editor::show(&ctx, &mut self.meta, &t) {
+            let result = self.source.edit(Edit::SetMeta(list));
+            self.report(
+                &ctx,
+                result.map(|m| format!("{m} · tags are not written to files")),
+            );
             self.refresh(true);
         }
 
@@ -781,21 +806,4 @@ pub(crate) fn mmss(d: Duration) -> String {
 /// A local time as HH:MM:SS.
 pub(crate) fn hms(z: &jiff::Zoned) -> String {
     z.strftime("%H:%M:%S").to_string()
-}
-
-/// The fields of the properties window for a timeline row or playlist item.
-pub(crate) fn row_fields(
-    title: &str,
-    len: Duration,
-    extra: &[(&str, String)],
-) -> Vec<(String, String)> {
-    let mut f = vec![
-        ("Title".to_owned(), title.to_owned()),
-        ("Length".to_owned(), mmss(len)),
-    ];
-    f.extend(extra.iter().map(|(k, v)| ((*k).to_owned(), v.clone())));
-    for cue in ["Cue in", "Intro", "Segue", "Cue out"] {
-        f.push((cue.to_owned(), "— (not decoded yet)".to_owned()));
-    }
-    f
 }

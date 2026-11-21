@@ -136,3 +136,13 @@ fn icon_buttons_keep_their_size_on_hover() {
         assert_eq!(rects(&harness), before, "hovering {cog} moves nothing");
     }
 }
+
+#[test]
+fn skip_on_deck_a_starts_the_next_item() {
+    let mut harness = harness();
+    let on_air = "Halvard Pine – Harbours of Kelmora";
+    let before = harness.query_all_by_label(on_air).count();
+    click(&mut harness, "⏭ Skip deck A");
+    let after = harness.query_all_by_label(on_air).count();
+    assert!(after < before, "deck A no longer shows the skipped item");
+}

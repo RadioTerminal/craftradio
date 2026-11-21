@@ -7,12 +7,14 @@ use std::time::Duration;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp, ToSpan, Zoned};
 
+use crate::context_menu::NEEDS_ENGINE;
 use crate::folders;
+use crate::meta;
 use crate::rules_script;
 use crate::view::{
-    Constraint, ConstraintKind, DeckState, DeckView, DropTarget, Edit, FitView, FolderSource,
-    LibraryItem, MeterView, MoveTo, Origin, Pick, Place, Placement, PlaylistTab, Row, RuleView,
-    StationView, Trigger, ViewSource,
+    Constraint, ConstraintKind, DeckCommand, DeckState, DeckView, DropTarget, Edit, FitView,
+    FolderSource, ItemMeta, LibraryItem, MetaTarget, MeterView, MoveTo, Origin, Pick, Place,
+    Placement, PlaylistTab, PublishMode, Row, RuleView, StationView, Trigger, ViewSource,
 };
 
 const MUSIC: [u8; 3] = [0x5B, 0xAA, 0x5B];
@@ -28,6 +30,17 @@ const FOLDER_COLOURS: [[u8; 3]; 4] = [
     [0x6F, 0x9F, 0xE8],
     [0xD9, 0x8C, 0x4A],
 ];
+/// The station name. A hidden stream title shows it.
+const STATION: &str = "Radio Preview";
+
+/// How the stream title of an item from `playlist` is made at first.
+fn publish_for(playlist: &str) -> PublishMode {
+    match playlist {
+        "Jingles" | "Ads" | "Beds" => PublishMode::KeepPrevious,
+        _ => PublishMode::FromTags,
+    }
+}
+
 /// The name of the built-in sample music once a folder takes its place.
 const SAMPLE: &str = "Music (sample)";
 
@@ -151,6 +164,12 @@ pub struct MockSource {
     main_tracks: Option<Vec<(String, Duration)>>,
     last_top: Option<Zoned>,
     last_now: Timestamp,
+    /// Tags that a person changed, by row id.
+    row_meta: std::collections::HashMap<u64, ItemMeta>,
+    /// Deck A stopped at this instant.
+    paused_at: Option<Timestamp>,
+    /// Deck A fades out from this instant over this many seconds.
+    fade: Option<(Timestamp, f32)>,
 }
 
 /// One edit to the timeline.
@@ -168,6 +187,11 @@ enum Op {
         at: Place,
     },
     Lock(u64),
+    /// End the row early at `at`, so the next item starts then.
+    Skip {
+        id: u64,
+        at: Timestamp,
+    },
 }
 
 impl MockSource {
@@ -187,6 +211,11 @@ impl MockSource {
             library.push(LibraryItem {
                 id: 0,
                 path: format!("music/{artist} - {title}.mp3"),
+                meta: ItemMeta {
+                    title: title.clone(),
+                    artist: artist.to_owned(),
+                    ..ItemMeta::default()
+                },
                 title,
                 artist: Some(artist.to_owned()),
                 len,
@@ -201,6 +230,7 @@ impl MockSource {
             library.push(LibraryItem {
                 id: 0,
                 path: format!("{folder}/{file}.wav"),
+                meta: meta::from_title(&title, publish_for(category)),
                 title,
                 artist: None,
                 len,
@@ -233,11 +263,14 @@ impl MockSource {
             main_tracks: None,
             last_top: None,
             last_now: Timestamp::UNIX_EPOCH,
+            row_meta: std::collections::HashMap::new(),
+            paused_at: None,
+            fade: None,
         }
     }
 
     /// Apply the edits to `rows`. It returns false when the rows no longer fit the fixed items.
-    fn apply_ops(&self, rows: &mut Vec<Row>, ops: &[Op], now: Timestamp) -> bool {
+    fn apply_ops(&self, rows: &mut Vec<Row>, ops: &[Op]) -> bool {
         for op in ops {
             match op {
                 Op::Insert { at, id, title, len } => {
@@ -259,6 +292,7 @@ impl MockSource {
                             fixed: None,
                             origin: Origin::Manual,
                             locked: false,
+                            meta: meta::from_title(title, PublishMode::FromTags),
                             ..base
                         },
                     );
@@ -279,9 +313,42 @@ impl MockSource {
                         r.locked = !r.locked;
                     }
                 }
+                Op::Skip { id, at } => {
+                    let Some(i) = rows.iter().position(|r| r.id == *id) else {
+                        continue;
+                    };
+                    let played = remaining(rows[i].start.timestamp(), *at);
+                    if played.is_zero() || played >= rows[i].len {
+                        continue;
+                    }
+                    rows[i].len = played;
+                    let fixed = rows[i + 1..]
+                        .iter()
+                        .position(|r| r.fixed.is_some())
+                        .map_or(rows.len(), |k| i + 1 + k);
+                    let music = rows[i + 1..fixed].iter().any(|r| r.origin == Origin::Main);
+                    if !music {
+                        // Nothing can fill the gap before the fixed item. A filler track starts now.
+                        let list = self.main_tracks.as_ref().unwrap_or(&self.tracks);
+                        let pick = (*id as usize) % list.len().max(1);
+                        if let Some((title, _)) = list.get(pick) {
+                            let mut filler = rows[i].clone();
+                            filler.id = id.wrapping_add(1) | MANUAL_ID;
+                            filler.title.clone_from(title);
+                            filler.meta = meta::from_title(title, PublishMode::FromTags);
+                            filler.len = Duration::ZERO;
+                            filler.origin = Origin::Main;
+                            filler.is_main = true;
+                            filler.fixed = None;
+                            filler.locked = false;
+                            filler.start = at.to_zoned(self.tz.clone());
+                            rows.insert(i + 1, filler);
+                        }
+                    }
+                }
             }
         }
-        fit_all(rows, &self.tz, now)
+        fit_all(rows, &self.tz)
     }
 
     /// The rows of the last snapshot window, with all edits.
@@ -291,7 +358,7 @@ impl MockSource {
         };
         let mut rows = self.rows_from(&top).to_vec();
         let ops = self.ops.clone();
-        self.apply_ops(&mut rows, &ops, self.last_now);
+        self.apply_ops(&mut rows, &ops);
         rows
     }
 
@@ -303,11 +370,59 @@ impl MockSource {
         let mut rows = self.rows_from(&top).to_vec();
         let mut ops = self.ops.clone();
         ops.push(op);
-        if self.apply_ops(&mut rows, &ops, self.last_now) {
+        if self.apply_ops(&mut rows, &ops) {
             self.ops = ops;
             Ok(done)
         } else {
             Err("preview — that does not fit before the next fixed item".to_owned())
+        }
+    }
+
+    /// End the item on air at `at`, so the next item starts then.
+    fn skip_on_air(&mut self, at: Timestamp) -> bool {
+        let rows = self.current();
+        let Some(r) = rows
+            .iter()
+            .find(|r| r.start.timestamp() <= at && at < end_of(r))
+        else {
+            return false;
+        };
+        let op = Op::Skip { id: r.id, at };
+        self.paused_at = None;
+        self.try_op(op, String::new()).is_ok()
+    }
+
+    fn deck_command(&mut self, deck: usize, command: DeckCommand) -> Result<String, String> {
+        let name = ['A', 'B', 'C', 'D'].get(deck).copied().unwrap_or('?');
+        if deck != 0 {
+            return Err(format!(
+                "preview — deck {name} is not on air · {NEEDS_ENGINE}"
+            ));
+        }
+        let now = self.last_now;
+        match command {
+            DeckCommand::PlayPause => {
+                if self.paused_at.take().is_some() {
+                    Ok("preview — deck A plays again; the timeline kept time".to_owned())
+                } else {
+                    self.paused_at = Some(now);
+                    Ok("preview — deck A paused here only; the timeline keeps time".to_owned())
+                }
+            }
+            DeckCommand::Fade(secs) => {
+                self.fade = Some((now, secs));
+                Ok(format!(
+                    "preview — deck A fades out over {secs:.1} s, then the next item starts"
+                ))
+            }
+            DeckCommand::Skip => {
+                self.fade = None;
+                if self.skip_on_air(now) {
+                    Ok("preview — skipped to the next item (not saved)".to_owned())
+                } else {
+                    Err("preview — nothing to skip".to_owned())
+                }
+            }
         }
     }
 
@@ -374,12 +489,13 @@ impl MockSource {
                     item.playlist.to_owned()
                 },
                 color: if main { self.main.color } else { item.color },
-                title: item.title,
                 len: item.len,
                 is_main: main,
                 fixed: item.fixed,
                 origin: if main { Origin::Main } else { Origin::Rule },
                 locked: false,
+                meta: meta::from_title(&item.title, publish_for(item.playlist)),
+                title: item.title,
             });
         };
 
@@ -648,14 +764,15 @@ fn index_of(rows: &[Row], at: Place) -> Option<usize> {
     }
 }
 
-/// The mock may shorten or lengthen this row to fit: a future main row that nobody locked.
-fn adjustable(r: &Row, now: Timestamp) -> bool {
-    r.origin == Origin::Main && !r.locked && r.start.timestamp() > now
+/// The mock may shorten or lengthen this row to fit: a main row that nobody locked.
+/// The mock tries the last rows of an hour first, so past rows rarely change.
+fn adjustable(r: &Row) -> bool {
+    r.origin == Origin::Main && !r.locked
 }
 
 /// Make every fixed row start on its time again. The mock cuts or lengthens future main rows,
 /// then sets each start to the end of the row before. It returns false when a gap stays.
-fn fit_all(rows: &mut Vec<Row>, tz: &TimeZone, now: Timestamp) -> bool {
+fn fit_all(rows: &mut Vec<Row>, tz: &TimeZone) -> bool {
     let mut ok = true;
     let mut p = 0;
     while p < rows.len() {
@@ -680,7 +797,7 @@ fn fit_all(rows: &mut Vec<Row>, tz: &TimeZone, now: Timestamp) -> bool {
                 if owed.is_zero() {
                     break;
                 }
-                if adjustable(r, now) {
+                if adjustable(r) {
                     let cut = owed.min(r.len);
                     r.len -= cut;
                     owed -= cut;
@@ -688,7 +805,7 @@ fn fit_all(rows: &mut Vec<Row>, tz: &TimeZone, now: Timestamp) -> bool {
             }
             ok &= owed.is_zero();
         } else if have < want {
-            match rows[p + 1..f].iter_mut().rev().find(|r| adjustable(r, now)) {
+            match rows[p + 1..f].iter_mut().rev().find(|r| adjustable(r)) {
                 Some(r) => r.len += want - have,
                 None => ok = false,
             }
@@ -782,9 +899,21 @@ impl ViewSource for MockSource {
             .unwrap_or_else(|_| local.clone());
         self.last_top = Some(top.clone());
         self.last_now = now;
+        if let Some((from, secs)) = self.fade {
+            let end = SignedDuration::try_from_secs_f32(secs).map_or(from, |d| from + d);
+            if now >= end {
+                self.fade = None;
+                self.skip_on_air(end);
+            }
+        }
         let mut all = self.rows_from(&top).to_vec();
         let ops = self.ops.clone();
-        self.apply_ops(&mut all, &ops, now);
+        self.apply_ops(&mut all, &ops);
+        for r in &mut all {
+            if let Some(m) = self.row_meta.get(&r.id) {
+                r.meta = m.clone();
+            }
+        }
         let since = now
             .checked_sub(SignedDuration::from_hours(PAST_HOURS))
             .unwrap_or(now);
@@ -804,8 +933,19 @@ impl ViewSource for MockSource {
             remaining(rows[i].start.timestamp(), now)
         });
         let at = |k: usize| on_air.and_then(|i| rows.get(i + k));
+        let a_state = if self.fade.is_some() {
+            DeckState::Fading
+        } else if self.paused_at.is_some() {
+            DeckState::Paused
+        } else {
+            DeckState::Playing
+        };
+        let elapsed = match self.paused_at {
+            Some(p) => on_air.map_or(elapsed, |i| remaining(rows[i].start.timestamp(), p)),
+            None => elapsed,
+        };
         let decks = [
-            deck('A', at(0), DeckState::Playing, elapsed),
+            deck('A', at(0), a_state, elapsed),
             deck('B', at(1), DeckState::Ready, Duration::ZERO),
             deck('C', at(2), DeckState::Ready, Duration::ZERO),
             deck('D', at(3), DeckState::Ready, Duration::ZERO),
@@ -820,6 +960,7 @@ impl ViewSource for MockSource {
             tabs: self.tabs.clone(),
             main: self.main.clone(),
             main_playlist: self.main.name.clone(),
+            station: STATION.to_owned(),
             meters,
             history,
             library: self.library.clone(),
@@ -860,6 +1001,7 @@ impl ViewSource for MockSource {
             let id = self.library.iter().map(|l| l.id).max().unwrap_or(0) + 1;
             self.library.push(LibraryItem {
                 id,
+                meta: meta::from_title(&name, PublishMode::FromTags),
                 title: name,
                 artist: None,
                 len: Duration::ZERO,
@@ -900,7 +1042,7 @@ impl ViewSource for MockSource {
                     return Err("preview — no timeline yet".to_owned());
                 };
                 let mut rows = self.rows_from(&top).to_vec();
-                if self.apply_ops(&mut rows, &ops, self.last_now) {
+                if self.apply_ops(&mut rows, &ops) {
                     self.ops = ops;
                     Ok(not_saved(format!("removed {n} rows")))
                 } else {
@@ -1014,6 +1156,23 @@ impl ViewSource for MockSource {
                     None => Err("preview — the item is already at the end".to_owned()),
                 }
             }
+            Edit::SetMeta(list) => {
+                let n = list.len();
+                for (target, m) in list {
+                    match target {
+                        MetaTarget::Row(id) => {
+                            self.row_meta.insert(id, m);
+                        }
+                        MetaTarget::Library(id) => {
+                            if let Some(l) = self.library.iter_mut().find(|l| l.id == id) {
+                                l.meta = m;
+                            }
+                        }
+                    }
+                }
+                Ok(not_saved(format!("changed the tags of {n} items")))
+            }
+            Edit::Deck { deck, command } => self.deck_command(deck, command),
             Edit::AssignCart { cart, item } => {
                 let label = match item {
                     Some(id) => match self.library_item(id) {
@@ -1054,6 +1213,7 @@ impl ViewSource for MockSource {
             len,
             category: "Unsorted".to_owned(),
             path: "—".to_owned(),
+            meta: meta::from_title(title, PublishMode::FromTags),
         });
         Some(id)
     }

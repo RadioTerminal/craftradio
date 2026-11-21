@@ -112,7 +112,7 @@ pub(crate) fn show(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: 
             }
             if state.icecast.open {
                 settings::section(ui, "Icecast", t, |ui| {
-                    icecast_settings(ui, &mut state.icecast, t)
+                    icecast_settings(ui, view, &mut state.icecast, t)
                 });
             }
             let mut open_settings = false;
@@ -319,9 +319,21 @@ fn mixer_settings(ui: &mut egui::Ui, view: &StationView, state: &mut State, t: &
         });
 }
 
-fn icecast_settings(ui: &mut egui::Ui, ice: &mut Icecast, t: &Tokens) {
+fn icecast_settings(ui: &mut egui::Ui, view: &StationView, ice: &mut Icecast, t: &Tokens) {
     let status = RichText::new("Icecast ○ not connected — preview").font(theme::text(theme::LABEL));
     ui.label(status.color(t.text_muted));
+    let now = crate::meta::streaming_before(view.history.iter(), None, &view.station);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Now streaming:").color(t.text_muted));
+        let text = RichText::new(format!("“{now}”")).font(theme::mono(theme::CODE));
+        ui.label(text.color(t.accent_ink));
+    });
+    let note = "The stream would carry this text. The preview sends nothing.";
+    ui.label(
+        RichText::new(note)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+    );
     ui.add_space(space::S);
     let formats: Vec<String> = FORMATS.iter().map(|f| (*f).to_owned()).collect();
     let rates: Vec<String> = BITRATES.iter().map(|b| format!("{b} kbit/s")).collect();
