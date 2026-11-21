@@ -432,3 +432,26 @@ fn first_event_keeps_its_floor_when_everything_before_it_is_dropped() {
         )));
     }
 }
+
+#[test]
+fn locked_entry_keeps_start_when_material_is_displaced_before_it() {
+    // A hard event 60 s in drops track 1, which then queues in front of locked track 3.
+    let st = make_station(tracks(1, 8, 180), vec![(jingle(100, 60), 0)], Vec::new());
+    let mut tl = timeline(&st, &[(at(60), FixMode::Hard)]);
+    for e in tl.entries.iter_mut() {
+        e.locked = e.item == ItemId(3);
+    }
+    let locked_at = tl.entries.iter().find(|e| e.locked).unwrap().start;
+    fit(&st, &mut tl);
+    let locked = tl.entries.iter().position(|e| e.locked).unwrap();
+    assert_eq!(tl.entries[locked].start, locked_at);
+    let prev = &tl.entries[locked - 1];
+    let item = find(&st, prev.item).0;
+    let handover = prev.start + radio_timing::advance(item, Some(item)) - prev.trim;
+    assert!(handover <= locked_at, "nothing runs into the locked entry");
+    assert!(
+        !tl.warnings
+            .iter()
+            .any(|w| matches!(w, Warning::LockedMoved { .. }))
+    );
+}

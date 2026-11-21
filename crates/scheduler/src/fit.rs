@@ -1,5 +1,5 @@
 use crate::constraints::item_ok;
-use crate::{Entry, Origin, PlayHistory, Played, Timeline, Warning, allowed};
+use crate::{Entry, Fixed, Origin, PlayHistory, Played, Timeline, Warning, allowed};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use radio_model::{FixMode, Item, ItemId, Playlist, PlaylistId, Station};
@@ -149,6 +149,9 @@ const MAX_TRIM: Duration = Duration::from_secs(30);
 /// How many entries after a fixed event the reorder step may pull in front of it.
 const LOOKAHEAD: usize = 10;
 
+/// The least a trimmed entry may still play; shorter, it is dropped instead.
+const MIN_PLAY: Duration = Duration::from_secs(1);
+
 /// How often the reorder and fill steps re-run after a rotation rule rejects their choice.
 const RETRIES: usize = 3;
 
@@ -218,7 +221,11 @@ impl<'a> Fitter<'a> {
         e.fixed.is_none() && !e.locked && self.item(e).is_some_and(|i| i.trimmable)
     }
 
+    /// A locked entry outranks every fixed event; a fixed one has its playlist's priority.
     fn priority(&self, e: &Entry) -> i32 {
+        if e.fixed.is_none() {
+            return i32::MAX;
+        }
         self.playlist(e.playlist).map_or_else(
             || e.fixed.as_ref().map_or(0, |f| f.priority),
             |p| p.priority,
@@ -376,6 +383,30 @@ struct Fit<'f, 'a> {
     head: usize,
     ev: &'f Entry,
     target: Timestamp,
+    hard: bool,
+}
+
+/// A place in the order the reorder step produces or started from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tok {
+    Win(usize),
+    Event,
+    Next,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    Free,
+    /// Never selected.
+    Banned,
+    /// Always kept before the event.
+    Forced,
+}
+
+/// The token before `t` in `list`.
+fn prev_of(list: &[Tok], t: Tok) -> Option<Tok> {
+    let pos = list.iter().position(|x| *x == t)?;
+    list.get(pos.checked_sub(1)?).copied()
 }
 
 impl Fit<'_, '_> {
@@ -428,36 +459,65 @@ impl Fit<'_, '_> {
         }
     }
 
-    /// Chooses which `window` entries play before the event. A choice that breaks a rotation
-    /// rule (checked for every pulled-forward entry and every new neighbour pair) bans the
-    /// offending entry and searches again, at most `RETRIES` times; then the original order.
-    fn choose(&self, seg: &[Entry], window: &[(Entry, bool)], gap: Duration) -> Vec<bool> {
+    /// Chooses which `window` entries play before the event. The order it makes is checked
+    /// against the rotation rules: every pulled-forward entry, and every entry whose
+    /// neighbour before it changed, the event's displaced entries and `next` (the flow entry
+    /// after the window) included. A failure bans the offending choice (or forces a displaced
+    /// entry to stay before the event) and searches again, at most `RETRIES` times; then
+    /// the original order.
+    fn choose(
+        &self,
+        seg: &[Entry],
+        window: &[(Entry, bool)],
+        next: Option<&Entry>,
+        gap: Duration,
+    ) -> Vec<bool> {
         let f = self.f;
         let cursor = f.arrival(self.base, seg, window.first().map_or(self.ev, |(e, _)| e));
-        let mut banned = vec![false; window.len()];
+        let n = window.len();
+        let next_tok = next.map(|_| Tok::Next);
+        let original: Vec<Tok> = (0..n)
+            .filter(|&j| window[j].1)
+            .map(Tok::Win)
+            .chain([Tok::Event])
+            .chain((0..n).filter(|&j| !window[j].1).map(Tok::Win))
+            .chain(next_tok)
+            .collect();
+        let mut picks = vec![Pick::Free; n];
         for _ in 0..=RETRIES {
             let cands: Vec<_> = window
                 .iter()
-                .zip(&banned)
-                .map(|((e, before), &ban)| {
-                    // A banned entry looks like an unmovable later one: never selected.
-                    let (movable, before) = if ban {
-                        (false, false)
-                    } else {
-                        (f.movable(e), *before)
+                .zip(&picks)
+                .map(|((e, before), pick)| {
+                    // Banned looks like an unmovable later entry, forced like an earlier one.
+                    let (movable, before) = match pick {
+                        Pick::Banned => (false, false),
+                        Pick::Forced => (false, true),
+                        Pick::Free => (f.movable(e), *before),
                     };
                     (f.natural(e), movable, before)
                 })
                 .collect();
             let keep = self.two_pass(seg, window, &cands, cursor, gap);
-            let kept: Vec<usize> = (0..window.len()).filter(|&j| keep[j]).collect();
+            let order: Vec<Tok> = (0..n)
+                .filter(|&j| keep[j])
+                .map(Tok::Win)
+                .chain([Tok::Event])
+                .chain((0..n).filter(|&j| !keep[j]).map(Tok::Win))
+                .chain(next_tok)
+                .collect();
             let mut full = seg.to_vec();
-            full.extend(kept.iter().map(|&j| window[j].0.clone()));
-            let (starts, _) = f.times(self.base, &full, Some(self.ev));
+            full.extend(order.iter().filter_map(|t| match t {
+                Tok::Win(j) => Some(window[*j].0.clone()),
+                Tok::Event => Some(self.ev.clone()),
+                Tok::Next => next.cloned(),
+            }));
+            let (starts, _) = f.times(self.base, &full, None);
             let mut check = vec![false; full.len()];
-            for (pos, &j) in kept.iter().enumerate() {
-                let moved_prev = j.checked_sub(1) != pos.checked_sub(1).map(|q| kept[q]);
-                check[seg.len() + pos] = !window[j].1 || moved_prev;
+            for (pos, &t) in order.iter().enumerate() {
+                let pulled = matches!(t, Tok::Win(j) if keep[j] && !window[j].1);
+                let rewired = prev_of(&order, t) != prev_of(&original, t);
+                check[seg.len() + pos] = t != Tok::Event && (pulled || rewired);
             }
             let h = self.head.min(full.len());
             let Some(bad) = f.first_violation(
@@ -469,18 +529,30 @@ impl Fit<'_, '_> {
             ) else {
                 return keep;
             };
-            let Some(pos) = (bad + h).checked_sub(seg.len()) else {
+            let Some(&tok) = (bad + h)
+                .checked_sub(seg.len())
+                .and_then(|pos| order.get(pos))
+            else {
                 break;
             };
-            let j = kept[pos];
-            if f.movable(&window[j].0) {
-                banned[j] = true;
-            } else if let Some(&p) = pos.checked_sub(1).and_then(|q| kept.get(q))
-                && f.movable(&window[p].0)
-            {
-                banned[p] = true;
-            } else {
-                break;
+            let free_movable = |j: usize| picks[j] == Pick::Free && f.movable(&window[j].0);
+            match (tok, prev_of(&order, tok)) {
+                // Kept but rejected: ban it, or the movable entry now before it.
+                (Tok::Win(j), _) if keep[j] && free_movable(j) => picks[j] = Pick::Banned,
+                (Tok::Win(j), Some(Tok::Win(p))) if keep[j] && keep[p] && free_movable(p) => {
+                    picks[p] = Pick::Banned
+                }
+                // Displaced and rejected after the event, or the entry it now leads into:
+                // keep the displaced original-before entry in front of the event instead.
+                (Tok::Win(j), _) if !keep[j] && window[j].1 && free_movable(j) => {
+                    picks[j] = Pick::Forced
+                }
+                (Tok::Win(_) | Tok::Next, Some(Tok::Win(p)))
+                    if !keep[p] && window[p].1 && free_movable(p) =>
+                {
+                    picks[p] = Pick::Forced
+                }
+                _ => break,
             }
         }
         window.iter().map(|(_, before)| *before).collect()
@@ -535,7 +607,7 @@ impl Fit<'_, '_> {
                 },
                 None => {
                     // A hard event must not be made late by an item that cannot be faded.
-                    let overshoots = is_hard(self.ev)
+                    let overshoots = self.hard
                         && reached > self.target
                         && fills.last().is_some_and(|e| !f.trimmable(e));
                     match picked.last() {
@@ -558,11 +630,17 @@ impl Fit<'_, '_> {
 ///    neighbours are checked against their playlists' rotation rules.
 /// 2. **Fill** a remaining gap from the enabled fill-pool playlists, checked with the
 ///    playlists' constraints and item validity.
-/// 3. **Trim**: before a `Hard` event the entry on air is faded to finish at the target.
+/// 3. **Trim**: before a `Hard` event the entry on air is faded to finish at the target
+///    (an entry that would be left under 1 s is moved after the event instead).
 ///    Before a `Soft` event it is faded early by at most 30 s, and only when the event
 ///    would be later than its tolerance. Locked and non-trimmable items (ads) never are.
 /// 4. **Alarm**: outside tolerance gives `Warning::OutsideTolerance`. Silence before any
 ///    entry gives `Warning::DeadAir`.
+///
+/// Locked entries are anchors fitted the same way, as a hard event with zero tolerance at
+/// their own start (handing over at the previous entry's segue). Material that does not fit
+/// before one moves after it. Only a non-trimmable item in the way makes a locked entry
+/// start late, with `Warning::LockedMoved`. A locked entry outranks any fixed event.
 ///
 /// Overlapping fixed entries: the higher playlist priority keeps its time (then the
 /// earlier target, then the earlier listed); the other starts right after it and gets
@@ -595,8 +673,11 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             .flat_map(|p| p.items.iter().map(|i| (i.id, i)))
             .collect(),
     };
-    let (events, flow): (Vec<Entry>, Vec<Entry>) =
-        tl.entries.drain(..).partition(|e| e.fixed.is_some());
+    // Locked entries are anchors too: fitted like a hard event at their own start.
+    let (events, flow): (Vec<Entry>, Vec<Entry>) = tl
+        .entries
+        .drain(..)
+        .partition(|e| e.fixed.is_some() || e.locked);
     let mut flow = VecDeque::from(flow);
     let slots = f.resolve(&events);
     let mut order: Vec<usize> = (0..events.len()).collect();
@@ -606,9 +687,13 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
     let mut out: Vec<Entry> = Vec::with_capacity(events.len() + flow.len());
     for (k, &i) in order.iter().enumerate() {
         let ev = &events[i];
-        let Some(fx) = ev.fixed.clone() else {
-            continue;
-        };
+        let lock = ev.fixed.is_none();
+        let fx = ev.fixed.clone().unwrap_or(Fixed {
+            target: ev.start,
+            mode: FixMode::Hard,
+            tolerance: Duration::ZERO,
+            priority: i32::MAX,
+        });
         let target = fx.target;
         let head = out.pop();
         let base = head.as_ref().map_or(t0, |e| e.start);
@@ -620,6 +705,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             head: seg.len(),
             ev,
             target,
+            hard: fx.mode == FixMode::Hard,
         };
         let mut steps = Vec::new();
 
@@ -641,17 +727,13 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             while flow.front().is_some_and(|e| e.start < target) {
                 window.extend(flow.pop_front().map(|e| (e, true)));
             }
-            // A locked entry is a boundary: what is before it is not reordered.
-            if let Some(last_locked) = window.iter().rposition(|(e, _)| e.locked) {
-                seg.extend(window.drain(..=last_locked).map(|(e, _)| e));
-            }
             let fixed_len = seg.len();
             let next_slot = order.get(k + 1).map(|&j| slots[j]);
             let mut ahead = 0;
             while ahead < LOOKAHEAD
                 && flow
                     .front()
-                    .is_some_and(|e| !e.locked && next_slot.is_none_or(|n| e.start < n))
+                    .is_some_and(|e| next_slot.is_none_or(|n| e.start < n))
             {
                 window.extend(flow.pop_front().map(|e| (e, false)));
                 ahead += 1;
@@ -664,7 +746,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             } else {
                 Duration::ZERO
             };
-            let keep = fit.choose(&seg, &window, gap);
+            let keep = fit.choose(&seg, &window, flow.front(), gap);
             let mut moved = window
                 .iter()
                 .zip(&keep)
@@ -707,25 +789,43 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
                         }
                     }
                 }
-                let arr = f.arrival(base, &seg, ev);
-                let late = if arr > target {
-                    apart(arr, target)
-                } else {
-                    Duration::ZERO
-                };
-                let wait = fx.mode == FixMode::Soft && late <= fx.tolerance;
-                if let Some(last) = seg.last().filter(|e| !wait && f.trimmable(e)) {
+                // Fade the last entry; one that would be left under MIN_PLAY goes instead.
+                for _ in 0..=seg.len() {
+                    let arr = f.arrival(base, &seg, ev);
+                    if arr <= target {
+                        break;
+                    }
+                    let late = apart(arr, target);
+                    if fx.mode == FixMode::Soft && late <= fx.tolerance {
+                        break;
+                    }
+                    let Some(last) = seg.last().filter(|e| f.trimmable(e)) else {
+                        break;
+                    };
                     let cap = match fx.mode {
                         FixMode::Hard => Duration::MAX,
                         FixMode::Soft => MAX_TRIM.saturating_sub(last.trim),
                     };
-                    let by = late.min(cap).min(f.step(last, Some(ev)));
-                    if by > Duration::ZERO {
-                        if let Some(last) = seg.last_mut() {
-                            last.trim = last.trim.saturating_add(by);
+                    let play = f.step(last, Some(ev));
+                    let by = late.min(cap).min(play);
+                    if play.saturating_sub(by) < MIN_PLAY {
+                        let droppable = last.origin == Origin::Fill || f.movable(last);
+                        if seg.len() <= fixed_len || !droppable {
+                            break;
                         }
+                        if let Some(e) = seg.pop().filter(|e| e.origin != Origin::Fill) {
+                            flow.push_front(e);
+                            moved += 1;
+                        }
+                        continue;
+                    }
+                    if by > Duration::ZERO
+                        && let Some(last) = seg.last_mut()
+                    {
+                        last.trim = last.trim.saturating_add(by);
                         trimmed = Some(by);
                     }
+                    break;
                 }
             }
             if moved > 0 {
@@ -750,7 +850,14 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
         let planned = f.arrival(base, &seg, ev);
         let error = planned.duration_since(target);
         let miss = error.unsigned_abs();
-        if slots[i] != target {
+        if lock {
+            if error.is_positive() {
+                tl.warnings.push(Warning::LockedMoved {
+                    item: ev.item,
+                    by: miss,
+                });
+            }
+        } else if slots[i] != target {
             tl.warnings.push(Warning::FixedConflict {
                 playlist: ev.playlist,
                 wanted: target,
@@ -764,20 +871,22 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
             });
         }
         let within_tolerance = miss <= fx.tolerance;
-        if !within_tolerance {
+        if !lock && !within_tolerance {
             tl.warnings.push(Warning::OutsideTolerance {
                 playlist: ev.playlist,
                 error,
             });
         }
-        tl.fits.push(FitResult {
-            playlist: ev.playlist,
-            target,
-            planned,
-            error,
-            within_tolerance,
-            steps,
-        });
+        if !lock {
+            tl.fits.push(FitResult {
+                playlist: ev.playlist,
+                target,
+                planned,
+                error,
+                within_tolerance,
+                steps,
+            });
+        }
         let head = fit.head;
         seg.push(ev.clone());
         f.reflow(&mut seg, base);
@@ -793,8 +902,9 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
 }
 
 /// Replaces the timeline's `DeadAir` warnings with the silences of the re-flowed `out`:
-/// before its first entry (from `t0`, or earlier where an old warning began) (up to the horizon the old warnings reached),
-/// and between any two entries.
+/// before its first entry (from `t0`, or earlier where an old warning began), between any
+/// two entries, and after the real end of the last one up to the horizon the old
+/// warnings reached.
 fn dead_air(f: &Fitter, tl: &mut Timeline, out: &[Entry], t0: Timestamp) {
     let mut old = Vec::new();
     tl.warnings.retain(|w| match w {
@@ -820,6 +930,6 @@ fn dead_air(f: &Fitter, tl: &mut Timeline, out: &[Entry], t0: Timestamp) {
         push(later(w[0].start, f.step(&w[0], Some(&w[1]))), w[1].start);
     }
     if let (Some(last), Some(end)) = (out.last(), old.iter().map(|o| o.1).max()) {
-        push(later(last.start, f.natural(last)), end);
+        push(later(last.start, f.step(last, None)), end);
     }
 }

@@ -68,6 +68,11 @@ pub enum Warning {
         playlist: PlaylistId,
         error: SignedDuration,
     },
+    /// A locked entry could not keep its start: a non-trimmable item ran into it.
+    LockedMoved {
+        item: ItemId,
+        by: Duration,
+    },
     /// The station's time zone is unknown; local-time rules were checked in UTC.
     UnknownTimeZone {
         tz: String,
