@@ -110,7 +110,13 @@ struct Fit {
     pending: bool,
     /// The frames since the request, so a request that never settles ends.
     waited: u8,
+    /// The natural width of the content, from the last sizing pass, and when it ran.
+    natural_w: Option<f32>,
+    measured: Option<std::time::Instant>,
 }
+
+/// A sizing pass measures the natural width of the content this often.
+const MEASURE_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// A size request settles within this many frames, even when the window system takes
 /// several steps or clamps it.
@@ -328,6 +334,20 @@ fn native(
                 return ui.input(|i| i.viewport().close_requested());
             }
             let out = egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+                // Now and then an invisible sizing pass finds the natural width of the content.
+                // Content that fills the width cannot tell it, so the window can get narrower.
+                if fit.measured.is_none_or(|at| at.elapsed() >= MEASURE_EVERY) {
+                    let rect = egui::Rect::from_min_size(ui.min_rect().min, max);
+                    let mut probe = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .sizing_pass()
+                            .invisible(),
+                    );
+                    add(&mut probe);
+                    fit.natural_w = Some(probe.min_rect().width());
+                    fit.measured = Some(std::time::Instant::now());
+                }
                 if w.is_list() {
                     // A list scrolls by itself: its width counts, and its height is fixed.
                     add(ui);
@@ -337,7 +357,11 @@ fn native(
                 }
             });
             let margin = frame.total_margin().sum();
-            let want = desired(w, out.inner, margin, min, max);
+            let mut content = out.inner;
+            if let Some(natural) = fit.natural_w {
+                content.x = content.x.min(natural);
+            }
+            let want = desired(w, content, margin, min, max);
             if let Some(now) = ui.input(|i| i.viewport().inner_rect.map(|r| r.size())) {
                 // A size that changes by itself to another size than the asked size is a
                 // resize by hand.
