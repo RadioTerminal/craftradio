@@ -268,7 +268,7 @@ impl EngineSource {
         for p in paths {
             let path = Path::new(p);
             if path.is_dir() {
-                let list = radio_library::list_audio(path, false, self.limits);
+                let list = radio_library::list_audio(path, true, self.limits);
                 skipped += list.errors.len();
                 files.extend(list.files);
             } else {
@@ -908,6 +908,16 @@ impl EngineSource {
                 self.run_audio(Command::CartFire { page, slot })
             }
             Edit::StopCarts => self.run_audio(Command::CartStopAll),
+            Edit::RemoveDuplicates { playlist } => {
+                let p = self.playlist_id(&playlist)?;
+                let items = self.duplicate_items(p);
+                if items.is_empty() {
+                    return Ok(0);
+                }
+                let n = items.len();
+                self.run_edit(Command::PlaylistRemoveItems { playlist: p, items })?;
+                Ok(n)
+            }
             Edit::AddFolder { path } => self.add_folder(&path),
             Edit::RemoveFolder { path } => self.remove_folder(&path),
             Edit::Rescan { folder } => self.rescan(&folder),
@@ -1099,6 +1109,22 @@ impl EngineSource {
             .map(|item| self.add_file(item, category))
             .collect();
         Imported { ids, skipped }
+    }
+
+    /// The items of a playlist whose file an earlier item of it has already.
+    pub(crate) fn duplicate_items(&self, playlist: PlaylistId) -> Vec<ItemId> {
+        let mut seen = std::collections::HashSet::new();
+        self.state
+            .station
+            .playlists
+            .iter()
+            .filter(|p| p.id == playlist)
+            .flat_map(|p| p.items.iter())
+            .filter_map(|i| match &i.source {
+                Source::File { path } if !seen.insert(path.clone()) => Some(i.id),
+                _ => None,
+            })
+            .collect()
     }
 
     pub(crate) fn find_ref(&self, title: &str) -> Option<u64> {

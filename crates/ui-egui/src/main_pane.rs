@@ -292,6 +292,9 @@ fn empty_menu(ui: &mut egui::Ui, view: &StationView, link: &Linked, actions: &mu
     if context_menu::menu_item_if(ui, link.has_clip, "Paste", Some(context_menu::PASTE)) {
         actions.push(Action::Paste(PasteTo::Main(Place::End)));
     }
+    if context_menu::menu_item(ui, "Remove duplicates…", None) {
+        actions.push(Action::RemoveDuplicates(view.main.name.clone()));
+    }
     if context_menu::menu_item(ui, "From library…", None) {
         actions.push(Action::OpenWindow(ToolWindow::Library));
         actions.push(Action::Toast(

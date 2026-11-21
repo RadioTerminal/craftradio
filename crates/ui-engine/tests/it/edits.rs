@@ -20,7 +20,8 @@ fn titles(
 #[test]
 fn added_files_show_in_the_timeline_and_undo_removes_them() {
     let d = dir();
-    let song = track(1, "Song", &wav(&d, "song", 3.0), 3.0);
+    // The song on air outlasts the test, so the new files never go on air during it.
+    let song = track(1, "Song", &wav(&d, "song", 30.0), 30.0);
     let (mut source, clock) = source(vec![song]);
     let view = wait_for(&mut source, &clock, |v| !v.rows.is_empty());
     let main = view.main_playlist.clone();

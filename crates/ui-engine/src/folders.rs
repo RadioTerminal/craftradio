@@ -344,10 +344,24 @@ impl EngineSource {
                 Err(e) => push_bounded(&mut self.watch_errors, e.to_string()),
             }
         }
+        let mut added_now: Vec<(PlaylistId, String)> = Vec::new();
         for (playlist, change) in changes {
             match change {
                 WatchEvent::Added(path) => {
                     let path = path.to_string_lossy().into_owned();
+                    // A path that the playlist holds already is no new item.
+                    let held = self
+                        .state
+                        .station
+                        .playlists
+                        .iter()
+                        .filter(|p| p.id == playlist)
+                        .flat_map(|p| p.items.iter())
+                        .any(|i| matches!(&i.source, Source::File { path: p } if *p == path));
+                    if held || added_now.contains(&(playlist, path.clone())) {
+                        continue;
+                    }
+                    added_now.push((playlist, path.clone()));
                     let Some(item) = file_item(&path) else {
                         continue;
                     };

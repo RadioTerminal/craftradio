@@ -845,6 +845,11 @@ pub enum Edit {
     },
     /// Stop every cart that plays.
     StopCarts,
+    /// Remove the items of a playlist whose file another item of it has already. The first
+    /// item of each file stays.
+    RemoveDuplicates {
+        playlist: String,
+    },
     /// Undo the last playlist edit.
     Undo,
     /// Do again the last edit that Undo took back.
@@ -958,6 +963,12 @@ pub trait ViewSource {
     fn use_as_main(&mut self, name: &str) -> Result<(), String> {
         let _ = name;
         Err(NOT_SUPPORTED.to_owned())
+    }
+
+    /// The number of items of `playlist` whose file another item of it has already.
+    fn duplicates(&self, playlist: &str) -> usize {
+        let _ = playlist;
+        0
     }
 
     /// The exact stream title that Icecast gets for `row`, at its place in the timeline.

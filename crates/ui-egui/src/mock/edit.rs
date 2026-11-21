@@ -156,6 +156,29 @@ impl MockSource {
                 _ => Err(gone("that cart")),
             },
             Edit::StopCarts => Ok(1),
+            Edit::RemoveDuplicates { playlist } => {
+                let Some(tab) = self.tab_mut(&playlist) else {
+                    return Err(gone(&format!("the playlist {playlist}")));
+                };
+                let mut seen = std::collections::HashSet::new();
+                let mut gone_n = 0;
+                let mut k = 0;
+                while k < tab.items.len() {
+                    if seen.insert(tab.items[k].0.clone()) {
+                        k += 1;
+                    } else {
+                        tab.items.remove(k);
+                        if k < tab.weights.len() {
+                            tab.weights.remove(k);
+                        }
+                        if k < tab.ids.len() {
+                            tab.ids.remove(k);
+                        }
+                        gone_n += 1;
+                    }
+                }
+                Ok(gone_n)
+            }
             Edit::StopAfterCurrent(on) => {
                 self.stop_after_current = on;
                 Ok(1)

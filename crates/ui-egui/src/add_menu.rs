@@ -95,14 +95,20 @@ pub(crate) fn items(
             }));
         }
     }
-    if menu_item(ui, "Add folder…", None)
-        && let Some(dir) = rfd::FileDialog::new().pick_folder()
-    {
-        actions.push(Action::Edit(Edit::AddFolderItems {
-            playlist: playlist.to_owned(),
-            path: dir.display().to_string(),
-            recursive: false,
-        }));
+    // A folder brings the files of its subfolders too, unless a person picks the top level.
+    for (label, recursive) in [
+        ("Add folder…", true),
+        ("Add folder, top level only…", false),
+    ] {
+        if menu_item(ui, label, None)
+            && let Some(dir) = rfd::FileDialog::new().pick_folder()
+        {
+            actions.push(Action::Edit(Edit::AddFolderItems {
+                playlist: playlist.to_owned(),
+                path: dir.display().to_string(),
+                recursive,
+            }));
+        }
     }
     if menu_item(ui, "Add URL…", None) {
         actions.push(Action::AddDialog(AddDialog::Url {

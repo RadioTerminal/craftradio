@@ -98,7 +98,8 @@ fn folder_for(music: &Path, part: &str) -> PathBuf {
     if let Some(first) = name.get_mut(..1) {
         first.make_ascii_uppercase();
     }
-    music.join(name)
+    // Beside Music, not in it: the Music playlist takes the subfolders of Music.
+    music.parent().unwrap_or(music).join(name)
 }
 
 /// Imports the example station with its files under `<dir>/Music`. Items whose file is
@@ -141,7 +142,7 @@ fn seed_example(engine: &mut Engine, dir: &Path) -> Result<Seeded, String> {
     for (playlist, home) in sources {
         let source = FolderSource {
             path: home.to_string_lossy().into_owned(),
-            recursive: false,
+            recursive: true,
             watch: true,
         };
         let source = serde_json::to_value(&source).map_err(|e| e.to_string())?;

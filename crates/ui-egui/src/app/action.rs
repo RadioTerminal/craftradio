@@ -67,6 +67,8 @@ pub(crate) enum Action {
     UseAsMain(String),
     /// Open a dialog that adds a stream or the live input.
     AddDialog(AddDialog),
+    /// Count the duplicates of a playlist, then ask before removing them.
+    RemoveDuplicates(String),
     /// Make a playlist from a folder of the library, and maybe make it main.
     FolderPlaylist {
         path: String,
@@ -134,6 +136,7 @@ fn describe_real(edit: &Edit, n: usize) -> String {
         Edit::RemoveCartPage { .. } => "Removed the page".to_owned(),
         Edit::SetCart { cart, .. } => format!("Changed cart {}", cart + 1),
         Edit::FireCart { cart } => format!("Fired cart {}", cart + 1),
+        Edit::RemoveDuplicates { playlist } => format!("Removed {n} duplicates from {playlist}"),
         Edit::StopCarts => "Stopped all carts".to_owned(),
         Edit::AddFolder { path } => format!("Reading the audio files of {path}"),
         Edit::RemoveFolder { path } => format!("Removed {path} from the Library"),
@@ -204,6 +207,7 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         Edit::RemoveCartPage { .. } => "removed the page".to_owned(),
         Edit::SetCart { cart, .. } => format!("changed cart {}", cart + 1),
         Edit::FireCart { cart } => format!("cart {} flashes; no audio", cart + 1),
+        Edit::RemoveDuplicates { playlist } => format!("removed {n} duplicates from {playlist}"),
         Edit::StopCarts => "stopped all carts; no audio".to_owned(),
         Edit::AddFolder { path } => format!("read {n} audio files from {path}"),
         Edit::RemoveFolder { path } => format!("removed {path} from the Library"),
@@ -379,6 +383,20 @@ impl RadioApp {
             }
             Action::Rename(name) => self.rename = Some((name.clone(), name)),
             Action::AddDialog(d) => self.add_dialog = Some(d),
+            Action::RemoveDuplicates(name) => {
+                let n = self.source.duplicates(&name);
+                if n == 0 {
+                    self.toast(ctx, format!("{name} has no duplicate items"));
+                } else {
+                    self.confirm = Some(Confirm {
+                        text: format!(
+                            "Remove {n} duplicate items from {name}? The first item of each file stays. You can undo it."
+                        ),
+                        yes: "Remove duplicates".to_owned(),
+                        then: Action::Edit(Edit::RemoveDuplicates { playlist: name }),
+                    });
+                }
+            }
             Action::UseAsMain(name) => {
                 let text = match self.source.use_as_main(&name) {
                     Ok(()) => self.done(format!("{name} is the main playlist now")),
@@ -389,7 +407,7 @@ impl RadioApp {
             Action::FolderPlaylist { path, main } => {
                 let folder = FolderSource {
                     path,
-                    recursive: false,
+                    recursive: true,
                     watch: false,
                 };
                 match self.source.playlist_from_folder(folder) {

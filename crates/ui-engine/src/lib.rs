@@ -753,6 +753,11 @@ impl ViewSource for EngineSource {
         self.set_main(name)
     }
 
+    fn duplicates(&self, playlist: &str) -> usize {
+        self.playlist_id(playlist)
+            .map_or(0, |p| self.duplicate_items(p).len())
+    }
+
     fn stream_title(&self, row: &Row) -> String {
         let previous = self
             .previous

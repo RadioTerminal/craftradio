@@ -90,6 +90,11 @@ impl Watcher {
                     continue;
                 }
                 let change = match event.kind {
+                    // macOS reports later writes to a new file with its "created" flag still
+                    // set. A path that the watch knows already is a change, not a new file.
+                    EventKind::Create(_) if self.seen.contains(&path) => {
+                        WatchEvent::Changed(path.clone())
+                    }
                     EventKind::Create(_) => WatchEvent::Added(path.clone()),
                     EventKind::Remove(_) => WatchEvent::Removed(path.clone()),
                     EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
