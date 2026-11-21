@@ -26,14 +26,26 @@ pub struct CompressorSettings {
 }
 
 impl Default for CompressorSettings {
-    /// Off, with a gentle broadcast setting for material at about −18 LUFS.
+    /// Off, with a gentle broadcast setting for music and speech at about −18 LUFS:
+    ///
+    /// - Threshold −18 dBFS: the compressor acts on the louder half of normal programme,
+    ///   and leaves quiet passages alone.
+    /// - Ratio 2.5:1: it evens out level jumps between items and does not squash them.
+    /// - Attack 15 ms: the first transient of a drum or a consonant passes, so the sound
+    ///   keeps its punch. The limiter after the compressor catches the peaks.
+    /// - Release 250 ms: the gain comes back over about a word or a beat, so it does not
+    ///   pump on speech or between notes.
+    /// - Makeup 0 dB: the compressor makes Program no louder. The operator sets the level.
+    ///
+    /// The bisque compressor has a hard knee only. The low ratio keeps the bend at the
+    /// threshold gentle, so a soft knee is not necessary here.
     fn default() -> Self {
         Self {
             enabled: false,
-            threshold_db: -20.0,
+            threshold_db: -18.0,
             ratio: 2.5,
-            attack_ms: 10.0,
-            release_ms: 200.0,
+            attack_ms: 15.0,
+            release_ms: 250.0,
             makeup_db: 0.0,
         }
     }
