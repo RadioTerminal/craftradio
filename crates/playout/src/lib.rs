@@ -12,6 +12,7 @@ mod cue;
 mod deadair;
 mod device;
 mod input;
+mod one_off;
 pub use input::{Capture, OpenInput, open_input};
 mod ops;
 mod output;

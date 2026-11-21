@@ -436,6 +436,8 @@ pub(crate) struct Core {
     /// A later edit compares with it, not with the station of the last plan.
     planned_rules: Vec<(Entry, Vec<radio_model::Rule>)>,
     out_clock: Option<SampleClock>,
+    /// One-offs that ended on air. The next sweep removes them from the schedule.
+    pub(crate) aired_one_offs: std::collections::BTreeSet<ItemId>,
 }
 
 fn empty_timeline() -> Timeline {
@@ -548,6 +550,7 @@ impl Core {
             superseded: Vec::new(),
             planned_rules: Vec::new(),
             out_clock: opened.clock,
+            aired_one_offs: std::collections::BTreeSet::new(),
         })
     }
 
@@ -770,6 +773,7 @@ impl Core {
         self.stop_took_effect();
         self.sync_engine_decks();
         self.expire_ended(now);
+        self.sweep_one_offs(now);
         if tick_start.elapsed() > self.cfg.command_lead / 2 {
             self.tick_overruns += 1;
             self.alarms.raise_once(now, Alarm::ControlOverrun);
@@ -937,6 +941,9 @@ impl Core {
         } else {
             LogStatus::Aired
         };
+        if s.started.is_some() {
+            self.note_aired_one_off(s.item.id);
+        }
         match s.row {
             Some(row) => self.log.log_end_later(row, now, status),
             None if s.started.is_some() => {
