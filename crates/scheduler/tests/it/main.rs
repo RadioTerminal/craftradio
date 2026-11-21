@@ -1,3 +1,4 @@
+mod adjacency;
 mod fit;
 mod fit_all;
 mod merge;
