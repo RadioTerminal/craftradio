@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 use crate::deck::{DeckShared, DeckSource, Verdict};
+use crate::dynamics::{Chain, ProgramDynamics};
 use crate::meter::{MeterBank, MeterBoard, MeterReader, SilenceChange, SilenceState};
 use crate::{
     AudioError, AudioEvent, CHANNELS, Clip, Command, CommandKind, DeckFeeder, DeckId, DeckState,
@@ -271,6 +272,8 @@ pub struct Mixer {
     silence: SilenceState,
     shared: Arc<Shared>,
     sample: u64,
+    dynamics: Option<Box<Chain>>,
+    block: Vec<[f32; CHANNELS]>,
 }
 
 impl Mixer {
@@ -306,6 +309,8 @@ impl Mixer {
             silence: SilenceState::new(config.silence),
             shared: Arc::clone(&shared),
             sample: 0,
+            dynamics: None,
+            block: Vec::new(),
         };
         let handle = MixerHandle {
             commands: cmd_tx,
@@ -320,6 +325,29 @@ impl Mixer {
             cart_slots: config.cart_slots,
         };
         (mixer, handle, LiveInput { producer: live_tx })
+    }
+
+    /// Puts a compressor and a lookahead limiter on Program in place of the soft clip, or
+    /// removes them with `None`. Call it before the render thread starts: it allocates.
+    /// It fails if a setting is out of range, and then keeps the processing it had.
+    pub fn set_dynamics(&mut self, dynamics: Option<ProgramDynamics>) -> Result<(), AudioError> {
+        match dynamics {
+            Some(config) => {
+                self.dynamics = Some(Box::new(Chain::new(config)?));
+                self.block = vec![[0.0; CHANNELS]; Chain::MAX_BLOCK];
+            }
+            None => {
+                self.dynamics = None;
+                self.block = Vec::new();
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns how many frames Program comes out after the frame that the timeline is
+    /// on. It is 0 without dynamics, and the limiter lookahead with dynamics.
+    pub fn latency_frames(&self) -> usize {
+        self.dynamics.as_ref().map_or(0, |d| d.latency())
     }
 
     /// Returns the absolute count of rendered frames.
@@ -352,14 +380,45 @@ impl Mixer {
         let (cue_frames, cue_rest) = pfl.as_chunks_mut::<CHANNELS>();
         let (out_frames, out_rest) = program.as_chunks_mut::<CHANNELS>();
         let mut cue_iter = cue_frames.iter_mut();
-        for out in out_frames.iter_mut() {
-            if self.sample >= self.next_due {
-                self.apply_due();
+        if let Some(mut chain) = self.dynamics.take() {
+            let mut block = std::mem::take(&mut self.block);
+            for outs in out_frames.chunks_mut(Chain::MAX_BLOCK) {
+                let start = self.sample;
+                let Some(pre) = block.get_mut(..outs.len()) else {
+                    break;
+                };
+                for y in pre.iter_mut() {
+                    if self.sample >= self.next_due {
+                        self.apply_due();
+                    }
+                    let (mix, cue) = self.frame(pfl_mask);
+                    *y = mix;
+                    if let Some(c) = cue_iter.next() {
+                        *c = cue;
+                    }
+                    self.sample += 1;
+                }
+                chain.process(pre);
+                for (i, (out, y)) in outs.iter_mut().zip(pre.iter()).enumerate() {
+                    *out = *y;
+                    self.finish(start + i as u64, *y);
+                }
             }
-            let (y, cue) = self.frame(pfl_mask);
-            *out = y;
-            if let Some(c) = cue_iter.next() {
-                *c = cue;
+            self.block = block;
+            self.dynamics = Some(chain);
+        } else {
+            for out in out_frames.iter_mut() {
+                if self.sample >= self.next_due {
+                    self.apply_due();
+                }
+                let (mix, cue) = self.frame(pfl_mask);
+                let y = [limit(mix[0]), limit(mix[1])];
+                self.finish(self.sample, y);
+                self.sample += 1;
+                *out = y;
+                if let Some(c) = cue_iter.next() {
+                    *c = cue;
+                }
             }
         }
         out_rest.fill(0.0);
@@ -664,7 +723,7 @@ impl Mixer {
         DeckStep::Frame([l * gain, r * gain])
     }
 
-    /// Mixes one frame. It returns the Program frame and the PFL frame.
+    /// Mixes one frame. It returns the Program frame before the limiter and the PFL frame.
     fn frame(&mut self, pfl_mask: u8) -> ([f32; 2], [f32; 2]) {
         let mut bus = [0.0f32; 2];
         let mut cue = [0.0f32; 2];
@@ -732,12 +791,17 @@ impl Mixer {
 
         let duck = self.duck.next();
         let out_gain = self.gains[Strip::Out.index()].next();
-        let y = [
-            limit((bus[0] * duck + cart_bus[0]) * out_gain),
-            limit((bus[1] * duck + cart_bus[1]) * out_gain),
+        let mix = [
+            (bus[0] * duck + cart_bus[0]) * out_gain,
+            (bus[1] * duck + cart_bus[1]) * out_gain,
         ];
+        (mix, cue)
+    }
+
+    /// Meters a Program frame and feeds it to the silence detector.
+    fn finish(&mut self, sample: u64, y: [f32; 2]) {
         self.meters.add(Strip::Out.index(), y);
-        match self.silence.add(self.sample, y) {
+        match self.silence.add(sample, y) {
             Some(SilenceChange::Started { since_sample }) => {
                 self.emit(AudioEvent::Silence { since_sample });
             }
@@ -746,8 +810,6 @@ impl Mixer {
             }
             None => {}
         }
-        self.sample += 1;
-        (y, cue)
     }
 
     /// Applies the fader of a strip, meters it, and adds it to a bus and to PFL.

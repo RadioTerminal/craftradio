@@ -13,7 +13,7 @@ use jiff::Timestamp;
 use radio_audio::Decoder;
 use radio_audio::{
     AudioEvent, CHANNELS, Command as Cmd, CommandKind, DeckId, DeckState, LiveInput, LoadOptions,
-    MeterReader, Mixer, MixerConfig, MixerHandle, SAMPLE_RATE,
+    MeterReader, Mixer, MixerConfig, MixerHandle, ProgramDynamics, SAMPLE_RATE,
 };
 use radio_audio_device::{NullOutput, SampleClock};
 use radio_engine::{Command, Engine, EngineEvent, LogEntry, LogHandle, LogStatus, RowId};
@@ -293,9 +293,11 @@ fn tap_ring(samples: Option<usize>) -> Tap {
 fn open_output(
     choice: &OutputChoice,
     config: MixerConfig,
+    dynamics: Option<ProgramDynamics>,
     tap: Option<usize>,
 ) -> Result<OpenedOutput, PlayoutError> {
-    let (mixer, handle, live) = Mixer::new(config);
+    let (mut mixer, handle, live) = Mixer::new(config);
+    mixer.set_dynamics(dynamics)?;
     let (tap_tx, tap_rx) = tap_ring(tap);
     let mut fallback = None;
     let (cue_tx, cue_rx) = rtrb::RingBuffer::new(48_000 * 2);
@@ -341,7 +343,8 @@ fn open_output(
             let (new_tx, new_rx) = rtrb::RingBuffer::new(48_000 * 2);
             cue_tx = Some(new_tx);
             cue = crate::cue::Cue::start(new_rx);
-            let (mixer, handle, live) = Mixer::new(config);
+            let (mut mixer, handle, live) = Mixer::new(config);
+            mixer.set_dynamics(dynamics)?;
             let (tap_tx, tap_rx) = tap_ring(tap);
             (mixer, handle, live, tap_tx, tap_rx)
         }
@@ -453,7 +456,7 @@ impl Core {
             .icecast
             .as_ref()
             .map(|_| 4 * SAMPLE_RATE as usize * CHANNELS);
-        let mut opened = open_output(&cfg.output, cfg.mixer, tap)?;
+        let mut opened = open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap)?;
         let icecast = cfg
             .icecast
             .clone()

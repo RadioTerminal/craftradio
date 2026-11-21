@@ -36,6 +36,9 @@ pub enum AudioError {
     /// The cartwall has no slot with this number.
     #[error("cart slot {0} does not exist")]
     NoSuchCartSlot(usize),
+    /// A setting of the Program compressor or limiter is out of range.
+    #[error("cannot set up Program dynamics: {0}")]
+    Dynamics(String),
     /// The system cannot start the decoder thread.
     #[error("cannot start the decoder thread: {0}")]
     Thread(std::io::Error),
