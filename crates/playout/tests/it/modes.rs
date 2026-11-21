@@ -434,6 +434,7 @@ fn late_hard_event_plays_in_full_and_the_next_item_follows_it() {
             playlist: radio_model::PlaylistId(1),
             items: vec![song],
             at: None,
+            lock: true,
         })
         .unwrap();
     program.extend(run(&p, &clock, 5.5));
@@ -567,6 +568,7 @@ fn a_play_next_item_airs_right_after_the_item_on_air() {
         playlist: radio_model::PlaylistId(1),
         items: vec![next],
         at: None,
+        lock: true,
     })
     .unwrap();
     p.dispatch(Command::PlayoutPlayNext {

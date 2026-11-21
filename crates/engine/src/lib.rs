@@ -736,6 +736,7 @@ impl Engine {
                 playlist,
                 items,
                 at,
+                lock,
             } => {
                 self.edit_station(|s| {
                     let list = &mut playlist_mut(s, playlist)?.items;
@@ -747,7 +748,7 @@ impl Engine {
                         )));
                     }
                     let locked = items.into_iter().map(|mut i: Item| {
-                        i.locked = true;
+                        i.locked = lock;
                         i
                     });
                     list.splice(at..at, locked);

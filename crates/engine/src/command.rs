@@ -71,12 +71,15 @@ pub enum Command {
         playlist: PlaylistId,
         on_interrupt: radio_model::OnInterrupt,
     },
-    /// Items added by hand are locked (spec 6.15).
+    /// With `lock`, the engine locks the items: a person placed them by hand (spec 6.15).
+    /// A folder, a watch or an import adds items with `lock` false.
     #[serde(rename = "playlist.add_items")]
     PlaylistAddItems {
         playlist: PlaylistId,
         items: Vec<Item>,
         at: Option<usize>,
+        #[serde(default = "yes")]
+        lock: bool,
     },
     /// Removes every item of a playlist but the items on decks, and the locked items unless
     /// `remove_locked`. `expect_count` is the item count that the person saw; a playlist that

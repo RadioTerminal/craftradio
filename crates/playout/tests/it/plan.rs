@@ -66,6 +66,7 @@ fn crash_and_restart(rule: OnInterrupt) -> (bool, bool, Vec<AsPlayed>) {
             playlist: PlaylistId(1),
             items: vec![song],
             at: None,
+            lock: true,
         },
         Command::PlaylistSetOnInterrupt {
             playlist: PlaylistId(1),
@@ -208,6 +209,7 @@ fn station_edit_keeps_the_frozen_window_order() {
             playlist: jingles,
             items: vec![new],
             at: Some(0),
+            lock: true,
         })
         .unwrap();
     let item = radio_model::ItemId(61);

@@ -473,11 +473,27 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         }
 
         let at = w.next_at;
+        // The pick can come back: keep the state of the picker.
+        let saved = (w.pickers[main].clone(), w.resumed[main]);
         let Some(item) = w.pick(main, &[], at) else {
             let gap = end.duration_since(at).unsigned_abs();
             w.warnings.push(Warning::DeadAir { at, gap });
             break;
         };
+        // A pinned entry that is not fixed follows the entry before it, so a gap before
+        // it is a timing artefact. After a skip, the item on air can start a few ms
+        // after `now`. A main item never fills such a gap: it would overlap the pinned
+        // entry, and the rotation would pick the pinned item a second time. The walk
+        // goes on at the pinned entry, and the rotation continues after it.
+        let item_end = at.checked_add(Walk::step(item)).unwrap_or(Timestamp::MAX);
+        if let Some(p) = pinned
+            .get(next_pinned)
+            .filter(|p| p.fixed.is_none() && p.start < item_end)
+        {
+            (w.pickers[main], w.resumed[main]) = saved;
+            w.next_at = w.next_at.max(p.start);
+            continue;
+        }
         w.place(&station.playlists[main], item, at, Origin::Main, None);
         for r in &mut rules {
             if let Due::Tracks { seen, .. } = &mut r.due {

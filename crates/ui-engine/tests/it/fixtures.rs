@@ -83,6 +83,8 @@ pub fn source(items: Vec<Item>) -> (EngineSource, ManualClock) {
                 playlist: PlaylistId(1),
                 items,
                 at: None,
+                // Like a folder playlist: nobody placed these songs by hand.
+                lock: false,
             })
             .unwrap();
     }

@@ -328,6 +328,7 @@ impl EngineSource {
                     playlist: id,
                     items,
                     at: None,
+                    lock: true,
                 },
             );
             self.send(what, Command::StationBatch { commands: cmds })?;
@@ -341,6 +342,7 @@ impl EngineSource {
                 playlist: id,
                 items,
                 at,
+                lock: true,
             },
         )?;
         Ok(n)
@@ -415,6 +417,7 @@ impl EngineSource {
                                     playlist: id,
                                     items,
                                     at: None,
+                                    lock: false,
                                 },
                                 Command::PlaylistSetSource {
                                     playlist: id,
@@ -460,6 +463,7 @@ impl EngineSource {
                                 playlist,
                                 items,
                                 at: None,
+                                lock: false,
                             }],
                         },
                     )
@@ -515,6 +519,7 @@ impl EngineSource {
             playlist,
             items: vec![copy],
             at: None,
+            lock: false,
         });
         cmds.push(Command::CartAssign {
             page,
@@ -920,6 +925,7 @@ impl EngineSource {
                     playlist: main,
                     items,
                     at,
+                    lock: true,
                 })?;
                 Ok(1)
             }

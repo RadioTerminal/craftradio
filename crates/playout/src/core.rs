@@ -987,11 +987,20 @@ impl Core {
             .filter(|s| s.not_started() && !s.is_hard())
             .count();
         let assigned = self.assigned();
+        // An item that waits on a deck already never loads on a second deck.
+        let waiting: Vec<ItemId> = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|s| s.not_started())
+            .map(|s| s.item.id)
+            .collect();
         let next: Vec<Entry> = self
             .timeline
             .entries
             .iter()
             .filter(|e| !assigned.contains(&(e.item, e.start)))
+            .filter(|e| !waiting.contains(&e.item))
             .filter(|e| !e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
             .filter(|e| {
                 !self

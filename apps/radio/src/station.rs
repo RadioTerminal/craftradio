@@ -299,6 +299,7 @@ pub fn reconcile(engine: &mut Engine) -> Vec<String> {
                 playlist,
                 items,
                 at: None,
+                lock: false,
             });
         }
         if cmds.is_empty() {

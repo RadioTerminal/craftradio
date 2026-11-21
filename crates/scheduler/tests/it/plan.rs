@@ -422,6 +422,70 @@ fn resume_rotation_continues_after_pinned_entries() {
     );
 }
 
+/// After a skip, the item on air starts a few ms after `now`, and the next item waits on
+/// a deck. The plan must start with them and repeat neither.
+#[test]
+fn a_pinned_item_just_after_now_is_not_picked_again() {
+    let mut main = playlist(1, "main", tracks(6));
+    main.is_main = true;
+    let st = station("UTC", vec![main]);
+    let len = Duration::from_secs(180);
+    let entry = |id: u64, start: Timestamp| Entry {
+        playlist: st.playlists[0].id,
+        item: ItemId(id),
+        start,
+        len,
+        origin: Origin::Main,
+        locked: false,
+        fixed: None,
+        trim: Duration::ZERO,
+    };
+    let on_air = now() + Duration::from_millis(11);
+    let pinned = vec![entry(3, on_air), entry(4, on_air + len)];
+    let mut history = PlayHistory::new();
+    // Playout logs the item on air at its real start.
+    let ago = |s: u64| now() - Duration::from_secs(s);
+    for (id, at) in [(1u64, ago(400)), (2, ago(200)), (3, on_air)] {
+        history.push(radio_scheduler::Played {
+            item: ItemId(id),
+            playlist: st.playlists[0].id,
+            at,
+            artist: None,
+            title: String::new(),
+        });
+    }
+    let opts = PlanOptions {
+        resume_rotation: true,
+        ..PlanOptions::default()
+    };
+    let tl = plan(
+        &PlanInput {
+            station: &st,
+            history: &history,
+            now: now(),
+            horizon: Duration::from_secs(1200),
+            pinned: &pinned,
+        },
+        &opts,
+        None,
+    );
+    let ids: Vec<u64> = tl.entries.iter().map(|e| e.item.0).collect();
+    assert_eq!(
+        ids.get(..2),
+        Some(&[3, 4][..]),
+        "the plan starts with the decks: {ids:?}"
+    );
+    assert_eq!(
+        ids.get(2),
+        Some(&5),
+        "the rotation goes on after the decks: {ids:?}"
+    );
+    assert!(
+        ids.windows(2).all(|w| w[0] != w[1]),
+        "an item repeats: {ids:?}"
+    );
+}
+
 /// A frozen window keeps its order after an edit, and the item on air (pinned, started
 /// before `now`) stays at its head as given: it is not dropped or moved after the event.
 #[test]

@@ -63,6 +63,7 @@ fn add_move_remove_survive_reopen() {
             playlist: MAIN,
             items: vec![item(1, "One"), item(2, "Two"), item(3, "Three")],
             at: None,
+            lock: true,
         };
         e.dispatch(add).unwrap();
         e.dispatch(Command::PlaylistMoveItems {
@@ -82,6 +83,36 @@ fn add_move_remove_survive_reopen() {
     assert_eq!(ids(&e), vec![3, 1]);
     // hand edits are locked (spec 6.15)
     assert!(e.state().station.main().items.iter().all(|i| i.locked));
+}
+
+/// A person who adds items locks them. A folder or a watch adds items without a lock, so
+/// the main list shows a pin only on what a person placed. Old JSON without `lock` locks.
+#[test]
+fn only_hand_added_items_are_locked() {
+    let mut e = Engine::open_in_memory().unwrap();
+    e.dispatch(Command::StationSystem {
+        commands: vec![Command::PlaylistAddItems {
+            playlist: MAIN,
+            items: vec![item(1, "From the folder")],
+            at: None,
+            lock: false,
+        }],
+    })
+    .unwrap();
+    let json = serde_json::json!({
+        "id": "playlist.add_items",
+        "args": {"playlist": MAIN, "items": [item(2, "By hand")], "at": null},
+    });
+    e.dispatch(serde_json::from_value(json).unwrap()).unwrap();
+    let locks: Vec<(u64, bool)> = e
+        .state()
+        .station
+        .main()
+        .items
+        .iter()
+        .map(|i| (i.id.0, i.locked))
+        .collect();
+    assert_eq!(locks, [(1, false), (2, true)]);
 }
 
 #[test]
@@ -199,6 +230,7 @@ fn deck_commands_queue_intent_and_do_not_claim_audio() {
         playlist: MAIN,
         items: vec![item(1, "One")],
         at: None,
+        lock: true,
     })
     .unwrap();
     e.dispatch(Command::DeckLoad {
@@ -244,6 +276,7 @@ fn undo_takes_back_at_least_fifty_edits_and_redo_does_them_again() {
             playlist: radio_model::PlaylistId(1),
             items: vec![item(100 + i, &format!("t{i}"))],
             at: None,
+            lock: true,
         })
         .unwrap();
     }
@@ -262,6 +295,7 @@ fn undo_takes_back_at_least_fifty_edits_and_redo_does_them_again() {
         playlist: radio_model::PlaylistId(1),
         items: vec![item(999, "new")],
         at: None,
+        lock: true,
     })
     .unwrap();
     assert!(
@@ -277,6 +311,7 @@ fn a_failed_batch_changes_nothing_and_undoes_as_one_step() {
         playlist: radio_model::PlaylistId(1),
         items: vec![item(id, title)],
         at: None,
+        lock: true,
     };
     let bad = e.dispatch(Command::StationBatch {
         commands: vec![add(1, "a"), add(1, "duplicate id")],
@@ -329,6 +364,7 @@ fn ui_settings_survive_a_reopen_beside_the_engine_parts() {
             playlist: radio_model::PlaylistId(1),
             items: vec![item(1, "one")],
             at: None,
+            lock: true,
         })
         .unwrap();
         e.flush().unwrap();
@@ -349,6 +385,7 @@ fn edited_tags_reach_the_item_that_playout_reads() {
         playlist: radio_model::PlaylistId(1),
         items: vec![item(1, "one")],
         at: None,
+        lock: true,
     })
     .unwrap();
     let meta = radio_model::ItemMeta {
@@ -384,6 +421,7 @@ fn start_up_edits_leave_no_undo_steps() {
         playlist: radio_model::PlaylistId(1),
         items: vec![item(1, "seeded")],
         at: None,
+        lock: true,
     })
     .unwrap();
     e.clear_history();
@@ -393,6 +431,7 @@ fn start_up_edits_leave_no_undo_steps() {
         playlist: radio_model::PlaylistId(1),
         items: vec![item(2, "by hand")],
         at: None,
+        lock: true,
     })
     .unwrap();
     e.dispatch(Command::StationSystem {
@@ -400,6 +439,7 @@ fn start_up_edits_leave_no_undo_steps() {
             playlist: radio_model::PlaylistId(1),
             items: vec![item(3, "from the folder")],
             at: None,
+            lock: true,
         }],
     })
     .unwrap();
@@ -414,6 +454,7 @@ fn undo_never_takes_the_item_on_air_off_its_deck() {
         playlist: radio_model::PlaylistId(1),
         items: vec![item(1, "on deck")],
         at: None,
+        lock: true,
     })
     .unwrap();
     e.set_deck(0, Some(radio_model::ItemId(1)));
@@ -450,6 +491,7 @@ fn clear_keeps_the_item_on_air_and_undo_restores_the_rest_in_order() {
         playlist: radio_model::PlaylistId(1),
         items,
         at: None,
+        lock: true,
     })
     .unwrap();
     e.set_deck(0, Some(radio_model::ItemId(3)));

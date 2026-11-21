@@ -7,6 +7,7 @@ use rand_chacha::{
 use crate::PlayHistory;
 
 /// State for one playlist. Recreate the picker when its items or pick order change.
+#[derive(Clone)]
 pub struct Picker {
     cursor: usize,
     permutation: Vec<usize>,
