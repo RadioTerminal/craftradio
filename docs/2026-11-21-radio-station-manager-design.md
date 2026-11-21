@@ -218,6 +218,18 @@ special feature; they're just another playlist with rules.
 - **Inserted playlists:** every other playlist is shown on the right. Its **rules** decide
   when its items are woven into the on-air timeline.
 
+**Folder-backed playlists (user, 2026-11-21).**
+- **Any folder can be a playlist.** Any folder can be added to the library, and a folder
+  becomes a playlist whose items are that folder's audio files, optionally including
+  subfolders. The usual workflow: build a playlist from a folder, then use it as the main
+  playlist.
+- **Keeping it in sync:** a folder-backed playlist re-syncs when the folder changes ("watch
+  for changes"). New files are added, removed files are dropped, and cue points and loudness
+  are analysed in the background.
+- **Model:** `Playlist.source: Option<FolderSource { path, recursive, watch }>`.
+- **Rules apply as usual:** a folder-backed playlist can carry rules like any other, so a
+  folder of jingles with "every 3 tracks" works as well.
+
 **A playlist has:**
 - a name and colour, and on/off;
 - its items (files, live inputs, streams, shows);
