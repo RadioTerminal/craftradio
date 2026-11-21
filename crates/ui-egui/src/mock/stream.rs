@@ -79,6 +79,7 @@ pub(super) fn from_title(title: &str, publish: PublishMode) -> ItemMeta {
         title: name,
         artist,
         publish,
+        gain_trim_db: Some(0.0),
         ..ItemMeta::default()
     }
 }

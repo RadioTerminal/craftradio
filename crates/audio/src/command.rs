@@ -132,6 +132,18 @@ pub enum CommandKind {
         /// The gain in dB. 0 is unity.
         db: f32,
     },
+    /// Sets the item gain of a deck (the loudness gain, before the fader), in dB. On a
+    /// playing deck the change ramps linearly over `over`. On a deck that does not play,
+    /// the gain changes at once. The handle refuses NaN and ±inf, and limits the gain to
+    /// −24 dB … +12 dB.
+    SetItemGain {
+        /// The deck.
+        deck: DeckId,
+        /// The gain in dB. 0 is unity.
+        db: f32,
+        /// The length of the ramp on a playing deck.
+        over: Duration,
+    },
     /// Plays the clip of a cart slot from its start on a free cart voice.
     FireCart {
         /// The cartwall slot.

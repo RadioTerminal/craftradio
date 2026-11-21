@@ -11,7 +11,7 @@ use crate::icons::{self, Icon};
 use crate::parts;
 use crate::settings::{self, Dot, Tab};
 use crate::theme::{self, Tokens, pad, size, space};
-use radio_model::{DynamicsSettings, dynamics_range as range};
+use radio_model::{DynamicsSettings, LoudnessSettings, dynamics_range as range, loudness_range};
 
 use crate::view::{
     DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
@@ -75,6 +75,8 @@ pub(crate) struct State {
     /// The processing on Program while a person edits it. A field sends it when the edit
     /// ends, so a drag does not rebuild the processors at each step.
     dynamics: Option<DynamicsSettings>,
+    /// Loudness normalisation while a person edits it. A field sends it when the edit ends.
+    loudness: Option<LoudnessSettings>,
 }
 
 impl State {
@@ -91,6 +93,7 @@ impl State {
         self.page = None;
         self.icecast = None;
         self.dynamics = None;
+        self.loudness = None;
     }
 }
 
@@ -164,6 +167,7 @@ fn settings_page(
     let mut selected = tab.index();
     let draft = &mut state.icecast;
     let processing = &mut state.dynamics;
+    let loudness = &mut state.loudness;
     let out = settings::page(
         ui,
         "Mixer settings",
@@ -174,7 +178,10 @@ fn settings_page(
         |ui, i| match SettingsTab::ALL.get(i).copied().unwrap_or_default() {
             SettingsTab::Devices => devices_tab(ui, view, actions, t),
             SettingsTab::Routing => routing_tab(ui, view, actions, t),
-            SettingsTab::Processing => processing_tab(ui, view, processing, actions, t),
+            SettingsTab::Processing => {
+                loudness_section(ui, view, loudness, actions, t);
+                processing_tab(ui, view, processing, actions, t);
+            }
             SettingsTab::Meters => meters_tab(ui, view, actions, t),
             SettingsTab::Icecast => {
                 let draft = draft.get_or_insert_with(|| view.icecast.clone());
@@ -589,6 +596,81 @@ fn dyn_field(
         r
     });
     done
+}
+
+/// Loudness normalisation on the decks, above the processing on Program. Each deck item
+/// gets the gain that brings it to the target. In the preview, nothing plays.
+fn loudness_section(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    draft: &mut Option<LoudnessSettings>,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let l = draft.get_or_insert(view.loudness);
+    ui.add_space(space::XS);
+    settings::form_note(
+        ui,
+        RichText::new("Loudness")
+            .font(theme::text(theme::LABEL))
+            .strong(),
+    );
+    let note = view.say(
+        "Preview: nothing plays, so no item gain applies.",
+        "Each deck item gets the gain that brings it to the target. A change on air ramps \
+         over 1.5 s.",
+    );
+    settings::form_note(
+        ui,
+        RichText::new(note)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+    );
+    let mut commit = false;
+    settings::form_row(ui, "Loudness normalisation", t, |ui| {
+        let on = l.enabled;
+        let r = ui.checkbox(&mut l.enabled, "On");
+        commit |= r.changed();
+        // The name says which switch it is: the row label, then "on".
+        r.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Checkbox,
+                true,
+                on,
+                "Loudness normalisation on",
+            )
+        });
+        r
+    });
+    ui.add_enabled_ui(l.enabled, |ui| {
+        commit |= dyn_field(
+            ui,
+            "Target",
+            &mut l.target_lufs,
+            loudness_range::TARGET_LUFS,
+            0.1,
+            " LUFS",
+            t,
+        );
+        commit |= dyn_field(
+            ui,
+            "Max boost",
+            &mut l.max_boost_db,
+            loudness_range::MAX_BOOST_DB,
+            0.1,
+            " dB",
+            t,
+        );
+    });
+    settings::form_note(
+        ui,
+        RichText::new("A boost never lifts a true peak over −1 dBTP. The deepest cut is −24 dB.")
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+    );
+    if commit && *l != view.loudness {
+        actions.push(Action::EditQuiet(Edit::SetLoudness(*l)));
+    }
 }
 
 /// The compressor and the limiter on Program. In the preview, nothing plays, so nothing is

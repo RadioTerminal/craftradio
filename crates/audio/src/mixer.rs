@@ -21,6 +21,9 @@ pub const CART_VOICES: usize = 16;
 /// The highest fader gain, in dB. The handle limits `SetGain` to this value.
 pub const MAX_GAIN_DB: f32 = 12.0;
 
+/// The lowest item gain, in dB. The handle limits `SetItemGain` to this value.
+pub const MIN_ITEM_GAIN_DB: f32 = -24.0;
+
 /// The number of commands that can wait for their sample at the same time.
 pub const COMMAND_CAPACITY: usize = 256;
 const CONTROL_CAPACITY: usize = 64;
@@ -66,6 +69,15 @@ fn duration_frames(d: Duration) -> u64 {
     u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
+/// The linear item gain of a load. A gain that is not finite counts as unity.
+fn item_gain(db: f32) -> f32 {
+    if db.is_finite() {
+        db_to_gain(db.clamp(MIN_ITEM_GAIN_DB, MAX_GAIN_DB))
+    } else {
+        1.0
+    }
+}
+
 fn ring_samples(d: Duration) -> usize {
     usize::try_from(duration_frames(d))
         .unwrap_or(usize::MAX / 4)
@@ -105,6 +117,18 @@ fn sanitize(kind: CommandKind) -> Result<CommandKind, AudioError> {
             Ok(CommandKind::SetGain {
                 strip,
                 db: db.min(MAX_GAIN_DB),
+            })
+        }
+        CommandKind::SetItemGain { deck, db, over } => {
+            if !db.is_finite() {
+                return Err(AudioError::InvalidCommand(
+                    "item gain must be a finite number",
+                ));
+            }
+            Ok(CommandKind::SetItemGain {
+                deck,
+                db: db.clamp(MIN_ITEM_GAIN_DB, MAX_GAIN_DB),
+                over,
             })
         }
         CommandKind::Duck {
@@ -164,6 +188,13 @@ struct Ramp {
     step: f32,
 }
 
+impl Default for Ramp {
+    /// Unity gain. A zero gain would be silence.
+    fn default() -> Self {
+        Ramp::UNITY
+    }
+}
+
 impl Ramp {
     const UNITY: Ramp = Ramp {
         current: 1.0,
@@ -171,9 +202,23 @@ impl Ramp {
         step: 0.0,
     };
 
+    /// A ramp that holds `gain`.
+    fn at(gain: f32) -> Ramp {
+        Ramp {
+            current: gain,
+            target: gain,
+            step: 0.0,
+        }
+    }
+
     fn set(&mut self, target: f32, frames: u64) {
         self.target = target;
         self.step = (target - self.current) / frames.max(1) as f32;
+    }
+
+    /// Goes to `target` at once.
+    fn jump(&mut self, target: f32) {
+        *self = Ramp::at(target);
     }
 
     fn next(&mut self) -> f32 {
@@ -239,6 +284,8 @@ struct DeckSlot {
     /// The remaining and the total frames of a fade-out.
     fade: Option<(u64, u64)>,
     underrun: bool,
+    /// The item gain (the loudness gain), linear.
+    item_gain: Ramp,
 }
 
 /// One cart voice.
@@ -575,10 +622,12 @@ impl Mixer {
             return;
         }
         let item_tag = source.item_tag;
+        let gain = source.gain;
         source.shared.set_verdict(Verdict::Accepted);
         let old = slot.source.replace(source);
         *slot = DeckSlot {
             source: slot.source.take(),
+            item_gain: Ramp::at(gain),
             ..DeckSlot::default()
         };
         if let Some(old) = old {
@@ -667,6 +716,18 @@ impl Mixer {
             CommandKind::SetGain { strip, db } if !db.is_nan() => {
                 let gain = db_to_gain(db.min(MAX_GAIN_DB));
                 self.gains[strip.index()].set(gain, GAIN_RAMP);
+            }
+            CommandKind::SetItemGain { deck, db, over }
+                if db.is_finite() && self.for_this_item(deck, cmd.item_tag) =>
+            {
+                let slot = &mut self.decks[deck.index()];
+                let gain = db_to_gain(db.clamp(MIN_ITEM_GAIN_DB, MAX_GAIN_DB));
+                // A deck that does not play has no sound to ramp: the gain changes at once.
+                if slot.playing && !slot.paused && !over.is_zero() {
+                    slot.item_gain.set(gain, duration_frames(over));
+                } else {
+                    slot.item_gain.jump(gain);
+                }
             }
             CommandKind::FireCart { slot } => {
                 if !matches!(self.carts.get(slot), Some(Some(_))) {
@@ -828,9 +889,9 @@ impl Mixer {
             slot.underrun = false;
             src.shared.underrun.store(false, Ordering::Release);
         }
-        let mut gain = 1.0;
+        let mut gain = slot.item_gain.next();
         if src.fade_in > slot.played {
-            gain = slot.played as f32 / src.fade_in as f32;
+            gain *= slot.played as f32 / src.fade_in as f32;
         }
         if let Some((remaining, total)) = slot.fade.as_mut() {
             if *remaining == 0 {
@@ -1058,6 +1119,7 @@ impl MixerHandle {
             shared: Arc::clone(&shared),
             fade_in: duration_frames(options.fade_in),
             item_tag: options.item_tag,
+            gain: item_gain(options.gain_db),
             external: false,
         };
         self.control
@@ -1090,6 +1152,7 @@ impl MixerHandle {
             shared: Arc::clone(&shared),
             fade_in: duration_frames(options.fade_in),
             item_tag: options.item_tag,
+            gain: item_gain(options.gain_db),
             external: true,
         };
         self.control

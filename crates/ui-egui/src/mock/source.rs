@@ -61,12 +61,17 @@ impl ViewSource for MockSource {
             Some(p) => on_air.map_or(elapsed, |i| remaining(rows[i].start.timestamp(), p)),
             None => elapsed,
         };
-        let decks = [
+        let mut decks = [
             deck('A', at(0), a_state, elapsed),
             deck('B', at(1), DeckState::Ready, Duration::ZERO),
             deck('C', at(2), DeckState::Ready, Duration::ZERO),
             deck('D', at(3), DeckState::Ready, Duration::ZERO),
         ];
+        for (i, d) in decks.iter_mut().enumerate() {
+            if d.state != DeckState::Empty {
+                d.gain = Some(super::decks::sample_gain(i, &self.loudness));
+            }
+        }
         // The deck of each row: A holds the row on air, B to D the next three.
         if let Some(i) = on_air {
             for (k, r) in rows.iter_mut().skip(i).take(4).enumerate() {
@@ -99,6 +104,7 @@ impl ViewSource for MockSource {
             cartwall: self.cartwall.clone(),
             icecast: self.icecast.clone(),
             dynamics: self.dynamics,
+            loudness: self.loudness,
             output: OutputStatus {
                 local: Status::Preview,
                 icecast: Status::NotConnected,

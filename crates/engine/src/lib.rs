@@ -15,7 +15,10 @@ pub use error::EngineError;
 pub use log::{AsPlayed, LogEntry, LogStatus, Report, RowId};
 
 use jiff::{Timestamp, civil};
-use radio_model::{DynamicsSettings, Item, ItemId, PickOrder, Playlist, PlaylistId, Station};
+use radio_model::{
+    DynamicsSettings, Item, ItemId, Loudness, LoudnessSettings, PickOrder, Playlist, PlaylistId,
+    Station,
+};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +33,8 @@ const DECKS: u8 = 4;
 const UNDO_STEPS: usize = 100;
 /// The settings key of the Program dynamics, in the part `dynamics`.
 pub(crate) const DYNAMICS_KEY: &str = "program";
+/// The settings key of loudness normalisation, in the part `dynamics`.
+pub(crate) const LOUDNESS_KEY: &str = "loudness";
 
 /// The names of the mixer strips.
 pub const STRIPS: [&str; 7] = ["A", "B", "C", "D", "Cart", "Live", "Out"];
@@ -95,6 +100,13 @@ pub struct State {
     /// The compressor and the limiter on Program, or `None` when no one set them. Playout
     /// then keeps its own default.
     pub dynamics: Option<DynamicsSettings>,
+    /// Loudness normalisation on the decks.
+    pub loudness: LoudnessSettings,
+    /// The measured loudness of each file, by content hash (hex). This is the analysis
+    /// cache: a file gets one measurement, and a restart keeps it.
+    pub measured: BTreeMap<String, Loudness>,
+    /// The manual gain trim of items, in dB. Items without a trim have none here.
+    pub trims: BTreeMap<ItemId, f32>,
     /// Items that play right after the item on air, in order. Playout takes each one off
     /// when it starts.
     pub queue: Vec<ItemId>,
@@ -121,6 +133,7 @@ struct Saved {
     item_meta: BTreeMap<ItemId, Value>,
     carts: Vec<CartAssign>,
     cart_settings: Vec<CartSettings>,
+    trims: BTreeMap<ItemId, f32>,
 }
 
 impl State {
@@ -169,6 +182,9 @@ impl State {
             settings: BTreeMap::new(),
             strips: BTreeMap::new(),
             dynamics: None,
+            loudness: LoudnessSettings::default(),
+            measured: BTreeMap::new(),
+            trims: BTreeMap::new(),
             cart_settings: Vec::new(),
             queue: Vec::new(),
             missing: BTreeSet::new(),
@@ -232,6 +248,9 @@ impl State {
         self.queue.retain(|i| live.contains(i));
         self.missing.retain(|i| live.contains(i));
         self.hashes.retain(|i, _| live.contains(i));
+        self.trims.retain(|i, _| live.contains(i));
+        let files: BTreeSet<&String> = self.hashes.values().map(|(h, _)| h).collect();
+        self.measured.retain(|h, _| files.contains(h));
         for d in &mut self.decks {
             if d.is_some_and(|i| !live.contains(&i)) {
                 *d = None;
@@ -281,6 +300,17 @@ impl State {
         let over = self.acked_alarms.len().saturating_sub(ACKED_MAX);
         self.acked_alarms.drain(..over);
         added
+    }
+
+    /// The measured loudness of the file of an item, from the cache by content hash.
+    pub fn loudness_of(&self, item: ItemId) -> Option<Loudness> {
+        let (hash, _) = self.hashes.get(&item)?;
+        self.measured.get(hash).copied()
+    }
+
+    /// The manual gain trim of an item in dB, or 0.
+    pub fn trim_of(&self, item: ItemId) -> f32 {
+        self.trims.get(&item).copied().unwrap_or(0.0)
     }
 
     fn has_item(&self, id: ItemId) -> bool {
@@ -359,6 +389,8 @@ pub enum AudioIntent {
     },
     /// The compressor and the limiter on Program.
     SetDynamics(DynamicsSettings),
+    /// Loudness normalisation on the decks. Playout sets the item gains again.
+    SetLoudness(LoudnessSettings),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -421,6 +453,7 @@ fn undoable(cmd: &Command) -> bool {
         | C::ItemUnlock { .. }
         | C::ItemSetMeta { .. }
         | C::ItemSetKeepAlive { .. }
+        | C::ItemSetGainTrim { .. }
         | C::CartAssign { .. }
         | C::CartClear { .. }
         | C::CartSet { .. } => true,
@@ -511,12 +544,20 @@ impl Engine {
         let before = (is_undoable && !merged).then(|| self.save());
         let system = matches!(cmd, Command::StationSystem { .. });
         // An acknowledgement changes no station data, so it needs no new plan.
-        let ack = matches!(cmd, Command::AlarmAck { .. } | Command::AlarmAckAll { .. });
+        // An acknowledgement or a measurement changes no plan: it needs a save, not a
+        // new plan.
+        let ack = matches!(
+            cmd,
+            Command::AlarmAck { .. }
+                | Command::AlarmAckAll { .. }
+                | Command::ItemSetLoudness { .. }
+        );
         // A fader, mute or cart duck changes no station data, so it needs no plan and no
         // full checkpoint: one settings row goes to disk.
         let strip_row = match &cmd {
             Command::MixerSetStrip { strip, .. } => Some(("mixer", strip.clone())),
             Command::MixerSetDynamics { .. } => Some(("dynamics", DYNAMICS_KEY.to_owned())),
+            Command::MixerSetLoudness { .. } => Some(("dynamics", LOUDNESS_KEY.to_owned())),
             Command::CartSet { page, slot, .. } => Some(("carts", format!("{page}:{slot}"))),
             _ => None,
         };
@@ -550,6 +591,7 @@ impl Engine {
     /// Writes one row of the strip or cart settings, without a full checkpoint.
     fn write_row(&self, part: &'static str, key: &str) {
         let value = match part {
+            "dynamics" if key == LOUDNESS_KEY => serde_json::to_string(&self.state.loudness).ok(),
             "dynamics" => self
                 .state
                 .dynamics
@@ -616,6 +658,7 @@ impl Engine {
             item_meta: s.item_meta.clone(),
             carts: s.carts.clone(),
             cart_settings: s.cart_settings.clone(),
+            trims: s.trims.clone(),
         }
     }
 
@@ -627,6 +670,7 @@ impl Engine {
         s.item_meta = saved.item_meta;
         s.carts = saved.carts;
         s.cart_settings = saved.cart_settings;
+        s.trims = saved.trims;
         s.prune_orphans();
     }
 
@@ -1005,6 +1049,38 @@ impl Engine {
                 self.state.hashes.insert(item, (hash, size));
                 Ok(Outcome::default())
             }
+            C::ItemSetLoudness {
+                item,
+                hash,
+                size,
+                lufs,
+                peak_db,
+            } => {
+                if !self.state.has_item(item) {
+                    return Err(EngineError::UnknownItem(item));
+                }
+                let finite = lufs.is_finite() && peak_db.is_none_or(f32::is_finite);
+                if !finite || hash.is_empty() {
+                    return Err(EngineError::BadArgument(
+                        "a loudness needs a hash and finite numbers".into(),
+                    ));
+                }
+                self.state.hashes.insert(item, (hash.clone(), size));
+                self.state.measured.insert(hash, Loudness { lufs, peak_db });
+                Ok(Outcome::default())
+            }
+            C::ItemSetGainTrim { item, db } => {
+                if !self.state.has_item(item) {
+                    return Err(EngineError::UnknownItem(item));
+                }
+                radio_model::check_trim(db).map_err(EngineError::BadArgument)?;
+                if db == 0.0 {
+                    self.state.trims.remove(&item);
+                } else {
+                    self.state.trims.insert(item, db);
+                }
+                Ok(Outcome::default())
+            }
             C::ItemSetKeepAlive { item, keep_alive } => {
                 self.edit_station(|s| {
                     let i = item_mut(s, item).ok_or(EngineError::UnknownItem(item))?;
@@ -1304,6 +1380,25 @@ impl Engine {
                 self.state.dynamics = Some(next);
                 Ok(self.audio(AudioIntent::SetDynamics(next)))
             }
+            C::MixerSetLoudness {
+                enabled,
+                target_lufs,
+                max_boost_db,
+            } => {
+                let mut next = self.state.loudness;
+                if let Some(v) = enabled {
+                    next.enabled = v;
+                }
+                if let Some(v) = target_lufs {
+                    next.target_lufs = v;
+                }
+                if let Some(v) = max_boost_db {
+                    next.max_boost_db = v;
+                }
+                next.validate().map_err(EngineError::BadArgument)?;
+                self.state.loudness = next;
+                Ok(self.audio(AudioIntent::SetLoudness(next)))
+            }
             C::AlarmAck { id } => Ok(Outcome {
                 data: Some(self.state.ack([id]).into()),
                 ..Outcome::default()
@@ -1365,6 +1460,16 @@ impl Engine {
         })?;
         if let Some(script) = self.state.scripts.get(&playlist).cloned() {
             self.state.scripts.insert(id, script);
+        }
+        // The copies play the same files: they keep the trim and the file hash, so the
+        // measured loudness applies to them too.
+        for (old, new) in &map {
+            if let Some(t) = self.state.trims.get(old).copied() {
+                self.state.trims.insert(*new, t);
+            }
+            if let Some(h) = self.state.hashes.get(old).cloned() {
+                self.state.hashes.insert(*new, h);
+            }
         }
         Ok(Outcome {
             data: Some(id.0.into()),

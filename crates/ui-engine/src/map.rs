@@ -51,7 +51,9 @@ pub(crate) fn effective_meta(
     m
 }
 
-pub(crate) fn view_meta(item: &Item, m: &radio_model::ItemMeta) -> ItemMeta {
+/// The view tags of an item. `trim` is the gain trim of a station file, or `None` for an
+/// item that takes no trim.
+pub(crate) fn view_meta(item: &Item, m: &radio_model::ItemMeta, trim: Option<f32>) -> ItemMeta {
     ItemMeta {
         title: m.title.clone(),
         artist: m.artist.clone(),
@@ -68,6 +70,10 @@ pub(crate) fn view_meta(item: &Item, m: &radio_model::ItemMeta) -> ItemMeta {
         custom: m.custom.clone(),
         keep_alive: match item.source {
             Source::Stream { keep_alive, .. } => Some(keep_alive),
+            _ => None,
+        },
+        gain_trim_db: match item.source {
+            Source::File { .. } => trim,
             _ => None,
         },
     }

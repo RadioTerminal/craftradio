@@ -99,6 +99,9 @@ pub fn offline(engine: Engine, tune: impl FnOnce(&mut PlayoutConfig)) -> (Playou
     let mut cfg = PlayoutConfig::new(Arc::new(clock.clone()), OutputChoice::Offline);
     // Fixture tracks last seconds, so a short horizon keeps each plan small.
     cfg.horizon = Duration::from_secs(60);
+    // Measurements come on a wall-clock worker, so they would change levels in the middle
+    // of a render. Tests that check loudness turn the real measurement back on.
+    cfg.measure = no_measure;
     tune(&mut cfg);
     (Playout::start(engine, cfg).unwrap(), clock)
 }
@@ -146,4 +149,43 @@ pub fn peak(program: &[f32], ch: usize, from: usize, to: usize) -> f32 {
     (from..to.min(program.len() / 2))
         .map(|f| program[f * 2 + ch].abs())
         .fold(0.0, f32::max)
+}
+
+/// A measurement that finds nothing: items play at unity.
+pub fn no_measure(_: &std::path::Path) -> Option<radio_playout::Measured> {
+    None
+}
+
+/// A 48 kHz stereo WAV of a 440 Hz tone on both channels, with peak `amp`. Every
+/// `spike_every` frames (if set), one frame peaks at `spike`.
+pub fn wav_at(name: &str, secs: f32, amp: f32, spike: Option<(usize, f32)>) -> String {
+    let path = dir().join(format!("{name}.wav"));
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: SR as u32,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(&path, spec).unwrap();
+    for n in 0..(secs * SR as f32) as usize {
+        let mut x = (n as f32 * 440.0 * std::f32::consts::TAU / SR as f32).sin() * amp;
+        if let Some((every, level)) = spike
+            && n % every == every / 2
+        {
+            x = level;
+        }
+        w.write_sample((x * 32767.0) as i16).unwrap();
+        w.write_sample((x * 32767.0) as i16).unwrap();
+    }
+    w.finalize().unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// The RMS level of channel `ch` in frames `from..to`, in dBFS.
+pub fn rms_db(program: &[f32], ch: usize, from: usize, to: usize) -> f32 {
+    let to = to.min(program.len() / 2);
+    let sum: f64 = (from..to)
+        .map(|f| f64::from(program[f * 2 + ch]).powi(2))
+        .sum();
+    (10.0 * (sum / (to - from).max(1) as f64).max(1e-24).log10()) as f32
 }

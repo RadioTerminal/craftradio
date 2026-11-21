@@ -194,3 +194,117 @@ fn a_probe_reads_the_length_without_decoding() {
         "{len:?}"
     );
 }
+
+/// Writes a mono 48 kHz tone without lead silence, `secs` long.
+fn tone_for(path: &Path, amplitude: f32, secs: u32) {
+    let mut wav = hound::WavWriter::create(
+        path,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: 48000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    for n in 0..secs * 48000 {
+        let value = amplitude * (n as f32 * 997.0 * std::f32::consts::TAU / 48000.0).sin();
+        wav.write_sample((value * i16::MAX as f32) as i16).unwrap();
+    }
+    wav.finalize().unwrap();
+}
+
+/// A quiet tone gets a boost and a loud one a cut. With the gain applied to the samples,
+/// both measure close to the target.
+#[test]
+fn the_measured_gain_brings_quiet_and_loud_tones_to_the_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = radio_model::LoudnessSettings::default();
+    let mut gains = Vec::new();
+    for (name, amp) in [("quiet", 0.08), ("loud", 0.7)] {
+        let path = dir.path().join(format!("{name}.wav"));
+        tone_for(&path, amp, 4);
+        let a = analyse(&path).unwrap();
+        let loudness = a.loudness.expect("a tone has a loudness");
+        let gain = settings.gain(Some((loudness, radio_model::GainSource::Measured)), 0.0);
+        let again = dir.path().join(format!("{name}-gained.wav"));
+        tone_for(&again, amp * 10f32.powf(gain.db / 20.0), 4);
+        let after = analyse(&again).unwrap().loudness.unwrap().lufs;
+        assert!(
+            (after - settings.target_lufs).abs() < 1.0,
+            "{name}: {} LUFS + {} dB measures {after} LUFS",
+            loudness.lufs,
+            gain.db
+        );
+        gains.push(gain.db);
+    }
+    assert!(gains[0] > 0.0 && gains[1] < 0.0, "gains {gains:?}");
+}
+
+/// The true peak of a tone is at least its sample peak, and a silent file has no
+/// loudness, so it plays at unity.
+#[test]
+fn analysis_keeps_the_true_peak_and_silence_has_no_loudness() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peak.wav");
+    tone_for(&path, 0.5, 2);
+    let peak = analyse(&path).unwrap().loudness.unwrap().peak_db.unwrap();
+    let sample_peak = 20.0 * 0.5f32.log10();
+    assert!(
+        peak >= sample_peak - 0.1 && peak < sample_peak + 1.0,
+        "{peak}"
+    );
+    let silent = dir.path().join("silent.wav");
+    tone_for(&silent, 0.0, 2);
+    assert!(analyse(&silent).unwrap().loudness.is_none());
+}
+
+/// A ReplayGain tag gives a loudness: a negative tag gain means a file louder than the
+/// ReplayGain reference.
+#[test]
+fn replaygain_tags_give_a_loudness() {
+    use lofty::{
+        file::TaggedFileExt,
+        tag::{ItemKey, Tag, TagExt, TagType},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tagged.wav");
+    tone_for(&path, 0.2, 1);
+    assert!(
+        radio_library::read_loudness_tags(&path).is_none(),
+        "no tag yet"
+    );
+    let mut tag = Tag::new(TagType::Id3v2);
+    tag.insert_text(ItemKey::ReplayGainTrackGain, "-4.50 dB".into());
+    tag.insert_text(ItemKey::ReplayGainTrackPeak, "0.891251".into());
+    tag.save_to_path(&path, lofty::config::WriteOptions::default())
+        .unwrap();
+    assert!(
+        lofty::read_from_path(&path)
+            .unwrap()
+            .tag(TagType::Id3v2)
+            .is_some()
+    );
+    let l = radio_library::read_loudness_tags(&path).expect("a tagged loudness");
+    assert!(l.lufs > -18.0, "louder than the reference: {}", l.lufs);
+    let peak = l.peak_db.expect("a tagged peak");
+    assert!(peak < 0.0 && peak > -2.0, "{peak}");
+}
+
+/// An R128 track gain tag (Q7.8 dB against −23 LUFS) gives a loudness without a peak.
+/// The key case varies between taggers, so a lowercase key counts too.
+#[test]
+fn an_r128_tag_gives_a_loudness_without_a_peak() {
+    use lofty::{id3::v2::Id3v2Tag, tag::TagExt};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("r128.wav");
+    tone_for(&path, 0.2, 1);
+    let mut tag = Id3v2Tag::new();
+    // −5 dB to −23 LUFS: the file measures −18 LUFS.
+    tag.insert_user_text("r128_track_gain".into(), "-1280".into());
+    tag.save_to_path(&path, lofty::config::WriteOptions::default())
+        .unwrap();
+    let l = radio_library::read_loudness_tags(&path).expect("an R128 loudness");
+    assert!((l.lufs - -18.0).abs() < 0.01, "{}", l.lufs);
+    assert_eq!(l.peak_db, None);
+}

@@ -86,6 +86,7 @@ pub struct MockSource {
     strips: HashMap<String, Strip>,
     icecast: IcecastView,
     dynamics: radio_model::DynamicsSettings,
+    loudness: radio_model::LoudnessSettings,
     device_roles: DeviceRoles,
     folders: Vec<Folder>,
     limits: Limits,
@@ -214,6 +215,7 @@ impl MockSource {
                 kbps: ICECAST_KBPS,
             },
             dynamics: radio_model::DynamicsSettings::default(),
+            loudness: radio_model::LoudnessSettings::default(),
             device_roles: DeviceRoles {
                 out: DEVICES[0].to_owned(),
                 pfl: DEVICES[3].to_owned(),

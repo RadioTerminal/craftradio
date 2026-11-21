@@ -66,7 +66,7 @@ impl EngineSource {
             len: item_len(&item),
             category: category.to_owned(),
             path,
-            meta: view_meta(&item, &meta),
+            meta: view_meta(&item, &meta, None),
         };
         self.files.push(LibFile {
             id,

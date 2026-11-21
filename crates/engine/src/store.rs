@@ -261,6 +261,12 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     if let Some(d) = &s.dynamics {
         set(&tx, "dynamics", crate::DYNAMICS_KEY, &json(d)?)?;
     }
+    set(&tx, "dynamics", crate::LOUDNESS_KEY, &json(&s.loudness)?)?;
+    set(&tx, "library", "trims", &json(&s.trims)?)?;
+    tx.execute("DELETE FROM settings_by_part WHERE part = 'loudness'", [])?;
+    for (hash, l) in &s.measured {
+        set(&tx, "loudness", hash, &json(l)?)?;
+    }
     tx.execute("DELETE FROM settings_by_part WHERE part = 'carts'", [])?;
     for c in &s.cart_settings {
         set(&tx, "carts", &format!("{}:{}", c.page, c.slot), &json(c)?)?;
@@ -371,6 +377,19 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
     state.dynamics = get("dynamics", crate::DYNAMICS_KEY)?
         .and_then(|v| serde_json::from_str::<radio_model::DynamicsSettings>(&v).ok())
         .filter(|d| d.validate().is_ok());
+    state.loudness = get("dynamics", crate::LOUDNESS_KEY)?
+        .and_then(|v| serde_json::from_str::<radio_model::LoudnessSettings>(&v).ok())
+        .filter(|l| l.validate().is_ok())
+        .unwrap_or_default();
+    // A measurement row that does not parse is dropped: playout measures that file again.
+    let mut stmt =
+        conn.prepare("SELECT key, value FROM settings_by_part WHERE part = 'loudness'")?;
+    for kv in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (hash, v) = kv?;
+        if let Ok(l) = serde_json::from_str::<radio_model::Loudness>(&v) {
+            state.measured.insert(hash, l);
+        }
+    }
     let mut stmt = conn.prepare("SELECT value FROM settings_by_part WHERE part = 'carts'")?;
     for v in stmt.query_map([], |r| r.get::<_, String>(0))? {
         state
@@ -383,6 +402,9 @@ pub(crate) fn load_state(conn: &Connection) -> Result<Option<State>, EngineError
     }
     if let Some(v) = get("library", "hashes")? {
         state.hashes = serde_json::from_str(&v).map_err(bad)?;
+    }
+    if let Some(v) = get("library", "trims")? {
+        state.trims = serde_json::from_str(&v).map_err(bad)?;
     }
     if let Some(v) = get("alarms", "acked")? {
         state.acked_alarms = serde_json::from_str(&v).map_err(bad)?;

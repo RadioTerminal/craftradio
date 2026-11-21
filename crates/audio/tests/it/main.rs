@@ -8,4 +8,5 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 mod decode;
 mod dynamics;
 mod fixtures;
+mod item_gain;
 mod mixer;

@@ -12,6 +12,7 @@ use crate::shortcuts;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckCommand, DeckState, DeckView, Edit, StationView, Status};
 use crate::widgets::{self, Armed, Look, guard_button_sized, icon_button_sized, transport_button};
+use radio_model::{Clamp, GainSource, ItemGain};
 
 /// The part setting that switches the second press on the deck on air.
 const CONFIRM_KEY: &str = "confirm_on_air";
@@ -46,6 +47,8 @@ pub(crate) struct State {
     focused: usize,
     /// The place of each deck in the queue, for this frame: 1 plays next.
     next: Vec<Option<usize>>,
+    /// The view is the UI preview: nothing plays, so no gain applies.
+    preview: bool,
 }
 
 impl Default for State {
@@ -58,6 +61,7 @@ impl Default for State {
             armed: None,
             focused: 0,
             next: Vec::new(),
+            preview: false,
         }
     }
 }
@@ -165,6 +169,7 @@ pub(crate) fn show(
     let now_ts = view.now.timestamp();
     ui.ctx()
         .data_mut(|d| d.insert_temp(egui::Id::new(NOW_KEY), now_ts));
+    state.preview = view.preview;
     let labels = ['A', 'B', 'C', 'D'];
     for (i, label) in labels.iter().enumerate() {
         state.fade_s[i] = parts::f32(view, parts::DECKS, &fade_key(*label), DEFAULT_FADE_S);
@@ -552,7 +557,13 @@ fn deck_body(
             )
         };
         let name = RichText::new(name).font(theme::text(theme::CAPTION));
-        widgets::truncated_label(ui, name.color(colour));
+        // The item gain sits at the end of the row; the playlist name truncates first.
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            gain_caption(ui, deck, state.preview, t);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                widgets::truncated_label(ui, name.color(colour));
+            });
+        });
     });
     progress(ui, deck, t);
     let left = deck.len.saturating_sub(deck.elapsed);
@@ -600,6 +611,96 @@ fn deck_body(
         .map_or("Nothing planned", String::as_str);
     ui.add(egui::Label::new(muted(line)).wrap_mode(egui::TextWrapMode::Extend));
     head.inner.union(title)
+}
+
+/// A gain in dB as text, with a real minus sign: "−3.2 dB", "+1.5 dB", "0.0 dB".
+fn db_text(db: f32) -> String {
+    let v = (db * 10.0).round() / 10.0;
+    let sign = if v < 0.0 {
+        "−"
+    } else if v > 0.0 {
+        "+"
+    } else {
+        ""
+    };
+    format!("{sign}{:.1} dB", v.abs())
+}
+
+/// The short caption of an item gain, and whether it shows a gain that applies.
+pub(crate) fn gain_words(g: &ItemGain) -> (String, bool) {
+    match g.source {
+        GainSource::Measured => (format!("RG {}", db_text(g.db)), true),
+        GainSource::Tag => (format!("tag {}", db_text(g.db)), true),
+        GainSource::NotMeasured => ("not measured".to_owned(), false),
+        GainSource::Off => ("RG off".to_owned(), false),
+    }
+}
+
+/// The tooltip of an item gain: the loudness, the peak, the target and any clamp.
+pub(crate) fn gain_detail(g: &ItemGain, preview: bool) -> String {
+    let mut lines = Vec::new();
+    let level = |v: f32, unit: &str| format!("{} {unit}", db_text(v).trim_end_matches(" dB"));
+    match (g.source, g.loudness) {
+        (GainSource::Off, _) => {
+            lines.push("Loudness normalisation is off: the item plays at unity.".to_owned());
+        }
+        (GainSource::NotMeasured, _) => lines
+            .push("Not measured yet, and no ReplayGain tag: the item plays at unity.".to_owned()),
+        (source, Some(l)) => {
+            let from = if source == GainSource::Tag {
+                "From the ReplayGain tag"
+            } else {
+                "Measured (EBU R128)"
+            };
+            lines.push(format!("{from}: {}", level(l.lufs, "LUFS")));
+            lines.push(match l.peak_db {
+                Some(p) => format!("True peak: {}", level(p, "dBTP")),
+                None => "True peak: not known".to_owned(),
+            });
+        }
+        (_, None) => {}
+    }
+    lines.push(format!("Target: {}", level(g.target_lufs, "LUFS")));
+    let applies = matches!(g.source, GainSource::Measured | GainSource::Tag);
+    if g.trim_db != 0.0 && applies {
+        lines.push(format!("Trim: {}", db_text(g.trim_db)));
+    }
+    if let Some(c) = g.clamp {
+        lines.push(
+            match c {
+                Clamp::Peak => "Boost held back: the true peak would pass −1 dBTP",
+                Clamp::NoPeak => "No boost: the tag gives no peak",
+                Clamp::MaxBoost => "Boost held at the max boost",
+                Clamp::MaxCut => "Cut held at −24 dB",
+            }
+            .to_owned(),
+        );
+    }
+    if applies {
+        lines.push(format!("Gain on this deck: {}", db_text(g.db)));
+    }
+    if preview {
+        lines.push("Preview: nothing plays, so no gain applies here.".to_owned());
+    }
+    lines.join("\n")
+}
+
+/// The item gain at the end of the playlist row: "RG −3.2 dB", "tag −2.1 dB", or "not
+/// measured" in muted ink. It has the caption font of the row, so the row keeps its
+/// height. The words carry the state, not the colour alone.
+fn gain_caption(ui: &mut egui::Ui, deck: &DeckView, preview: bool, t: &Tokens) {
+    let Some(g) = &deck.gain else { return };
+    let (words, applied) = gain_words(g);
+    let colour = if applied && !preview {
+        t.text
+    } else {
+        t.text_muted
+    };
+    let text = RichText::new(words)
+        .font(theme::text(theme::CAPTION))
+        .color(colour);
+    ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Truncate))
+        .on_hover_text(gain_detail(g, preview));
 }
 
 fn badge(ui: &mut egui::Ui, i: usize, label: char, focused: bool, t: &Tokens) -> egui::Response {
@@ -1174,5 +1275,32 @@ fn start_lines(deck: &DeckView, now: Option<jiff::Timestamp>) -> Vec<String> {
             out.push(format!("{sharp}{at}"));
             out
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radio_model::{Loudness, LoudnessSettings};
+
+    /// A trim that does not apply (normalisation off, or nothing known) is not shown as
+    /// part of the gain.
+    #[test]
+    fn the_tooltip_shows_a_trim_only_when_it_applies() {
+        let measured = Some((
+            Loudness {
+                lufs: -20.0,
+                peak_db: Some(-6.0),
+            },
+            GainSource::Measured,
+        ));
+        let on = LoudnessSettings::default();
+        assert!(gain_detail(&on.gain(measured, -2.0), false).contains("Trim"));
+        let off = LoudnessSettings {
+            enabled: false,
+            ..on
+        };
+        assert!(!gain_detail(&off.gain(measured, -2.0), false).contains("Trim"));
+        assert!(!gain_detail(&on.gain(None, -2.0), false).contains("Trim"));
     }
 }

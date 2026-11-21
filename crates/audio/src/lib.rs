@@ -19,8 +19,8 @@ pub use dynamics::{CompressorConfig, LimiterConfig, ProgramDynamics};
 pub use error::AudioError;
 pub use meter::{METER_FLOOR_DB, MeterReader, MeterSnapshot, SilenceDetector, StripMeter};
 pub use mixer::{
-    CART_VOICES, COMMAND_CAPACITY, DeviceRenderer, LiveInput, MAX_GAIN_DB, Mixer, MixerConfig,
-    MixerHandle, drain_offline, render_offline, render_offline_buses,
+    CART_VOICES, COMMAND_CAPACITY, DeviceRenderer, LiveInput, MAX_GAIN_DB, MIN_ITEM_GAIN_DB, Mixer,
+    MixerConfig, MixerHandle, drain_offline, render_offline, render_offline_buses,
 };
 
 /// The engine sample rate in Hz.

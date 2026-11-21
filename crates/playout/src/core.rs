@@ -216,6 +216,10 @@ pub(crate) struct Slot {
     /// Start as soon as the deck is ready, whatever the plan says.
     pub(crate) asap: bool,
     pub(crate) options: LoadOptions,
+    /// The item gain that playout sent to the mixer (or puts in the load), for a file item.
+    pub(crate) gain: Option<radio_model::ItemGain>,
+    /// The loudness from the tags of the file, once the worker read them.
+    pub(crate) tagged: Option<radio_model::Loudness>,
 }
 
 impl Slot {
@@ -663,7 +667,7 @@ impl Core {
     }
 
     /// Takes the engine events. It turns intents into audio and returns their checks.
-    fn drain_engine(&mut self) -> Vec<Check> {
+    pub(crate) fn drain_engine(&mut self) -> Vec<Check> {
         let mut checks = Vec::new();
         while let Ok(ev) = self.engine_rx.try_recv() {
             match ev {
@@ -746,6 +750,7 @@ impl Core {
         }
         let _ = self.drain_engine();
         self.take_done(now);
+        self.refresh_gains();
         if std::mem::take(&mut self.carts_dirty) || self.ticks == 1 {
             self.sync_carts();
         }
@@ -1095,6 +1100,7 @@ impl Core {
             self.timeline_changed = true;
             self.save_due = true;
         }
+        self.measure_ahead(now);
         self.note_planned_rules(&station, now);
         self.prune_hard(now);
         self.planned = true;
@@ -1297,17 +1303,22 @@ impl Core {
                 Duration::ZERO
             },
             item_tag: Some(tag),
+            gain_db: 0.0,
         };
         let mut stream = None;
         let mut phase = Phase::Loading;
+        let mut gain = None;
         match &item.source {
             Source::File { path } => {
                 let (path, cue_in) = (path.clone(), options.cue_in);
                 self.work.run(move || Done::Opened {
                     tag,
                     result: Decoder::open_at(&path, cue_in).map_err(|e| e.to_string()),
+                    tagged: radio_library::read_loudness_tags(&path),
                 });
                 phase = Phase::Opening;
+                gain = Some(self.item_gain(item.id, None));
+                self.ensure_measured(&item);
             }
             Source::Stream { url, keep_alive } => {
                 stream = Some(self.load_stream(deck, url, *keep_alive, options)?);
@@ -1344,6 +1355,8 @@ impl Core {
             fading: false,
             asap: false,
             options,
+            gain,
+            tagged: None,
         });
         self.next_deck = (i + 1) % 4;
         Ok(tag)
@@ -1511,6 +1524,7 @@ impl Core {
                 role: Some(s.role),
                 start: Some(s.started.unwrap_or(s.entry.start)),
                 end: Some(s.planned_end()),
+                gain: s.gain,
             },
         });
         let Ok(mut view) = self.view.lock() else {
@@ -1630,7 +1644,11 @@ impl Core {
                         let _ = reply.send(Err(e));
                     }
                 },
-                Done::Opened { tag, result } => self.on_opened(tag, result, now),
+                Done::Opened {
+                    tag,
+                    result,
+                    tagged,
+                } => self.on_opened(tag, result, tagged, now),
                 Done::Row { tag, result } => match result {
                     Ok(row) => {
                         let slot = self.slots.iter_mut().flatten().find(|s| s.tag == tag);
@@ -1654,13 +1672,20 @@ impl Core {
                 },
                 Done::Folder(files) => self.on_folder(files, now),
                 Done::Analysed(id, timing) => self.on_analysed(id, timing),
+                Done::Measured(id, measured) => self.on_measured(id, measured),
                 Done::Cart(i, item, result) => self.on_cart(i, item, result, now),
             }
         }
     }
 
     /// A worker opened (or failed to open) the file of the load with `tag`.
-    fn on_opened(&mut self, tag: u64, result: Result<Decoder, String>, now: Timestamp) {
+    fn on_opened(
+        &mut self,
+        tag: u64,
+        result: Result<Decoder, String>,
+        tagged: Option<radio_model::Loudness>,
+        now: Timestamp,
+    ) {
         let Some(i) = (0..4).find(|&i| {
             self.slots[i]
                 .as_ref()
@@ -1669,6 +1694,16 @@ impl Core {
             return;
         };
         let deck = DeckId::ALL[i];
+        // The gain goes with the load, so the item plays at it from its first sample.
+        let id = self.slots[i].as_ref().map(|s| s.item.id);
+        if let Some(id) = id {
+            let gain = self.item_gain(id, tagged);
+            if let Some(s) = &mut self.slots[i] {
+                s.tagged = tagged;
+                s.options.gain_db = gain.db;
+                s.gain = Some(gain);
+            }
+        }
         let result = result.and_then(|dec| {
             let options = self.slots[i]
                 .as_ref()

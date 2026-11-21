@@ -214,6 +214,21 @@ pub enum Command {
         hash: String,
         size: u64,
     },
+    /// Stores the loudness of the file of an item: an EBU R128 measurement, by content hash
+    /// (hex) and size. Items with the same file share it. Playout sends this after it
+    /// measures a file.
+    #[serde(rename = "item.set_loudness")]
+    ItemSetLoudness {
+        item: ItemId,
+        hash: String,
+        size: u64,
+        lufs: f32,
+        #[serde(default)]
+        peak_db: Option<f32>,
+    },
+    /// Sets the manual gain trim of an item, in dB, on top of its loudness gain. 0 clears it.
+    #[serde(rename = "item.set_gain_trim")]
+    ItemSetGainTrim { item: ItemId, db: f32 },
     /// Keep-alive of a stream item: it reconnects until its planned end.
     #[serde(rename = "item.set_keep_alive")]
     ItemSetKeepAlive { item: ItemId, keep_alive: bool },
@@ -349,6 +364,16 @@ pub enum Command {
         #[serde(default)]
         limiter: Option<LimiterPatch>,
     },
+    /// Sets loudness normalisation on the decks. Absent fields keep their values.
+    #[serde(rename = "mixer.set_loudness")]
+    MixerSetLoudness {
+        #[serde(default)]
+        enabled: Option<bool>,
+        #[serde(default)]
+        target_lufs: Option<f32>,
+        #[serde(default)]
+        max_boost_db: Option<f32>,
+    },
     /// Acknowledges one alarm or warning by its id: it stops counting as new.
     #[serde(rename = "alarm.ack")]
     AlarmAck { id: u64 },
@@ -383,6 +408,8 @@ impl Command {
             Self::ItemMarkMissing { .. } => "item.mark_missing",
             Self::ItemRelink { .. } => "item.relink",
             Self::ItemSetHash { .. } => "item.set_hash",
+            Self::ItemSetLoudness { .. } => "item.set_loudness",
+            Self::ItemSetGainTrim { .. } => "item.set_gain_trim",
             Self::DeckLoad { .. } => "deck.load",
             Self::DeckPlay { .. } => "deck.play",
             Self::DeckPause { .. } => "deck.pause",
@@ -414,6 +441,7 @@ impl Command {
             Self::CartSet { .. } => "cart.set",
             Self::MixerSetStrip { .. } => "mixer.set_strip",
             Self::MixerSetDynamics { .. } => "mixer.set_dynamics",
+            Self::MixerSetLoudness { .. } => "mixer.set_loudness",
             Self::AlarmAck { .. } => "alarm.ack",
             Self::AlarmAckAll { .. } => "alarm.ack_all",
         }
@@ -446,6 +474,8 @@ impl Command {
             | Self::ItemMarkMissing { .. }
             | Self::ItemRelink { .. }
             | Self::ItemSetHash { .. }
+            | Self::ItemSetLoudness { .. }
+            | Self::ItemSetGainTrim { .. }
             | Self::DeckLoad { .. }
             | Self::DeckPlay { .. }
             | Self::DeckPause { .. }
@@ -474,6 +504,7 @@ impl Command {
             | Self::CartSet { .. }
             | Self::MixerSetStrip { .. }
             | Self::MixerSetDynamics { .. }
+            | Self::MixerSetLoudness { .. }
             | Self::AlarmAck { .. }
             | Self::AlarmAckAll { .. } => Tier::OnAir,
         }
@@ -837,6 +868,33 @@ pub fn registry() -> Vec<CommandSpec> {
             "Set the compressor and the limiter on Program",
             A,
             &[("compressor", "object"), ("limiter", "object")],
+        ),
+        spec(
+            "mixer.set_loudness",
+            "Set loudness normalisation on the decks: on/off, target LUFS, max boost",
+            A,
+            &[
+                ("enabled", "boolean"),
+                ("target_lufs", "number"),
+                ("max_boost_db", "number"),
+            ],
+        ),
+        spec(
+            "item.set_loudness",
+            "Store the measured loudness of the file of an item",
+            A,
+            &[
+                ("item", "integer"),
+                ("hash", "string"),
+                ("size", "integer"),
+                ("lufs", "number"),
+            ],
+        ),
+        spec(
+            "item.set_gain_trim",
+            "Set the manual gain trim of an item, in dB",
+            A,
+            &[("item", "integer"), ("db", "number")],
         ),
         spec(
             "alarm.ack",

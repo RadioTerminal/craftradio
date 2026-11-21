@@ -34,6 +34,9 @@ pub struct DeckView {
     pub waiting: bool,
     /// The id of the item, as `PlaylistTab::ids` has it. `None` when it is not known.
     pub item: Option<u64>,
+    /// The item gain that the deck applies to a file (the loudness gain). `None` for an
+    /// empty deck, a stream or live input.
+    pub gain: Option<radio_model::ItemGain>,
 }
 
 /// How well a fixed-time item fits its slot.
@@ -103,7 +106,7 @@ impl PublishMode {
 }
 
 /// The tags of an item, and how its stream title is made.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ItemMeta {
     pub title: String,
     pub artist: String,
@@ -115,6 +118,9 @@ pub struct ItemMeta {
     pub custom: String,
     /// For a stream: true when it reconnects until its planned end. `None` for other items.
     pub keep_alive: Option<bool>,
+    /// For a file of the station: the manual gain trim in dB, on top of the loudness gain.
+    /// `None` for other items.
+    pub gain_trim_db: Option<f32>,
 }
 
 /// Who starts the next item: the schedule, the operator with help, or the operator alone.
@@ -505,6 +511,8 @@ pub struct StationView {
     pub icecast: IcecastView,
     /// The compressor and the limiter on Program.
     pub dynamics: radio_model::DynamicsSettings,
+    /// Loudness normalisation on the decks.
+    pub loudness: radio_model::LoudnessSettings,
     pub output: OutputStatus,
     /// Folders in the library.
     pub folders: Vec<FolderView>,
@@ -1014,6 +1022,8 @@ pub enum Edit {
     SetIcecast(IcecastView),
     /// The compressor and the limiter on Program, whole.
     SetDynamics(radio_model::DynamicsSettings),
+    /// Loudness normalisation on the decks, whole.
+    SetLoudness(radio_model::LoudnessSettings),
     SetDevice {
         role: DeviceRole,
         device: String,

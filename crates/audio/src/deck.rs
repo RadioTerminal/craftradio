@@ -47,7 +47,7 @@ impl DeckState {
 }
 
 /// How a deck plays a new item.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct LoadOptions {
     /// Route captured audio through the live strip.
     pub live_bus: bool,
@@ -58,6 +58,9 @@ pub struct LoadOptions {
     /// A tag that the engine picks for the item. A [`crate::Command`] with a different tag
     /// has no effect on the deck.
     pub item_tag: Option<u64>,
+    /// The item gain in dB (the loudness gain), before the fader. 0 is unity. It applies
+    /// from the first sample. [`crate::CommandKind::SetItemGain`] changes it later.
+    pub gain_db: f32,
 }
 
 /// The answer of the mixer to a load.
@@ -135,6 +138,8 @@ pub(crate) struct DeckSource {
     pub(crate) shared: Arc<DeckShared>,
     pub(crate) fade_in: u64,
     pub(crate) item_tag: Option<u64>,
+    /// The linear item gain at the load.
+    pub(crate) gain: f32,
     /// Fed from outside (a stream), not by a [`DeckFeeder`]: offline render never waits for it.
     pub(crate) external: bool,
 }

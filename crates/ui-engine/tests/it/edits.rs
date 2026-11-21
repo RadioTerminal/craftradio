@@ -262,3 +262,74 @@ fn a_dynamics_edit_reaches_the_engine_and_the_view() {
     let after = wait_for(&mut source, &clock, |_| true);
     assert_eq!(after.dynamics, next, "a bad ratio changes nothing");
 }
+
+/// A change of the Loudness section reaches the engine and the next view, and a bad
+/// target changes nothing.
+#[test]
+fn a_loudness_edit_reaches_the_engine_and_the_view() {
+    let (mut source, clock) = source(Vec::new());
+    let before = wait_for(&mut source, &clock, |_| true).loudness;
+    assert!(before.enabled, "normalisation starts on");
+    let next = radio_model::LoudnessSettings {
+        enabled: false,
+        target_lufs: -23.0,
+        ..before
+    };
+    assert_eq!(source.edit(Edit::SetLoudness(next)), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| v.loudness == next);
+    assert_eq!(view.loudness, next);
+    let bad = radio_model::LoudnessSettings {
+        target_lufs: -3.0,
+        ..next
+    };
+    let _ = source.edit(Edit::SetLoudness(bad));
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(wait_for(&mut source, &clock, |_| true).loudness, next);
+}
+
+/// A deck with a file shows the gain that playout applies, once the file is measured.
+#[test]
+fn a_deck_shows_the_measured_gain_of_its_file() {
+    let dir = dir();
+    // A short file, so a debug build measures it well inside the wait.
+    let path = wav(&dir, "measured", 3.0);
+    let (mut source, clock) = source(vec![track(1, "Amber Wire", &path, 3.0)]);
+    let view = wait_for(&mut source, &clock, |v| {
+        v.decks.iter().any(|d| {
+            d.gain
+                .is_some_and(|g| g.source == radio_model::GainSource::Measured)
+        })
+    });
+    let gain = view
+        .decks
+        .iter()
+        .find_map(|d| d.gain)
+        .expect("a file deck has a gain");
+    assert_eq!(gain.source, radio_model::GainSource::Measured);
+    assert!(gain.loudness.is_some());
+}
+
+/// A trim set in the metadata editor goes to the engine, and the row reads it back.
+#[test]
+fn a_trim_from_the_metadata_editor_reaches_the_engine() {
+    let dir = dir();
+    let path = wav(&dir, "trimmed", 20.0);
+    let (mut source, clock) = source(vec![track(1, "Amber Wire", &path, 20.0)]);
+    let view = wait_for(&mut source, &clock, |v| !v.rows.is_empty());
+    let row = view.rows[0].clone();
+    assert_eq!(
+        row.meta.gain_trim_db,
+        Some(0.0),
+        "a file row has no trim yet"
+    );
+    let mut meta = row.meta.clone();
+    meta.gain_trim_db = Some(-2.5);
+    let target = radio_ui_egui::view::MetaTarget::Row(row.id);
+    assert_eq!(source.edit(Edit::SetMeta(vec![(target, meta)])), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        v.rows
+            .first()
+            .is_some_and(|r| r.meta.gain_trim_db == Some(-2.5))
+    });
+    assert_eq!(view.rows[0].meta.gain_trim_db, Some(-2.5));
+}

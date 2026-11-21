@@ -32,6 +32,9 @@ pub(crate) struct MetaEditor {
     publish_touched: bool,
     custom_touched: bool,
     keep_alive_touched: bool,
+    trim_touched: bool,
+    /// True when the items do not share one gain trim.
+    trim_mixed: bool,
     /// The row whose place in the timeline gives the preview line its context.
     base: Row,
     note: bool,
@@ -52,6 +55,8 @@ impl MetaEditor {
                 field(&mut draft, i).clear();
             }
         }
+        let first_trim = draft.gain_trim_db;
+        let trim_mixed = targets.iter().any(|(_, m)| m.gain_trim_db != first_trim);
         Self {
             targets,
             draft,
@@ -60,6 +65,8 @@ impl MetaEditor {
             publish_touched: false,
             custom_touched: false,
             keep_alive_touched: false,
+            trim_touched: false,
+            trim_mixed,
             base,
             note: false,
             base_preview: true,
@@ -91,6 +98,10 @@ impl MetaEditor {
         // Keep-alive applies only to streams.
         if self.keep_alive_touched && out.keep_alive.is_some() {
             out.keep_alive = self.draft.keep_alive;
+        }
+        // The trim applies only to station files.
+        if self.trim_touched && out.gain_trim_db.is_some() {
+            out.gain_trim_db = self.draft.gain_trim_db;
         }
         out
     }
@@ -197,6 +208,32 @@ pub(crate) fn show(
                 {
                     ed.keep_alive_touched = true;
                 }
+            }
+            if let Some(trim) = ed.draft.gain_trim_db.as_mut() {
+                ui.add_space(space::S);
+                caption(ui, "LOUDNESS", t);
+                ui.horizontal(|ui| {
+                    let label = ui.label(RichText::new("Gain trim").color(t.text_muted));
+                    let (lo, hi) = radio_model::loudness_range::TRIM_DB;
+                    let field = egui::DragValue::new(trim)
+                        .range(lo..=hi)
+                        .speed(0.1)
+                        .max_decimals(1)
+                        .suffix(" dB");
+                    if ui
+                        .add_sized([size::FIELD_W, size::CONTROL_SM], field)
+                        .labelled_by(label.id)
+                        .changed()
+                    {
+                        ed.trim_touched = true;
+                    }
+                });
+                let note = if ed.trim_mixed && !ed.trim_touched {
+                    "The items have different trims. A change sets one trim on all of them."
+                } else {
+                    "On top of the loudness gain. The peak guard and the caps still apply."
+                };
+                caption(ui, note, t);
             }
             ui.add_space(space::S);
             caption(ui, "Cue points can't be edited in this build.", t);
