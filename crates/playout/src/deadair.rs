@@ -16,6 +16,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// A skip on silence loads an entry on demand only if it starts within this time.
+const ON_DEMAND_AHEAD: Duration = Duration::from_secs(600);
+
 /// The state of the dead-air logic and of the emergency fallback.
 #[derive(Default)]
 pub(crate) struct DeadAir {
@@ -60,6 +63,15 @@ impl Core {
     fn quiet_on_purpose(&self) -> bool {
         let mode = self.engine.state().mode;
         if mode == Mode::Manual || self.hold {
+            return true;
+        }
+        // A paused item is an operator's wait, in any mode.
+        if self
+            .slots
+            .iter()
+            .flatten()
+            .any(|s| s.phase == Phase::Paused)
+        {
             return true;
         }
         let on_air = self
@@ -113,6 +125,8 @@ impl Core {
             .timeline
             .entries
             .iter()
+            // Never a fixed or locked entry, and never one far ahead: those keep their time.
+            .filter(|e| e.fixed.is_none() && !e.locked && e.start <= add(now, ON_DEMAND_AHEAD))
             .find(|e| e.start >= from && !assigned.contains(&(e.item, e.start)))
             .cloned();
         let Some(entry) = next else { return false };
@@ -346,7 +360,7 @@ impl Core {
                 None => {
                     self.analysis.done.insert(item.id, None);
                     let (id, path) = (item.id, path.clone());
-                    self.work.run(move || {
+                    self.work.run_slow(move || {
                         Done::Analysed(id, radio_library::analyse(&path).ok().map(|a| a.timing))
                     });
                 }

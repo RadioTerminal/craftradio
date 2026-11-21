@@ -150,3 +150,44 @@ fn hard_event_is_never_skipped_when_decks_are_full() {
         "event at {start}, target {target}"
     );
 }
+
+/// An operator pause in `Auto` mode is a wait. Silence does not skip, the next item does
+/// not start, and the emergency folder stays off.
+#[test]
+fn pause_in_auto_is_a_wait_not_dead_air() {
+    let one = file_item(1, "One", &wav("p-one", 4.0, Side::Left), 4.0, 3.5, 0.5);
+    let two = file_item(2, "Two", &wav("p-two", 2.0, Side::Right), 2.0, 1.5, 0.5);
+    let backup = wav("p-backup", 2.0, Side::Both);
+    let folder = std::path::Path::new(&backup)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (p, clock) = offline(engine_with(vec![one, two]), |cfg| {
+        cfg.mixer.silence.after = Duration::from_millis(500);
+        cfg.fallback_folder = Some(folder);
+    });
+    let before = run(&p, &clock, 1.0);
+    assert!(
+        first_audible(&before, 0, 0).is_some(),
+        "item one did not start"
+    );
+    let _ = p.send(Command::DeckPause { deck: 0 }).unwrap();
+    let after = run(&p, &clock, 3.0);
+
+    assert!(
+        peak(&after, 0, SR / 10, after.len() / 2) < 0.01,
+        "the pause did not hold"
+    );
+    assert!(
+        first_audible(&after, 1, 0).is_none(),
+        "the next item started"
+    );
+    let view = p.snapshot();
+    assert_eq!(view.decks[0].phase, radio_playout::DeckPhase::Paused);
+    assert!(!view.emergency);
+    assert!(
+        view.alarms
+            .iter()
+            .all(|a| a.alarm != radio_playout::Alarm::DeadAir)
+    );
+}

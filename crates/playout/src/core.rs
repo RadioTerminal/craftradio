@@ -258,6 +258,11 @@ pub(crate) struct Core {
     pub(crate) work: Workers,
     /// Rows of items that ended before the writer returned their row id.
     ended: BTreeMap<u64, (Timestamp, LogStatus)>,
+    /// Hard entries seen within the preload time. The planner drops a late one from the
+    /// timeline, but playout still finds it here.
+    hard_seen: Vec<Entry>,
+    /// Items taken off a deck for a hard event. They wait until that event starts.
+    blocked: Vec<(ItemId, Timestamp)>,
     out_clock: Option<SampleClock>,
 }
 
@@ -346,6 +351,8 @@ impl Core {
             log,
             work: Workers::new(),
             ended: BTreeMap::new(),
+            hard_seen: Vec::new(),
+            blocked: Vec::new(),
             out_clock: opened.clock,
         })
     }
@@ -450,6 +457,8 @@ impl Core {
         self.check_dead_air(now);
         self.poll_states();
         self.stop_took_effect();
+        self.sync_engine_decks();
+        self.expire_ended(now);
         self.publish(now);
         self.heartbeat(now);
         self.save_state(now);
@@ -710,6 +719,12 @@ impl Core {
             .iter()
             .filter(|e| !assigned.contains(&(e.item, e.start)))
             .filter(|e| !e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
+            .filter(|e| {
+                !self
+                    .blocked
+                    .iter()
+                    .any(|(id, until)| *id == e.item && now < *until)
+            })
             .filter(|e| last.is_none_or(|l| e.start > l))
             .take_while(|e| e.start <= horizon)
             .take(MAX_QUEUED.saturating_sub(queued))
@@ -984,8 +999,8 @@ impl Core {
         let _ = self.engine.flush();
     }
 
-    /// Offline only: waits until no deck is still opening or filling, for 2 s at most.
-    /// Then a run does not depend on the speed of the disk. A real output never waits.
+    /// Offline only: waits until no deck is still opening or filling, for 2 s at most. Then
+    /// a run does not depend on the speed of the disk. A real output never waits.
     fn settle_offline(&mut self) {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(2) {
@@ -1026,7 +1041,10 @@ impl Core {
                             }
                         }
                     }
-                    Err(reason) => self.alarms.raise(now, Alarm::LogFailed { reason }),
+                    Err(reason) => {
+                        self.ended.remove(&tag);
+                        self.alarms.raise(now, Alarm::LogFailed { reason });
+                    }
                 },
                 Done::Folder(files) => self.on_folder(files, now),
                 Done::Analysed(id, timing) => self.on_analysed(id, timing),
@@ -1096,40 +1114,99 @@ impl Core {
         }
     }
 
+    /// Tells the engine which item each deck holds, so `deck.*` commands reach the
+    /// decks that playout loads.
+    fn sync_engine_decks(&mut self) {
+        for i in 0..4 {
+            let item = self.slots[i].as_ref().map(|s| s.item.id);
+            if self.engine.state().decks[i] != item {
+                self.engine.set_deck(i as u8, item);
+            }
+        }
+    }
+
+    /// Ends the wait for row ids that never came, after 60 s, with an alarm.
+    fn expire_ended(&mut self, now: Timestamp) {
+        const WAIT: Duration = Duration::from_secs(60);
+        let old: Vec<u64> = self
+            .ended
+            .iter()
+            .filter(|(_, (end, _))| since(*end, now) >= WAIT)
+            .map(|(tag, _)| *tag)
+            .collect();
+        for tag in old {
+            self.ended.remove(&tag);
+            let reason = "the log returned no row id within 60 s".to_string();
+            self.alarms.raise(now, Alarm::LogFailed { reason });
+        }
+    }
+
     /// Makes sure each hard event within the preload time is on a deck. When no deck is
-    /// free, it takes off a queued item that has not started.
+    /// free, it takes off a queued item that has not started. A late event still loads
+    /// while it is within its tolerance. After that, playout raises `HardEventMissed`.
     fn ensure_hard(&mut self, now: Timestamp) {
         let horizon = add(now, self.cfg.preload);
         let assigned = self.assigned();
-        let due: Vec<Entry> = self
-            .timeline
-            .entries
-            .iter()
-            .filter(|e| e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
-            .filter(|e| e.start > now && e.start <= horizon)
-            .filter(|e| !assigned.contains(&(e.item, e.start)))
-            .cloned()
-            .collect();
+        for e in self.timeline.entries.iter().filter(|e| {
+            e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard)
+                && e.start > now
+                && e.start <= horizon
+        }) {
+            if !self
+                .hard_seen
+                .iter()
+                .any(|h| h.item == e.item && h.start == e.start)
+            {
+                self.hard_seen.push(e.clone());
+            }
+        }
+        self.hard_seen
+            .retain(|h| !assigned.contains(&(h.item, h.start)));
+        self.blocked.retain(|(_, until)| now < *until);
+        let mut missed = Vec::new();
+        let mut due = Vec::new();
+        for h in &self.hard_seen {
+            let tolerance = h.fixed.as_ref().map_or(Duration::ZERO, |f| f.tolerance);
+            if h.start <= now && since(h.start, now) > tolerance {
+                missed.push(h.clone());
+            } else {
+                due.push(h.clone());
+            }
+        }
+        for m in missed {
+            self.hard_seen
+                .retain(|h| !(h.item == m.item && h.start == m.start));
+            let alarm = Alarm::HardEventMissed {
+                item: m.item,
+                target: m.start,
+            };
+            self.alarms.raise(now, alarm);
+        }
         for entry in due {
             let Some(item) = self.items.get(&entry.item).cloned() else {
                 continue;
             };
             let Some(i) = self.free_deck() else {
-                if !self.evict_for_hard() {
+                if !self.evict_for_hard(entry.start, now) {
                     self.alarms
                         .raise_once(now, Alarm::HardEventNotLoaded { item: item.id });
                 }
                 return;
             };
+            let late = entry.start <= now;
             if let Err(reason) = self.load(i, entry, item.clone(), DeckRole::Plan, Duration::ZERO) {
                 self.skip_broken(&item, reason, now);
+            } else if late && let Some(s) = &mut self.slots[i] {
+                // The target passed but the tolerance holds: start as soon as possible.
+                s.asap = true;
             }
         }
     }
 
     /// Takes the latest queued item that has not started off its deck, plan items
-    /// first. It returns false when there is no such item.
-    fn evict_for_hard(&mut self) -> bool {
+    /// first. That item cannot load again before the hard event at `target`. It
+    /// returns false when there is no such item.
+    fn evict_for_hard(&mut self, target: Timestamp, now: Timestamp) -> bool {
         let victim = (0..4)
             .filter_map(|i| self.slots[i].as_ref().map(|s| (i, s)))
             .filter(|(_, s)| s.not_started() && !s.is_hard())
@@ -1140,6 +1217,14 @@ impl Core {
         if let Some(s) = self.slots[i].take() {
             let cmd = Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]));
             let _ = self.mixer.send(cmd.for_item(s.tag));
+            self.blocked.push((s.item.id, target));
+            if s.role == DeckRole::Operator {
+                let alarm = Alarm::OperatorItemEvicted {
+                    deck: i as u8,
+                    item: s.item.id,
+                };
+                self.alarms.raise(now, alarm);
+            }
         }
         self.dirty = true;
         true

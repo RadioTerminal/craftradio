@@ -654,6 +654,17 @@ impl Engine {
         self.log_handle()?.history(since, limit)
     }
 
+    /// Records the item on a deck, or `None` for an empty deck. Playout calls this for
+    /// the decks it loads itself, so `deck.*` commands accept those decks too.
+    pub fn set_deck(&mut self, deck: u8, item: Option<ItemId>) {
+        if let Ok(d) = self.deck(deck)
+            && self.state.decks[d] != item
+        {
+            self.state.decks[d] = item;
+            self.emit(EngineEvent::StateChanged);
+        }
+    }
+
     /// Clears the stop-after-current flag. Playout calls this when the stop takes effect.
     pub fn clear_stop_after_current(&mut self) {
         if self.state.stop_after_current {

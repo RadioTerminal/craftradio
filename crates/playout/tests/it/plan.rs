@@ -108,3 +108,33 @@ fn restart_resumes_or_replays_by_playlist() {
     assert_eq!(rows[0].status, Some(LogStatus::Interrupted));
     assert!(rows[0].end.is_some_and(|end| end <= rows[1].entry.start));
 }
+
+/// Many files wait for analysis, and the next item still opens at once. Analysis has its
+/// own lane, so an open never waits behind it.
+#[test]
+fn next_item_opens_while_analysis_is_busy() {
+    let one = file_item(1, "One", &wav("busy-one", 2.0, Side::Left), 2.0, 1.5, 0.0);
+    let mut engine = engine_with(vec![one]);
+    let long = wav("busy-long", 20.0, Side::Both);
+    let untimed: Vec<_> = (100..130)
+        .map(|id| {
+            let mut item = file_item(id, &format!("Untimed {id}"), &long, 20.0, 19.0, 0.0);
+            item.timing = None;
+            item.planned_len = Some(Duration::from_secs(20));
+            item
+        })
+        .collect();
+    crate::fixtures::add_playlist(&mut engine, "Library", untimed, "");
+    let (p, clock) = offline(engine, |_| {});
+    let begun = std::time::Instant::now();
+    let program = run(&p, &clock, 0.3);
+
+    assert!(
+        first_audible(&program, 0, 0).is_some(),
+        "item one did not open"
+    );
+    assert!(
+        begun.elapsed() < Duration::from_millis(1500),
+        "the open waited"
+    );
+}
