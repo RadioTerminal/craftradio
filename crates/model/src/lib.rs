@@ -4,6 +4,7 @@ mod dynamics;
 mod error;
 mod ids;
 mod item;
+mod loudness;
 mod playlist;
 mod rule;
 mod station;
@@ -13,6 +14,10 @@ pub use dynamics::{
 };
 pub use error::ModelError;
 pub use ids::{ItemId, PlaylistId};
+pub use loudness::{
+    Clamp, GainSource, ItemGain, Loudness, LoudnessSettings, MAX_CUT_DB, PEAK_CEILING_DB, check_trim,
+    range as loudness_range,
+};
 pub use item::{Item, ItemMeta, PublishMode, Source, Timing, stream_title};
 pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist};
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
