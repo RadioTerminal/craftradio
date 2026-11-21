@@ -83,7 +83,14 @@ pub struct EngineSource {
     next_id: u64,
     /// Library files that no playlist holds.
     files: Vec<folders::LibFile>,
+    next_file: u64,
     limits: radio_library::Limits,
+    worker: Option<folders::Worker>,
+    folders: Vec<folders::Folder>,
+    /// The watches of folder playlists, by playlist.
+    watches: HashMap<PlaylistId, (radio_model::FolderSource, radio_library::Watcher)>,
+    /// Watch problems, for the warnings.
+    watch_errors: Vec<String>,
 }
 
 /// What a timeline row stands for.
@@ -123,8 +130,19 @@ impl EngineSource {
             history_at: None,
             next_id: 0,
             files: Vec::new(),
+            next_file: 0,
             limits: radio_library::Limits::DEFAULT,
+            worker: folders::Worker::start(),
+            folders: Vec::new(),
+            watches: HashMap::new(),
+            watch_errors: Vec::new(),
         }
+    }
+
+    /// The same source with other limits for folder reads.
+    pub fn with_limits(mut self, limits: radio_library::Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// The playout under this source, for a headless run or a test.
@@ -153,6 +171,8 @@ impl EngineSource {
             .find(|p| p.is_main)
             .map(|p| map::tab(p, state));
         self.library = self.library_items();
+        self.sync_folders();
+        self.sync_watches();
     }
 
     /// The media library: each file and stream of each playlist, once per source.
@@ -555,6 +575,8 @@ impl ViewSource for EngineSource {
             self.rebuild(&pv.state);
             self.revision = Some(pv.revision);
         }
+        self.take_scans();
+        self.poll_watches();
         let rows = self.timeline_rows(&pv);
         let decks = self.decks(&pv, now);
         self.deck_states = std::array::from_fn(|i| decks[i].state);
@@ -600,9 +622,9 @@ impl ViewSource for EngineSource {
             cartwall,
             icecast: IcecastView::default(),
             output: Self::output(&pv),
-            folders: Vec::new(),
+            folders: self.folder_views(),
             settings: self.state.ui_settings().clone(),
-            warnings: open_alarms + pv.timeline.warnings.len(),
+            warnings: open_alarms + pv.timeline.warnings.len() + self.watch_errors.len(),
             preview: false,
         }
     }
