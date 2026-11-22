@@ -454,8 +454,11 @@ fn mute_action(meter: &MeterView, is_out: bool, mute: bool) -> Action {
     let edit = strip_edit(&meter.strip, StripChange::Mute(mute));
     if is_out && mute {
         Action::Confirm {
-            text: "Mute Out? Listeners hear silence until you unmute it.".to_owned(),
-            yes: "Mute Out".to_owned(),
+            text: format!(
+                "Mute {}? Listeners hear silence until you unmute it.",
+                meter.label
+            ),
+            yes: format!("Mute {}", meter.label),
             then: Box::new(edit),
         }
     } else {
@@ -469,7 +472,7 @@ pub(crate) fn frac(v: f32) -> f32 {
 }
 
 /// The right-click menu of a strip. It returns the settings tab that the person asks for.
-/// Settings of Out opens Icecast, of another strip Devices; Out also links to Processing.
+/// Settings opens Devices; Program also links to Processing.
 fn strip_menu(
     ui: &mut egui::Ui,
     meter: &MeterView,
@@ -500,12 +503,9 @@ fn strip_menu(
     {
         return Some(SettingsTab::Processing);
     }
+    // As the ⚙ of Program: every strip's settings are its devices.
     let settings = menu_item(ui, &icons::lead(Icon::Settings, "Settings"), None);
-    settings.then_some(if is_out {
-        SettingsTab::Icecast
-    } else {
-        SettingsTab::Devices
-    })
+    settings.then_some(SettingsTab::Devices)
 }
 
 /// Two LED meter bars (left and right) with green, amber and red zones and a held peak, and
@@ -667,7 +667,12 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
             "" => None,
             name => Some(name),
         };
-        if !view.preview && wanted.is_some_and(|w| w != roles.out) {
+        // The system default names no card, but with none open it too waits for a start.
+        let waits = match wanted {
+            Some(w) => w != roles.out,
+            None => roles.out.is_empty(),
+        };
+        if !view.preview && waits {
             let now = if roles.out.is_empty() {
                 "no sound card"
             } else {

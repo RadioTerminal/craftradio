@@ -7,10 +7,12 @@ use radio_ui_egui::view::{OutputKind, OutputMeterView};
 /// The output strips in mixer order: the Program device, Icecast, WebRTC. An output is live
 /// only while it really sends: a sound card is open, Icecast is connected, or somebody
 /// listens over WebRTC.
-pub(crate) fn output_meter_views(out: &OutputStatus) -> Vec<OutputMeterView> {
+pub(crate) fn output_meter_views(out: &OutputStatus, card_wanted: bool) -> Vec<OutputMeterView> {
     let device = match &out.local {
         LocalOutput::Device { name } => (true, name.clone()),
         LocalOutput::Lost { name } => (false, format!("Lost: {name}")),
+        // A card that failed to open leaves the null output too: it is not the same as none.
+        LocalOutput::Null | LocalOutput::Offline if card_wanted => (false, "Not open".to_owned()),
         LocalOutput::Null | LocalOutput::Offline => (false, "No device".to_owned()),
     };
     let icecast = match &out.icecast {
@@ -82,7 +84,7 @@ mod tests {
     }
 
     fn view(out: &OutputStatus, kind: OutputKind) -> OutputMeterView {
-        output_meter_views(out)
+        output_meter_views(out, false)
             .into_iter()
             .find(|v| v.kind == kind)
             .unwrap()
@@ -112,6 +114,15 @@ mod tests {
         );
         assert!(v.live);
         assert_eq!(v.note, "Studio out");
+    }
+
+    #[test]
+    fn a_wanted_card_that_is_not_open_does_not_read_as_no_device() {
+        let out = status(LocalOutput::Null);
+        let v = output_meter_views(&out, true).remove(0);
+        assert!(!v.live);
+        assert_eq!(v.note, "Not open");
+        assert_eq!(output_meter_views(&out, false).remove(0).note, "No device");
     }
 
     #[test]
@@ -158,7 +169,7 @@ mod tests {
             name: "Studio out".into(),
         });
         out.icecast = Some(StreamStatus::Connecting);
-        let views = output_meter_views(&out);
+        let views = output_meter_views(&out, false);
         let levels = gated_levels(&views, &[[-6.0, -6.0], [-6.0, -6.0], [-6.0, -6.0]]);
         assert_eq!(levels, vec![[-6.0, -6.0], [FLOOR, FLOOR], [FLOOR, FLOOR]]);
     }

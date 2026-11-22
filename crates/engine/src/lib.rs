@@ -53,7 +53,7 @@ pub const MONITOR_KEY: &str = "monitor";
 /// The value of [`OUT_KEY`] for no Program device: a system-clock timer drives the mixer.
 pub const NO_DEVICE: &str = "none";
 /// The old key of the monitor device, from when it played PFL.
-const OLD_CUE_KEY: &str = "pfl";
+pub(crate) const OLD_CUE_KEY: &str = "pfl";
 
 /// The settings of one mixer strip.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]

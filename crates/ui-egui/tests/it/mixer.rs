@@ -126,3 +126,16 @@ fn the_program_cog_opens_the_devices_page() {
         "Devices shows the monitor device"
     );
 }
+
+#[test]
+fn muting_program_asks_by_its_name() {
+    let mut harness = harness(Arc::default());
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Mute Program");
+    assert!(
+        harness
+            .query_all_by_label_contains("Mute Program?")
+            .next()
+            .is_some()
+    );
+}

@@ -652,12 +652,25 @@ fn old_cue_device_setting_becomes_the_monitor_device() {
         set_setting(&mut e, "audio", "pfl", "Desk speakers");
         e.flush().unwrap();
     }
-    let e = Engine::open(&path).unwrap();
-    assert_eq!(
-        audio_setting(&e, "monitor").as_deref(),
-        Some("Desk speakers")
-    );
-    assert_eq!(audio_setting(&e, "pfl"), None);
+    {
+        let e = Engine::open(&path).unwrap();
+        assert_eq!(
+            audio_setting(&e, "monitor").as_deref(),
+            Some("Desk speakers")
+        );
+        assert_eq!(audio_setting(&e, "pfl"), None);
+        e.flush().unwrap();
+    }
+    // The old row leaves the database too, so the move happens once.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let old: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings_by_part WHERE part = 'ui:audio' AND key = 'pfl'",
+            (),
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old, 0);
 }
 
 #[test]

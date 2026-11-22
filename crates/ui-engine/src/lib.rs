@@ -1055,7 +1055,14 @@ impl ViewSource for EngineSource {
             label.push_str(&format!(" · NOT SAVED: {reason}"));
         }
         let alarms = self.alarm_views(&pv, now);
-        self.output_views = outputs::output_meter_views(&pv.outputs);
+        // A Program device is wanted unless the setting says none.
+        let card_wanted = self
+            .state
+            .settings(AUDIO_PART)
+            .and_then(|s| s.get(radio_engine::OUT_KEY))
+            .and_then(|v| v.as_str())
+            != Some(radio_engine::NO_DEVICE);
+        self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted);
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {

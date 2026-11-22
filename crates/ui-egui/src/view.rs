@@ -950,7 +950,7 @@ pub enum DeviceRole {
 /// The device for each job, by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceRoles {
-    /// The Program device: `NO_DEVICE` for none, empty for the system default.
+    /// The Program sound card that is open now, or empty when none is.
     pub out: String,
     pub monitor: String,
     pub input: String,
