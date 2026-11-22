@@ -363,7 +363,17 @@ fn status(shared: &Mutex<StreamStatus>, value: StreamStatus) {
 }
 impl IcecastClient {
     pub fn start(cfg: IcecastConfig, frames: rtrb::Consumer<f32>) -> IcecastHandle {
-        Self::start_with_extra_roots(cfg, frames, Vec::new())
+        Self::start_metered(cfg, frames, Arc::default())
+    }
+
+    /// Like [`IcecastClient::start`], and `meter` gets each block that goes to the encoder,
+    /// so it reads silence while the source is not connected.
+    pub fn start_metered(
+        cfg: IcecastConfig,
+        frames: rtrb::Consumer<f32>,
+        meter: Arc<crate::LevelMeter>,
+    ) -> IcecastHandle {
+        Self::start_inner(cfg, frames, Vec::new(), meter)
     }
 
     /// Add DER trust anchors, for private servers and TLS integration tests.
@@ -371,8 +381,17 @@ impl IcecastClient {
     #[doc(hidden)]
     pub fn start_with_extra_roots(
         cfg: IcecastConfig,
+        frames: rtrb::Consumer<f32>,
+        extra_roots: Vec<Vec<u8>>,
+    ) -> IcecastHandle {
+        Self::start_inner(cfg, frames, extra_roots, Arc::default())
+    }
+
+    fn start_inner(
+        cfg: IcecastConfig,
         mut frames: rtrb::Consumer<f32>,
         extra_roots: Vec<Vec<u8>>,
+        meter: Arc<crate::LevelMeter>,
     ) -> IcecastHandle {
         let cfg = SourceConfig {
             settings: cfg,
@@ -389,7 +408,15 @@ impl IcecastClient {
                 let mut delay = 1;
                 loop {
                     status(&state, StreamStatus::Connecting);
-                    let result = send(&cfg, &mut frames, &rx, &state, &mut title, &mut delay);
+                    let result = send(
+                        &cfg,
+                        &mut frames,
+                        &rx,
+                        &state,
+                        &mut title,
+                        &mut delay,
+                        &meter,
+                    );
                     match result {
                         Ok(()) => break,
                         Err(error) => {
@@ -495,6 +522,7 @@ fn send(
     state: &Mutex<StreamStatus>,
     title: &mut String,
     delay: &mut u64,
+    meter: &crate::LevelMeter,
 ) -> Result<(), StreamError> {
     // Discard audio collected during the outage before opening the source.
     let stale = frames.slots();
@@ -541,6 +569,7 @@ fn send(
             }
         }
         if samples.len() == 1920 {
+            meter.add(&samples);
             output.packet(&samples)?;
             samples.clear();
         } else {

@@ -45,17 +45,6 @@ pub enum CartMode {
     Restart,
 }
 
-/// Where a mixer strip sends its sound.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
-pub enum Route {
-    #[default]
-    Out,
-    OutAndCue,
-    CueOnly,
-}
-
 /// Who may run a command (spec 6.14). MCP exposes both tiers and marks `ReadOnly` tools as such.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Tier {
@@ -358,7 +347,8 @@ pub enum Command {
         duck_db: f32,
         mode: CartMode,
     },
-    /// Sets the fader, mute, PFL or route of a mixer strip (A–D, Cart, Live, Out).
+    /// Sets the fader, mute or SND of a mixer strip (A–D, Cart, Live, Out). SND sends the
+    /// strip to the monitor device; `pfl` is its old name.
     #[serde(rename = "mixer.set_strip")]
     MixerSetStrip {
         strip: String,
@@ -366,10 +356,12 @@ pub enum Command {
         gain_db: Option<f32>,
         #[serde(default)]
         mute: Option<bool>,
-        #[serde(default)]
-        pfl: Option<bool>,
-        #[serde(default)]
-        route: Option<Route>,
+        #[serde(default, alias = "pfl")]
+        snd: Option<bool>,
+        /// Gone: mute and SND replace routes. A value is refused with a message.
+        #[serde(default, skip_serializing)]
+        #[schemars(skip)]
+        route: Option<Value>,
     },
     /// Sets the compressor and the limiter on Program. Absent fields keep their values.
     #[serde(rename = "mixer.set_dynamics")]
@@ -911,7 +903,7 @@ pub fn registry() -> Vec<CommandSpec> {
         ),
         spec(
             "mixer.set_strip",
-            "Set the fader, mute, PFL or route of a mixer strip",
+            "Set the fader, mute or SND (monitor send) of a mixer strip",
             A,
             &[("strip", "string")],
         ),

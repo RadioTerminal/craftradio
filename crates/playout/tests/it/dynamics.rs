@@ -22,7 +22,7 @@ fn hot_out() -> Command {
         strip: "Out".into(),
         gain_db: Some(12.0),
         mute: None,
-        pfl: None,
+        snd: None,
         route: None,
     }
 }

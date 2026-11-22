@@ -9,6 +9,7 @@ mod keyboard;
 mod listen_link;
 mod loudness;
 mod meters;
+mod mixer;
 mod overflow;
 mod preferences;
 mod prefs_window;

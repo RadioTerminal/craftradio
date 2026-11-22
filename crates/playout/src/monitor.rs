@@ -1,4 +1,4 @@
-//! The cue output consumes only the PFL ring. It cannot read Program.
+//! The monitor output consumes only the SND ring. It cannot read Program.
 use radio_audio_device::{AudioSource, Output};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{
@@ -7,23 +7,23 @@ use std::sync::{
 };
 use std::time::Duration;
 
-pub(crate) struct Cue {
+pub(crate) struct Monitor {
     pub(crate) open: Arc<AtomicBool>,
     pub(crate) select: Sender<String>,
     pub(crate) errors: Receiver<String>,
 }
-struct CueSource {
+struct MonitorSource {
     ring: Option<rtrb::Consumer<f32>>,
     give_back: Sender<rtrb::Consumer<f32>>,
 }
-impl Drop for CueSource {
+impl Drop for MonitorSource {
     fn drop(&mut self) {
         if let Some(ring) = self.ring.take() {
             let _ = self.give_back.send(ring);
         }
     }
 }
-impl AudioSource for CueSource {
+impl AudioSource for MonitorSource {
     fn render(&mut self, out: &mut [f32], channels: usize) {
         out.fill(0.0);
         if channels == 0 {
@@ -52,7 +52,7 @@ impl AudioSource for CueSource {
         }
     }
 }
-impl Cue {
+impl Monitor {
     pub(crate) fn start(ring: rtrb::Consumer<f32>) -> Self {
         let open = Arc::new(AtomicBool::new(false));
         let worker_open = Arc::clone(&open);
@@ -60,7 +60,7 @@ impl Cue {
         let (tx, errors) = mpsc::channel();
         let spawn_error = tx.clone();
         let worker = std::thread::Builder::new()
-            .name("cue-output".into())
+            .name("monitor-output".into())
             .spawn(move || {
                 let (give_back, returned) = mpsc::channel();
                 let mut ring = Some(ring);
@@ -93,7 +93,7 @@ impl Cue {
                     }
                     if let Some(out) = &output {
                         if let Ok(event) = out.events().try_recv() {
-                            let _ = tx.send(format!("Cue output lost: {event:?}"));
+                            let _ = tx.send(format!("Monitor output lost: {event:?}"));
                             worker_open.store(false, Ordering::Release);
                             changed = true;
                         }
@@ -105,7 +105,7 @@ impl Cue {
                             ring = Some(ready);
                             continue;
                         }
-                        let source = Box::new(CueSource {
+                        let source = Box::new(MonitorSource {
                             ring: Some(ready),
                             give_back: give_back.clone(),
                         });
@@ -115,11 +115,11 @@ impl Cue {
                                 worker_open.store(true, Ordering::Release);
                             }
                             Ok(_) => {
-                                let _ = tx.send("Cue device must run at 48000 Hz".into());
+                                let _ = tx.send("Monitor device must run at 48000 Hz".into());
                                 current.clear();
                             }
                             Err(e) => {
-                                let _ = tx.send(format!("Cue output: {e}"));
+                                let _ = tx.send(format!("Monitor output: {e}"));
                                 current.clear();
                             }
                         }
@@ -127,7 +127,7 @@ impl Cue {
                 }
             });
         if let Err(error) = worker {
-            let _ = spawn_error.send(format!("Cue output thread: {error}"));
+            let _ = spawn_error.send(format!("Monitor output thread: {error}"));
         }
         Self {
             open,
@@ -147,21 +147,21 @@ mod tests {
             producer.push(value as f32).unwrap();
         }
         let (give_back, _) = mpsc::channel();
-        let mut source = CueSource {
+        let mut source = MonitorSource {
             ring: Some(consumer),
             give_back,
         };
         let mut out = [0.0; 4];
         source.render(&mut out, 2);
-        assert!(out[0] >= 28.0, "old cue frames must be discarded");
+        assert!(out[0] >= 28.0, "old monitor frames must be discarded");
         assert!(out[2] > out[0], "frame order must stay intact");
     }
     #[test]
-    fn cue_device_source_reads_only_the_pfl_ring() {
+    fn monitor_device_source_reads_only_the_snd_ring() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(16);
         producer.push_entire_slice(&[0.2, 0.3, 0.4, 0.5]).unwrap();
         let (give_back, returned) = mpsc::channel();
-        let mut source = CueSource {
+        let mut source = MonitorSource {
             ring: Some(consumer),
             give_back,
         };
@@ -174,7 +174,7 @@ mod tests {
         drop(source);
         assert!(
             returned.try_recv().is_ok(),
-            "device changes must retain the cue ring"
+            "device changes must retain the monitor ring"
         );
     }
 }

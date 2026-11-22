@@ -320,7 +320,8 @@ impl Core {
         let Some(tap) = &self.webrtc_tap else { return };
         let mut cfg = base.clone();
         cfg.bind = bind;
-        let server = WebRtcServer::start_shared(cfg, tap.clone());
+        let server =
+            WebRtcServer::start_metered(cfg, tap.clone(), self.output_meters.webrtc.clone());
         if let Some(now) = &self.webrtc_now {
             now.send(&server, &self.webrtc_played);
         }

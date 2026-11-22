@@ -222,13 +222,15 @@ or silence detection (my call).
 - **Buses (my call):**
   - Program: decks plus live inputs, which feeds the outputs.
   - Cart: the cartwall, mixed into Program after ducking.
-  - Cue/PFL: pre-listening on a separate device, never on air.
+  - SND (monitor): each strip's SND sends it, before its fader and mute, to the monitor
+    device; SND on Program sends the on-air mix. Never on air. (Was Cue/PFL; see
+    `docs/superpowers/specs/2026-11-22-console-mixer-design.md`.)
 - **Ducking:** a cart (or a voice input) can lower Program by a set dB, with attack and
   release times.
 - **Program dynamics:** an optional compressor, then a lookahead limiter, on Program.
   - *Signal flow:* decks, carts and live input mix into Program; Program goes through the
     Out fader, then the compressor, then the limiter, and from there to the local output,
-    the Icecast encoder and the Out meter. PFL/Cue is not processed.
+    the Icecast encoder and the Out meter. Source SNDs are not processed.
   - *Defaults:* the limiter is on, with a −1 dBFS true-peak ceiling, 50 ms release and a
     fixed 1.5 ms lookahead (72 frames at 48 kHz), so Program has one known latency. The
     compressor is off; when turned on it starts at −18 dBFS threshold, 2.5:1, 15 ms
@@ -537,7 +539,8 @@ from a Windows menu in the deck strip, and the main window keeps the decks and t
 panes.
 - **Cartwall:** pages of carts, and stop-all.
 - **Mixer:** a strip each for players A–D, the cart bus, live input and Out, with faders,
-  stereo VU meters with peak hold and numeric dB, and mute/PFL.
+  stereo VU meters with peak hold and numeric dB, and mute/SND; then a meter strip each for
+  the Program device, Icecast and WebRTC.
 - **Clock:** a large clock that scales with the window, plus countdowns to the next fixed
   event and to the end of the current item.
 - **History:** the as-played log (aired at, playlist, title, length, origin), newest first,

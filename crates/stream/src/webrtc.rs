@@ -215,6 +215,16 @@ impl WebRtcServer {
 
     /// Like [`WebRtcServer::start`], with a tap that outlives the server.
     pub fn start_shared(cfg: WebRtcConfig, frames: TapSlot) -> WebRtcHandle {
+        Self::start_metered(cfg, frames, Arc::default())
+    }
+
+    /// Like [`WebRtcServer::start_shared`], and `meter` gets each block that is encoded for
+    /// listeners, so it reads silence while nobody listens.
+    pub fn start_metered(
+        cfg: WebRtcConfig,
+        frames: TapSlot,
+        meter: Arc<crate::LevelMeter>,
+    ) -> WebRtcHandle {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(WebRtcStatus::Starting));
         let title: SharedNow = Arc::default();
@@ -264,6 +274,7 @@ impl WebRtcServer {
                 .as_ref()
                 .map(|i| format!("{LISTEN_SITE}#{}", i.id())),
             url: format!("http://{}/", SocketAddr::new(url_ip, http.port())),
+            meter,
         };
         match thread::Builder::new()
             .name("webrtc-media".into())
@@ -353,6 +364,7 @@ struct Media {
     relays: Arc<AtomicUsize>,
     link: Option<String>,
     url: String,
+    meter: Arc<crate::LevelMeter>,
 }
 
 /// Listeners that still connect, by the address that sent the offer.
@@ -475,6 +487,7 @@ impl Media {
                 if listeners.iter().any(|l| l.connected)
                     && let Ok(packet) = self.encoder.encode(&samples)
                 {
+                    self.meter.add(&samples);
                     let packet: Arc<[u8]> = packet.into();
                     for l in listeners.iter_mut().filter(|l| l.connected) {
                         if let (Some(mid), Some(pt)) = (l.mid, l.pt)

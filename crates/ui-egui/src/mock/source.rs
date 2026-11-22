@@ -83,7 +83,8 @@ impl ViewSource for MockSource {
         self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
         StationView {
-            cue_open: false,
+            monitor_open: false,
+            output_meters: super::decks::output_meters(),
             now: local,
             mode: self.play_mode.label().to_uppercase(),
             play_mode: self.play_mode,
@@ -285,6 +286,7 @@ impl ViewSource for MockSource {
             level_db: m.iter().map(|m| m.level_db).collect(),
             peak_db: m.iter().map(|m| m.peak_db).collect(),
             at_sample: 0,
+            output_level_db: vec![[crate::theme::size::METER_MIN_DB; 2]; 3],
         })
     }
 
