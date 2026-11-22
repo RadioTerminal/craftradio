@@ -461,173 +461,185 @@ fn playlist(
             actions.push(remove_items(p, decks, sel));
         }
     }
-    // The height of the pane: the items list stretches down to its bottom.
-    let pane_h = ui.available_height();
-    egui::ScrollArea::vertical()
-        .id_salt(("playlist_scroll", &p.name))
-        .show(ui, |ui| {
-            // Where the content starts. It moves with the scroll, as the cursor does, so the
-            // room left below the cursor does not change when the pane scrolls.
-            let content_top = ui.min_rect().top();
-            ui.push_id(("playlist_tab", &p.name), |ui| {
-                ui.horizontal(|ui| {
-                    let (dot, _) = ui
-                        .allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
-                    ui.painter().circle_filled(
-                        dot.center(),
-                        size::DOT_R,
-                        Tokens::playlist(p.color),
+    // One scroll only: the header stays put and the items list fills the rest of the pane.
+    ui.scope(|ui| {
+        ui.push_id(("playlist_tab", &p.name), |ui| {
+            ui.horizontal(|ui| {
+                let (dot, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+                ui.painter()
+                    .circle_filled(dot.center(), size::DOT_R, Tokens::playlist(p.color));
+                let folder = if p.source.is_some() {
+                    format!(" {}", icons::glyph(Icon::Folder))
+                } else {
+                    String::new()
+                };
+                let name = RichText::new(format!("{}{folder}", p.name));
+                ui.label(name.font(theme::text(theme::SECTION)).strong());
+                if rules_editor::cog(ui, &p.name) {
+                    actions.push(Action::OpenRules(p.name.clone()));
+                }
+                add_menu::button(ui, &p.name, &view.input_devices, None, actions);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let n = p.items.len();
+                    let noun = if n == 1 { "item" } else { "items" };
+                    let summary = format!("{n} {noun} · {}", p.pick);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(summary)
+                                .font(theme::text(theme::CAPTION))
+                                .color(t.text_muted),
+                        )
+                        .truncate(),
                     );
-                    let folder = if p.source.is_some() {
-                        format!(" {}", icons::glyph(Icon::Folder))
-                    } else {
-                        String::new()
-                    };
-                    let name = RichText::new(format!("{}{folder}", p.name));
-                    ui.label(name.font(theme::text(theme::SECTION)).strong());
-                    if rules_editor::cog(ui, &p.name) {
-                        actions.push(Action::OpenRules(p.name.clone()));
-                    }
-                    add_menu::button(ui, &p.name, &view.input_devices, None, actions);
                 });
-                if let Some(src) = &p.source {
-                    caption(ui, &format!("From folder {}", src.path), t);
-                }
-                ui.add_space(space::S);
-                caption(ui, "PICK", t);
-                ui.label(RichText::new(&p.pick).font(theme::text(theme::BODY)));
-                ui.add_space(space::M);
-                caption(ui, "RULES", t);
-                for rule in &p.rules {
-                    ui.label(RichText::new(format!("•  {rule}")).font(theme::text(theme::BODY)));
-                }
-                ui.add_space(space::M);
-                caption(ui, &format!("ITEMS ({})", p.items.len()), t);
-                let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
-                let mut rows = Vec::new();
-                let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
-                    ui.set_width(ui.available_width());
+            });
+            // The rules and the folder in one muted line each; the tooltip has all of it.
+            let rules = if p.rules.is_empty() {
+                "No rules: this playlist does not air by itself".to_owned()
+            } else {
+                format!("Rules: {}", p.rules.join("; "))
+            };
+            let line = |ui: &mut egui::Ui, text: &str| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(text)
+                            .font(theme::text(theme::CAPTION))
+                            .color(t.text_muted),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(text);
+            };
+            line(ui, &rules);
+            if let Some(src) = &p.source {
+                line(ui, &format!("From folder {}", src.path));
+            }
+            ui.add_space(space::XS);
+            let frame = theme::card_frame(t).inner_margin(pad::TIGHT);
+            let mut rows = Vec::new();
+            let dragging = egui::DragAndDrop::has_payload_of_type::<LibraryDrag>(ui.ctx())
+                || ui.input(|i| !i.raw.hovered_files.is_empty());
+            let (zone, dropped) = ui.dnd_drop_zone::<LibraryDrag, _>(frame, |ui| {
+                ui.set_width(ui.available_width());
+                // The hint shows only when it helps: on an empty list, or during a drag.
+                if p.items.is_empty() || dragging {
                     let hint = RichText::new("Drop a library title or files here to add them");
                     ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
-                    // The list fills the pane down to its bottom edge, never less than its
-                    // minimum height.
-                    // Leave room for the header row and the card's bottom edge.
-                    let edge = f32::from(pad::TIGHT.bottom) + size::HAIRLINE;
-                    let used = ui.cursor().top() - content_top;
-                    let fill =
-                        (pane_h - used - size::DIVIDER_ROW - edge).max(size::PLAYLIST_TABLE_H);
-                    TableBuilder::new(ui)
-                        .id_salt("items")
-                        .min_scrolled_height(fill)
-                        .max_scroll_height(fill)
-                        .sense(Sense::click())
-                        .auto_shrink(false)
-                        .cell_layout(Layout::left_to_right(Align::Center))
-                        .column(Column::remainder().clip(true))
-                        .column(
-                            Column::initial(size::COL_ARTIST)
-                                .at_least(size::TEXT_COL_MIN)
-                                .clip(true),
-                        )
-                        .column(Column::exact(size::COL_LEN))
-                        .header(size::DIVIDER_ROW, |mut header| {
-                            for name in ["TITLE", "ARTIST", "LENGTH"] {
-                                header.col(|ui| {
-                                    caption(ui, name, t);
-                                });
-                            }
-                        })
-                        .body(|body| {
-                            body.rows(size::ROW, p.items.len(), |mut row| {
-                                let i = row.index();
-                                let (name, len) = &p.items[i];
-                                let id = p.ids.get(i).copied();
-                                row.set_selected(
-                                    id.is_some_and(|id| link.playlist_sel.contains(id)),
-                                );
-                                row.col(|ui| {
-                                    let on =
-                                        decks.iter().position(|d| id.is_some() && d.item == id);
-                                    let hint = on
-                                        .and_then(|d| decks[d].start.as_ref().map(|s| (d, s)))
-                                        .map_or_else(String::new, |(d, s)| {
-                                            crate::widgets::deck_hint(d, s)
-                                        });
-                                    crate::widgets::deck_mark(ui, on, &hint);
-                                    let weight = p.weights.get(i).copied().unwrap_or(1);
-                                    let title = if weight == 1 {
-                                        name.clone()
-                                    } else {
-                                        format!("{name}  ×{weight}")
-                                    };
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(title).font(theme::text(theme::SMALL)),
-                                        )
-                                        .truncate(),
+                }
+                // The list fills the pane down to its bottom edge: room for the header
+                // row and the card's bottom edge.
+                let edge = f32::from(pad::TIGHT.bottom) + size::HAIRLINE;
+                let fill = (ui.available_height() - size::DIVIDER_ROW - edge).max(size::ROW * 3.0);
+                TableBuilder::new(ui)
+                    .id_salt("items")
+                    .min_scrolled_height(fill)
+                    .max_scroll_height(fill)
+                    .sense(Sense::click())
+                    .auto_shrink(false)
+                    .cell_layout(Layout::left_to_right(Align::Center))
+                    .column(Column::remainder().clip(true))
+                    .column(
+                        Column::initial(size::COL_ARTIST)
+                            .at_least(size::TEXT_COL_MIN)
+                            .clip(true),
+                    )
+                    .column(Column::exact(size::COL_LEN))
+                    .header(size::DIVIDER_ROW, |mut header| {
+                        for name in ["TITLE", "ARTIST", "LENGTH"] {
+                            header.col(|ui| {
+                                caption(ui, name, t);
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(size::ROW, p.items.len(), |mut row| {
+                            let i = row.index();
+                            let (name, len) = &p.items[i];
+                            let id = p.ids.get(i).copied();
+                            row.set_selected(id.is_some_and(|id| link.playlist_sel.contains(id)));
+                            row.col(|ui| {
+                                let on = decks.iter().position(|d| id.is_some() && d.item == id);
+                                let hint = on
+                                    .and_then(|d| decks[d].start.as_ref().map(|s| (d, s)))
+                                    .map_or_else(String::new, |(d, s)| {
+                                        crate::widgets::deck_hint(d, s)
+                                    });
+                                crate::widgets::deck_mark(ui, on, &hint);
+                                let weight = p.weights.get(i).copied().unwrap_or(1);
+                                let title = if weight == 1 {
+                                    name.clone()
+                                } else {
+                                    format!("{name}  ×{weight}")
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(title).font(theme::text(theme::SMALL)),
                                     )
-                                    .on_hover_text(name);
-                                });
-                                row.col(|ui| {
-                                    let artist =
-                                        id.and_then(|id| artists.get(&id).copied()).unwrap_or("—");
-                                    ui.add(egui::Label::new(artist).truncate())
-                                        .on_hover_text(artist);
-                                });
-                                row.col(|ui| {
-                                    ui.label(
-                                        RichText::new(mmss(*len))
-                                            .font(theme::mono(theme::CODE))
-                                            .color(t.text_muted),
-                                    );
-                                });
-                                let resp = row.response();
-                                rows.push(resp.rect);
-                                if let Some(id) = id {
-                                    let plain = !link.playlist_sel.contains(id);
-                                    if resp.clicked() || (resp.secondary_clicked() && plain) {
-                                        let m = if resp.clicked() {
-                                            resp.ctx.input(|i| i.modifiers)
-                                        } else {
-                                            egui::Modifiers::NONE
-                                        };
-                                        link.focus = Pane::Playlist;
-                                        link.playlist_sel.click(id, m, order);
-                                    }
+                                    .truncate(),
+                                )
+                                .on_hover_text(name);
+                            });
+                            row.col(|ui| {
+                                let artist =
+                                    id.and_then(|id| artists.get(&id).copied()).unwrap_or("—");
+                                ui.add(egui::Label::new(artist).truncate())
+                                    .on_hover_text(artist);
+                            });
+                            row.col(|ui| {
+                                ui.label(
+                                    RichText::new(mmss(*len))
+                                        .font(theme::mono(theme::CODE))
+                                        .color(t.text_muted),
+                                );
+                            });
+                            let resp = row.response();
+                            rows.push(resp.rect);
+                            if let Some(id) = id {
+                                let plain = !link.playlist_sel.contains(id);
+                                if resp.clicked() || (resp.secondary_clicked() && plain) {
+                                    let m = if resp.clicked() {
+                                        resp.ctx.input(|i| i.modifiers)
+                                    } else {
+                                        egui::Modifiers::NONE
+                                    };
+                                    link.focus = Pane::Playlist;
+                                    link.playlist_sel.click(id, m, order);
                                 }
-                                resp.context_menu(|ui| {
-                                    item_menu(ui, p, decks, &view.input_devices, i, link, actions)
-                                });
+                            }
+                            resp.context_menu(|ui| {
+                                item_menu(ui, p, decks, &view.input_devices, i, link, actions)
                             });
                         });
-                });
-                // The zone takes clicks only outside the rows. A click on the zone on top of the
-                // rows would take the clicks of the rows.
-                let pointer = ui.input(|i| i.pointer.interact_pos());
-                let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
-                if !on_row {
-                    zone.response.interact(Sense::click()).context_menu(|ui| {
-                        add_menu::items(ui, &p.name, &view.input_devices, None, actions)
                     });
-                }
-                if let Some(drag) = dropped {
-                    actions.push(Action::Drop {
-                        item: drag.0,
-                        target: DropTarget::Playlist(p.name.clone()),
-                    });
-                }
-                if files_over(ui, zone.response.rect) {
-                    link.hover_files(FileTarget::Playlist(p.name.clone()));
-                    let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
-                    ui.painter().rect_stroke(
-                        zone.response.rect,
-                        t.radius_lg,
-                        edge,
-                        egui::StrokeKind::Outside,
-                    );
-                }
             });
+            // The zone takes clicks only outside the rows. A click on the zone on top of the
+            // rows would take the clicks of the rows.
+            let pointer = ui.input(|i| i.pointer.interact_pos());
+            let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
+            if !on_row {
+                zone.response.interact(Sense::click()).context_menu(|ui| {
+                    add_menu::items(ui, &p.name, &view.input_devices, None, actions)
+                });
+            }
+            if let Some(drag) = dropped {
+                actions.push(Action::Drop {
+                    item: drag.0,
+                    target: DropTarget::Playlist(p.name.clone()),
+                });
+            }
+            if files_over(ui, zone.response.rect) {
+                link.hover_files(FileTarget::Playlist(p.name.clone()));
+                let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
+                ui.painter().rect_stroke(
+                    zone.response.rect,
+                    t.radius_lg,
+                    edge,
+                    egui::StrokeKind::Outside,
+                );
+            }
         });
+    });
 }
 
 /// The action that removes items of playlist `p`. Items on a deck stay, with the reason.
