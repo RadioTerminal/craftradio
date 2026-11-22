@@ -1,7 +1,7 @@
 //! Folder scanning, audio analysis, file tags and content-based relinking.
 //!
-//! Opus uses bundled libopus through the Symphonia adapter. Building requires
-//! CMake and a C compiler. AAC support is AAC-LC; unsupported profiles return errors.
+//! Files decode with the station's codecs (`radio-codecs`): Symphonia's, and Opus through
+//! craft-audio's native decoder. AAC support is AAC-LC; unsupported profiles return errors.
 //! Keep scan results in station data. Playout keeps the loudness of each analysed file
 //! in station data, by content hash, so each file gets one measurement.
 mod listing;
@@ -221,9 +221,7 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
         .as_ref()
         .and_then(|p| p.audio())
         .ok_or_else(|| media("no audio track"))?;
-    let mut registry = symphonia::core::codecs::registry::CodecRegistry::new();
-    symphonia::default::register_enabled_codecs(&mut registry);
-    registry.register_audio_decoder::<symphonia_adapter_libopus::OpusDecoder>();
+    let registry = radio_codecs::registry();
     let mut decoder = registry
         .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(media)?;

@@ -189,8 +189,9 @@ or silence detection (my call).
 ### 6.4 Sources
 
 - **File:** decoded with symphonia (MP3, AAC-LC/M4A, FLAC, WAV, Ogg/Vorbis).
-  - Opus and HE-AAC fall back to libopus / fdk-aac if symphonia doesn't cover them; check
-    this before building.
+  - Opus decodes with craft-audio's native decoder (`radio-codecs`, 2026-11-22), which
+    matched libopus on the same packets. HE-AAC would need fdk-aac if symphonia doesn't cover
+    it; check this before building.
   - **Streaming decode:** each deck holds a ring buffer of a few seconds, refilled by the
     decoder pool, not whole files. If the ring underruns, the deck outputs silence and an
     alarm is raised; the callback never blocks.
@@ -433,8 +434,10 @@ command `schedule.add`.
 - Local audio device(s) through cpal; more than one output allowed (for example main plus
   a backup sound card).
 - Icecast source client (HTTP PUT / SOURCE). Formats: Ogg/Opus and MP3. MP3 uses craft-audio's
-  native encoder (pure Rust, MIT OR Apache-2.0) behind the `mp3` feature. Ogg/Opus uses libopus,
-  a C dependency and an accepted exception to pure Rust.
+  native encoder (pure Rust, MIT OR Apache-2.0) behind the `mp3` feature. Ogg/Opus still
+  encodes with libopus, a C dependency and an accepted exception to pure Rust: craft-audio's
+  Opus encoder measured noisier (2026-11-22; at 64 kbit/s its worst frames were about 20 dB
+  noisier), so it stays until that improves.
 - **v1 scope (my call, after review):** one local output device plus PFL, and one Icecast
   mount. More devices and mounts are deferred; the design allows them.
 - **Now-playing metadata:**

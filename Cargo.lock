@@ -3970,15 +3970,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "opusic-sys"
-version = "0.7.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "986d749e9dc12035f11bf3ecc83a2a696ff7534d4143be9469a4a0faa25b9fd1"
-dependencies = [
- "cmake",
-]
-
-[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4462,11 +4453,11 @@ dependencies = [
  "assert_no_alloc",
  "bisque",
  "hound",
+ "radio-codecs",
  "radio-model",
  "rtrb",
  "rubato",
  "symphonia",
- "symphonia-adapter-libopus",
  "thiserror 2.0.21",
 ]
 
@@ -4493,6 +4484,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "radio-codecs"
+version = "0.1.0"
+dependencies = [
+ "craft-audio",
+ "ogg",
+ "symphonia",
 ]
 
 [[package]]
@@ -4532,9 +4532,9 @@ dependencies = [
  "hound",
  "lofty",
  "notify",
+ "radio-codecs",
  "radio-model",
  "symphonia",
- "symphonia-adapter-libopus",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -5698,17 +5698,6 @@ dependencies = [
  "symphonia-format-ogg",
  "symphonia-format-riff",
  "symphonia-metadata",
-]
-
-[[package]]
-name = "symphonia-adapter-libopus"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6febe6f88f9a9483db7e5b72a2dad916d8f8eb588d18905a39c861319fc7fa1"
-dependencies = [
- "log",
- "opusic-sys",
- "symphonia-core",
 ]
 
 [[package]]

@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 radio-model.workspace = true
 symphonia.workspace = true
-symphonia-adapter-libopus.workspace = true
+radio-codecs.workspace = true
 rubato.workspace = true
 bisque.workspace = true
 rtrb.workspace = true

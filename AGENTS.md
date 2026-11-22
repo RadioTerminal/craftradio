@@ -61,7 +61,7 @@ output. Spec: `docs/2026-11-21-radio-station-manager-design.md`. Roadmap and pla
 | Layer | Crates | Notes |
 |---|---|---|
 | L0 | `model` | plain serde data; no I/O, no clock |
-| L1 | `timing` | time arithmetic, DST-safe local time |
+| L1 | `timing`, `codecs` | time arithmetic, DST-safe local time; the decoders (Symphonia and native Opus) |
 | L2 | `scheduler`, `library` | playlists, rules, fitting; media library |
 | L3 | `audio`, `script` | decks / mixer / outputs; JS runtime |
 | L4 | `engine` | state, the command registry, persistence, as-played log |
