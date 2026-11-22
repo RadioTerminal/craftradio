@@ -15,7 +15,11 @@ const INSTRUCTIONS: &str = "CraftRadio runs a radio station: four decks, a main 
 named playlists woven in by rules, fixed-time events, a cartwall, and local and Icecast output. \
 Each tool is one engine command and runs on the station that is on air now, as a panel of the \
 app would. Tools marked on-air change what the station plays: confirm with the person first. \
-Read the state with station_get; history_list and history_export_csv read the as-played log.";
+Read the state with station_get; history_list and history_export_csv read the as-played log. \
+screenshot shows the app's main window, when the station runs with one.";
+
+/// The tool that is no engine command: a picture of the app's main window.
+const SCREENSHOT: &str = "screenshot";
 
 /// Where tool calls go: the running station.
 pub trait Station {
@@ -124,10 +128,34 @@ impl<S: Station> Tools for StationTools<S> {
     }
 
     fn list(&mut self) -> Vec<Value> {
-        self.specs.iter().map(definition).collect()
+        let mut tools: Vec<Value> = self.specs.iter().map(definition).collect();
+        tools.push(tool(
+            SCREENSHOT,
+            "Screenshot",
+            "A PNG of the app's main window, as the operator sees it. Read-only. A station \
+             started with --headless has no window, and the call says so.",
+            json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            Effect::ReadOnly,
+        ));
+        tools
     }
 
     fn call(&mut self, name: &str, args: &Value) -> Value {
+        if name == SCREENSHOT {
+            return match self.station.call("ui.screenshot", json!({})) {
+                Ok(shot) => match shot["png"].as_str() {
+                    Some(png) => json!({"content": [
+                        {"type": "image", "data": png, "mimeType": "image/png"},
+                        {"type": "text", "text": format!(
+                            "The main window, {} × {} pixels.",
+                            shot["width"], shot["height"]
+                        )},
+                    ]}),
+                    None => text_result("the station sent no image", true),
+                },
+                Err(error) => text_result(error, true),
+            };
+        }
         let Some(spec) = self.specs.iter().find(|s| tool_name(s.id) == name) else {
             return text_result(format!("unknown tool `{name}`"), true);
         };

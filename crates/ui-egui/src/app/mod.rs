@@ -141,6 +141,8 @@ impl Linked {
 
 /// The desktop app. It reads the station only through a [`ViewSource`].
 pub struct RadioApp {
+    /// Screenshot requests of the control channel, when it is attached.
+    captures: Option<crate::capture::Captures>,
     source: Box<dyn ViewSource>,
     clock: Box<dyn Fn() -> Timestamp>,
     view: StationView,
@@ -210,6 +212,7 @@ impl RadioApp {
         };
         let carts = cartwall::State::default();
         Self {
+            captures: None,
             source,
             clock,
             view,
@@ -299,6 +302,16 @@ impl RadioApp {
         if changed || self.meters_moving {
             self.meter_active_until = Some(now + Duration::from_secs_f32(size::METER_IDLE_S));
         }
+    }
+
+    /// Answers screenshot requests (the control channel's `ui.screenshot`) with PNGs of the
+    /// main window.
+    pub fn with_screenshots(
+        mut self,
+        requests: std::sync::mpsc::Receiver<crate::capture::ScreenshotRequest>,
+    ) -> Self {
+        self.captures = Some(crate::capture::Captures::new(requests));
+        self
     }
 
     /// Show the time of each frame in the status line.
@@ -546,6 +559,9 @@ impl eframe::App for RadioApp {
             self.styled = true;
         }
         self.refresh(false);
+        if let Some(captures) = &mut self.captures {
+            captures.tick(&ctx);
+        }
         if let Some(failed) = self.prefs.tick(&ctx) {
             self.toast(&ctx, failed);
         }
