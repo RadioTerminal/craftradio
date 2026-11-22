@@ -2,228 +2,248 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Tune in</title>
-<meta name="description" content="Listen to a radio station straight from its computer, over WebRTC.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+<meta name="description" content="Listen to a radio station live, straight from its computer.">
+<meta name="theme-color" content="#16181d">
 <style>
   :root {
-    --room: #d9e2dc;          /* the wall behind the radio */
-    --enamel: #0f3b3a;        /* the radio body */
-    --enamel-edge: #0a2b2a;
-    --glass: #e7eed8;         /* backlit dial glass */
-    --ink: #13201f;
-    --ink-soft: #4a5e5b;
-    --needle: #c8322b;
-    --lamp: #f2b33d;
-    --on-enamel: #e7eed8;
-    --on-enamel-soft: #a9c2bd;
-    --focus: #f2b33d;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --room: #0c1716; --enamel: #12403f; --enamel-edge: #1c5251; --ink-soft: #3f524f; }
+    --a: #3b4a6b; --b: #6b3b52;                 /* fallback colours, set per station */
+    --text: #ffffff; --soft: rgba(255,255,255,.72); --faint: rgba(255,255,255,.45);
+    --glass: rgba(22,24,29,.42); --edge: rgba(255,255,255,.14);
+    --live: #ff4d5e; --focus: #ffffff;
   }
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
+  html, body { height: 100%; }
   body {
-    margin: 0; min-height: 100vh; background: var(--room); color: var(--ink);
-    font: 400 1rem/1.55 "Barlow", system-ui, sans-serif;
-    display: grid; place-items: start center; padding: 3rem 1rem 4rem;
+    margin: 0; color: var(--text); background: #16181d;
+    font: 400 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
   }
-  main { width: 100%; max-width: 36rem; }
 
-  /* The radio */
-  .radio {
-    background: var(--enamel); color: var(--on-enamel);
-    border-radius: 28px; padding: 1.5rem 1.5rem 1.75rem;
-    box-shadow: inset 0 0 0 2px var(--enamel-edge), 0 18px 40px -22px rgba(6, 30, 29, .75);
-  }
-  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
-  h1 {
-    margin: 0; font: 700 2.25rem/1 "Barlow Condensed", "Arial Narrow", sans-serif;
-    letter-spacing: .01em;
-  }
-  .lamp { display: inline-flex; align-items: center; gap: .5rem; color: var(--on-enamel-soft);
-          font: 500 1.05rem/1 "Barlow Condensed", "Arial Narrow", sans-serif; }
-  .lamp i { width: .8rem; height: .8rem; border-radius: 50%; display: inline-block;
-            background: #2a5654; box-shadow: inset 0 0 0 2px #3b6b68; }
-  .lamp.on { color: var(--on-enamel); }
-  .lamp.on i { background: var(--lamp); box-shadow: 0 0 0 3px rgba(242,179,61,.25), 0 0 14px rgba(242,179,61,.8); }
+  /* The blurred cover behind everything */
+  .backdrop { position: fixed; inset: -10%; z-index: 0; background: linear-gradient(135deg, var(--a), var(--b));
+              background-size: cover; background-position: center;
+              filter: blur(70px) saturate(1.5) brightness(.75); transform: scale(1.15);
+              transition: background-image .8s ease, opacity .8s ease; }
+  .backdrop.art { background-image: var(--art); }
+  .shade { position: fixed; inset: 0; z-index: 0; background: radial-gradient(ellipse at 50% 30%, transparent 0, rgba(0,0,0,.45) 75%); }
 
-  /* Dial glass with the frequency scale and the needle */
-  .dial {
-    position: relative; margin-top: 1.25rem; height: 7.5rem; border-radius: 14px;
-    background: linear-gradient(var(--glass), #d6e1c4); color: var(--ink);
-    box-shadow: inset 0 2px 0 rgba(255,255,255,.6), inset 0 -10px 24px rgba(19,32,31,.12);
-    overflow: hidden;
-  }
-  .scale { position: absolute; inset: 1rem 1.25rem auto; height: 3rem; }
-  .ticks { position: absolute; inset: 0 0 auto; height: 1.6rem; display: flex; justify-content: space-between; align-items: flex-start; }
-  .ticks i { width: 1px; height: .7rem; background: var(--ink); opacity: .45; }
-  .ticks i.mid { height: 1rem; opacity: .6; }
-  .ticks i.major { width: 2px; height: 1.45rem; opacity: .9; }
-  .nums { position: absolute; top: 1.9rem; inset-inline: 0; display: flex; justify-content: space-between;
-          font: 500 1.1rem/1 "Barlow Condensed", "Arial Narrow", sans-serif; color: var(--ink-soft); }
-  .nums span { width: 0; display: flex; justify-content: center; }
-  .needle { position: absolute; top: .4rem; bottom: .4rem; width: 3px; left: 8%;
-            background: var(--needle); border-radius: 2px; box-shadow: 0 0 0 1px rgba(200,50,43,.15);
-            transition: left 1.4s cubic-bezier(.2,.8,.2,1); }
-  .readout { position: absolute; left: 1.25rem; bottom: .75rem; font: 700 1.35rem/1 "Barlow Condensed", "Arial Narrow", sans-serif; }
-  .readout small { font-weight: 500; color: var(--ink-soft); margin-left: .25rem; font-size: .95rem; }
+  main { position: relative; z-index: 1; min-height: 100%; display: grid; place-items: center; padding: 28px 16px 40px; }
+  .stack { width: 100%; max-width: 400px; }
 
-  /* Level meter: real levels of the incoming audio */
-  .meter { position: absolute; right: 1.25rem; bottom: .8rem; display: flex; gap: 3px; align-items: flex-end; height: 1.4rem; }
-  .meter b { width: 5px; height: 15%; background: var(--ink-soft); border-radius: 1px; opacity: .35; }
-  .meter.live b { opacity: 1; background: var(--enamel); }
+  /* The player */
+  .player { position: relative; border-radius: 26px; overflow: hidden; background: #22252c;
+            box-shadow: 0 40px 80px -30px rgba(0,0,0,.7), 0 0 0 1px var(--edge); }
+  .cover { position: relative; aspect-ratio: 1 / 1; background: linear-gradient(135deg, var(--a), var(--b)); }
+  .cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .6s ease; }
+  .cover img.shown { opacity: 1; z-index: 1; }
+  .cover:has(img.shown) .placeholder { visibility: hidden; }
+  .cover .placeholder { position: absolute; inset: 0; display: grid; place-items: center; }
+  .cover .placeholder svg { width: 34%; opacity: .55; }
+  .cover::after { content: ""; position: absolute; inset: auto 0 0; height: 45%;
+                  background: linear-gradient(transparent, rgba(16,18,22,.78)); pointer-events: none; }
 
-  /* Controls */
-  .controls { display: grid; grid-template-columns: auto 1fr; gap: 1.25rem; align-items: center; margin-top: 1.5rem; }
-  .knob {
-    width: 5rem; height: 5rem; border-radius: 50%; border: 0; cursor: pointer;
-    background: radial-gradient(circle at 35% 30%, #f3f6ea, #cfd9bd 60%, #a9b79a);
-    color: var(--ink); box-shadow: 0 6px 0 var(--enamel-edge), 0 10px 18px -8px rgba(0,0,0,.6);
-    font: 700 1.15rem/1 "Barlow Condensed", "Arial Narrow", sans-serif;
-    transition: transform .08s, box-shadow .08s;
-  }
-  .knob:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--enamel-edge), 0 4px 10px -6px rgba(0,0,0,.6); }
-  .now-block { min-width: 0; }
-  #now { margin: 0; font: 700 1.35rem/1.2 "Barlow Condensed", "Arial Narrow", sans-serif; min-height: 1.6rem;
-         overflow-wrap: anywhere; }
-  #state { margin: .2rem 0 0; color: var(--on-enamel-soft); }
+  .chip { position: absolute; z-index: 2; top: 14px; display: inline-flex; align-items: center; gap: 7px;
+          height: 30px; padding: 0 12px; border-radius: 15px; font-size: 13px; font-weight: 600;
+          background: rgba(20,22,27,.5); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+          box-shadow: inset 0 0 0 1px var(--edge); color: var(--text); }
+  .chip.left { left: 14px; }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+  .chip.on i { background: var(--live); box-shadow: 0 0 10px var(--live); }
+  button.chip { right: 14px; border: 0; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
+  button.chip svg { width: 15px; height: 15px; }
 
-  .tuner { margin-top: 1.5rem; }
-  .tuner label { display: block; font-weight: 600; margin-bottom: .35rem; }
-  .tuner input {
-    width: 100%; padding: .65rem .8rem; font: inherit; color: var(--on-enamel);
-    background: var(--enamel-edge); border: 1px solid #2d6461; border-radius: 10px;
-  }
-  .tuner input::placeholder { color: #7f9e99; }
-  .hint { margin: .45rem 0 0; color: var(--on-enamel-soft); font-size: .92rem; }
-  .hint code { font-size: .92em; color: var(--on-enamel); }
+  .info { position: absolute; z-index: 2; left: 20px; right: 20px; bottom: 16px; }
+  #now { margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -.01em; line-height: 1.2;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 12px rgba(0,0,0,.35); }
+  #artist { margin: 2px 0 0; font-size: 16px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.45em; }
 
-  button:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+  /* The glass bar with the controls */
+  .bar { padding: 14px 20px 20px; background: var(--glass); -webkit-backdrop-filter: blur(30px) saturate(1.4); backdrop-filter: blur(30px) saturate(1.4); }
+  .meter { display: flex; gap: 3px; align-items: flex-end; height: 16px; }
+  .meter b { flex: 1; height: 12%; border-radius: 2px; background: rgba(255,255,255,.22); transition: height .08s linear; }
+  .meter.live b { background: rgba(255,255,255,.78); }
+  .row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: 14px; }
+  #state { margin: 0; font-size: 13px; color: var(--soft); }
+  .play { width: 64px; height: 64px; border-radius: 50%; border: 0; cursor: pointer; display: grid; place-items: center;
+          background: var(--text); color: #16181d; box-shadow: 0 8px 24px -8px rgba(0,0,0,.6);
+          transition: transform .12s ease; }
+  .play:active { transform: scale(.94); }
+  .play svg { width: 26px; height: 26px; }
+  .volume { justify-self: end; display: flex; align-items: center; gap: 8px; color: var(--soft); }
+  .volume svg { width: 18px; height: 18px; flex: none; }
+  input[type=range] { width: 92px; accent-color: #fff; }
 
-  /* Under the radio */
-  .notes { margin: 1.75rem .5rem 0; color: var(--ink); max-width: 34rem; }
-  @media (prefers-color-scheme: dark) { .notes { color: #b9ccc8; } .notes code { background: #183130; } }
-  .notes p { margin: .6rem 0; }
-  .notes code { font-size: .92em; background: #c7d3cb; padding: .05rem .35rem; border-radius: 4px; }
+  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 
-  @media (max-width: 30rem) {
-    body { padding-top: 1.25rem; }
-    .radio { padding: 1.25rem 1rem 1.5rem; border-radius: 22px; }
-    h1 { font-size: 1.9rem; }
-    .nums span:nth-child(even) { visibility: hidden; }
-    .knob { width: 4.25rem; height: 4.25rem; }
-  }
+  /* Under the player */
+  .tuner { margin-top: 18px; padding: 0 4px; color: var(--soft); }
+  .tuner summary { cursor: pointer; font-size: 14px; list-style: none; }
+  .tuner summary::-webkit-details-marker { display: none; }
+  .tuner[open] summary { color: var(--text); }
+  .field { display: flex; gap: 8px; margin-top: 10px; }
+  .field input { flex: 1; min-width: 0; padding: 11px 13px; font: inherit; color: var(--text);
+                 background: rgba(255,255,255,.1); border: 1px solid var(--edge); border-radius: 12px; }
+  .field input::placeholder { color: var(--faint); }
+  .field button { padding: 0 16px; border: 0; border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer;
+                  background: rgba(255,255,255,.9); color: #16181d; }
+  .hint { margin: 10px 0 0; font-size: 13px; color: var(--faint); }
+  .hint code { color: var(--soft); font-size: 12.5px; }
+
   @media (prefers-reduced-motion: reduce) {
-    .needle, .knob { transition: none; }
+    .backdrop, .cover img, .play, .meter b { transition: none; }
   }
 </style>
 </head>
 <body>
+<div class="backdrop" id="backdrop" aria-hidden="true"></div>
+<div class="shade" aria-hidden="true"></div>
 <main>
-  <section class="radio" aria-labelledby="title">
-    <div class="top">
-      <h1 id="title">Tune in</h1>
-      <span class="lamp" id="lamp"><i aria-hidden="true"></i><span id="lamp-text">Off air</span></span>
-    </div>
-
-    <div class="dial" aria-hidden="true">
-      <div class="scale">
-        <div class="ticks" id="ticks"></div>
-        <div class="nums"><span>88</span><span>92</span><span>96</span><span>100</span><span>104</span><span>108</span></div>
+  <div class="stack">
+    <section class="player" aria-label="Player">
+      <div class="cover">
+        <div class="placeholder" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>
+        </div>
+        <img id="art" alt="">
+        <span class="chip left" id="lamp"><i aria-hidden="true"></i><span id="lamp-text">Off air</span></span>
+        <button class="chip" id="share" type="button" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span id="share-text">Copy link</span>
+        </button>
+        <div class="info">
+          <p id="now" aria-live="polite">Radio</p>
+          <p id="artist"></p>
+        </div>
       </div>
-      <div class="needle" id="needle"></div>
-      <div class="readout" id="readout">--.-<small>MHz</small></div>
-      <div class="meter" id="meter"></div>
-    </div>
-
-    <div class="controls">
-      <button id="listen" class="knob" type="button">Listen</button>
-      <div class="now-block">
-        <p id="now" aria-live="polite"></p>
-        <p id="state" role="status">Enter a station address, then press Listen.</p>
+      <div class="bar">
+        <div class="meter" id="meter" aria-hidden="true"></div>
+        <div class="row">
+          <p id="state" role="status">Ready</p>
+          <button id="listen" class="play" type="button" aria-label="Listen">
+            <svg id="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
+          </button>
+          <label class="volume">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+            <input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+          </label>
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div class="tuner">
-      <label for="station">Station address</label>
-      <input id="station" type="url" placeholder="http://localhost:8000" autocomplete="url" spellcheck="false" aria-describedby="station-hint">
-      <p class="hint" id="station-hint">A station started with <code>--webrtc</code>, or a TinyIce mount such as <code>https://radio.example.com/live</code>.</p>
-    </div>
-    <audio id="audio" autoplay></audio>
-  </section>
-
-  <div class="notes">
-    <p>The sound comes over WebRTC, with about a second of delay, and you install nothing. A station started with <code>--webrtc</code> sends it straight from its own computer. A TinyIce server sends it on to many listeners.</p>
-    <p>To run a station, start <code>radio --headless --webrtc 8000</code>. It prints the address to share.
-    This page on GitHub Pages can reach a station on your own computer (<code>localhost</code>) or one with an HTTPS address, such as a Cloudflare quick tunnel.
-    On a local network, open the station address itself.</p>
+    <details class="tuner" id="tuner">
+      <summary>Listen to another station</summary>
+      <div class="field">
+        <input id="station" type="text" placeholder="Station link or address" autocomplete="off" spellcheck="false" aria-label="Station link or address" aria-describedby="station-hint">
+        <button id="tune" type="button">Tune in</button>
+      </div>
+      <p class="hint" id="station-hint">Paste the link a station shares, an address such as <code>http://192.168.1.20:8000</code>, or a TinyIce mount such as <code>https://radio.example.com/live</code>.</p>
+    </details>
   </div>
+  <audio id="audio" autoplay></audio>
 </main>
 <script>
 "use strict";
 const ICE = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] }];
-const input = document.getElementById("station");
-const button = document.getElementById("listen");
-const state = document.getElementById("state");
-const now = document.getElementById("now");
-const audio = document.getElementById("audio");
-const needle = document.getElementById("needle");
-const readout = document.getElementById("readout");
-const lamp = document.getElementById("lamp");
-const lampText = document.getElementById("lamp-text");
-const meter = document.getElementById("meter");
-const BARS = 14;
+const TRACKERS = ["wss://tracker.openwebtorrent.com", "wss://tracker.webtorrent.dev"];
+const SIG = "a=x-radio-sig:";
+const $ = (id) => document.getElementById(id);
+const input = $("station"), button = $("listen"), state = $("state"), nowEl = $("now"), artistEl = $("artist");
+const audio = $("audio"), art = $("art"), backdrop = $("backdrop"), lamp = $("lamp"), lampText = $("lamp-text");
+const meter = $("meter"), shareBtn = $("share"), shareText = $("share-text"), icon = $("icon");
+const BARS = 28;
 for (let i = 0; i < BARS; i++) meter.appendChild(document.createElement("b"));
-// 88.0 to 108.0 in 0.5 MHz steps: a long tick every 4 MHz, a middle one every 1 MHz.
-const ticks = document.getElementById("ticks");
-for (let i = 0; i <= 40; i++) {
-  const t = document.createElement("i");
-  if (i % 8 === 0) t.className = "major"; else if (i % 2 === 0) t.className = "mid";
-  ticks.appendChild(t);
-}
-let pc = null, resource = null, poll = null, ctx = null, raf = 0;
+const PLAY = '<path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/>';
+const STOP = '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/>';
 
-const query = new URLSearchParams(location.search).get("station");
+let pc = null, resource = null, poll = null, ctx = null, raf = 0, sockets = [], coverUrl = null, cover = null, gotMeta = false;
+
+// A station is either an ID (from a shared link) or an http(s) address.
+const ID_RE = /^[A-Za-z0-9_-]{43}$/;
+function parseStation(text) {
+  text = (text || "").trim();
+  const hash = text.includes("#") ? text.slice(text.indexOf("#") + 1) : text;
+  if (ID_RE.test(hash)) return { kind: "id", id: hash, label: hash };
+  if (/^https?:\/\//.test(text)) return { kind: "url", url: text.replace(/\/+$/, ""), label: text };
+  return null;
+}
 const served = !location.hostname.endsWith("github.io") && location.protocol.startsWith("http");
-input.value = query || (served ? location.origin : "");
+const fromLink = parseStation(location.hash.slice(1)) || parseStation(new URLSearchParams(location.search).get("station") || "");
+let station = fromLink || (served ? { kind: "url", url: location.origin, label: location.origin } : null);
+if (station) input.value = station.kind === "id" ? location.origin + location.pathname + "#" + station.id : station.url;
+else $("tuner").open = true;
 
-function base() { return input.value.trim().replace(/\/+$/, ""); }
 function say(text) { state.textContent = text; }
+function setIcon(playing) { icon.innerHTML = playing ? STOP : PLAY; button.setAttribute("aria-label", playing ? "Stop" : "Listen"); }
+function onAir(on) { lamp.classList.toggle("on", on); lampText.textContent = on ? "Live" : "Off air"; }
 
-// Each station address gets its own place on the dial, between 88.0 and 108.0.
-function frequency(url) {
+// Each station gets its own colours, so a station without a cover still looks like itself.
+function paint(key) {
   let h = 2166136261;
-  for (const c of url) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
-  return 88 + (h % 201) / 10;
+  for (const c of key) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+  const hue = h % 360;
+  document.documentElement.style.setProperty("--a", `hsl(${hue} 45% 34%)`);
+  document.documentElement.style.setProperty("--b", `hsl(${(hue + 55) % 360} 50% 28%)`);
 }
-function tune(freq) {
-  if (freq === null) { needle.style.left = "8%"; readout.firstChild.textContent = "--.-"; return; }
-  const scaleLeft = 1.25 * 16, width = needle.parentElement.clientWidth - 2 * scaleLeft;
-  needle.style.left = (scaleLeft + width * (freq - 88) / 20 - 1) + "px";
-  readout.firstChild.textContent = freq.toFixed(1);
+if (station) paint(station.label);
+
+function setNow(title, artist) {
+  nowEl.textContent = title || "Radio";
+  artistEl.textContent = artist || "";
+  document.title = title ? title + (artist ? " – " + artist : "") : "Tune in";
+  updateSession();
 }
-function onAir(on) {
-  lamp.classList.toggle("on", on);
-  lampText.textContent = on ? "On air" : "Off air";
+function setCover(url) {
+  if (coverUrl) URL.revokeObjectURL(coverUrl);
+  coverUrl = url;
+  if (url) {
+    art.src = url; art.onload = () => art.classList.add("shown");
+    backdrop.style.setProperty("--art", `url("${url}")`); backdrop.classList.add("art");
+  } else {
+    art.classList.remove("shown"); art.removeAttribute("src");
+    backdrop.classList.remove("art");
+  }
+  updateSession();
+}
+function updateSession() {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: nowEl.textContent, artist: artistEl.textContent, album: "Live radio",
+    artwork: coverUrl ? [{ src: coverUrl }] : [],
+  });
+}
+if ("mediaSession" in navigator) {
+  navigator.mediaSession.setActionHandler("play", () => { if (!pc) listen(); });
+  navigator.mediaSession.setActionHandler("stop", () => stop());
+  navigator.mediaSession.setActionHandler("pause", () => stop());
+}
+
+// What plays now arrives on the data channel: a "now" message, then the cover in parts.
+function onMessage(text) {
+  let m; try { m = JSON.parse(text); } catch (_) { setNow(text, ""); return; }
+  gotMeta = true;
+  if (m.type === "now") {
+    setNow(m.title, m.artist);
+    if (!m.cover) { cover = null; setCover(null); }
+    else cover = { id: m.cover.id, mime: m.cover.mime, parts: new Array(m.cover.parts), left: m.cover.parts };
+  } else if (m.type === "cover" && cover && m.id === cover.id && cover.parts[m.part] === undefined) {
+    cover.parts[m.part] = Uint8Array.from(atob(m.data), (c) => c.charCodeAt(0));
+    if (--cover.left === 0) setCover(URL.createObjectURL(new Blob(cover.parts, { type: cover.mime })));
+  }
 }
 
 function startMeter(stream) {
   try {
     ctx = new AudioContext();
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
+    analyser.fftSize = 512;
     ctx.createMediaStreamSource(stream).connect(analyser);
     const data = new Uint8Array(analyser.frequencyBinCount);
     const bars = meter.children;
+    // Bands on a log scale, as the ear hears them.
+    const edges = Array.from({ length: BARS + 1 }, (_, i) => Math.min(data.length, Math.round(Math.pow(data.length, i / BARS))));
     meter.classList.add("live");
-    // Bands on a log scale, as the ear hears them, from about 190 Hz to 24 kHz.
-    const edges = Array.from({ length: BARS + 1 }, (_, i) =>
-      Math.min(data.length, Math.round(Math.pow(data.length, i / BARS))));
     const draw = () => {
       analyser.getByteFrequencyData(data);
       for (let i = 0; i < BARS; i++) {
@@ -244,38 +264,115 @@ function stopMeter() {
   for (const b of meter.children) b.style.height = "";
 }
 
-function blockedMixed(url) {
-  if (location.protocol !== "https:" || !url.startsWith("http:")) return false;
-  const host = new URL(url).hostname;
-  return !["localhost", "127.0.0.1", "[::1]"].includes(host);
-}
+function closeTrackers() { for (const s of sockets) { try { s.close(); } catch (_) {} } sockets = []; }
 
 async function stop(message) {
   clearInterval(poll); poll = null;
+  closeTrackers();
   if (resource) fetch(resource, { method: "DELETE" }).catch(() => {});
   if (pc) pc.close();
   pc = null; resource = null;
   stopMeter();
-  audio.srcObject = null; now.textContent = "";
-  button.textContent = "Listen";
-  onAir(false); tune(null);
-  say(message || "Stopped. Press Listen to tune in again.");
+  audio.srcObject = null;
+  setIcon(false); onAir(false);
+  say(message || "Stopped");
+}
+
+function randomId(n) {
+  const a = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  return Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => a[b % a.length]).join("");
+}
+function b64url(text) {
+  const s = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+
+// Through the trackers: post the offer to the station's swarm, take the first answer
+// that carries the signature of the station key.
+async function viaTrackers(id, offerSdp) {
+  const publicKey = b64url(id);
+  // Browsers check signatures only on https:// pages and on this computer.
+  if (!window.isSecureContext || !crypto.subtle) {
+    throw new Error("a station link needs a secure page. Open https://radioterminal.github.io/craftradio/#" + id);
+  }
+  let key;
+  try { key = await crypto.subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, ["verify"]); }
+  catch (_) { throw new Error("this browser cannot check the station signature. Update it, or open the station address directly"); }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey));
+  const infoHash = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 20);
+  const peerId = randomId(20);
+  return new Promise((resolve, reject) => {
+    const ids = new Set();
+    let done = false, open = 0;
+    const offers = () => Array.from({ length: 5 }, () => {
+      const offerId = randomId(20); ids.add(offerId);
+      return { offer: { type: "offer", sdp: offerSdp }, offer_id: offerId };
+    });
+    const announce = (ws) => ws.readyState === 1 && ws.send(JSON.stringify({
+      action: "announce", info_hash: infoHash, peer_id: peerId, numwant: 5,
+      uploaded: 0, downloaded: 0, left: 1, event: "started", offers: offers(),
+    }));
+    const timer = setTimeout(() => finish(new Error("the station did not answer. It may be off air")), 20000);
+    const again = setInterval(() => sockets.forEach(announce), 5000);
+    function finish(result) {
+      if (done) return; done = true;
+      clearTimeout(timer); clearInterval(again); closeTrackers();
+      result instanceof Error ? reject(result) : resolve(result);
+    }
+    for (const url of TRACKERS) {
+      let ws;
+      try { ws = new WebSocket(url); } catch (_) { continue; }
+      sockets.push(ws);
+      ws.onopen = () => { open++; announce(ws); };
+      ws.onerror = () => { if (!sockets.some((s) => s.readyState <= 1) && !open) finish(new Error("no tracker could be reached")); };
+      ws.onmessage = async (e) => {
+        let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+        if (!m.answer || !ids.has(m.offer_id) || done) return;
+        const signed = m.answer.sdp || "";
+        const at = signed.lastIndexOf(SIG);
+        if (at < 0) return;
+        const sdp = signed.slice(0, at);
+        const sig = b64url(signed.slice(at + SIG.length).trim());
+        const ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, new TextEncoder().encode(m.offer_id + "\n" + sdp)).catch(() => false);
+        if (ok) finish(sdp);
+      };
+    }
+    if (!sockets.length) finish(new Error("no tracker could be reached"));
+  });
+}
+
+function blockedMixed(url) {
+  if (location.protocol !== "https:" || !url.startsWith("http:")) return false;
+  return !["localhost", "127.0.0.1", "[::1]"].includes(new URL(url).hostname);
+}
+
+async function titleFromServer(url) {
+  if (gotMeta) return;
+  try { const r = await fetch(url + "/now"); if (r.ok) { setNow(await r.text(), ""); return; } } catch (_) {}
+  // TinyIce and Icecast give the title in their stats, by mount.
+  try {
+    const u = new URL(url);
+    const r = await fetch(u.origin + "/status-json.xsl");
+    if (!r.ok) return;
+    const sources = [].concat(((await r.json()).icestats || {}).source || []);
+    const mount = u.pathname.replace(/\/+$/, "") || "/";
+    const s = sources.find((x) => (x.listenurl || "").replace(/\/+$/, "").endsWith(mount)) || sources[0];
+    if (s) setNow(s.title || s.server_name || "", s.artist || "");
+  } catch (_) {}
 }
 
 async function listen() {
-  const url = base();
-  if (!url) { say("Enter the station address first."); input.focus(); return; }
-  try { new URL(url); } catch (_) { say("That is not an address. It looks like http://localhost:8000."); input.focus(); return; }
-  if (blockedMixed(url)) {
-    say("This HTTPS page cannot reach an http:// station on another computer. Open " + url + " directly, or give the station an HTTPS tunnel.");
+  if (!station) { $("tuner").open = true; input.focus(); say("Paste a station link first"); return; }
+  if (station.kind === "url" && blockedMixed(station.url)) {
+    say("This page cannot reach an http:// station on another computer. Open " + station.url + " directly.");
     return;
   }
-  history.replaceState(null, "", "?station=" + encodeURIComponent(url));
-  button.textContent = "Stop";
-  tune(frequency(url));
-  say("Tuning in…");
+  setIcon(true); gotMeta = false;
+  say(station.kind === "id" ? "Finding the station…" : "Connecting…");
   pc = new RTCPeerConnection({ iceServers: ICE });
   pc.addTransceiver("audio", { direction: "recvonly" });
+  const channel = pc.createDataChannel("now");
+  channel.onmessage = (e) => onMessage(e.data);
   pc.ontrack = (e) => {
     const stream = e.streams[0] || new MediaStream([e.track]);
     audio.srcObject = stream;
@@ -284,9 +381,9 @@ async function listen() {
   };
   pc.onconnectionstatechange = () => {
     const s = pc && pc.connectionState;
-    if (s === "connected") { onAir(true); say("Connected. Playing."); }
-    if (s === "failed") { onAir(false); say("Could not connect. The station may be behind a strict NAT."); }
-    if (s === "disconnected") { onAir(false); say("Connection lost. It tries again for a few seconds."); }
+    if (s === "connected") { onAir(true); say("Live"); }
+    if (s === "failed") { onAir(false); say("Could not connect: a firewall may block it"); }
+    if (s === "disconnected") { onAir(false); say("Connection lost, trying again…"); }
   };
   try {
     const offer = await pc.createOffer();
@@ -298,40 +395,52 @@ async function listen() {
       pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && done();
       setTimeout(done, 2000);
     });
-    const res = await fetch(url + "/whep", {
-      method: "POST", headers: { "Content-Type": "application/sdp" }, body: pc.localDescription.sdp,
-    });
-    if (res.status !== 201) throw new Error(await res.text() || "HTTP " + res.status);
-    const loc = res.headers.get("Location");
-    resource = loc ? new URL(loc, url + "/").href : null;
-    await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
-    const title = async () => {
-      try {
-        const r = await fetch(url + "/now");
-        if (r.ok) { now.textContent = await r.text(); return; }
-      } catch (_) {}
-      // TinyIce and Icecast give the title in their stats, by mount.
-      try {
-        const u = new URL(url);
-        const r = await fetch(u.origin + "/status-json.xsl");
-        if (!r.ok) return;
-        const stats = (await r.json()).icestats || {};
-        const sources = [].concat(stats.source || []);
-        const mount = u.pathname.replace(/\/+$/, "") || "/";
-        const s = sources.find((x) => (x.listenurl || "").replace(/\/+$/, "").endsWith(mount)) || sources[0];
-        if (s) now.textContent = [s.artist, s.title].filter(Boolean).join(" – ") || s.server_name || "";
-      } catch (_) {}
-    };
-    title(); poll = setInterval(title, 5000);
+    let answer;
+    if (station.kind === "id") {
+      answer = await viaTrackers(station.id, pc.localDescription.sdp);
+      say("Connecting…");
+    } else {
+      const res = await fetch(station.url + "/whep", {
+        method: "POST", headers: { "Content-Type": "application/sdp" }, body: pc.localDescription.sdp,
+      });
+      if (res.status !== 201) throw new Error(await res.text() || "HTTP " + res.status);
+      const loc = res.headers.get("Location");
+      resource = loc ? new URL(loc, station.url + "/").href : null;
+      answer = await res.text();
+      titleFromServer(station.url);
+      poll = setInterval(() => titleFromServer(station.url), 5000);
+    }
+    if (!pc) return;
+    await pc.setRemoteDescription({ type: "answer", sdp: answer });
   } catch (e) {
-    await stop("The station did not answer: " + e.message + ". Check the address and that the station runs with --webrtc.");
+    await stop("Could not tune in: " + e.message);
   }
 }
 
+function tuneTo(text) {
+  const next = parseStation(text);
+  if (!next) { say("That is not a station link or address"); input.focus(); return; }
+  station = next;
+  history.replaceState(null, "", next.kind === "id" ? "#" + next.id : "?station=" + encodeURIComponent(next.url));
+  paint(next.label); setNow("", ""); setCover(null); shareBtn.hidden = next.kind !== "id";
+  $("tuner").open = false;
+  if (pc) stop().then(listen); else listen();
+}
+
+shareBtn.hidden = !(station && station.kind === "id");
+shareBtn.addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(location.href); shareText.textContent = "Copied"; }
+  catch (_) { shareText.textContent = "Copy failed"; }
+  setTimeout(() => (shareText.textContent = "Copy link"), 1800);
+});
 button.addEventListener("click", () => (pc ? stop() : listen()));
-input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !pc) listen(); });
-window.addEventListener("resize", () => { if (pc) tune(frequency(base())); });
+$("tune").addEventListener("click", () => tuneTo(input.value));
+input.addEventListener("keydown", (e) => { if (e.key === "Enter") tuneTo(input.value); });
+$("volume").addEventListener("input", (e) => { audio.volume = Number(e.target.value); });
+window.addEventListener("hashchange", () => { const s = parseStation(location.hash.slice(1)); if (s && (!station || s.id !== station.id)) tuneTo(location.hash.slice(1)); });
 window.addEventListener("pagehide", () => { if (resource) fetch(resource, { method: "DELETE", keepalive: true }); });
+setIcon(false);
+if (station) say("Press play to listen");
 </script>
 </body>
 </html>
