@@ -541,6 +541,16 @@ fn meters_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
         );
         ui.add_sized([ui.available_width(), size::CONTROL_SM], field)
     });
+    let note = view.say(
+        "Preview: the simulated meters keep their own hold.",
+        "The meters take a new peak hold at the next start.",
+    );
+    settings::form_note(
+        ui,
+        RichText::new(note)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+    );
     if hold != old {
         actions.push(parts::set(parts::MIXER, "peak_hold_s", f64::from(hold)));
     }

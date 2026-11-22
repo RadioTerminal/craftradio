@@ -2,6 +2,7 @@ mod edits;
 mod fixtures;
 mod folders;
 mod icecast;
+mod meters;
 mod one_off;
 mod pick_orders;
 mod snapshot;

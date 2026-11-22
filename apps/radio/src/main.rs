@@ -194,6 +194,9 @@ fn real(args: &Args) -> Result<(), String> {
     };
     let mut cfg = PlayoutConfig::new(Arc::new(SystemClock), output);
     cfg.icecast = icecast;
+    if let Some(hold) = radio_ui_engine::peak_hold(engine.state()) {
+        cfg.mixer.peak_hold = hold;
+    }
     // The switch in the status line (the `webrtc.enabled` setting) starts streaming.
     // With `--webrtc`, streaming runs for this run in any case.
     let mut webrtc =

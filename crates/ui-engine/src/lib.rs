@@ -19,6 +19,13 @@ pub use icecast::{
 mod map;
 mod one_off;
 
+/// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
+/// with: `None` when none is set, so the playout keeps its own.
+pub fn peak_hold(state: &State) -> Option<Duration> {
+    let seconds = state.settings("mixer")?.get("peak_hold_s")?.as_f64()?;
+    (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
+}
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
