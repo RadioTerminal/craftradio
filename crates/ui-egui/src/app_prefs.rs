@@ -17,7 +17,13 @@ use crate::parts;
 use crate::view::StationView;
 
 /// The parts whose every setting is a display preference of this computer.
-const DISPLAY_PARTS: [&str; 4] = [parts::CLOCK, parts::HISTORY, parts::ALARMS, parts::LIBRARY];
+const DISPLAY_PARTS: [&str; 5] = [
+    parts::CLOCK,
+    parts::HISTORY,
+    parts::ALARMS,
+    parts::LIBRARY,
+    parts::WINDOWS,
+];
 
 /// True when `part`/`key` is a preference of this computer, not a station setting.
 pub(crate) fn is_display(part: &str, key: &str) -> bool {

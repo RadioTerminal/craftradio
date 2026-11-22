@@ -154,6 +154,8 @@ pub struct RadioApp {
     preferences: crate::preferences::State,
     /// This computer's preferences: in memory until the app gives a store.
     prefs: crate::app_prefs::AppPrefs,
+    /// The window layout last kept, once the app has a store.
+    layout: Option<(Vec<&'static str>, bool)>,
     clock_state: clock_window::State,
     history: history::State,
     alarms: alarms::State,
@@ -188,6 +190,10 @@ pub struct RadioApp {
     out_moving: bool,
 }
 
+/// The settings key of the open tool windows, and of the docked Library.
+const OPEN_KEY: &str = "open";
+const DOCKED_KEY: &str = "library_docked";
+
 impl RadioApp {
     pub fn new(mut source: Box<dyn ViewSource>, clock: Box<dyn Fn() -> Timestamp>) -> Self {
         let view = source.snapshot(clock());
@@ -216,6 +222,7 @@ impl RadioApp {
             mixer: mixer::State::default(),
             preferences: crate::preferences::State::default(),
             prefs: crate::app_prefs::AppPrefs::memory(),
+            layout: None,
             clock_state: clock_window::State::default(),
             history: history::State::default(),
             alarms: alarms::State::default(),
@@ -306,7 +313,42 @@ impl RadioApp {
         self.prefs = prefs;
         self.prefs.import(&self.view);
         self.refresh(true);
+        // The windows open as they were left.
+        let open = crate::parts::strings(&self.view, crate::parts::WINDOWS, OPEN_KEY, &[]);
+        for w in ToolWindow::ALL {
+            if open.iter().any(|t| t == w.title()) {
+                self.open.set(w, true);
+            }
+        }
+        self.library.docked =
+            crate::parts::bool(&self.view, crate::parts::WINDOWS, DOCKED_KEY, false);
+        self.layout = Some(self.current_layout());
         self
+    }
+
+    /// The open tool windows, by title, and whether the Library is docked.
+    fn current_layout(&self) -> (Vec<&'static str>, bool) {
+        let open = ToolWindow::ALL
+            .into_iter()
+            .filter(|w| self.open.get(*w))
+            .map(ToolWindow::title)
+            .collect();
+        (open, self.library.docked)
+    }
+
+    /// Keeps the open windows and the docked Library when they change.
+    fn keep_layout(&mut self) {
+        let now = self.current_layout();
+        if self.layout.as_ref() == Some(&now) {
+            return;
+        }
+        if self.layout.is_some() {
+            self.prefs
+                .set(crate::parts::WINDOWS, OPEN_KEY, serde_json::json!(now.0));
+            self.prefs
+                .set(crate::parts::WINDOWS, DOCKED_KEY, serde_json::json!(now.1));
+        }
+        self.layout = Some(now);
     }
 
     /// Open or close a tool window.
@@ -605,6 +647,7 @@ impl eframe::App for RadioApp {
             });
 
         self.tool_windows(&ctx, &mut actions, &t);
+        self.keep_layout();
         self.global_keys(&ctx, &mut actions);
         self.dialogs(&ctx, &mut actions, &t);
 
