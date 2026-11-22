@@ -86,7 +86,7 @@ if (-not $SkipBuild) {
   # The static C runtime applies to the target only. Build scripts and proc-macros keep the default.
   $flagVar = 'CARGO_TARGET_' + ($Target.ToUpper() -replace '-', '_') + '_RUSTFLAGS'
   [Environment]::SetEnvironmentVariable($flagVar, '-C target-feature=+crt-static')
-  # vendor/mp3lame-sys links libmp3lame.lib from this folder.
+  # ffi/lame links libmp3lame.lib from this folder.
   $env:LAME_LIB_DIR = Join-Path $LamePrefix 'lib'
   $env:LAME_LIB_NAME = 'libmp3lame'
   Invoke-Native "cargo build ($Target)" { cargo build --release --locked -p radio -p radio-cli --target $Target }

@@ -17,7 +17,8 @@ and MAY are used as in RFC 2119.
 4. Rust only. No handwritten JavaScript/TypeScript, Electron or webview in the app (user
    scripts run inside the embedded JS engine; they aren't app code).
 5. Fix what a lint reports; don't silence it with `allow`. Non-test code SHOULD NOT panic.
-   `unsafe_code = "forbid"` workspace-wide.
+   `unsafe_code = "forbid"` workspace-wide. The one place with unsafe code is `ffi/lame`, the LAME
+   bindings, kept outside the workspace with every `unsafe` block documented.
 6. **Panels change engine state only through commands**, so the CLI and MCP can do anything
    a panel does. Every feature SHOULD also work without the GUI.
 7. **No placeholder shown as success.** Something unsupported or not yet built (no audio in

@@ -90,7 +90,7 @@ fi
 if [[ "$SKIP_BUILD" = 0 ]]; then
   args=()
   for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
-  # LAME_LIB_DIR tells vendor/mp3lame-sys to link this LAME build.
+  # LAME_LIB_DIR tells ffi/lame to link this LAME build.
   # The rpath lets the app find the library in Contents/Frameworks.
   (cd "$ROOT" && LAME_LIB_DIR="$LAME_OUT" \
     RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,@executable_path/../Frameworks" \

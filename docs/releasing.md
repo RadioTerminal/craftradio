@@ -60,7 +60,7 @@ turns those off.
 ## MP3 and LAME
 
 LAME is LGPL, so it is never compiled into CraftRadio (AGENTS.md rule 12, `docs/mp3-release.md`).
-`vendor/mp3lame-sys` links the LAME shared library, and each package gets it like this:
+`ffi/lame`, this repository's own MIT/Apache binding, links the LAME shared library, and each package gets it like this:
 
 | Package | LAME |
 |---|---|
@@ -72,9 +72,6 @@ LAME is LGPL, so it is never compiled into CraftRadio (AGENTS.md rule 12, `docs/
 Every bundled copy sits next to `LICENSE-LAME.txt` (LAME's own `COPYING`, kept in
 `packaging/lame/`) and `LAME.txt`, which says how to replace it.
 
-> [!WARNING]
-> **Release blocker:** the Rust wrapper `mp3lame-encoder` and the bindings in `vendor/mp3lame-sys`
-> are LGPL-3.0 and still compiled into the app statically. See `docs/mp3-release.md`.
 The macOS CLI zip has no LAME: only the app links it.
 
 ## Known gaps
