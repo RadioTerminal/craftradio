@@ -26,6 +26,20 @@ pub fn peak_hold(state: &State) -> Option<Duration> {
     (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
 }
 
+/// The output that the Program device setting (`audio.out`) asks for. `"none"` or the
+/// `--null-output` flag mean no sound card; absent or empty is the system default.
+pub fn output_choice(out_setting: Option<&str>, null_flag: bool) -> radio_playout::OutputChoice {
+    use radio_playout::OutputChoice;
+    match out_setting {
+        _ if null_flag => OutputChoice::Null,
+        Some(radio_engine::NO_DEVICE) => OutputChoice::Null,
+        Some("") | None => OutputChoice::Device { name: None },
+        Some(name) => OutputChoice::Device {
+            name: Some(name.to_owned()),
+        },
+    }
+}
+
 /// The WebRTC stream settings that Preferences keeps, put onto `cfg`: the port (on the address
 /// it has), the bitrate and the most listeners. Values out of range are left as they were.
 pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
@@ -1152,5 +1166,39 @@ impl ViewSource for EngineSource {
             .cloned()
             .unwrap_or_else(|| self.station.clone());
         radio_model::stream_title(&meta_item(row), &previous, &self.station)
+    }
+}
+
+#[cfg(test)]
+mod output_choice_tests {
+    use super::output_choice;
+    use radio_playout::OutputChoice;
+
+    #[test]
+    fn none_or_the_flag_means_no_sound_card() {
+        assert_eq!(output_choice(Some("none"), false), OutputChoice::Null);
+        assert_eq!(output_choice(Some("Studio out"), true), OutputChoice::Null);
+    }
+
+    #[test]
+    fn absent_or_empty_is_the_system_default() {
+        assert_eq!(
+            output_choice(None, false),
+            OutputChoice::Device { name: None }
+        );
+        assert_eq!(
+            output_choice(Some(""), false),
+            OutputChoice::Device { name: None }
+        );
+    }
+
+    #[test]
+    fn a_name_opens_that_device() {
+        assert_eq!(
+            output_choice(Some("Studio out"), false),
+            OutputChoice::Device {
+                name: Some("Studio out".into())
+            }
+        );
     }
 }
