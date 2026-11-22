@@ -233,6 +233,15 @@ impl Slot {
         self.role == DeckRole::Plan || (self.role == DeckRole::Operator && !self.not_started())
     }
 
+    /// Tells if this is a soft event and `now` is before its target less its tolerance.
+    /// Then it may not start yet.
+    pub(crate) fn soft_too_early(&self, now: Timestamp) -> bool {
+        self.entry
+            .fixed
+            .as_ref()
+            .is_some_and(|f| f.mode == FixMode::Soft && now < sub(f.target, f.tolerance))
+    }
+
     pub(crate) fn is_hard(&self) -> bool {
         self.entry
             .fixed
@@ -769,6 +778,7 @@ impl Core {
         }
         // Hard events claim a deck first, so a queued item cannot take it back.
         self.ensure_hard(now);
+        self.make_room_for_soft();
         self.load_ahead(now);
         self.cue_starts(now);
         self.cue_ends(now);
@@ -973,10 +983,15 @@ impl Core {
             };
             if s.not_started() {
                 if let Some((start, item, trim)) = &prev
-                    && s.entry.fixed.is_none()
+                    && !s.is_hard()
                 {
                     let gap = radio_timing::advance(item, Some(&s.item)).saturating_sub(*trim);
-                    s.entry.start = add(*start, gap);
+                    let handover = add(*start, gap);
+                    // A soft event never starts early. It waits for the item before it.
+                    s.entry.start = match s.entry.fixed {
+                        Some(_) => s.entry.start.max(handover),
+                        None => handover,
+                    };
                 }
                 // A hard event keeps its target, even when it starts late.
                 if s.offset.is_zero() && !s.is_hard() {
@@ -1169,12 +1184,51 @@ impl Core {
     /// Takes the plan items that wait on decks off them, so a new plan can move them after
     /// the play-next items. Hard events and operator items stay.
     fn unload_waiting_plan_items(&mut self) {
+        self.unload_where(|s| !s.is_hard());
+    }
+
+    /// Makes room for a soft event that the plan puts before items on decks. It takes
+    /// those items off their decks. The event then loads first, and they load after it.
+    /// Else the event never loads, and its time passes.
+    fn make_room_for_soft(&mut self) {
+        let on_deck: Vec<Entry> = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|s| s.entry.clone())
+            .collect();
+        let Some(event) = self.timeline.entries.iter().position(|e| {
+            e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Soft)
+                && !on_deck.iter().any(|d| same_event(d, e))
+                && !self.aired_fixed.iter().any(|a| same_occurrence(a, e))
+        }) else {
+            return;
+        };
+        let after: Vec<ItemId> = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|s| s.item.id)
+            .filter(|id| {
+                self.timeline
+                    .entries
+                    .iter()
+                    .position(|e| e.item == *id && e.fixed.is_none())
+                    .is_some_and(|k| k > event)
+            })
+            .collect();
+        self.unload_where(|s| s.entry.fixed.is_none() && after.contains(&s.item.id));
+    }
+
+    /// Takes off their decks the plan items that wait there and match `which`. Items on
+    /// the play-next queue stay.
+    fn unload_where(&mut self, which: impl Fn(&Slot) -> bool) {
         let queue = self.engine.state().queue.clone();
         for i in 0..4 {
             let waiting = self.slots[i].as_ref().is_some_and(|s| {
                 s.role == DeckRole::Plan
                     && s.not_started()
-                    && !s.is_hard()
+                    && which(s)
                     && !queue.contains(&s.item.id)
             });
             if waiting && let Some(s) = self.slots[i].take() {
@@ -1207,10 +1261,11 @@ impl Core {
 
     /// Loads the next planned entries that start within the preload time.
     fn load_ahead(&mut self, now: Timestamp) {
-        // Hard events load on their own (see `ensure_hard`) and do not count here.
+        // Hard events load on their own (see `ensure_hard`) and do not count here. A soft
+        // event keeps its own time, so the items before it still load.
         let plan_slots = || self.slots.iter().flatten().filter(|s| s.pinned());
         let last = plan_slots()
-            .filter(|s| !s.is_hard())
+            .filter(|s| s.entry.fixed.is_none())
             .map(|s| s.entry.start)
             .max();
         let queued = plan_slots()

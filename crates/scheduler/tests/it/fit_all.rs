@@ -479,6 +479,43 @@ fn hard_event_beats_locked_entry() {
     )));
 }
 
+#[test]
+fn soft_event_among_locked_entries_starts_after_the_one_in_its_way() {
+    // Every track is locked, as when a person adds them. The soft event at 200 s falls in
+    // track 2 (178 s to 356 s), so it starts late, right after that track, and the locked
+    // tracks after it give way.
+    let st = make_station(tracks(1, 8, 180), vec![(jingle(100, 60), 0)], Vec::new());
+    let target = at(200);
+    let mut tl = timeline(&st, &[(target, FixMode::Soft)]);
+    for e in tl.entries.iter_mut() {
+        e.locked = e.fixed.is_none();
+    }
+    let in_way = tl
+        .entries
+        .iter()
+        .rfind(|e| e.locked && e.start < target)
+        .cloned()
+        .unwrap();
+    fit(&st, &mut tl);
+    let ev = event_index(&tl, 100);
+    let start = tl.entries[ev].start;
+    let item = find(&st, in_way.item).0;
+    let handover = in_way.start + radio_timing::advance(item, Some(item));
+    assert!(start > target + TOL, "it cannot start in its tolerance");
+    assert!(
+        start <= handover,
+        "it starts once the track in its way hands over"
+    );
+    assert_eq!(tl.entries[ev - 1].item, in_way.item);
+    assert!(
+        tl.warnings
+            .iter()
+            .any(|w| matches!(w, Warning::LockedMoved { .. })),
+        "the locked track after it starts late"
+    );
+    no_overlap_with_fixed(&st, &tl);
+}
+
 /// Three 180 s tracks hand over at +534 s; before a hard event the last one plays to +536 s.
 fn hard_fill_case(fill: Vec<Item>) -> (Station, Timeline, Timestamp) {
     let st = make_station(tracks(1, 12, 180), vec![(jingle(100, 60), 0)], fill);

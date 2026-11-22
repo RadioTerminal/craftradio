@@ -472,18 +472,16 @@ impl Core {
             .filter(|(_, s)| s.role == DeckRole::Plan && s.not_started())
             .filter(|(_, s)| !s.is_hard() || s.entry.fixed.as_ref().is_none_or(|f| now >= f.target))
             .min_by_key(|(_, s)| s.entry.start)
+            // A soft event that comes next keeps its time. Nothing moves in front of it.
+            .filter(|(_, s)| !s.soft_too_early(now))
             .map(|(i, s)| (i, s.tag));
         let Some((j, tag)) = next else {
-            if self
-                .slots
-                .iter()
-                .flatten()
-                .any(|s| s.is_hard() && s.not_started())
-            {
+            let waits = |s: &Slot| (s.is_hard() || s.soft_too_early(now)) && s.not_started();
+            if self.slots.iter().flatten().any(waits) {
                 self.alarms.raise_once(
                     now,
                     Alarm::Unsupported {
-                        what: "The next hard event waits for its target time".into(),
+                        what: "The next fixed event waits for its time".into(),
                     },
                 );
             }
