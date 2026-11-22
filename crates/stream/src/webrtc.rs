@@ -1059,7 +1059,7 @@ pub fn filter_candidates(sdp: &str, peer: IpAddr) -> String {
             // the local network still connects: its checks arrive from its real address.
             let allowed = address
                 .parse::<IpAddr>()
-                .is_ok_and(|ip| ip == peer || is_public(ip));
+                .is_ok_and(|ip| is_public(ip) || (ip == peer && !ip.is_unspecified()));
             if !allowed || kept >= MAX_CANDIDATES {
                 continue;
             }

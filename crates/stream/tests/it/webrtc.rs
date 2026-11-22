@@ -278,6 +278,12 @@ fn an_offer_cannot_point_the_station_at_other_hosts() {
         assert!(kept.contains("a=mid:0"));
         assert_eq!(kept.matches("a=candidate:").count(), 1, "{peer}: {kept}");
     }
+    // An offer from a tracker has no client address. Its `::` candidate must not pass.
+    let relayed = filter_candidates(
+        "a=candidate:1 1 udp 1 :: 5000 typ host\r\na=candidate:2 1 udp 1 0.0.0.0 5000 typ host\r\n",
+        "::".parse().unwrap(),
+    );
+    assert_eq!(relayed.matches("a=candidate:").count(), 0, "{relayed}");
     // The client's own address stays, so a listener on this computer still connects.
     let own = filter_candidates(sdp, "127.0.0.1".parse().unwrap());
     assert!(own.contains(" 127.0.0.1 "));
