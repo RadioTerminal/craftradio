@@ -1,8 +1,11 @@
-//! `cargo xtask version [set X.Y.Z]`: the repository's own tasks, run by the release workflow.
+//! `cargo xtask version [set X.Y.Z]` and `cargo xtask ico <out.ico> <png>...`: the repository's
+//! own tasks, run by the release workflow and `packaging/icons.sh`.
 //!
 //! `[workspace.package] version` in the root `Cargo.toml` is the single source of the app's
 //! version. `version` prints it; `version set X.Y.Z[-pre]` rewrites it and refreshes the
 //! workspace's own entries in `Cargo.lock`.
+
+mod ico;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -13,8 +16,9 @@ fn main() -> ExitCode {
     let ok = match args.as_slice() {
         ["version"] => print_version(&workspace_root()),
         ["version", "set", v] => set_version(&workspace_root(), v),
+        ["ico", rest @ ..] => ico::run(rest).map_err(|e| eprintln!("ico: {e}")).is_ok(),
         _ => {
-            eprintln!("usage: cargo xtask version [set X.Y.Z]");
+            eprintln!("usage: cargo xtask version [set X.Y.Z] | ico <out.ico> <png>...");
             false
         }
     };

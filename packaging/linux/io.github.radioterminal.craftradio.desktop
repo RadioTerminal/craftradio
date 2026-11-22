@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=CraftRadio
+GenericName=Radio Automation
+Comment=Run a radio station: four decks, timed playlists, a cartwall and Icecast output
+Exec=craftradio
+TryExec=craftradio
+Icon=io.github.radioterminal.craftradio
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.github.radioterminal.craftradio
+Categories=AudioVideo;Audio;Player;
+Keywords=radio;playout;automation;broadcast;icecast;playlist;jingle;cartwall;
