@@ -1,8 +1,6 @@
 # The deb and rpm packages, made with nfpm (https://nfpm.goreleaser.com).
 # The package script stages the file tree and puts its path in place of ${STAGE}.
 # It also exports VERSION, NFPM_ARCH and CRAFTRADIO_MAINTAINER.
-#
-# These packages use the LAME library of the distribution. They do not bundle it.
 name: craftradio
 arch: ${NFPM_ARCH}
 platform: linux
@@ -22,7 +20,7 @@ description: |-
   pinned to an exact time, a cartwall fires jingles, and output goes to the
   sound card and to Icecast. A CLI and an MCP server do everything the app does.
 
-# The programs link glibc, libgcc_s, ALSA and LAME directly.
+# The programs link glibc, libgcc_s and ALSA directly.
 # The window system and the GPU load at runtime through dlopen.
 # The package tools cannot find those libraries, so this file lists them.
 overrides:
@@ -31,7 +29,6 @@ overrides:
       - libc6 (>= 2.35)
       - libgcc-s1
       - libasound2
-      - libmp3lame0
       - libxkbcommon0
       - libxkbcommon-x11-0
       - libwayland-client0
@@ -49,7 +46,6 @@ overrides:
     # Soname provides resolve on Fedora, RHEL and openSUSE, which name the packages differently.
     depends:
       - libasound.so.2()(64bit)
-      - libmp3lame.so.0()(64bit)
       - libxkbcommon.so.0()(64bit)
       - libxkbcommon-x11.so.0()(64bit)
       - libwayland-client.so.0()(64bit)

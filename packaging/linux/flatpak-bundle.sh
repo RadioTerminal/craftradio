@@ -73,7 +73,6 @@ fi
 if [[ "$TEST" = 1 ]]; then
   flatpak install --user -y --noninteractive --reinstall "$OUT"
   flatpak info --user "$APP_ID"
-  # The app must find the bundled libmp3lame in /app/lib/craftradio.
   flatpak run --command=craftradio "$APP_ID" --version
   flatpak run --command=craftradio-cli "$APP_ID" --version
   flatpak run --command=sh "$APP_ID" -c 'ls /app/share/applications /app/share/metainfo /app/share/icons/hicolor/256x256/apps'

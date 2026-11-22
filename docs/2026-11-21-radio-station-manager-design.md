@@ -430,9 +430,9 @@ command `schedule.add`.
 
 - Local audio device(s) through cpal; more than one output allowed (for example main plus
   a backup sound card).
-- Icecast source client (HTTP PUT / SOURCE). Formats: Ogg/Opus and MP3. MP3 uses LAME (LGPL),
-  allowed by the user as the one licence exception, behind the `mp3` feature. The encoders are MP3 (LAME) and Ogg/Opus
-  (libopus); these two are C dependencies, an accepted exception to pure Rust.
+- Icecast source client (HTTP PUT / SOURCE). Formats: Ogg/Opus and MP3. MP3 uses craft-audio's
+  native encoder (pure Rust, MIT OR Apache-2.0) behind the `mp3` feature. Ogg/Opus uses libopus,
+  a C dependency and an accepted exception to pure Rust.
 - **v1 scope (my call, after review):** one local output device plus PFL, and one Icecast
   mount. More devices and mounts are deferred; the design allows them.
 - **Now-playing metadata:**
