@@ -220,6 +220,7 @@ impl Core {
                     title: before.title,
                     artist: before.artist,
                     at: before.at,
+                    file: before.file,
                 });
             }
             let hour_ago = at
@@ -261,10 +262,18 @@ impl Core {
             else {
                 continue;
             };
+            // Only an item that shows its tags shows its cover.
+            let file = item
+                .filter(|i| i.meta.publish == PublishMode::FromTags)
+                .and_then(|i| match &i.source {
+                    Source::File { path } => Some(std::path::PathBuf::from(path)),
+                    _ => None,
+                });
             self.webrtc_played.push_front(Played {
                 title,
                 artist,
                 at: row.entry.start,
+                file,
             });
         }
         self.webrtc_played.truncate(PLAYED_MAX);

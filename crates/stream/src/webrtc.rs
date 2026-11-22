@@ -6,7 +6,7 @@
 
 use crate::now::SharedNow;
 use crate::{OpusEncoder, StreamError};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
@@ -333,7 +333,9 @@ struct Listener {
     /// The revision of [`Now`](crate::now::Now) in the outbox.
     sent_rev: u64,
     /// Messages that wait for room in the data channel.
-    outbox: VecDeque<String>,
+    outbox: VecDeque<crate::now::Message>,
+    /// Keys of the thumbnails that the listener has. Each goes out once.
+    sent_thumbs: HashSet<String>,
 }
 
 struct Media {
@@ -599,18 +601,25 @@ impl Media {
 
 impl Listener {
     /// Queues what plays now when it changed, and sends as much as the channel takes.
-    fn send_now(&mut self, rev: u64, messages: &[String]) {
+    fn send_now(&mut self, rev: u64, messages: &[crate::now::Message]) {
         let Some(id) = self.channel else { return };
         if self.sent_rev != rev {
             self.sent_rev = rev;
-            self.outbox = messages.iter().cloned().collect();
+            self.outbox = messages
+                .iter()
+                .filter(|m| m.key.as_ref().is_none_or(|k| !self.sent_thumbs.contains(k)))
+                .cloned()
+                .collect();
         }
         let Some(mut ch) = self.rtc.channel(id) else {
             return;
         };
         while let Some(m) = self.outbox.front() {
-            if !ch.write(false, m.as_bytes()).unwrap_or(false) {
+            if !ch.write(false, m.text.as_bytes()).unwrap_or(false) {
                 break;
+            }
+            if let Some(key) = &m.key {
+                self.sent_thumbs.insert(key.clone());
             }
             self.outbox.pop_front();
         }
@@ -637,6 +646,7 @@ impl Listener {
                     Event::ChannelOpen(id, _) => {
                         self.channel = Some(id);
                         self.sent_rev = 0;
+                        self.sent_thumbs.clear();
                     }
                     Event::ChannelClose(id) if self.channel == Some(id) => self.channel = None,
                     Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
@@ -1029,6 +1039,7 @@ impl Gate {
                     channel: None,
                     sent_rev: 0,
                     outbox: VecDeque::new(),
+                    sent_thumbs: HashSet::new(),
                 };
                 if self.control.send(Control::Add(Box::new(listener))).is_err() {
                     return Err(Response::text(503, "the station stopped"));
