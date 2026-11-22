@@ -112,6 +112,26 @@ fn small_improvement_does_not_reshuffle() {
 }
 
 #[test]
+fn large_improvement_reshuffles() {
+    let st = make_station(tracks(30), 30);
+    let fresh = run(&st, &[], None);
+    // A previous plan with the first two tracks swapped and an error 2 s worse.
+    let mut prev = fresh.clone();
+    let (a, b) = (prev.entries[0].item, prev.entries[1].item);
+    prev.entries[0].item = b;
+    prev.entries[1].item = a;
+    let err = prev.fits[0].error;
+    let worse = SignedDuration::from_secs(2);
+    prev.fits[0].error = if err.is_negative() {
+        err - worse
+    } else {
+        err + worse
+    };
+    let again = run(&st, &[], Some(&prev));
+    assert_eq!(window(&again), window(&fresh));
+}
+
+#[test]
 fn locked_window_only_fills_and_trims() {
     let st = make_station(tracks(30), 9);
     let prev = run(&st, &[], None);

@@ -263,3 +263,73 @@ fn late_break_adopts_second_pinned_ad_before_picking_third() {
         .expect("third distinct ad");
     assert!(third.start >= pinned[1].start + pinned[1].len, "{ads:?}");
 }
+
+fn ads_entries(tl: &Timeline) -> Vec<&Entry> {
+    tl.entries.iter().filter(|e| e.playlist == ADS).collect()
+}
+
+#[test]
+fn expired_item_not_picked() {
+    let mut ads = jingles(100, 2);
+    ads[0].valid_to = Some(date(2026, 11, 20));
+    let st = station_with(ads, vec![rule(Trigger::EveryNTracks(2), 1)]);
+    let tl = run(&st, at_14(0), Duration::from_secs(3600));
+    let aired = ads_entries(&tl);
+    assert!(!aired.is_empty());
+    assert!(aired.iter().all(|e| e.item != radio_model::ItemId(100)));
+}
+
+#[test]
+fn daypart_rule_only_fires_inside_window() {
+    let (from, to) = (at_14(20), at_14(40));
+    let mut r = rule(Trigger::EveryNTracks(1), 1);
+    r.constraints = vec![Constraint::Daypart {
+        from: jiff::civil::time(14, 20, 0, 0),
+        to: jiff::civil::time(14, 40, 0, 0),
+    }];
+    let st = station_with(jingles(100, 1), vec![r]);
+    let tl = run(&st, at_14(0), Duration::from_secs(3600));
+    let aired = ads_entries(&tl);
+    assert!(!aired.is_empty());
+    assert!(
+        aired.iter().all(|e| e.start >= from && e.start < to),
+        "{aired:?}"
+    );
+}
+
+#[test]
+fn priority_orders_simultaneous_rules() {
+    const LOW: PlaylistId = PlaylistId(3);
+    for (ads_priority, low_priority, first) in [(5, 1, ADS), (1, 5, LOW)] {
+        let mut st = station_with(jingles(100, 1), vec![rule(Trigger::EveryNTracks(3), 1)]);
+        st.playlists[1].priority = ads_priority;
+        let mut low = playlist(3, "low", jingles(200, 1));
+        low.priority = low_priority;
+        low.rules = vec![rule(Trigger::EveryNTracks(3), 1)];
+        st.playlists.push(low);
+        let tl = run(&st, at_14(0), Duration::from_secs(3600));
+        let inserted: Vec<PlaylistId> = playlists(&tl.entries[3..5]).to_vec();
+        assert_eq!(inserted.len(), 2);
+        assert_eq!(inserted[0], first, "{:?}", playlists(&tl.entries));
+        assert!(inserted.contains(&ADS) && inserted.contains(&LOW));
+    }
+}
+
+#[test]
+fn artist_separation_skips_same_artist_within_60m() {
+    let mut items = tracks(20);
+    items[1].artist = items[0].artist.clone();
+    let mut st = station_with(Vec::new(), Vec::new());
+    st.playlists[0].items = items;
+    st.playlists[0].constraints = vec![Constraint::ArtistSeparation(Duration::from_secs(3600))];
+    st.playlists.truncate(1);
+    let tl = run(&st, at_14(0), Duration::from_secs(3600));
+    let first = tl.entries.iter().find(|e| e.item.0 == 1).unwrap().start;
+    assert_eq!(tl.entries[1].item.0, 3, "the same-artist track is skipped");
+    assert!(
+        tl.entries
+            .iter()
+            .filter(|e| e.item.0 == 2)
+            .all(|e| e.start >= first + Duration::from_secs(3600))
+    );
+}

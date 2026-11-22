@@ -20,6 +20,10 @@ rand_chacha (seeded shuffles), clap, proptest.
 **Spec:** `docs/2026-11-21-radio-station-manager-design.md` (§6.2, §6.3, §6.6, §6.15).
 Roadmap: `docs/superpowers/plans/2026-11-21-roadmap.md`.
 
+**Status (2026-11-22):** done. Tests live in one binary per crate (`tests/it/*.rs`), not the
+files named below. Some listed tests exist under other names. Task 6's 10 ms timing test was
+not written; `tests/it/performance.rs` holds the scheduler's benchmarks.
+
 ## Global Constraints
 
 - Edition 2024, `rust-version = "1.97"`, license `MIT OR Apache-2.0`, matching the template.
@@ -127,11 +131,11 @@ examples/station.toml
   `playlist(id, name, items) -> Playlist`; `station(tz, playlists) -> Station`.
   Serde defaults: `enabled = true`, `movable = true`, `trimmable = true`, `take = 1`.
 
-- [ ] **Step 1: Create the workspace.** Root `Cargo.toml` per Global Constraints, with
+- [x] **Step 1: Create the workspace.** Root `Cargo.toml` per Global Constraints, with
   workspace dependencies `serde = { version = "1", features = ["derive"] }`, `toml = "0.9"`,
   `jiff = { version = "0.2", features = ["serde"] }`, `thiserror = "2"`, `rand_chacha = "0.9"`,
   `clap = { version = "4", features = ["derive"] }`, `proptest = "1"`. Run `git init`.
-- [ ] **Step 2: Write the failing tests** in `crates/model/tests/model.rs`:
+- [x] **Step 2: Write the failing tests** in `crates/model/tests/model.rs`:
   ```rust
   #[test] fn station_roundtrips_through_toml()   // build with testkit, to_string → from_str, assert_eq
   #[test] fn validate_rejects_no_main()           // Err(ModelError::NoMainPlaylist)
@@ -142,13 +146,13 @@ examples/station.toml
   #[test] fn validate_rejects_unknown_tz()        // tz "Mars/Base" → UnknownTimeZone
   #[test] fn validate_rejects_duplicate_item_ids()
   ```
-- [ ] **Step 3: Run** `cargo test -p radio-model`. Expected: compile failure, because the types don't exist yet.
-- [ ] **Step 4: Implement** the types above in their files, and `Station::validate`. It
+- [x] **Step 3: Run** `cargo test -p radio-model`. Expected: compile failure, because the types don't exist yet.
+- [x] **Step 4: Implement** the types above in their files, and `Station::validate`. It
   checks the time zone with `jiff::tz::TimeZone::get`. A `File` item may have
   `timing: None` only if it has `planned_len` (cue points not analysed yet). Also implement
   the testkit builders.
-- [ ] **Step 5: Run** `cargo test -p radio-model`. Expected: all pass.
-- [ ] **Step 6: Commit** `feat(model): station data model and validation`.
+- [x] **Step 5: Run** `cargo test -p radio-model`. Expected: all pass.
+- [x] **Step 6: Commit** `feat(model): station data model and validation`.
 
 ### Task 2: Item lengths and timeline arithmetic
 
@@ -167,7 +171,7 @@ examples/station.toml
   /// Start time of each item in `seq` when the first starts at `t0`.
   pub fn start_times(t0: Timestamp, seq: &[&Item]) -> Vec<Timestamp>;
   ```
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   ```rust
   #[test] fn advance_uses_segue() { let a = track(1,"a","x",200); let b = track(2,"b","y",180);
       assert_eq!(advance(&a, Some(&b)), Duration::from_secs(198)); }
@@ -176,10 +180,10 @@ examples/station.toml
   #[test] fn start_times_accumulate() { // t0 = 2026-11-21T14:00:00Z; tracks 200,180,jingle 6
       // expect [14:00:00, 14:03:18, 14:06:16] }
   ```
-- [ ] **Step 2: Run** `cargo test -p radio-timing`. Expected: FAIL.
-- [ ] **Step 3: Implement** `item_len`, `advance`, `start_times` in `crates/timing/src/lib.rs`.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(timing): item length and start-time arithmetic`.
+- [x] **Step 2: Run** `cargo test -p radio-timing`. Expected: FAIL.
+- [x] **Step 3: Implement** `item_len`, `advance`, `start_times` in `crates/timing/src/lib.rs`.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(timing): item length and start-time arithmetic`.
 
 ### Task 3: Local time resolution and trigger occurrences
 
@@ -194,7 +198,7 @@ examples/station.toml
   /// minute where minute-of-day % n == 0. EveryNTracks and ScriptEvent return an empty Vec.
   pub fn occurrences(tz: &TimeZone, trigger: &Trigger, from: Timestamp, to: Timestamp) -> Vec<Timestamp>;
   ```
-- [ ] **Step 1: Failing tests** (tz `Europe/Ljubljana`):
+- [x] **Step 1: Failing tests** (tz `Europe/Ljubljana`):
   ```rust
   #[test] fn dst_gap_moves_forward()  // 2027-03-28T02:30 → 2027-03-28T01:30:00Z (03:30 local)
   #[test] fn dst_fold_takes_first()   // 2026-10-25T02:30 → 2026-10-25T00:30:00Z
@@ -203,10 +207,10 @@ examples/station.toml
   #[test] fn weekdays_skips_weekend()         // At 07:00 Weekdays over 2026-11-21 (Sat)…23 → only Mon 23rd
   #[test] fn once_in_past_yields_nothing()
   ```
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement**, iterating over local civil days and converting each candidate with `resolve_local`.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(timing): DST-safe local times and trigger occurrences`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement**, iterating over local civil days and converting each candidate with `resolve_local`.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(timing): DST-safe local times and trigger occurrences`.
 
 ### Task 4: Play history and picking items
 
@@ -227,14 +231,14 @@ examples/station.toml
   impl Picker { pub fn new(pl: &Playlist) -> Self;
       pub fn next<'a>(&mut self, pl: &'a Playlist, hist: &PlayHistory, ok: impl Fn(&Item) -> bool) -> Option<&'a Item>; }
   ```
-- [ ] **Step 1: Failing tests:** `in_order_cycles` (3 items → 1,2,3,1);
+- [x] **Step 1: Failing tests:** `in_order_cycles` (3 items → 1,2,3,1);
   `shuffle_same_seed_same_order` (two pickers with seed 42 give identical sequences of 10);
   `shuffle_plays_all_before_repeat`; `least_recently_played_picks_oldest`;
   `weighted_respects_zero_weight_never_picked`; `next_returns_none_when_ok_rejects_all`.
-- [ ] **Step 2: Run** `cargo test -p radio-scheduler pick`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Shuffle builds a permutation from `ChaCha8Rng::seed_from_u64(seed)` and reshuffles when it's used up. Weighted uses a deterministic smooth weighted round-robin (no RNG).
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(scheduler): play history and pick orders`.
+- [x] **Step 2: Run** `cargo test -p radio-scheduler pick`. Expected: FAIL.
+- [x] **Step 3: Implement.** Shuffle builds a permutation from `ChaCha8Rng::seed_from_u64(seed)` and reshuffles when it's used up. Weighted uses a deterministic smooth weighted round-robin (no RNG).
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(scheduler): play history and pick orders`.
 
 ### Task 5: Merging rules into the timeline, with constraints
 
@@ -271,7 +275,7 @@ examples/station.toml
   4. Every candidate must pass the playlist's constraints, the rule's constraints, item
      validity (valid_from / valid_to in local date) and `max_per_day`. Simulated plays
      inside the horizon count toward the caps.
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `station_id_every_3_tracks`: 9 tracks give the pattern `T T T J T T T J T T T J`.
   - `ads_at_20_and_50_land_after_track_boundary`: the ad entry's start is ≥ :20, and it's the first boundary.
   - `take_3_inserts_three_ads`.
@@ -282,10 +286,10 @@ examples/station.toml
   - `daypart_rule_only_fires_inside_window`.
   - `empty_playlist_rule_warns_and_continues` (Review Focus 1): gives `Warning::NoEligibleItem`, and the main playlist continues.
   - `priority_orders_simultaneous_rules`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement** `allowed` in `constraints.rs` and `merge` in `merge.rs`.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(scheduler): merge named playlists by rules with constraints`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement** `allowed` in `constraints.rs` and `merge` in `merge.rs`.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(scheduler): merge named playlists by rules with constraints`.
 
 ### Task 6: Fit step 1, choosing which movable items play before a fixed event
 
@@ -311,16 +315,16 @@ examples/station.toml
   - Choose the sum that minimises `|gap − sum|`, breaking ties by fewer displacements, then
     by an earlier finish.
   - Dropped items move to just after the event, in their original order.
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `exact_fit_found`: a gap of 600 s with candidates [200, 180, 220, 190], all movable, gives `[0, 1, 2]` with 0 leftover.
   - `prefers_fewer_moves_on_tie`.
   - `non_movable_always_kept`.
   - `leftover_reported_when_no_exact_fit`.
   - `runs_under_10ms_for_40_candidates_and_1h_gap` (a timing assertion in release mode only, behind `#[cfg(not(debug_assertions))]`).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement** `select_before`.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(scheduler): fixed-event subset selection`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement** `select_before`.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(scheduler): fixed-event subset selection`.
 
 ### Task 7: Fit steps 2–4, fill, trim, tolerance and conflicts
 
@@ -354,7 +358,7 @@ examples/station.toml
     earlier one ends after the later one's target), the higher `priority` keeps its target;
     the lower one starts right after it and gets `FixedConflict`. On equal priority, the
     earlier target wins.
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `fill_closes_small_gap`: a 7 s gap and a fill pool of [6 s, 3 s, 4 s] gives `Filled` with 3+4 s and an error of 0.
   - `trim_last_track_when_late_hard`: the fade ends exactly at the target.
   - `ad_is_never_trimmed`: the last item before the event is non-trimmable, so `LateStart` (soft) or `OutsideTolerance` (hard).
@@ -363,10 +367,10 @@ examples/station.toml
   - `conflicting_fixed_events_priority_wins` (Review Focus 4).
   - `same_time_equal_priority_earlier_listed_wins_deterministically`.
   - `locked_entry_never_moved_or_trimmed`.
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement** `fit_all`.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Commit** `feat(scheduler): fill, trim, tolerance and fixed-event conflicts`.
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement** `fit_all`.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Commit** `feat(scheduler): fill, trim, tolerance and fixed-event conflicts`.
 
 ### Task 8: `plan()`, the lock window, frozen entries and hysteresis
 
@@ -381,17 +385,17 @@ examples/station.toml
   /// reorders a window whose target is within lock_before of `now` (only fill / trim apply there).
   pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> Timeline;
   ```
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `pinned_entries_keep_position`: a manual (locked) entry stays where it was put.
   - `on_deck_entries_frozen`: the first 2 pinned entries never move.
   - `small_improvement_does_not_reshuffle`: a 0.3 s better fit keeps prev's order.
   - `large_improvement_reshuffles`.
   - `locked_window_only_fills_and_trims`: 9 min before the event, a removed track leads to fill, not reorder.
   - `same_input_same_output` (determinism).
-- [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement** `plan` and `replan.rs`.
-- [ ] **Step 4: Run.** Expected: PASS.
-- [ ] **Step 5: Add a property test** `crates/scheduler/tests/prop.rs` with proptest:
+- [x] **Step 2: Run.** Expected: FAIL.
+- [x] **Step 3: Implement** `plan` and `replan.rs`.
+- [x] **Step 4: Run.** Expected: PASS.
+- [x] **Step 5: Add a property test** `crates/scheduler/tests/prop.rs` with proptest:
   random stations (1–30 tracks of 60–400 s, a fill pool of 3–10 items of 2–15 s, 0–3 fixed
   events). It checks four invariants:
   1. entries sorted by start, with no overlaps beyond the segue;
@@ -400,7 +404,7 @@ examples/station.toml
   4. no panics.
 
   Run `cargo test -p radio-scheduler --release prop`. Expected: PASS.
-- [ ] **Step 6: Commit** `feat(scheduler): plan with lock window, pinning and hysteresis`.
+- [x] **Step 6: Commit** `feat(scheduler): plan with lock window, pinning and hysteresis`.
 
 ### Task 9: `radio-cli plan`
 
@@ -416,24 +420,24 @@ examples/station.toml
     `DeadAir` / `OutsideTolerance`.
   - `--json` prints the serialised `Timeline`.
   - The command also exists as an MCP tool in M3; for now it's CLI only.
-- [ ] **Step 1: Write `examples/station.toml`**, which mirrors the spec's mockup:
+- [x] **Step 1: Write `examples/station.toml`**, which mirrors the spec's mockup:
   - **Music** (main): 40 tracks, shuffled with seed 1.
   - **Jingles:** a station ID every 3 tracks, `NotAdjacentToSelf`.
   - **Ads:** at :20 and :50, take 3, not trimmable, `MaxPerDay(24)`.
   - **News:** a stream `At 15:00 Daily`, `Fixed Hard`, tolerance 1 s, planned 5 min, priority 10.
   - **Shows:** `Jazz Hour.mp3` `At 16:00 Daily`, `Fixed Soft`, planned 58:40.
   - **Beds:** `is_fill_pool`.
-- [ ] **Step 2: Failing tests:**
+- [x] **Step 2: Failing tests:**
   - `plan_example_prints_news_at_1500`: the output contains `15:00:00  News` and `fit: +0.0 s ✓`, or within ±1.0.
   - `json_roundtrips`.
   - `invalid_station_exits_1_with_item_name`.
   - `dead_air_exits_2`.
-- [ ] **Step 3: Run** `cargo test -p radio-cli`. Expected: FAIL.
-- [ ] **Step 4: Implement** `main.rs` with clap. Map `ModelError` to exit code 1 with its message.
-- [ ] **Step 5: Run** `cargo test --workspace`. Expected: all PASS. Run
+- [x] **Step 3: Run** `cargo test -p radio-cli`. Expected: FAIL.
+- [x] **Step 4: Implement** `main.rs` with clap. Map `ModelError` to exit code 1 with its message.
+- [x] **Step 5: Run** `cargo test --workspace`. Expected: all PASS. Run
   `cargo run -p radio-cli -- plan examples/station.toml --now 2026-11-21T13:00:00Z --hours 4`
   and check by eye that ads come in threes at :20 / :50, the news is at 15:00:00 and the show is at about 16:00.
-- [ ] **Step 6: Commit** `feat(cli): radio-cli plan prints the on-air timeline`.
+- [x] **Step 6: Commit** `feat(cli): radio-cli plan prints the on-air timeline`.
 
 ### Task 10: UI preview (egui), the two-pane playlist over the real plan
 
@@ -467,13 +471,13 @@ are visual only. Times come from `plan()` run against `examples/station.toml`.
 - **Updates:** `plan()` re-runs once a second with the current time and the previous timeline.
   The clock (`HH:MM:SS`) is shown in the top-right.
 
-- [ ] **Step 1:** Add the workspace deps `eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }`, `egui = "0.36"` and `egui_extras = "0.36"` (choose the nearest working versions; note them in the report).
-- [ ] **Step 2:** One test, `crates/ui-egui/tests/smoke.rs`, using `egui_kittest`: build
+- [x] **Step 1:** Add the workspace deps `eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }`, `egui = "0.36"` and `egui_extras = "0.36"` (choose the nearest working versions; note them in the report).
+- [x] **Step 2:** One test, `crates/ui-egui/tests/smoke.rs`, using `egui_kittest`: build
   `RadioApp` from the testkit station at a fixed `now`, run one frame, and assert that the
   texts `Upcoming` and `15:00:00` exist.
-- [ ] **Step 3:** Implement. Keep panels in separate files: `decks.rs`, `main_pane.rs`,
+- [x] **Step 3:** Implement. Keep panels in separate files: `decks.rs`, `main_pane.rs`,
   `scheduled_pane.rs`, `cartwall.rs`, `app.rs`.
-- [ ] **Step 4:** Run `mise exec -- cargo test -p radio-ui-egui`. Expected: PASS. Then
+- [x] **Step 4:** Run `mise exec -- cargo test -p radio-ui-egui`. Expected: PASS. Then
   `mise exec -- cargo run -p radio -- --now 2026-11-21T13:58:00Z` opens the window. Take a
   screenshot to check it.
-- [ ] **Step 5: Commit** `feat(ui): two-pane playlist preview over the scheduler`.
+- [x] **Step 5: Commit** `feat(ui): two-pane playlist preview over the scheduler`.

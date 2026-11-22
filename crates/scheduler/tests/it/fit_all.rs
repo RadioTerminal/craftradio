@@ -688,3 +688,48 @@ fn trim_keeps_music_when_artist_separation_cannot_be_met() {
             .any(|w| matches!(w, radio_scheduler::Warning::NoEligibleItem { .. }))
     );
 }
+
+#[test]
+fn soft_late_within_tolerance_ok() {
+    // Four untrimmable tracks hand over 0.8 s after a soft event's target.
+    let mut main = tracks(1, 12, 180);
+    for item in &mut main {
+        item.trimmable = false;
+    }
+    let st = make_station(main, vec![(jingle(100, 60), 0)], Vec::new());
+    let target = at(4 * 178) - Duration::from_millis(800);
+    let mut tl = timeline(&st, &[(target, FixMode::Soft)]);
+    fit(&st, &mut tl);
+    let result = fit_for(&tl, target);
+    assert!(result.within_tolerance, "{result:?}");
+    assert!(result.error.is_positive() && result.error.unsigned_abs() <= TOL);
+    assert!(
+        !tl.warnings
+            .iter()
+            .any(|w| matches!(w, Warning::OutsideTolerance { .. }))
+    );
+    no_overlap_with_fixed(&st, &tl);
+}
+
+#[test]
+fn same_time_equal_priority_earlier_listed_wins_deterministically() {
+    let events = vec![(jingle(100, 60), 0), (jingle(101, 60), 0)];
+    let st = make_station(tracks(1, 12, 180), events, Vec::new());
+    let target = at(3 * 178);
+    let base = timeline(&st, &[(target, FixMode::Soft), (target, FixMode::Soft)]);
+    let mut tl = base.clone();
+    fit(&st, &mut tl);
+    let (first, second) = (
+        &tl.entries[event_index(&tl, 100)],
+        &tl.entries[event_index(&tl, 101)],
+    );
+    assert!((first.start.duration_since(target)).unsigned_abs() <= TOL);
+    assert!(second.start >= first.start + item_len(find(&st, first.item).0));
+    assert!(tl.warnings.iter().any(|w| matches!(
+        w,
+        Warning::FixedConflict { playlist, .. } if *playlist == second.playlist
+    )));
+    let mut again = base;
+    fit(&st, &mut again);
+    assert_eq!(again, tl);
+}
