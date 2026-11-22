@@ -142,7 +142,7 @@ fn demo(args: &Args) -> Result<(), String> {
         }
         return Ok(());
     }
-    window(args, Box::new(source), clock, "Radio — UI preview")
+    window(args, Box::new(source), clock, "Radio — UI preview", None)
 }
 
 fn real(args: &Args) -> Result<(), String> {
@@ -221,10 +221,71 @@ fn real(args: &Args) -> Result<(), String> {
         },
     )
     .with_secrets(Arc::new(secrets));
+    let bridge = control.as_ref().map(window_bridge);
     if let Some(control) = control {
         source = source.with_companion(Box::new(control));
     }
-    window(args, Box::new(source), Box::new(Timestamp::now), "Radio")
+    window(
+        args,
+        Box::new(source),
+        Box::new(Timestamp::now),
+        "Radio",
+        bridge,
+    )
+}
+
+/// The window's side of the control channel: its `ui.screenshot` requests, handed to the
+/// window, which answers with a PNG.
+struct WindowBridge {
+    requests: std::sync::mpsc::Receiver<radio_ui_egui::ScreenshotRequest>,
+    /// The window's context, to wake it for a request once the window exists.
+    ctx: Arc<std::sync::OnceLock<eframe::egui::Context>>,
+}
+
+/// Attaches the window to `control`. A thread turns each `ui.screenshot` into a request to the
+/// window and its PNG into the channel's answer; it ends with the channel.
+fn window_bridge(control: &radio_control::Control) -> WindowBridge {
+    use base64::Engine as _;
+    let ctx: Arc<std::sync::OnceLock<eframe::egui::Context>> = Arc::default();
+    let wake = {
+        let ctx = Arc::clone(&ctx);
+        move || {
+            if let Some(ctx) = ctx.get() {
+                ctx.request_repaint();
+            }
+        }
+    };
+    let incoming = control.attach_window(wake.clone());
+    let (to_window, requests) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("control-window".into())
+        .spawn(move || {
+            for req in incoming {
+                let (reply, shot) = std::sync::mpsc::channel();
+                let sent = to_window
+                    .send(radio_ui_egui::ScreenshotRequest { reply })
+                    .is_ok();
+                wake();
+                let answer = match shot.recv_timeout(Duration::from_secs(9)) {
+                    _ if !sent => serde_json::json!({"ok": false, "error": "the window is closed"}),
+                    Ok(Ok(s)) => serde_json::json!({"ok": true, "result": {
+                        "mime": "image/png",
+                        "png": base64::engine::general_purpose::STANDARD.encode(&s.png),
+                        "width": s.width,
+                        "height": s.height,
+                    }}),
+                    Ok(Err(e)) => serde_json::json!({"ok": false, "error": e}),
+                    Err(_) => {
+                        serde_json::json!({"ok": false, "error": "the window did not capture"})
+                    }
+                };
+                let _ = req.reply.send(answer);
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("radio: no screenshots over the control channel: {e}");
+    }
+    WindowBridge { requests, ctx }
 }
 
 /// Starts the control channel of the CLI and MCP, unless `--no-control`. A channel that
@@ -413,6 +474,7 @@ fn window(
     source: Box<dyn ViewSource>,
     clock: Box<dyn Fn() -> Timestamp>,
     title: &str,
+    bridge: Option<WindowBridge>,
 ) -> Result<(), String> {
     let single_window = args.single_window;
     let perf = args.perf;
@@ -449,6 +511,10 @@ fn window(
             let mut app = RadioApp::new(source, clock)
                 .with_perf(perf)
                 .with_preferences(prefs);
+            if let Some(bridge) = bridge {
+                let _ = bridge.ctx.set(cc.egui_ctx.clone());
+                app = app.with_screenshots(bridge.requests);
+            }
             for w in open {
                 app.set_window(w, true);
             }

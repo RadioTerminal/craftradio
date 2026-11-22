@@ -69,7 +69,12 @@ fn every_engine_command_is_a_tool_a_client_accepts() {
         .as_array()
         .expect("a tool list");
     let specs = registry();
-    assert_eq!(tools.len(), specs.len(), "one tool per command");
+    // One tool per command, and the screenshot of the window.
+    assert_eq!(
+        tools.len(),
+        specs.len() + 1,
+        "one tool per command, and screenshot"
+    );
     let mut names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for name in &names {
         assert!(
@@ -83,11 +88,7 @@ fn every_engine_command_is_a_tool_a_client_accepts() {
     }
     names.sort_unstable();
     names.dedup();
-    assert_eq!(
-        names.len(),
-        specs.len(),
-        "no two commands share a tool name"
-    );
+    assert_eq!(names.len(), specs.len() + 1, "no two tools share a name");
     for spec in &specs {
         let t = tools
             .iter()
@@ -187,4 +188,43 @@ fn nested_arguments_reach_the_engine_intact() {
         "the engine reads the nested fade-in: {}",
         text(&replies[0])
     );
+}
+
+/// A station started with --headless has no window: the screenshot is an error that says so.
+#[test]
+fn a_screenshot_without_a_window_says_there_is_none() {
+    let (_playout, control) = station();
+    let replies = session(
+        Running::new(Some(control.port()), Some(TOKEN.into())),
+        &[call(1, "screenshot", json!({}))],
+    );
+    assert_eq!(replies[0]["result"]["isError"], true);
+    assert!(
+        text(&replies[0]).contains("headless"),
+        "{}",
+        text(&replies[0])
+    );
+}
+
+/// With a window attached, the screenshot comes back as an MCP image.
+#[test]
+fn a_screenshot_of_the_window_is_an_image() {
+    let (_playout, control) = station();
+    let requests = control.attach_window(|| {});
+    // A window that answers every request with a 1 × 1 picture.
+    std::thread::spawn(move || {
+        for req in requests {
+            let _ = req.reply.send(json!({"ok": true, "result": {
+                "mime": "image/png", "png": "iVBORw0KGgo=", "width": 1, "height": 1,
+            }}));
+        }
+    });
+    let replies = session(
+        Running::new(Some(control.port()), Some(TOKEN.into())),
+        &[call(1, "screenshot", json!({}))],
+    );
+    let content = &replies[0]["result"]["content"];
+    assert_eq!(content[0]["type"], "image", "{}", replies[0]);
+    assert_eq!(content[0]["mimeType"], "image/png");
+    assert_eq!(content[0]["data"], "iVBORw0KGgo=");
 }

@@ -31,6 +31,7 @@ the token; a connection without it is closed.
 |---|---|---|
 | `station.commands` | none | every engine command: `id`, `summary`, `tier`, `args_schema` |
 | `station.run` | one engine command, `{"id": …, "args": {…}}` | its outcome: `data`, `note`, `audio_required`, `applied_to_audio` |
+| `ui.screenshot` | none | the main window as PNG: `png` (base64), `mime`, `width`, `height`; an error when the station runs `--headless` and has no window |
 | `control.capabilities` | none | the methods above |
 
 A failure is `{"ok": false, "error": "…"}`. A command runs on the playout as a panel's would, so
@@ -43,7 +44,9 @@ by its id with `_` for `.` (`schedule.add` is `schedule_add`), with the command'
 schema. Read-only commands are marked read-only; the others are marked destructive and say they
 change the running station. A call runs on the station started last, or on `--port PORT`; the token comes from
 `CRAFTRADIO_CONTROL_TOKEN` or the token file, never from the command line. With no station
-running, a call is an error result. For Claude Code:
+running, a call is an error result. One more tool, `screenshot`, returns the app's main window as
+an image, so a client can see what the operator sees; a `--headless` station has no window, and
+the call says so. For Claude Code:
 
 ```sh
 claude mcp add craftradio -- craftradio-cli mcp

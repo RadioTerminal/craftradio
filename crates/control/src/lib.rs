@@ -12,9 +12,9 @@
 use std::ffi::OsString;
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -42,7 +42,7 @@ pub const APP: App = App {
 pub const DEFAULT_PORT: u16 = 17_470;
 
 /// The methods this station answers.
-pub const METHODS: [&str; 2] = ["station.commands", "station.run"];
+pub const METHODS: [&str; 3] = ["station.commands", "station.run", "ui.screenshot"];
 
 /// The longest request line accepted.
 const MAX_LINE: usize = 1 << 20;
@@ -75,7 +75,7 @@ impl Protocol for Station {
         let id = params.get("id").and_then(Value::as_str);
         let spec = id.and_then(|id| registry().into_iter().find(|s| s.id == id));
         let effect = match (method, &spec) {
-            ("station.commands", _) => Effect::ReadsOnly,
+            ("station.commands" | "ui.screenshot", _) => Effect::ReadsOnly,
             (_, Some(s)) if s.tier == Tier::ReadOnly => Effect::ReadsOnly,
             _ => Effect::Changes,
         };
@@ -112,9 +112,56 @@ impl Protocol for Station {
     }
 }
 
+/// A request only the station's window can answer (`ui.screenshot`), handed to the UI thread.
+/// Its `reply` is the whole answer: `{"ok": true, "result": …}` or `{"ok": false, "error": …}`.
+pub struct WindowRequest {
+    pub method: String,
+    pub params: Value,
+    pub reply: Sender<Value>,
+}
+
+/// The window attached to the channel, and how to wake it for a request.
+struct WindowLink {
+    tx: Sender<WindowRequest>,
+    wake: Box<dyn Fn() + Send + Sync>,
+}
+
+/// The attached window, shared by the channel and its request thread.
+type Window = Arc<Mutex<Option<WindowLink>>>;
+
+/// How long the window has to answer, a frame or a few.
+const WINDOW_WAIT: Duration = Duration::from_secs(10);
+
+/// Hands `method` to the attached window and waits for its answer.
+fn ask_window(window: &Window, method: &str, params: Value) -> Value {
+    let refuse = |error: &str| json!({ "ok": false, "error": error });
+    let (reply, answer) = mpsc::channel();
+    let sent = window.lock().ok().and_then(|link| {
+        let link = link.as_ref()?;
+        link.tx
+            .send(WindowRequest {
+                method: method.to_owned(),
+                params,
+                reply,
+            })
+            .ok()?;
+        (link.wake)();
+        Some(())
+    });
+    if sent.is_none() {
+        return refuse(
+            "no window: this station runs without one (--headless), so there is nothing to capture",
+        );
+    }
+    answer
+        .recv_timeout(WINDOW_WAIT)
+        .unwrap_or_else(|_| refuse("the window did not answer"))
+}
+
 /// The answer to one request: `{"ok": true, "result": …}` or `{"ok": false, "error": …}`.
-fn answer(sender: &CommandSender, method: &str, params: Value) -> Value {
+fn answer(sender: &CommandSender, window: &Window, method: &str, params: Value) -> Value {
     match method {
+        "ui.screenshot" => ask_window(window, method, params),
         "station.commands" => {
             let list: Vec<Value> = registry()
                 .into_iter()
@@ -137,7 +184,7 @@ fn answer(sender: &CommandSender, method: &str, params: Value) -> Value {
             "ok": false,
             "error": format!(
                 "unknown method `{other}`: this station answers {}",
-                METHODS.join(" and ")
+                METHODS.join(", ")
             ),
         }),
     }
@@ -161,13 +208,14 @@ fn run(sender: &CommandSender, params: Value) -> Result<Value, String> {
 /// can stop once this thread ends.
 fn answer_requests(
     sender: CommandSender,
+    window: Window,
     requests: Receiver<ControlRequest>,
     closing: &AtomicBool,
 ) {
     while !closing.load(Ordering::SeqCst) {
         match requests.recv_timeout(POLL) {
             Ok(req) => {
-                let reply = answer(&sender, &req.method, req.params);
+                let reply = answer(&sender, &window, &req.method, req.params);
                 let _ = req.reply.send(reply);
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -184,6 +232,7 @@ pub struct Control {
     stop: Option<Stop>,
     closing: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    window: Window,
     /// The token and discovery files to remove at the end, when [`start`] wrote them.
     files: Option<PathBuf>,
 }
@@ -197,6 +246,22 @@ impl Control {
     /// Where its token file is, when it wrote one.
     pub fn token_file(&self) -> Option<&PathBuf> {
         self.files.as_ref()
+    }
+
+    /// Attaches the station's window: `ui.*` requests arrive on the returned receiver, and
+    /// `wake` makes the window look at them now. Without a window, they are refused.
+    pub fn attach_window(
+        &self,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Receiver<WindowRequest> {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut link) = self.window.lock() {
+            *link = Some(WindowLink {
+                tx,
+                wake: Box::new(wake),
+            });
+        }
+        rx
     }
 }
 
@@ -228,11 +293,12 @@ pub fn serve(
     let hub = Arc::new(Hub::new(Station, || {}, MAX_LINE));
     let stop = hub.listen_stoppable(listener, token.clone(), tx, false)?;
     let closing = Arc::new(AtomicBool::new(false));
+    let window: Window = Arc::default();
     let thread = {
-        let closing = Arc::clone(&closing);
+        let (closing, window) = (Arc::clone(&closing), Arc::clone(&window));
         std::thread::Builder::new()
             .name("control-requests".into())
-            .spawn(move || answer_requests(sender, rx, &closing))?
+            .spawn(move || answer_requests(sender, window, rx, &closing))?
     };
     Ok(Control {
         port,
@@ -240,6 +306,7 @@ pub fn serve(
         stop: Some(stop),
         closing,
         thread: Some(thread),
+        window,
         files: None,
     })
 }

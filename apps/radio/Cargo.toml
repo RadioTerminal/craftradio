@@ -14,6 +14,7 @@ path = "src/main.rs"
 radio-ui-egui.workspace = true
 radio-ui-engine.workspace = true
 radio-control.workspace = true
+base64.workspace = true
 radio-engine.workspace = true
 radio-playout.workspace = true
 radio-model.workspace = true
