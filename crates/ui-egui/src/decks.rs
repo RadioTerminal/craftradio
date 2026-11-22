@@ -1146,7 +1146,16 @@ fn live_chip(
         Some(false) => "Click to stream to listeners, with a link anyone can open",
         None => "This station has no streaming to listeners",
     };
-    let hint = format!("{word}: {why}\nIcecast: {icecast}\n{click}");
+    let router = match (&view.output.forwarded, on) {
+        (Some(addr), _) => {
+            format!("\nRouter: forwards {addr}, so phones on mobile data reach the station")
+        }
+        (None, true) => {
+            "\nRouter: no port forwarded (no UPnP), so some listeners may not connect".to_owned()
+        }
+        (None, false) => String::new(),
+    };
+    let hint = format!("{word}: {why}{router}\nIcecast: {icecast}\n{click}");
     // A narrow cluster keeps only the icon of the chip. The tooltip still has the words.
     let label = if wide {
         icons::lead(icon, word)

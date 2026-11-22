@@ -910,6 +910,8 @@ pub struct OutputStatus {
     pub listen_link: Option<String>,
     /// The address of the listener page on the local network, while streaming runs.
     pub local_link: Option<String>,
+    /// The public address that the router forwards to the station (UPnP), while it does.
+    pub forwarded: Option<String>,
     /// The streaming switch: `None` when this station has no WebRTC output.
     pub streaming: Option<bool>,
 }

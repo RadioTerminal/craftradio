@@ -108,6 +108,8 @@ pub enum WebRtcStatus {
         link: Option<String>,
         /// Trackers with a connection now. Without one, the link does not work.
         relays: usize,
+        /// The address that the home router forwards to the station (UPnP), while it does.
+        mapped: Option<SocketAddr>,
     },
     Failed(String),
     Stopped,
@@ -423,7 +425,11 @@ impl Media {
         let Some(frames) = tap.reader() else { return };
         let mut stun = Stun::new(&self.stun, local);
         let mut public = stun.query_blocking(&self.socket);
-        self.publish_candidates(local, public);
+        let mapped: crate::upnp::Mapped = Arc::default();
+        let mut forwarded = None;
+        let status = self.status.clone();
+        crate::upnp::start(local, mapped.clone(), move || is_running(&status));
+        self.publish_candidates(local, public, forwarded);
         let since = jiff::Timestamp::now();
         let mut listeners: Vec<Listener> = Vec::new();
         let mut samples: Vec<f32> = Vec::with_capacity(PACKET);
@@ -500,10 +506,15 @@ impl Media {
             for l in &mut listeners {
                 l.send_now(rev, &messages);
             }
+            let now_mapped = mapped.lock().ok().and_then(|m| *m);
+            if now_mapped != forwarded {
+                forwarded = now_mapped;
+                self.publish_candidates(local, public, forwarded);
+            }
             let count = listeners.iter().filter(|l| l.connected).count();
             let relays = self.relays.load(Ordering::Acquire);
-            if shown != Some((count, public, relays)) {
-                shown = Some((count, public, relays));
+            if shown != Some((count, public, relays, forwarded)) {
+                shown = Some((count, public, relays, forwarded));
                 set_status(
                     &self.status,
                     WebRtcStatus::Listening {
@@ -513,6 +524,7 @@ impl Media {
                         since,
                         link: self.link.clone(),
                         relays,
+                        mapped: forwarded,
                     },
                 );
             }
@@ -527,7 +539,7 @@ impl Media {
                 if let Some(found) = stun.take_response(data) {
                     if public != Some(found) {
                         public = Some(found);
-                        self.publish_candidates(local, public);
+                        self.publish_candidates(local, public, forwarded);
                     }
                 } else if let Ok(contents) = data.try_into() {
                     let input = Input::Receive(
@@ -586,12 +598,24 @@ impl Media {
         }
     }
 
-    fn publish_candidates(&self, local: SocketAddr, public: Option<SocketAddr>) {
+    /// The addresses that the station offers: local, from STUN, and from the router.
+    fn publish_candidates(
+        &self,
+        local: SocketAddr,
+        public: Option<SocketAddr>,
+        forwarded: Option<SocketAddr>,
+    ) {
         let mut list: Vec<Candidate> = Candidate::host(local, "udp").into_iter().collect();
-        if let Some(public) = public.filter(|p| *p != local)
-            && let Ok(c) = Candidate::server_reflexive(public, local, "udp")
-        {
-            list.push(c);
+        let mut outside: Vec<SocketAddr> = Vec::new();
+        for addr in [forwarded, public].into_iter().flatten() {
+            if addr != local && !outside.contains(&addr) {
+                outside.push(addr);
+            }
+        }
+        for addr in outside {
+            if let Ok(c) = Candidate::server_reflexive(addr, local, "udp") {
+                list.push(c);
+            }
         }
         if let Ok(mut c) = self.candidates.lock() {
             *c = list;
@@ -1143,7 +1167,7 @@ impl Response {
 }
 
 /// True only for public addresses. IPv6 must be in 2000::/3, without 6to4, Teredo or documentation.
-fn is_public(ip: IpAddr) -> bool {
+pub(crate) fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
             let [a, b, c, _] = v.octets();

@@ -374,9 +374,17 @@ fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool) {
             listeners,
             link,
             relays,
+            mapped,
             ..
         } => {
             println!("radio: WebRTC listening, {listeners} listeners, {relays} trackers connected");
+            match mapped {
+                Some(m) => println!("radio: the router forwards {m} to the station (UPnP)"),
+                None if addresses => println!(
+                    "radio: the router forwards no port (no UPnP yet): phones on mobile data may not connect"
+                ),
+                None => {}
+            }
             if !addresses {
                 return;
             }
