@@ -1,6 +1,7 @@
 //! The one-off dialog of Upcoming. It picks a source, a local start time, the timing and a
 //! repeat. The view source schedules the one-off.
 
+use crate::widgets;
 use std::time::Duration;
 
 use egui::{DragValue, RichText};
@@ -349,7 +350,7 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
                                 }
                                 None => format!("{} · {}", item.title, crate::app::mmss(item.len)),
                             };
-                            let r = ui.add(egui::Button::selectable(on, text).truncate());
+                            let r = widgets::steady(ui, on, egui::Button::new(text).truncate());
                             if r.clicked() {
                                 let title = match &item.artist {
                                     Some(a) => format!("{a} – {}", item.title),
@@ -385,7 +386,7 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
                 .selected_text(d.device.as_str())
                 .show_ui(ui, |ui| {
                     for name in &view.input_devices {
-                        ui.selectable_value(&mut d.device, name.clone(), name);
+                        widgets::selectable_value(ui, &mut d.device, name.clone(), name);
                     }
                 });
             ui.end_row();
@@ -439,10 +440,12 @@ pub(crate) fn show(
                         for k in Kind::ALL {
                             let live = k == Kind::Live;
                             let enabled = !live || !view.input_devices.is_empty();
-                            let r = ui.add_enabled(
-                                enabled,
-                                egui::Button::selectable(d.kind == k, k.label()),
-                            );
+                            let on = d.kind == k;
+                            let r = ui
+                                .add_enabled_ui(enabled, |ui| {
+                                    widgets::selectable(ui, on, k.label())
+                                })
+                                .inner;
                             let name = format!("{} source", k.label());
                             r.widget_info(|| {
                                 egui::WidgetInfo::selected(
@@ -511,7 +514,7 @@ pub(crate) fn show(
                         .selected_text(d.repeat.label())
                         .show_ui(ui, |ui| {
                             for r in OneOffRepeat::ALL {
-                                ui.selectable_value(&mut d.repeat, r, r.label());
+                                widgets::selectable_value(ui, &mut d.repeat, r, r.label());
                             }
                         });
                     ui.end_row();

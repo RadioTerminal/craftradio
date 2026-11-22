@@ -3,6 +3,7 @@
 //! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
 //! The ⚙ swaps the strips for the settings page: Devices, Routing, Meters and Icecast.
 
+use crate::widgets;
 use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::Action;
@@ -444,11 +445,12 @@ fn device_pick(
         .truncate()
         .selected_text(if current.is_empty() { "None" } else { current })
         .show_ui(ui, |ui| {
-            if ui.selectable_label(current.is_empty(), "None").clicked() && !current.is_empty() {
+            if widgets::selectable(ui, current.is_empty(), "None").clicked() && !current.is_empty()
+            {
                 *picked = Some(String::new());
             }
             for d in devices {
-                if ui.selectable_label(d == current, d).clicked() && d != current {
+                if widgets::selectable(ui, d == current, d).clicked() && d != current {
                     *picked = Some(d.clone());
                 }
             }
@@ -527,7 +529,7 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
             .selected_text(khz(rate))
             .show_ui(ui, |ui| {
                 for r in RATES {
-                    if ui.selectable_label(r == rate, khz(r)).clicked() && r != rate {
+                    if widgets::selectable(ui, r == rate, khz(r)).clicked() && r != rate {
                         actions.push(parts::set(parts::MIXER, "sample_rate", r));
                     }
                 }
@@ -545,7 +547,7 @@ fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
                 .show_ui(ui, |ui| {
                     for r in Route::ALL {
                         if r != Route::OutAndCue
-                            && ui.selectable_label(r == m.route, r.label()).clicked()
+                            && widgets::selectable(ui, r == m.route, r.label()).clicked()
                         {
                             actions.push(strip_edit(&m.label, StripChange::Route(r)));
                         }
@@ -911,8 +913,8 @@ fn icecast_tab(
         let w = (ui.available_width() - space::S * (n - 1.0)) / n;
         let mut all: Option<egui::Response> = None;
         for f in StreamFormat::ALL {
-            let button = egui::Button::selectable(ice.format == f, f.label());
-            let r = ui.add_sized([w, size::CONTROL_SM], button);
+            let button = egui::Button::new(f.label()).min_size(egui::vec2(w, size::CONTROL_SM));
+            let r = widgets::steady(ui, ice.format == f, button);
             if r.clicked() {
                 ice.format = f;
             }
@@ -929,7 +931,7 @@ fn icecast_tab(
             .selected_text(format!("{} kbit/s", ice.kbps))
             .show_ui(ui, |ui| {
                 for b in BITRATES {
-                    ui.selectable_value(&mut ice.kbps, b, format!("{b} kbit/s"));
+                    widgets::selectable_value(ui, &mut ice.kbps, b, format!("{b} kbit/s"));
                 }
             })
             .response

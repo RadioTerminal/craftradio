@@ -1,0 +1,7 @@
+# egui's own selectables grow by their edge width on hover. Use the steady ones in
+# `crates/ui-egui/src/widgets.rs`, which keep one size in every state.
+disallowed-methods = [
+    { path = "egui::Ui::selectable_label", reason = "grows on hover; use widgets::selectable" },
+    { path = "egui::Ui::selectable_value", reason = "grows on hover; use widgets::selectable_value" },
+    { path = "egui::Button::selectable", reason = "grows on hover; use widgets::selectable or widgets::steady" },
+]

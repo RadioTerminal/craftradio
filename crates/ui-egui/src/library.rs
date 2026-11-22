@@ -3,6 +3,7 @@
 //! A folder can become a playlist, and that playlist can become the main playlist.
 //! The view source reads folders. The library only asks for a scan and shows the result.
 
+use crate::widgets;
 use std::path::Path;
 
 use egui::{Align, Layout, RichText, Sense};
@@ -269,10 +270,7 @@ fn tree(
         .show(ui, |ui| {
             // Long names truncate in the tree; the tooltips have all of them.
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            if ui
-                .selectable_label(state.pick == Pick::All, "All files")
-                .clicked()
-            {
+            if widgets::selectable(ui, state.pick == Pick::All, "All files").clicked() {
                 state.pick = Pick::All;
             }
             let folder_names: Vec<&str> =
@@ -288,8 +286,7 @@ fn tree(
                 let n = view.library.iter().filter(|i| i.category == c).count();
                 let on = state.pick == Pick::Category(c.clone());
                 let text = format!("{c} ({n})");
-                if ui
-                    .selectable_label(on, &text)
+                if widgets::selectable(ui, on, &text)
                     .on_hover_text(&text)
                     .clicked()
                 {
@@ -307,8 +304,7 @@ fn tree(
                     Icon::Folder,
                     &format!("{} ({})", folder_name(&folder.path), count_text(folder)),
                 );
-                let r = ui
-                    .selectable_label(on, RichText::new(&text).color(colour))
+                let r = widgets::selectable(ui, on, RichText::new(&text).color(colour))
                     .on_hover_text(format!("{}\n{text}", folder.path));
                 if r.clicked() {
                     state.pick = Pick::Folder(folder.path.clone());

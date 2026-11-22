@@ -1,6 +1,7 @@
 //! The as-played log: newest first, with a text filter and a playlist filter.
 //! The table draws only the visible rows.
 
+use crate::widgets;
 use egui::{Align, DragValue, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use jiff::SignedDuration;
@@ -96,13 +97,13 @@ pub(crate) fn show(
             .width(size::COMBO_W)
             .selected_text(shown)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut state.playlist, None, "All playlists");
+                widgets::selectable_value(ui, &mut state.playlist, None, "All playlists");
                 let mut names: Vec<&str> =
                     view.history.iter().map(|r| r.playlist.as_str()).collect();
                 names.sort_unstable();
                 names.dedup();
                 for n in names {
-                    ui.selectable_value(&mut state.playlist, Some(n.to_owned()), n);
+                    widgets::selectable_value(ui, &mut state.playlist, Some(n.to_owned()), n);
                 }
             });
     });

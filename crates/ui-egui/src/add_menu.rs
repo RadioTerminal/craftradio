@@ -1,6 +1,7 @@
 //! The "Add" menu of a playlist: files, a folder, a stream, the live input, or the library.
 //! The view source reads the files. The menu only picks paths and sends edits.
 
+use crate::widgets;
 use std::time::Duration;
 
 use egui::{DragValue, RichText};
@@ -264,7 +265,7 @@ pub(crate) fn dialog(
                             .selected_text(device.as_str())
                             .show_ui(ui, |ui| {
                                 for d in &view.input_devices {
-                                    ui.selectable_value(device, d.clone(), d);
+                                    widgets::selectable_value(ui, device, d.clone(), d);
                                 }
                             });
                         ui.end_row();

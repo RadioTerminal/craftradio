@@ -329,3 +329,49 @@ pub(crate) fn transport_button(
         resp.on_hover_text(hint)
     }
 }
+
+/// A selectable label, tab or choice that keeps one exact size in every state.
+// egui draws a selectable at rest without its frame and takes the edge width off the padding
+// only when the frame shows, so the control grows by its edge on hover. Here the frame always
+// shows. At rest, an unselected one has a clear fill and a clear edge of the same width.
+pub(crate) fn selectable<'a>(
+    ui: &mut egui::Ui,
+    selected: bool,
+    atoms: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    steady(ui, selected, egui::Button::new(atoms))
+}
+
+/// [`selectable`] for a button the caller set up, for example with `.truncate()`.
+pub(crate) fn steady<'a>(
+    ui: &mut egui::Ui,
+    selected: bool,
+    button: egui::Button<'a>,
+) -> egui::Response {
+    ui.scope(|ui| {
+        if !selected {
+            let rest = &mut ui.visuals_mut().widgets.inactive;
+            rest.bg_fill = egui::Color32::TRANSPARENT;
+            rest.weak_bg_fill = egui::Color32::TRANSPARENT;
+            rest.bg_stroke.color = egui::Color32::TRANSPARENT;
+        }
+        // A plain `Button` keeps its frame at rest; only `Button::selectable` drops it.
+        ui.add(button.selected(selected).frame(true))
+    })
+    .inner
+}
+
+/// [`selectable`] that sets `current` to `value` on a click, like `Ui::selectable_value`.
+pub(crate) fn selectable_value<'a, V: PartialEq>(
+    ui: &mut egui::Ui,
+    current: &mut V,
+    value: V,
+    atoms: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    let mut r = selectable(ui, *current == value, atoms);
+    if r.clicked() && *current != value {
+        *current = value;
+        r.mark_changed();
+    }
+    r
+}

@@ -143,7 +143,7 @@ fn mode_bar(ui: &mut egui::Ui, editor: &mut Editor) {
             (Mode::Items, "Items & source"),
         ];
         for (mode, label) in modes {
-            if ui.selectable_label(editor.mode == mode, label).clicked() {
+            if widgets::selectable(ui, editor.mode == mode, label).clicked() {
                 editor.mode = mode;
             }
         }
@@ -187,7 +187,8 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
                 .selected_text(tab.order.label())
                 .show_ui(ui, |ui| {
                     for p in Pick::ALL {
-                        changed |= ui.selectable_value(&mut tab.order, p, p.label()).changed();
+                        changed |=
+                            widgets::selectable_value(ui, &mut tab.order, p, p.label()).changed();
                     }
                 });
         });
@@ -255,9 +256,8 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
             .selected_text(rule.trigger.label())
             .show_ui(ui, |ui| {
                 for v in Trigger::ALL {
-                    changed |= ui
-                        .selectable_value(&mut rule.trigger, v, v.label())
-                        .changed();
+                    changed |=
+                        widgets::selectable_value(ui, &mut rule.trigger, v, v.label()).changed();
                 }
             });
         match rule.trigger {
@@ -302,7 +302,8 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
             .selected_text(rule.place.label())
             .show_ui(ui, |ui| {
                 for v in Placement::ALL {
-                    changed |= ui.selectable_value(&mut rule.place, v, v.label()).changed();
+                    changed |=
+                        widgets::selectable_value(ui, &mut rule.place, v, v.label()).changed();
                 }
             });
         if rule.place.is_fixed() {
@@ -356,7 +357,7 @@ fn constraint(ui: &mut egui::Ui, id: (usize, usize), c: &mut Constraint) -> bool
         .selected_text(c.kind.label())
         .show_ui(ui, |ui| {
             for v in ConstraintKind::ALL {
-                changed |= ui.selectable_value(&mut c.kind, v, v.label()).changed();
+                changed |= widgets::selectable_value(ui, &mut c.kind, v, v.label()).changed();
             }
         });
     if c.kind.has_value() {

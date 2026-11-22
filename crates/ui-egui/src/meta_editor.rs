@@ -3,6 +3,7 @@
 //! With several items, a field shows a value only when all items share it.
 //! Apply changes only the fields that the person edited.
 
+use crate::widgets;
 use egui::{RichText, TextEdit};
 
 use crate::theme::{self, Tokens, pad, size, space};
@@ -155,10 +156,7 @@ pub(crate) fn show(
             caption(ui, "STREAM TITLE", t);
             ui.horizontal(|ui| {
                 for mode in PublishMode::ALL {
-                    if ui
-                        .selectable_label(ed.draft.publish == mode, mode.label())
-                        .clicked()
-                    {
+                    if widgets::selectable(ui, ed.draft.publish == mode, mode.label()).clicked() {
                         ed.draft.publish = mode;
                         ed.publish_touched = true;
                     }

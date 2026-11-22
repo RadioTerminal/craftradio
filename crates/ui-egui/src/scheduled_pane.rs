@@ -1,5 +1,6 @@
 //! The right pane: Upcoming, the items that rules weave into Main, and one tab per playlist.
 
+use crate::widgets;
 use egui::{Align, Layout, RichText, Sense, Stroke};
 use egui_extras::{Column, TableBuilder};
 
@@ -74,10 +75,7 @@ fn tab_bar(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         let label = |s: &str| RichText::new(s).font(theme::text(theme::LABEL));
-        if ui
-            .selectable_label(*tab == Tab::Upcoming, label("Upcoming").strong())
-            .clicked()
-        {
+        if widgets::selectable(ui, *tab == Tab::Upcoming, label("Upcoming").strong()).clicked() {
             *tab = Tab::Upcoming;
         }
         for (i, p) in view.tabs.iter().enumerate() {
@@ -92,7 +90,7 @@ fn tab_bar(
             // A long name truncates; the tooltip has all of it.
             let full = format!("    {}{folder}{off}", p.name);
             let (shown, cut) = elide_chars(&full, size::TAB_MAX_CHARS);
-            let r = ui.selectable_label(selected, label(&shown));
+            let r = widgets::selectable(ui, selected, label(&shown));
             let r = if cut { r.on_hover_text(full.trim()) } else { r };
             let dot = egui::pos2(r.rect.left() + space::S + size::DOT_R, r.rect.center().y);
             ui.painter()
@@ -155,7 +153,7 @@ fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &T
         for (k, (name, rgb)) in crate::theme::PALETTE.iter().enumerate() {
             let label =
                 RichText::new(icons::lead(Icon::CircleDot, name)).color(t.readable(*rgb, t.card));
-            if ui.selectable_label(p.color == *rgb, label).clicked() {
+            if widgets::selectable(ui, p.color == *rgb, label).clicked() {
                 actions.push(Action::Edit(Edit::SetPlaylistColour {
                     playlist: p.name.clone(),
                     colour: k,

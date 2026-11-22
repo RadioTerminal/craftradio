@@ -2,6 +2,7 @@
 //! The preview plays no audio. A pressed cart only flashes, and the caption says so.
 //! Pages, carts, ducking, mode and colour live in the view source.
 
+use crate::widgets;
 use egui::{DragValue, RichText, Stroke};
 
 use crate::app::{Action, PasteTo};
@@ -117,14 +118,17 @@ pub(crate) fn show(
                 .selected_text(current)
                 .show_ui(ui, |ui| {
                     for (page, name) in wall.pages.iter().enumerate() {
-                        ui.selectable_value(&mut state.page, page, name);
+                        widgets::selectable_value(ui, &mut state.page, page, name);
                     }
                 });
         } else {
             for page in (0..wall.pages.len()).rev() {
                 let name = &wall.pages[page];
-                let tab = egui::Button::selectable(state.page == page, name.as_str()).truncate();
-                let r = crate::widgets::with_max_width(ui, size::PAGE_TAB_MAX_W, |ui| ui.add(tab));
+                let on = state.page == page;
+                let tab = egui::Button::new(name.as_str()).truncate();
+                let r = crate::widgets::with_max_width(ui, size::PAGE_TAB_MAX_W, |ui| {
+                    crate::widgets::steady(ui, on, tab)
+                });
                 if r.on_hover_text(name).clicked() {
                     state.page = page;
                 }
