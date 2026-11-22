@@ -271,6 +271,14 @@ fn write_state(conn: &mut Connection, s: &State) -> rusqlite::Result<()> {
     for c in &s.cart_settings {
         set(&tx, "carts", &format!("{}:{}", c.page, c.slot), &json(c)?)?;
     }
+    // The monitor device moved from this key; the old row would move it again at each start.
+    tx.execute(
+        "DELETE FROM settings_by_part WHERE part = ?1 AND key = ?2",
+        (
+            format!("{}{}", crate::UI_PREFIX, crate::AUDIO_PART),
+            crate::OLD_CUE_KEY,
+        ),
+    )?;
     for (part, keys) in &s.settings {
         for (key, value) in keys {
             set(

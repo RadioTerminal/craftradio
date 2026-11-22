@@ -140,26 +140,26 @@ pub(super) fn meters(
         let peak = (l + 2.5 + 1.5 * (t * 0.5 + ch).sin().abs()).min(0.0);
         (l as f32, peak as f32)
     };
-    let silent = |label: String| MeterView {
-        label,
+    let silent = |strip: String| MeterView {
+        label: strip_label(&strip),
+        strip,
         level_db: [SILENCE_DB; 2],
         peak_db: [SILENCE_DB; 2],
         gain_db: 0.0,
         mute: false,
-        pfl: false,
-        route: Route::Out,
+        snd: false,
     };
-    let live = |label: String, offset: f64| {
+    let live = |strip: String, offset: f64| {
         let (l0, p0) = wave(offset);
         let (l1, p1) = wave(offset + 0.4);
         MeterView {
-            label,
+            label: strip_label(&strip),
+            strip,
             level_db: [l0, l1],
             peak_db: [p0, p1],
             gain_db: 0.0,
             mute: false,
-            pfl: false,
-            route: Route::Out,
+            snd: false,
         }
     };
     let mut out: Vec<MeterView> = decks
@@ -182,15 +182,43 @@ pub(super) fn meters(
         silent("Out".to_owned())
     });
     for m in &mut out {
-        let st = strips.get(&m.label).copied().unwrap_or_default();
+        let st = strips.get(&m.strip).copied().unwrap_or_default();
         m.gain_db = st.gain_db;
         m.mute = st.mute;
-        m.pfl = st.pfl;
-        m.route = st.route;
+        m.snd = st.snd;
         if st.mute {
             m.level_db = [SILENCE_DB; 2];
             m.peak_db = [SILENCE_DB; 2];
         }
     }
     out
+}
+
+/// The name on a strip: Out shows as Program.
+fn strip_label(strip: &str) -> String {
+    if strip == crate::view::PROGRAM_STRIP {
+        "Program".to_owned()
+    } else {
+        strip.to_owned()
+    }
+}
+
+/// The output strips of the preview: it plays nothing, so no output is live.
+pub(super) fn output_meters() -> Vec<crate::view::OutputMeterView> {
+    use crate::view::{OutputKind, OutputMeterView};
+    [
+        (OutputKind::Device, "Sound card", "Preview — no audio"),
+        (OutputKind::Icecast, "Icecast", "Not connected"),
+        (OutputKind::WebRtc, "WebRTC", "Off"),
+    ]
+    .into_iter()
+    .map(|(kind, label, note)| OutputMeterView {
+        kind,
+        label: label.to_owned(),
+        live: false,
+        note: note.to_owned(),
+        level_db: [SILENCE_DB; 2],
+        peak_db: [SILENCE_DB; 2],
+    })
+    .collect()
 }

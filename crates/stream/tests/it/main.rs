@@ -1,3 +1,4 @@
+mod meter;
 use radio_stream::*;
 use std::{
     io::{Read, Write},
@@ -64,7 +65,7 @@ fn sine_encodes_and_chains() {
     assert_eq!(heads, 2);
     assert_eq!(tags, 2);
 }
-fn config(port: u16) -> IcecastConfig {
+pub(crate) fn config(port: u16) -> IcecastConfig {
     IcecastConfig {
         host: "127.0.0.1".into(),
         port,
@@ -263,7 +264,7 @@ fn input_decodes_icy_wrapped_wav_to_stereo() {
 #[cfg(feature = "mp3")]
 mod mp3;
 
-fn request_header(socket: &mut std::net::TcpStream) -> String {
+pub(crate) fn request_header(socket: &mut std::net::TcpStream) -> String {
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();

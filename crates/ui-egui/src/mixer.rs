@@ -1,7 +1,7 @@
 //! The mixer: one strip per deck, the cart bus, the live input and the output.
 //! Levels come from the view-model. In the preview, the mock simulates them, and nothing plays.
-//! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
-//! The ⚙ opens Preferences on the mixer's pages: Devices, Routing, Processing, Meters and Icecast.
+//! Faders, mute, SND, devices and Icecast go to the view source as edits.
+//! The ⚙ opens Preferences on the mixer's pages: Devices, Processing, Meters and Icecast.
 
 use crate::numbers;
 use crate::widgets;
@@ -17,14 +17,16 @@ use crate::theme::{self, Tokens, pad, size, space};
 use radio_model::{DynamicsSettings, LoudnessSettings, dynamics_range as range, loudness_range};
 
 use crate::view::{
-    DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
+    DeviceRole, Edit, IcecastView, MeterView, NO_DEVICE, OutputKind, OutputMeterView, StationView,
+    Status, StreamFormat, StripChange,
 };
 
 /// The settings part where the view source keeps the audio devices.
 const AUDIO_PART: &str = "audio";
 
-/// The dB marks beside a meter.
-const SCALE_DB: [f32; 5] = [0.0, -6.0, -12.0, -20.0, -40.0];
+/// The dB marks beside a meter, as on a broadcast console. A number that would touch the one
+/// above it is left out; its mark stays.
+const SCALE_DB: [f32; 9] = [0.0, -3.0, -6.0, -9.0, -12.0, -18.0, -20.0, -30.0, -40.0];
 const NOTE: &str = "preview — simulated levels, no audio";
 /// The one rate of the audio path (the playout's `SAMPLE_RATE`): decks, carts, live input and
 /// outputs all run at it, and files are resampled to it.
@@ -41,7 +43,6 @@ const HZ_PER_KHZ: f64 = 1000.0;
 pub(crate) enum SettingsTab {
     #[default]
     Devices,
-    Routing,
     Processing,
     Meters,
     Icecast,
@@ -51,7 +52,6 @@ impl SettingsTab {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Devices => "Devices",
-            Self::Routing => "Routing",
             Self::Processing => "Processing",
             Self::Meters => "Meters",
             Self::Icecast => "Icecast",
@@ -110,17 +110,27 @@ pub(crate) fn show(
     });
     let mut wanted = open.then_some(SettingsTab::Devices);
     ui.add_space(space::S);
+    let mut page = None;
     ui.horizontal_top(|ui| {
         for meter in &view.meters {
-            let is_out = meter.label == "Out";
-            let cue = view.cue_open && view.devices.contains(&view.device_roles.pfl);
+            let is_out = meter.is_program();
+            let cue = monitor_ready(view);
             if let Some(tab) = strip_ui(ui, meter, is_out, cue, actions, t) {
                 wanted = Some(tab);
+            }
+        }
+        // A wider gap sets the outputs apart from the strips that mix.
+        ui.add_space(space::L);
+        for out in &view.output_meters {
+            if let Some(p) = output_strip(ui, out, t) {
+                page = Some(p);
             }
         }
     });
     if let Some(tab) = wanted {
         actions.push(Action::OpenPreferences(Page::from(tab)));
+    } else if let Some(p) = page {
+        actions.push(Action::OpenPreferences(p));
     }
 }
 
@@ -186,7 +196,6 @@ pub(crate) fn preferences(
 ) {
     match tab {
         SettingsTab::Devices => devices_tab(ui, view, actions, t),
-        SettingsTab::Routing => routing_tab(ui, view, actions, t),
         SettingsTab::Processing => {
             loudness_section(ui, view, &mut state.loudness, actions, t);
             processing_tab(ui, view, &mut state.dynamics, actions, t);
@@ -209,125 +218,251 @@ fn strip_ui(
     t: &Tokens,
 ) -> Option<SettingsTab> {
     let mut settings_wanted: Option<SettingsTab> = None;
-    let mut icecast = false;
+    let mut devices = false;
     let mut gain = meter.gain_db;
     let mut mute = meter.mute;
 
-    let fill = if is_out { t.selection } else { t.card };
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
-        .corner_radius(t.radius_lg)
-        .inner_margin(pad::TIGHT)
-        .show(ui, |ui| {
-            ui.set_width(size::STRIP_W);
-            ui.vertical_centered(|ui| {
-                // Every name row has the height of a settings button, so all strips line up.
-                let row = egui::vec2(ui.available_width(), size::BADGE);
-                ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
-                    let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
-                    let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
-                    r.context_menu(|ui| {
-                        if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
-                            settings_wanted = Some(tab);
-                        }
-                    });
-                    if is_out {
-                        settings::settings_button(ui, "Icecast", &mut icecast);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    meter_bars(ui, meter, t).context_menu(|ui| {
-                        if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
-                            settings_wanted = Some(tab);
-                        }
-                    });
-                    ui.spacing_mut().slider_width = size::METER_H;
-                    let range = size::METER_MIN_DB..=size::METER_MAX_DB;
-                    let fader = egui::Slider::new(&mut gain, range)
-                        .vertical()
-                        .show_value(false);
-                    ui.add(fader)
-                        .on_hover_text(format!("{} fader", meter.label));
-                });
-                let level = meter.level_db[0].max(meter.level_db[1]);
-                let peak = meter.peak_db[0].max(meter.peak_db[1]);
-                let small = |s: String| RichText::new(s).font(theme::mono(theme::CAPTION));
-                ui.label(RichText::new(db(level)).font(theme::mono(theme::CODE)));
-                ui.label(small(format!("pk {}", db(peak))).color(t.text_muted));
-                ui.label(small(format!("gain {gain:+.1}")).color(t.text_muted));
-                ui.horizontal(|ui| {
-                    // Framed toggles: the word and the fill change, so the state does not hang on colour.
-                    let word = if mute { "MUTED" } else { "Mute" };
-                    let fill = if mute { t.danger_fill } else { t.field };
-                    if toggle(ui, word, fill, t).clicked() {
-                        mute = !mute;
-                    }
-                    if ui
-                        .add_enabled(
-                            cue && !is_out,
-                            egui::Button::new(if cue && !is_out && meter.pfl {
-                                "PFL ON"
-                            } else {
-                                "PFL"
-                            }),
-                        )
-                        .on_disabled_hover_text(
-                            "PFL needs a present cue device and an open cue output",
-                        )
-                        .clicked()
-                    {
-                        actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
-                    }
-                });
+    strip_frame(ui, t, |ui| {
+        let font = theme::mono(theme::CARD);
+        let gear = is_out.then_some(&mut devices);
+        let head = strip_head(ui, &meter.label, font, is_out, gear, t);
+        head.context_menu(|ui| {
+            if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
+                settings_wanted = Some(tab);
+            }
+        });
+        ui.horizontal_top(|ui| {
+            meter_bars(ui, meter.level_db, meter.peak_db, t).context_menu(|ui| {
+                if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
+                    settings_wanted = Some(tab);
+                }
+            });
+            // The fader sits in the middle of the room beside the bars.
+            let room = egui::vec2(ui.available_width(), size::METER_H);
+            ui.allocate_ui_with_layout(room, Layout::top_down(Align::Center), |ui| {
+                ui.spacing_mut().slider_width = size::METER_H;
+                let range = size::METER_MIN_DB..=size::METER_MAX_DB;
+                let fader = egui::Slider::new(&mut gain, range)
+                    .vertical()
+                    .show_value(false);
+                ui.add(fader)
+                    .on_hover_text(format!("{} fader", meter.label));
             });
         });
+        // Under the bars the held peak; at the right, under the fader, its gain.
+        let peak = meter.peak_db[0].max(meter.peak_db[1]);
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), size::CONTROL_SM),
+            Sense::hover(),
+        );
+        let p = ui.painter();
+        let small = theme::mono(theme::CAPTION);
+        p.text(
+            egui::pos2(row.left() + bars_centre(), row.center().y),
+            egui::Align2::CENTER_CENTER,
+            db_short(peak),
+            small.clone(),
+            t.text,
+        );
+        p.text(
+            egui::pos2(row.right(), row.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{gain:+.1}"),
+            small,
+            t.text_muted,
+        );
+        // Framed toggles: the word and the fill change, so the state does not hang on
+        // colour. Each name starts with the visible word and says which strip it is.
+        let word = if mute { "MUTED" } else { "Mute" };
+        let fill = if mute { t.danger_fill } else { t.field };
+        if toggle(ui, true, word, &meter.label, fill, t).clicked() {
+            mute = !mute;
+        }
+        let on = cue && meter.snd;
+        let word = if on { "SND ON" } else { "SND" };
+        let fill = if on { t.warn_fill } else { t.field };
+        let snd = toggle(ui, cue, word, &meter.label, fill, t).on_disabled_hover_text(SND_NEEDS);
+        if snd.clicked() {
+            actions.push(strip_edit(&meter.strip, StripChange::Snd(!meter.snd)));
+        }
+    });
     if gain != meter.gain_db {
-        actions.push(strip_edit(&meter.label, StripChange::Gain(gain)));
+        actions.push(strip_edit(&meter.strip, StripChange::Gain(gain)));
     }
     if mute != meter.mute {
         actions.push(mute_action(meter, is_out, mute));
     }
 
-    // The Out ⚙ and the Settings item of Out open the Icecast tab; the others open Devices.
-    if icecast {
-        Some(SettingsTab::Icecast)
+    // The Program ⚙ opens Devices, where its sound card is picked.
+    if devices {
+        Some(SettingsTab::Devices)
     } else {
         settings_wanted
     }
 }
 
-/// A framed toggle button with a fill that shows its state.
-fn toggle(ui: &mut egui::Ui, word: &str, fill: egui::Color32, t: &Tokens) -> egui::Response {
+/// The card of one strip, at the strip width, with its parts centred.
+fn strip_frame(ui: &mut egui::Ui, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(t.card)
+        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
+        .corner_radius(t.radius_lg)
+        .inner_margin(pad::TIGHT)
+        .show(ui, |ui| {
+            ui.set_width(size::STRIP_W);
+            ui.spacing_mut().item_spacing.y = space::XS;
+            ui.vertical_centered(body);
+        });
+}
+
+/// The name band at the top of a strip. Program's band has the selection fill, and its name
+/// says so too. With `gear`, a ⚙ at the right opens the strip's Preferences page. It returns
+/// the name, which takes a right-click.
+fn strip_head(
+    ui: &mut egui::Ui,
+    label: &str,
+    font: egui::FontId,
+    accent: bool,
+    gear: Option<&mut bool>,
+    t: &Tokens,
+) -> egui::Response {
+    let (band, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), size::BADGE),
+        Sense::hover(),
+    );
+    let fill = if accent { t.selection } else { t.field };
+    ui.painter().rect_filled(band, t.radius_sm, fill);
+    let mut name_rect = band;
+    if let Some(open) = gear {
+        let side = band.height();
+        let at = egui::Rect::from_min_size(
+            egui::pos2(band.right() - side, band.top()),
+            egui::Vec2::splat(side),
+        );
+        name_rect.set_right(at.left());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
+            settings::settings_button_sized(ui, label, open, side);
+        });
+    }
+    let name = RichText::new(label).font(font).color(t.text).strong();
+    ui.put(
+        name_rect,
+        egui::Label::new(name).truncate().sense(Sense::click()),
+    )
+}
+
+/// The x of the middle of the two bars, from the left edge of [`meter_bars`].
+fn bars_centre() -> f32 {
+    size::METER_SCALE_W + space::XS + size::METER_BAR_W + space::XXS / 2.0
+}
+
+/// A level as a short number for under a meter. Silence shows as "−∞".
+fn db_short(v: f32) -> String {
+    if v <= size::METER_MIN_DB {
+        "−∞".to_owned()
+    } else {
+        format!("{v:.1}")
+    }
+}
+
+/// Why SND is off: it plays on the monitor device, which must be there and open.
+const SND_NEEDS: &str = "SND needs a present monitor device and an open monitor output";
+
+/// The monitor output plays, so SND can be heard.
+fn monitor_ready(view: &StationView) -> bool {
+    view.monitor_open && view.devices.contains(&view.device_roles.monitor)
+}
+
+/// A framed toggle button with a fill that shows its state. Its name is the word and the
+/// strip, for example "SND A".
+fn toggle(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    word: &str,
+    strip: &str,
+    fill: egui::Color32,
+    t: &Tokens,
+) -> egui::Response {
     let text = RichText::new(word)
         .font(theme::text(theme::CAPTION))
         .color(t.text);
     let button = egui::Button::new(text)
         .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, t.field_border));
-    ui.add(button)
+        .stroke(Stroke::new(size::HAIRLINE, t.field_border))
+        .min_size(egui::vec2(ui.available_width(), size::CONTROL_SM));
+    let r = ui.add_enabled(enabled, button);
+    r.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{word} {strip}"))
+    });
+    r
+}
+
+/// One output strip: the level of what that output sends, and its state in words. A down
+/// output shows empty bars. Its ⚙ returns the page of that output.
+fn output_strip(ui: &mut egui::Ui, out: &OutputMeterView, t: &Tokens) -> Option<Page> {
+    let mut open = false;
+    strip_frame(ui, t, |ui| {
+        let font = theme::text(theme::CAPTION);
+        strip_head(ui, &out.label, font, false, Some(&mut open), t);
+        let silent = [size::METER_MIN_DB; 2];
+        let (level, peak) = if out.live {
+            (out.level_db, out.peak_db)
+        } else {
+            (silent, silent)
+        };
+        meter_bars(ui, level, peak, t);
+        let row = egui::vec2(ui.available_width(), size::CONTROL_SM);
+        let (row, _) = ui.allocate_exact_size(row, Sense::hover());
+        ui.painter().text(
+            row.center(),
+            egui::Align2::CENTER_CENTER,
+            db_short(peak[0].max(peak[1])),
+            theme::mono(theme::CAPTION),
+            if out.live { t.text } else { t.text_muted },
+        );
+        // The state in words, in the room that the toggles take on a mixing strip.
+        let foot = egui::vec2(
+            ui.available_width(),
+            size::CONTROL_SM * 2.0 + ui.spacing().item_spacing.y,
+        );
+        let centred = Layout::top_down(Align::Center).with_main_align(Align::Center);
+        ui.allocate_ui_with_layout(foot, centred, |ui| {
+            ui.set_min_size(foot);
+            let colour = if out.live { t.text } else { t.text_muted };
+            let text = RichText::new(&out.note)
+                .font(theme::text(theme::CAPTION))
+                .color(colour);
+            let note = ui.add(egui::Label::new(text).wrap());
+            note.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Label,
+                    true,
+                    format!("{}: {}", out.label, out.note),
+                )
+            });
+        });
+    });
+    open.then_some(match out.kind {
+        OutputKind::Device => Page::Devices,
+        OutputKind::Icecast => Page::Icecast,
+        OutputKind::WebRtc => Page::WebRtc,
+    })
 }
 
 /// The action for a Mute press. Muting Out silences the whole programme, so it asks first.
 fn mute_action(meter: &MeterView, is_out: bool, mute: bool) -> Action {
-    let edit = strip_edit(&meter.label, StripChange::Mute(mute));
+    let edit = strip_edit(&meter.strip, StripChange::Mute(mute));
     if is_out && mute {
         Action::Confirm {
-            text: "Mute Out? Listeners hear silence until you unmute it.".to_owned(),
-            yes: "Mute Out".to_owned(),
+            text: format!(
+                "Mute {}? Listeners hear silence until you unmute it.",
+                meter.label
+            ),
+            yes: format!("Mute {}", meter.label),
             then: Box::new(edit),
         }
     } else {
         edit
-    }
-}
-
-/// A level as text. Silence shows as "−∞ dB".
-fn db(v: f32) -> String {
-    if v <= size::METER_MIN_DB {
-        "−∞ dB".to_owned()
-    } else {
-        format!("{v:.1} dB")
     }
 }
 
@@ -337,7 +472,7 @@ pub(crate) fn frac(v: f32) -> f32 {
 }
 
 /// The right-click menu of a strip. It returns the settings tab that the person asks for.
-/// Settings of Out opens Icecast, of another strip Devices; Out also links to Processing.
+/// Settings opens Devices; Program also links to Processing.
 fn strip_menu(
     ui: &mut egui::Ui,
     meter: &MeterView,
@@ -348,23 +483,16 @@ fn strip_menu(
     if check_item(ui, meter.mute, "Mute") {
         actions.push(mute_action(meter, is_out, !meter.mute));
     }
-    ui.add_enabled_ui(cue && !is_out, |ui| {
-        if check_item(ui, meter.pfl, "PFL") {
-            actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
+    ui.add_enabled_ui(cue, |ui| {
+        if check_item(ui, meter.snd, "SND") {
+            actions.push(strip_edit(&meter.strip, StripChange::Snd(!meter.snd)));
         }
     })
     .response
-    .on_disabled_hover_text("PFL needs a present cue device and an open cue output");
+    .on_disabled_hover_text(SND_NEEDS);
     if menu_item(ui, "Reset gain to 0 dB", None) {
-        actions.push(strip_edit(&meter.label, StripChange::Gain(0.0)));
+        actions.push(strip_edit(&meter.strip, StripChange::Gain(0.0)));
     }
-    ui.menu_button("Route to", |ui| {
-        for route in Route::ALL {
-            if (route == Route::Out || cue) && check_item(ui, meter.route == route, route.label()) {
-                actions.push(strip_edit(&meter.label, StripChange::Route(route)));
-            }
-        }
-    });
     ui.separator();
     if is_out
         && menu_item(
@@ -375,61 +503,73 @@ fn strip_menu(
     {
         return Some(SettingsTab::Processing);
     }
+    // As the ⚙ of Program: every strip's settings are its devices.
     let settings = menu_item(ui, &icons::lead(Icon::Settings, "Settings"), None);
-    settings.then_some(if is_out {
-        SettingsTab::Icecast
-    } else {
-        SettingsTab::Devices
-    })
+    settings.then_some(SettingsTab::Devices)
 }
 
-/// Two meter bars (left and right) with green, amber and red zones and a peak line.
-fn meter_bars(ui: &mut egui::Ui, meter: &MeterView, t: &Tokens) -> egui::Response {
-    let w = size::METER_BAR_W * 2.0 + space::XXS;
-    let full = w + size::METER_SCALE_W;
+/// Two LED meter bars (left and right) with green, amber and red zones and a held peak, and
+/// the dB scale at their left. Unlit LEDs show their zone faintly.
+fn meter_bars(
+    ui: &mut egui::Ui,
+    level_db: [f32; 2],
+    peak_db: [f32; 2],
+    t: &Tokens,
+) -> egui::Response {
+    let bars_w = size::METER_BAR_W * 2.0 + space::XXS;
+    let full = size::METER_SCALE_W + space::XS + bars_w;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(full, size::METER_H), Sense::click());
     let p = ui.painter();
+    let bars_left = rect.right() - bars_w;
+    let step = size::METER_SEG_H + size::METER_SEG_GAP;
+    let count = (rect.height() / step).floor().max(1.0);
+    let span = size::METER_MAX_DB - size::METER_MIN_DB;
     for ch in 0..2 {
-        let left = rect.left() + ch as f32 * (size::METER_BAR_W + space::XXS);
-        let bar = egui::Rect::from_min_size(
-            egui::pos2(left, rect.top()),
-            egui::vec2(size::METER_BAR_W, rect.height()),
-        );
-        p.rect_filled(bar, t.radius_sm, t.canvas);
-        let y_of = |v: f32| bar.bottom() - bar.height() * frac(v);
-        let level = meter.level_db[ch];
-        for (lo, hi, colour) in [
-            (size::METER_MIN_DB, size::METER_AMBER_DB, t.meter_low),
-            (size::METER_AMBER_DB, size::METER_RED_DB, t.meter_mid),
-            (size::METER_RED_DB, size::METER_MAX_DB, t.meter_high),
-        ] {
-            if level > lo {
-                let seg =
-                    egui::Rect::from_x_y_ranges(bar.x_range(), y_of(level.min(hi))..=y_of(lo));
-                p.rect_filled(seg, 0.0, colour);
-            }
-        }
-        let peak = meter.peak_db[ch];
-        if peak > size::METER_MIN_DB {
-            p.hline(
-                bar.x_range(),
-                y_of(peak),
-                Stroke::new(size::HAIRLINE * 2.0, t.text),
-            );
+        let left = bars_left + ch as f32 * (size::METER_BAR_W + space::XXS);
+        let x = egui::Rangef::new(left, left + size::METER_BAR_W);
+        let peak_led = ((frac(peak_db[ch]) * count).ceil() - 1.0).max(-1.0);
+        let mut k = 0.0;
+        while k < count {
+            // The LED is lit when the level passes its lower edge.
+            let low = size::METER_MIN_DB + span * k / count;
+            let zone = if low >= size::METER_RED_DB {
+                t.meter_high
+            } else if low >= size::METER_AMBER_DB {
+                t.meter_mid
+            } else {
+                t.meter_low
+            };
+            let colour = if k == peak_led {
+                t.text
+            } else if level_db[ch] > low {
+                zone
+            } else {
+                zone.gamma_multiply(size::METER_UNLIT)
+            };
+            let bottom = rect.bottom() - k * step;
+            let led = egui::Rect::from_x_y_ranges(x, (bottom - size::METER_SEG_H)..=bottom);
+            p.rect_filled(led, 0.0, colour);
+            k += 1.0;
         }
     }
-    // The scale: a mark and its dB number at the usual steps.
+    // The scale: a short mark at each step, and its number where it does not touch the last.
+    let font = theme::mono(theme::TINY);
+    let line = ui.fonts_mut(|f| f.row_height(&font));
+    let mut last_label = f32::NEG_INFINITY;
     for v in SCALE_DB {
         let y = rect.bottom() - rect.height() * frac(v);
-        let bars = egui::Rangef::new(rect.left(), rect.left() + w);
-        p.hline(bars, y, Stroke::new(size::HAIRLINE, t.field_border));
-        p.text(
-            egui::pos2(rect.right(), y),
-            egui::Align2::RIGHT_CENTER,
-            format!("{v:.0}"),
-            theme::mono(theme::TINY),
-            t.text_muted,
-        );
+        let mark = egui::Rangef::new(bars_left - space::XS, bars_left - space::XXS);
+        p.hline(mark, y, Stroke::new(size::HAIRLINE, t.text_muted));
+        if y - last_label >= line {
+            p.text(
+                egui::pos2(bars_left - space::XS - space::XXS, y),
+                egui::Align2::RIGHT_CENTER,
+                format!("{v:.0}"),
+                font.clone(),
+                t.text_muted,
+            );
+            last_label = y;
+        }
     }
     resp
 }
@@ -461,6 +601,39 @@ fn device_pick(
         .response
 }
 
+/// The Program device dropdown: None (no sound card), System default, or a device. `saved`
+/// is the setting: `NO_DEVICE`, empty for the system default, or a name.
+fn program_device_pick(
+    ui: &mut egui::Ui,
+    saved: &str,
+    devices: &[String],
+    picked: &mut Option<String>,
+) -> egui::Response {
+    const SYSTEM_DEFAULT: &str = "System default";
+    let shown = match saved {
+        NO_DEVICE => "None",
+        "" => SYSTEM_DEFAULT,
+        name => name,
+    };
+    craft_ui::ComboBox::from_id_salt("out_device")
+        .width(ui.available_width())
+        .truncate()
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for (word, value) in [("None", NO_DEVICE), (SYSTEM_DEFAULT, "")] {
+                if widgets::selectable(ui, saved == value, word).clicked() && saved != value {
+                    *picked = Some(value.to_owned());
+                }
+            }
+            for d in devices {
+                if widgets::selectable(ui, d == saved, d).clicked() && d != saved {
+                    *picked = Some(d.clone());
+                }
+            }
+        })
+        .response
+}
+
 fn khz(rate: u32) -> String {
     format!("{} kHz", f64::from(rate) / HZ_PER_KHZ)
 }
@@ -474,17 +647,52 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
         .get(AUDIO_PART)
         .and_then(|a| a.get("out"))
         .and_then(serde_json::Value::as_str)
-        .filter(|d| !d.is_empty())
-        .map(str::to_owned);
-    let out = saved_out.clone().unwrap_or_else(|| roles.out.clone());
+        .unwrap_or("")
+        .to_owned();
     settings::section(ui, "Audio devices", t, |ui| {
+        let mut picked = None;
+        settings::form_row(ui, "Program device", t, |ui| {
+            program_device_pick(ui, &saved_out, &view.devices, &mut picked)
+        });
+        if let Some(device) = picked {
+            actions.push(Action::EditQuiet(Edit::SetDevice {
+                role: DeviceRole::Out,
+                device,
+            }));
+        }
+        // The sound card that plays until the next start, when it differs from the pick. A
+        // pick of the system default names no card, so there is nothing to compare.
+        let wanted = match saved_out.as_str() {
+            NO_DEVICE => Some(""),
+            "" => None,
+            name => Some(name),
+        };
+        // The system default names no card, but with none open it too waits for a start.
+        let waits = match wanted {
+            Some(w) => w != roles.out,
+            None => roles.out.is_empty(),
+        };
+        if !view.preview && waits {
+            let now = if roles.out.is_empty() {
+                "no sound card"
+            } else {
+                roles.out.as_str()
+            };
+            settings::form_note(
+                ui,
+                RichText::new(format!(
+                    "Opens at the next start. Until then the sound goes to {now}."
+                ))
+                .font(theme::text(theme::CAPTION))
+                .color(t.warn),
+            );
+        }
         for (label, id, role, current) in [
-            ("Output device (Out)", "out_device", DeviceRole::Out, &out),
             (
-                "Cue device (PFL)",
-                "cue_device",
-                DeviceRole::Pfl,
-                &roles.pfl,
+                "Monitor device (SND)",
+                "monitor_device",
+                DeviceRole::Monitor,
+                &roles.monitor,
             ),
             (
                 "Live input device",
@@ -504,24 +712,6 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
             });
             if let Some(device) = picked {
                 actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
-            }
-            if role == DeviceRole::Out
-                && !view.preview
-                && saved_out.as_ref().is_some_and(|s| *s != roles.out)
-            {
-                let now = if roles.out.is_empty() {
-                    "no sound card"
-                } else {
-                    roles.out.as_str()
-                };
-                settings::form_note(
-                    ui,
-                    RichText::new(format!(
-                        "Opens at the next start. Until then the sound goes to {now}."
-                    ))
-                    .font(theme::text(theme::CAPTION))
-                    .color(t.warn),
-                );
             }
         }
     });
@@ -559,39 +749,6 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
                 .on_hover_text("The audio always runs at this rate; files are resampled to it")
         });
     });
-}
-
-fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
-    // A cue route needs a cue to go to, as in the strip menu: without one, Cue only would
-    // only silence the strip on Out.
-    let cue = view.cue_open && view.devices.contains(&view.device_roles.pfl);
-    for m in &view.meters {
-        settings::form_row(ui, &m.label, t, |ui| {
-            craft_ui::ComboBox::from_id_salt(("route", &m.label))
-                .width(ui.available_width())
-                .selected_text(m.route.label())
-                .show_ui(ui, |ui| {
-                    for r in Route::ALL {
-                        if r == Route::OutAndCue {
-                            continue;
-                        }
-                        let ok = r == Route::Out || cue;
-                        let pick = ui
-                            .add_enabled_ui(ok, |ui| {
-                                widgets::selectable(ui, r == m.route, r.label())
-                            })
-                            .inner
-                            .on_disabled_hover_text(
-                                "Cue routes need a present cue device and an open cue output",
-                            );
-                        if pick.clicked() {
-                            actions.push(strip_edit(&m.label, StripChange::Route(r)));
-                        }
-                    }
-                })
-                .response
-        });
-    }
 }
 
 fn meters_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {

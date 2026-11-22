@@ -19,7 +19,6 @@ pub(crate) enum Page {
     Decks,
     Cartwall,
     Devices,
-    Routing,
     Processing,
     Meters,
     Icecast,
@@ -33,11 +32,10 @@ pub(crate) enum Page {
 
 impl Page {
     /// The pages in rail order: each group's pages together.
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 12] = [
         Self::Decks,
         Self::Cartwall,
         Self::Devices,
-        Self::Routing,
         Self::Processing,
         Self::Meters,
         Self::Icecast,
@@ -67,7 +65,6 @@ impl Page {
         match self {
             Self::Decks => Icon::Disc3,
             Self::Devices => Icon::Speaker,
-            Self::Routing => Icon::Route,
             Self::Processing => Icon::SlidersHorizontal,
             Self::Meters => Icon::Gauge,
             Self::Icecast => Icon::RadioTower,
@@ -84,7 +81,7 @@ impl Page {
     fn group(self) -> &'static str {
         match self {
             Self::Decks | Self::Cartwall => "Playout",
-            Self::Devices | Self::Routing | Self::Processing | Self::Meters => "Audio",
+            Self::Devices | Self::Processing | Self::Meters => "Audio",
             Self::Icecast | Self::WebRtc => "Streaming",
             Self::Clock | Self::History | Self::Library | Self::Alarms => "Windows",
             Self::Shortcuts => "Input",
@@ -96,8 +93,9 @@ impl Page {
         match self {
             Self::Decks => "Fades, and how a cut of the item on air is confirmed.",
             Self::Cartwall => "The cart pages and the grid of the cartwall.",
-            Self::Devices => "The audio devices, the live input channels and the sample rate.",
-            Self::Routing => "The bus each strip plays to.",
+            Self::Devices => {
+                "The Program and monitor devices, the live input channels and the sample rate."
+            }
             Self::Processing => "Loudness normalisation, the compressor and the limiter.",
             Self::Meters => "How long the meters hold a peak.",
             Self::Icecast => "The Icecast server that the station streams to.",
@@ -116,9 +114,9 @@ impl Page {
             Self::Decks => "on air confirm cut play fade-in fade-out deck a b c d",
             Self::Cartwall => "carts pages grid jingles",
             Self::Devices => {
-                "output device out cue device pfl live input device channels sample rate"
+                "program device output out none monitor device snd cue pfl route routing \
+                 live input device channels sample rate"
             }
-            Self::Routing => "route bus strips",
             Self::Processing => {
                 "loudness normalisation target lufs max boost compressor threshold ratio \
                  attack compressor release makeup gain limiter ceiling limiter release dynamics"
@@ -153,9 +151,7 @@ impl Page {
             | Self::Alarms
             | Self::Library
             | Self::WebRtc => Ok(()),
-            Self::Devices | Self::Routing => {
-                Err("The devices and routes of this computer have no defaults to go back to.")
-            }
+            Self::Devices => Err("The devices of this computer have no defaults to go back to."),
             Self::Icecast => Err("The Icecast server has no default; change it field by field."),
             Self::Cartwall => Err("The cart pages are the station's own and have no defaults."),
             Self::Shortcuts => {
@@ -168,7 +164,6 @@ impl Page {
     fn mixer(self) -> Option<SettingsTab> {
         match self {
             Self::Devices => Some(SettingsTab::Devices),
-            Self::Routing => Some(SettingsTab::Routing),
             Self::Processing => Some(SettingsTab::Processing),
             Self::Meters => Some(SettingsTab::Meters),
             Self::Icecast => Some(SettingsTab::Icecast),
@@ -185,7 +180,6 @@ impl From<SettingsTab> for Page {
     fn from(tab: SettingsTab) -> Self {
         match tab {
             SettingsTab::Devices => Self::Devices,
-            SettingsTab::Routing => Self::Routing,
             SettingsTab::Processing => Self::Processing,
             SettingsTab::Meters => Self::Meters,
             SettingsTab::Icecast => Self::Icecast,
@@ -299,7 +293,7 @@ fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Ve
             }
         }
         // Pages without defaults show the button disabled with the reason.
-        Page::Devices | Page::Routing | Page::Icecast | Page::Cartwall | Page::Shortcuts => {}
+        Page::Devices | Page::Icecast | Page::Cartwall | Page::Shortcuts => {}
     }
 }
 

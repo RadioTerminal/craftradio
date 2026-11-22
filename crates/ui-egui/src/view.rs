@@ -577,7 +577,10 @@ pub struct StationView {
     /// Audio devices that the mixer can pick.
     pub devices: Vec<String>,
     pub input_devices: Vec<String>,
-    pub cue_open: bool,
+    /// The monitor output is open on its device, so SND can play.
+    pub monitor_open: bool,
+    /// The output meter strips: the Program device, Icecast and WebRTC.
+    pub output_meters: Vec<OutputMeterView>,
     /// The device for each job.
     pub device_roles: DeviceRoles,
     pub carts: Vec<String>,
@@ -701,13 +704,51 @@ pub type Settings =
 /// One meter of the mixer, in dBFS, left and right.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeterView {
+    /// The strip in commands: A–D, Cart, Live or Out.
+    pub strip: String,
+    /// The name on the strip, for example "Program" for Out.
     pub label: String,
     pub level_db: [f32; 2],
     pub peak_db: [f32; 2],
     pub gain_db: f32,
     pub mute: bool,
-    pub pfl: bool,
-    pub route: Route,
+    /// The strip plays on the monitor device.
+    pub snd: bool,
+}
+
+impl MeterView {
+    /// The Program strip: the on-air mix.
+    pub fn is_program(&self) -> bool {
+        self.strip == PROGRAM_STRIP
+    }
+}
+
+/// The command name of the Program strip.
+pub const PROGRAM_STRIP: &str = "Out";
+
+/// The Program device setting for no sound card.
+pub const NO_DEVICE: &str = "none";
+
+/// Which output an output meter strip shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputKind {
+    /// The Program sound card.
+    Device,
+    Icecast,
+    WebRtc,
+}
+
+/// One output meter strip: the level of what an output really sends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputMeterView {
+    pub kind: OutputKind,
+    pub label: String,
+    /// The output sends now. When false, the bars stay empty and `note` says why.
+    pub live: bool,
+    /// The state in words: a device name, "Not connected", "On — 0 listeners"…
+    pub note: String,
+    pub level_db: [f32; 2],
+    pub peak_db: [f32; 2],
 }
 
 /// The meter levels of one instant, in the order of `StationView::meters`, in dBFS.
@@ -720,6 +761,9 @@ pub struct MeterFrame {
     /// The audio frame count at the end of the block, to tell a new block from an old one.
     /// 0 when the source has no such count.
     pub at_sample: u64,
+    /// The level of each output, in the order of `StationView::output_meters`. Silence for
+    /// an output that does not send.
+    pub output_level_db: Vec<[f32; 2]>,
 }
 
 /// What one meter channel shows: a new level at once, a fall at a fixed rate in dB per
@@ -772,6 +816,7 @@ impl MeterFrame {
     pub fn moving(&self) -> bool {
         self.level_db
             .iter()
+            .chain(&self.output_level_db)
             .any(|l| l[0].max(l[1]) > METER_SILENT_DB)
     }
 }
@@ -779,34 +824,12 @@ impl MeterFrame {
 /// A meter below this level is silent, for the choice of the repaint rate.
 pub const METER_SILENT_DB: f32 = -58.0;
 
-/// Where a mixer strip sends its sound.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Route {
-    #[default]
-    Out,
-    OutAndCue,
-    CueOnly,
-}
-
-impl Route {
-    pub const ALL: [Self; 3] = [Self::Out, Self::OutAndCue, Self::CueOnly];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Out => "Out",
-            Self::OutAndCue => "Out and cue",
-            Self::CueOnly => "Cue only",
-        }
-    }
-}
-
 /// A change to one mixer strip.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StripChange {
     Gain(f32),
     Mute(bool),
-    Pfl(bool),
-    Route(Route),
+    Snd(bool),
 }
 
 /// The codec of the Icecast stream.
@@ -920,15 +943,16 @@ pub struct OutputStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceRole {
     Out,
-    Pfl,
+    Monitor,
     Input,
 }
 
 /// The device for each job, by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceRoles {
+    /// The Program sound card that is open now, or empty when none is.
     pub out: String,
-    pub pfl: String,
+    pub monitor: String,
     pub input: String,
 }
 

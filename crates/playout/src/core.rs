@@ -287,7 +287,7 @@ struct OpenedOutput {
     driver: Driver,
     handle: MixerHandle,
     live: LiveInput,
-    cue: crate::cue::Cue,
+    cue: crate::monitor::Monitor,
     local: LocalOutput,
     taps: Vec<rtrb::Consumer<f32>>,
     fallback: Option<String>,
@@ -311,13 +311,14 @@ fn open_output(
     config: MixerConfig,
     dynamics: Option<ProgramDynamics>,
     taps: usize,
+    device_meter: &Arc<radio_stream::LevelMeter>,
 ) -> Result<OpenedOutput, PlayoutError> {
     let (mut mixer, handle, live) = Mixer::new(config);
     mixer.set_dynamics(dynamics)?;
     let (tap_tx, tap_rx) = tap_rings(taps);
     let mut fallback = None;
     let (cue_tx, cue_rx) = rtrb::RingBuffer::new(48_000 * 2);
-    let mut cue = crate::cue::Cue::start(cue_rx);
+    let mut cue = crate::monitor::Monitor::start(cue_rx);
     let mut cue_tx = Some(cue_tx);
     let (mixer, handle, live, tap_tx, tap_rx) = match choice {
         OutputChoice::Offline => {
@@ -339,6 +340,7 @@ fn open_output(
         OutputChoice::Device { name } => {
             let mut source = ProgramSource::new(mixer, tap_tx);
             source.cue = cue_tx.take();
+            source.device_meter = Some(device_meter.clone());
             let source = Box::new(source);
             match crate::device::Device::open(name.clone(), source) {
                 Ok((out, name, clock)) => {
@@ -358,7 +360,7 @@ fn open_output(
             }
             let (new_tx, new_rx) = rtrb::RingBuffer::new(48_000 * 2);
             cue_tx = Some(new_tx);
-            cue = crate::cue::Cue::start(new_rx);
+            cue = crate::monitor::Monitor::start(new_rx);
             let (mut mixer, handle, live) = Mixer::new(config);
             mixer.set_dynamics(dynamics)?;
             let (tap_tx, tap_rx) = tap_rings(taps);
@@ -389,7 +391,7 @@ pub(crate) struct Core {
     pub(crate) mixer: MixerHandle,
     driver: Driver,
     _live: LiveInput,
-    cue: crate::cue::Cue,
+    cue: crate::monitor::Monitor,
     cue_name: String,
     local: LocalOutput,
     pub(crate) clock: Arc<dyn Clock>,
@@ -428,6 +430,7 @@ pub(crate) struct Core {
     pub(crate) webrtc: Option<WebRtcHandle>,
     /// Program for the WebRTC server, kept while the server is off.
     pub(crate) webrtc_tap: Option<TapSlot>,
+    pub(crate) output_meters: crate::OutputMeters,
     /// The address of the running server.
     pub(crate) webrtc_bind: Option<std::net::SocketAddr>,
     /// The thread that stops the last server and frees its ports.
@@ -480,20 +483,27 @@ impl Core {
         let engine_rx = engine.events();
         let log = engine.log_handle()?;
         let carts = Carts::new(cfg.mixer.cart_slots);
+        let meters = crate::OutputMeters::default();
         let tap = usize::from(cfg.icecast.is_some()) + usize::from(cfg.webrtc.is_some());
         // The setting that a person stored wins over the default of the config. A stored
         // setting that the processors refuse falls back to that default.
         let stored = engine.state().dynamics.map(|d| ProgramDynamics::from(&d));
         let mut opened = match stored {
-            Some(d) => open_output(&cfg.output, cfg.mixer, Some(d), tap)
-                .or_else(|_| open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap))?,
-            None => open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap)?,
+            Some(d) => {
+                open_output(&cfg.output, cfg.mixer, Some(d), tap, &meters.device).or_else(|_| {
+                    open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap, &meters.device)
+                })?
+            }
+            None => open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap, &meters.device)?,
         };
         let mut taps = std::mem::take(&mut opened.taps).into_iter();
-        let icecast = cfg
-            .icecast
-            .clone()
-            .and_then(|ice| Some(IcecastClient::start(ice, taps.next()?)));
+        let icecast = cfg.icecast.clone().and_then(|ice| {
+            Some(IcecastClient::start_metered(
+                ice,
+                taps.next()?,
+                meters.icecast.clone(),
+            ))
+        });
         let webrtc_tap = cfg
             .webrtc
             .as_ref()
@@ -504,7 +514,7 @@ impl Core {
             alarms.raise(now, Alarm::OutputFallback { reason });
         }
         let view = PlayoutView {
-            cue_open: false,
+            monitor_open: false,
             now,
             mode: engine.state().mode,
             stop_after_current: false,
@@ -565,6 +575,7 @@ impl Core {
             icecast,
             webrtc: None,
             webrtc_tap,
+            output_meters: meters,
             webrtc_bind: None,
             webrtc_stopping: None,
             webrtc_now: None,
@@ -618,8 +629,8 @@ impl Core {
         let Driver::Offline { mixer, taps, cue } = &mut self.driver else {
             return Err(PlayoutError::NotOffline);
         };
-        let (out, pfl) = radio_audio::render_offline_buses(mixer, frames);
-        feed_tap(cue, &pfl);
+        let (out, monitor) = radio_audio::render_offline_buses(mixer, frames);
+        feed_tap(cue, &monitor);
         feed_taps(taps, &out);
         Ok(out)
     }
@@ -768,8 +779,8 @@ impl Core {
         let cue_name = self
             .engine
             .state()
-            .settings("audio")
-            .and_then(|s| s.get("pfl"))
+            .settings(radio_engine::AUDIO_PART)
+            .and_then(|s| s.get(radio_engine::MONITOR_KEY))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_owned();
@@ -1629,7 +1640,7 @@ impl Core {
         let Ok(mut view) = self.view.lock() else {
             return;
         };
-        view.cue_open = self.cue.open.load(std::sync::atomic::Ordering::Acquire);
+        view.monitor_open = self.cue.open.load(std::sync::atomic::Ordering::Acquire);
         view.now = now;
         view.mode = self.engine.state().mode;
         view.stop_after_current = self.hold;
