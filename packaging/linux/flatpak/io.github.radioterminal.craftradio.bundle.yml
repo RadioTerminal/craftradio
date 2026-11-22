@@ -2,7 +2,6 @@
 # The bundle script builds it from the release tarball. It does not compile Rust.
 # Thus the binaries are the same as in the AppImage, deb and rpm.
 # The freedesktop runtime has glibc, ALSA, X11, Wayland, xkbcommon and Vulkan.
-# The tarball brings libmp3lame in lib/craftradio.
 id: io.github.radioterminal.craftradio
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
@@ -28,8 +27,6 @@ modules:
     build-commands:
       - install -Dm755 bin/craftradio /app/bin/craftradio
       - install -Dm755 bin/craftradio-cli /app/bin/craftradio-cli
-      # The app finds LAME through its RUNPATH, $ORIGIN/../lib/craftradio.
-      - mkdir -p /app/lib && cp -R lib/craftradio /app/lib/
       - install -Dm644 share/applications/io.github.radioterminal.craftradio.desktop /app/share/applications/io.github.radioterminal.craftradio.desktop
       # The package script already put the version and date in this file.
       - install -Dm644 share/metainfo/io.github.radioterminal.craftradio.metainfo.xml /app/share/metainfo/io.github.radioterminal.craftradio.metainfo.xml

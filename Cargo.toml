@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
-exclude = ["ffi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,7 +23,8 @@ ebur128 = "0.1"
 blake3 = "1"
 notify = "8"
 tempfile = "3"
-radio-lame = { path = "ffi/lame" }
+# Native MP3 encoder for the Icecast output (MIT OR Apache-2.0).
+craft-audio = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false, features = ["mp3-encode"] }
 percent-encoding = "2"
 opus = "0.3"
 ogg = "0.9"
@@ -54,15 +54,18 @@ radio-engine = { path = "crates/engine" }
 radio-audio = { path = "crates/audio" }
 radio-audio-device = { path = "crates/audio-device" }
 radio-library = { path = "crates/library" }
-# The radio app explicitly enables MP3 (LAME, LGPL); other consumers opt in.
+# The radio app explicitly enables MP3 output; other consumers opt in.
 radio-stream = { path = "crates/stream", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
 schemars = "1"
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
-egui = "0.36"
-egui_extras = "0.36"
-egui_kittest = "0.36"
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+# The emoji fonts were part of the default fonts until egui 0.37; titles and the UI use them.
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+egui_extras = "0.37"
+egui_kittest = "0.37"
 lucide-icons = "1.77"
+# Shared egui controls of the Craft apps (MIT OR Apache-2.0). Same rev as craft-audio.
+craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
 rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }
@@ -77,3 +80,19 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
+
+# storytold's forks of egui (0.37.0 plus their IME, right-to-left and font work) and of winit,
+# at the revisions the Craft apps use. craft-ui needs them.
+[patch.crates-io]
+ecolor = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+emath = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+epaint_default_fonts = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui-winit = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui-wgpu = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_glow = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_extras = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+egui_kittest = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+eframe = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
+winit = { git = "https://github.com/storytold/winit.git", rev = "a517b3846ee8457d84ee4975110bfda6797c44dc" }

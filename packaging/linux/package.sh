@@ -2,7 +2,7 @@
 # Build and package CraftRadio for Linux on x86_64 or aarch64.
 # The output is an AppImage with its zsync file, a deb, an rpm and a tar.gz, in $DIST.
 # Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"].
-# It needs cargo, nfpm, the LAME development files and the ALSA development files.
+# It needs cargo, nfpm and the ALSA development files.
 # The script downloads a pinned appimagetool when it is missing.
 # Build on an old distribution (CI uses Ubuntu 22.04) so that the binaries run on newer ones.
 set -euo pipefail
@@ -32,17 +32,8 @@ BASENAME="craftradio-$VERSION-linux-$ARCH"
 
 echo "==> CraftRadio $VERSION for Linux $ARCH ($FORMATS)"
 
-# The shared CI action installs ALSA but not LAME. Install LAME when it is missing.
-if [[ -n "${GITHUB_ACTIONS:-}" ]] && ! dpkg -s libmp3lame-dev >/dev/null 2>&1; then
-  sudo apt-get install -y --no-install-recommends libmp3lame-dev
-fi
-
 if [[ "$SKIP_BUILD" = 0 ]]; then
-  # The RUNPATH lets the tarball, AppImage and Flatpak find their own copy of LAME.
-  # The deb and rpm do not have that folder. Thus the app uses the LAME of the system.
-  # The shell must not expand $ORIGIN. The dynamic linker reads it.
-  (cd "$ROOT" && RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,\$ORIGIN/../lib/craftradio" \
-    cargo build --release --locked "${CARGO_PKGS[@]}")
+  (cd "$ROOT" && cargo build --release --locked "${CARGO_PKGS[@]}")
 fi
 BIN="$CARGO_TARGET_DIR/release"
 WORK="$CARGO_TARGET_DIR/linux-package"
@@ -70,29 +61,13 @@ if command -v appstreamcli >/dev/null; then
   appstreamcli validate --no-net --explain "$STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
 fi
 
-# The tarball and the AppImage bring LAME. Copy the library that the build linked.
-LAME_SO="$(ldd "$STAGE/usr/bin/craftradio" | awk '/libmp3lame\.so/ { print $3; exit }')"
-if [[ -z "$LAME_SO" || ! -f "$LAME_SO" ]]; then
-  ldd "$STAGE/usr/bin/craftradio" >&2
-  echo "error: craftradio does not link libmp3lame.so" >&2
-  exit 1
-fi
-LAME_SONAME="$(basename "$LAME_SO")"
-# Usage: add_lame <usr folder>. It adds lib/craftradio with LAME and its notice.
-add_lame() {
-  install -Dm644 "$(readlink -f "$LAME_SO")" "$1/lib/craftradio/$LAME_SONAME"
-  mkdir -p "$1/share/doc/craftradio"
-  copy_lame_notice "$1/share/doc/craftradio" "lib/craftradio/$LAME_SONAME"
-}
-
 has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- .tar.gz ------------------------------------------------------------------------------------
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
-  add_lame "$WORK/tar/$BASENAME"
-  # The app must start with the LAME in the tarball.
+  # The app must start from the tarball.
   env LD_LIBRARY_PATH= "$WORK/tar/$BASENAME/bin/craftradio" --version
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
@@ -114,7 +89,6 @@ fi
 if has appimage; then
   APPDIR="$WORK/CraftRadio.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  add_lame "$APPDIR/usr"
   # AppRun installs the desktop entry and icons, so Wayland docks show the right icon.
   install -Dm755 "$HERE/AppRun" "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"

@@ -2,7 +2,7 @@
 <!--
   CraftRadio MSI for WiX Toolset v5. package.ps1 builds it with the UI and Util extensions.
   It is a per-machine install with a setup wizard and a Start Menu shortcut.
-  It installs craftradio.exe, craftradio-cli.exe and the LAME library libmp3lame.dll.
+  It installs craftradio.exe and craftradio-cli.exe.
   The UpgradeCode belongs to CraftRadio. Do not change it and do not use it for another app.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
@@ -78,12 +78,6 @@
       </Component>
       <Component Id="CraftRadioCli">
         <File Id="CraftRadioCliExe" Source="$(var.BinDir)\craftradio-cli.exe" KeyPath="yes" />
-      </Component>
-      <!-- LAME is a separate DLL, so a person can replace it (docs/mp3-release.md). -->
-      <Component Id="Lame" Guid="3F2FF632-F082-4A06-862C-0398A337D131">
-        <File Id="LameDll" Source="$(var.BinDir)\libmp3lame.dll" KeyPath="yes" />
-        <File Id="LameLicence" Source="$(var.BinDir)\LICENSE-LAME.txt" />
-        <File Id="LameNote" Source="$(var.BinDir)\LAME.txt" />
       </Component>
     </ComponentGroup>
   </Fragment>

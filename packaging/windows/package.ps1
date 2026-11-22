@@ -8,12 +8,9 @@
   craftradio-<version>-windows-<arch>-portable.zip holds the same files without an installer.
 
   The programs link the C runtime statically, so they do not need the Visual C++ redistributable.
-  LAME is the separate DLL libmp3lame.dll from vcpkg (docs/mp3-release.md).
-  A custom vcpkg triplet also links its C runtime statically.
   sign.ps1 signs the files. Without signing secrets, it gives a warning and signs nothing.
 
-  The script needs Rust (MSVC), the Windows SDK, vcpkg and WiX v5 with the UI and Util extensions.
-  Without VCPKG_ROOT or VCPKG_INSTALLATION_ROOT, the script clones vcpkg into the target folder.
+  The script needs Rust (MSVC), the Windows SDK and WiX v5 with the UI and Util extensions.
 
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64
@@ -26,7 +23,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $AppId = 'io.github.radioterminal.craftradio'
-$LameVersion = '3.100'
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
   Write-Output "==> $What"
@@ -57,38 +53,10 @@ if (-not $env:CRAFTRADIO_BUILD_DATE) { $env:CRAFTRADIO_BUILD_DATE = (Get-Date).T
 
 Write-Output "CraftRadio $Version for Windows $Arch ($Target)"
 
-# ---- LAME --------------------------------------------------------------------------------------
-# The triplet makes a DLL that links the C runtime statically, as the programs do.
-$Triplet = "$Arch-windows-static-crt"
-$TripletDir = Join-Path $TargetDir 'vcpkg-triplets'
-New-Item -ItemType Directory -Force -Path $TripletDir | Out-Null
-Set-Content -Path (Join-Path $TripletDir "$Triplet.cmake") -Value @"
-set(VCPKG_TARGET_ARCHITECTURE $Arch)
-set(VCPKG_CRT_LINKAGE static)
-set(VCPKG_LIBRARY_LINKAGE dynamic)
-"@
-$Vcpkg = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT } elseif ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { Join-Path $TargetDir 'vcpkg' }
-if (-not (Test-Path (Join-Path $Vcpkg 'vcpkg.exe'))) {
-  if (-not (Test-Path (Join-Path $Vcpkg 'bootstrap-vcpkg.bat'))) {
-    Invoke-Native 'clone vcpkg' { git clone --depth 1 https://github.com/microsoft/vcpkg $Vcpkg }
-  }
-  Invoke-Native 'bootstrap vcpkg' { & (Join-Path $Vcpkg 'bootstrap-vcpkg.bat') -disableMetrics }
-}
-$LameRoot = Join-Path $TargetDir "vcpkg-installed"
-Invoke-Native "vcpkg install mp3lame:$Triplet" {
-  & (Join-Path $Vcpkg 'vcpkg.exe') install "mp3lame:$Triplet" --overlay-triplets=$TripletDir --x-install-root=$LameRoot --disable-metrics
-}
-$LamePrefix = Join-Path $LameRoot $Triplet
-$LameDll = Join-Path $LamePrefix 'bin\libmp3lame.dll'
-if (-not (Test-Path $LameDll)) { throw "vcpkg did not write $LameDll" }
-
 if (-not $SkipBuild) {
   # The static C runtime applies to the target only. Build scripts and proc-macros keep the default.
   $flagVar = 'CARGO_TARGET_' + ($Target.ToUpper() -replace '-', '_') + '_RUSTFLAGS'
   [Environment]::SetEnvironmentVariable($flagVar, '-C target-feature=+crt-static')
-  # ffi/lame links libmp3lame.lib from this folder.
-  $env:LAME_LIB_DIR = Join-Path $LamePrefix 'lib'
-  $env:LAME_LIB_NAME = 'libmp3lame'
   Invoke-Native "cargo build ($Target)" { cargo build --release --locked -p radio -p radio-cli --target $Target }
 }
 
@@ -113,17 +81,8 @@ $Stage = Join-Path $TargetDir "windows-package\$Arch"
 Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 foreach ($exe in 'craftradio.exe', 'craftradio-cli.exe') { Copy-Item (Join-Path $Bin $exe) $Stage }
-Copy-Item $LameDll $Stage
-# The LGPL notice next to the DLL. packaging/env.sh writes the same text for the other platforms.
-Copy-Item (Join-Path $Root 'packaging\lame\COPYING') (Join-Path $Stage 'LICENSE-LAME.txt')
-Set-Content -Path (Join-Path $Stage 'LAME.txt') -Value @"
-CraftRadio encodes MP3 with LAME $LameVersion (https://lame.sourceforge.io), licensed under the
-GNU LGPL (LICENSE-LAME.txt). LAME is not built into CraftRadio: it is the separate shared library
-libmp3lame.dll next to craftradio.exe. To use your own build of LAME, build LAME $LameVersion or a
-compatible version as a DLL from its source and replace that file.
-"@
 
-& (Join-Path $PSScriptRoot 'sign.ps1') @('craftradio.exe', 'craftradio-cli.exe', 'libmp3lame.dll' | ForEach-Object { Join-Path $Stage $_ })
+& (Join-Path $PSScriptRoot 'sign.ps1') @('craftradio.exe', 'craftradio-cli.exe' | ForEach-Object { Join-Path $Stage $_ })
 
 # ---- MSI ---------------------------------------------------------------------------------------
 # The setup wizard art comes from the app icon. Both images must be 24-bit BMPs.
@@ -183,7 +142,7 @@ Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Ms
 $Portable = Join-Path $TargetDir "windows-package\craftradio-$Version-windows-$Arch-portable"
 Remove-Item -Recurse -Force $Portable -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Portable | Out-Null
-foreach ($f in 'craftradio.exe', 'craftradio-cli.exe', 'libmp3lame.dll', 'LICENSE-LAME.txt', 'LAME.txt') { Copy-Item (Join-Path $Stage $f) $Portable }
+foreach ($f in 'craftradio.exe', 'craftradio-cli.exe') { Copy-Item (Join-Path $Stage $f) $Portable }
 foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE') {
   $p = Join-Path $Root $f
   if (Test-Path $p) { Copy-Item $p $Portable }
@@ -192,7 +151,7 @@ $Zip = Join-Path $Dist "craftradio-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip
 
-# Run --version when this machine can run the build. The app must load libmp3lame.dll to start.
+# Run --version when this machine can run the build.
 $HostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
 if ($Arch -ne 'arm64' -or $HostArch -eq 'arm64') {
   Invoke-Native 'craftradio.exe --version' { & (Join-Path $Stage 'craftradio.exe') --version | Out-Host }

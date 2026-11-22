@@ -9,10 +9,10 @@ workspace = true
 
 [features]
 default = ["mp3"]
-mp3 = ["dep:radio-lame"]
+mp3 = ["dep:craft-audio"]
 
 [dependencies]
-radio-lame = { workspace = true, optional = true }
+craft-audio = { workspace = true, optional = true }
 percent-encoding.workspace = true
 opus.workspace = true
 str0m.workspace = true

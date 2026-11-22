@@ -65,7 +65,7 @@ pub(crate) fn show(
         ui.add(edit.desired_width(size::FIELD_W))
             .on_hover_text("History filter");
         let shown = state.playlist.as_deref().unwrap_or("All playlists");
-        egui::ComboBox::from_id_salt("history_playlist")
+        craft_ui::ComboBox::from_id_salt("history_playlist")
             .width(size::COMBO_W)
             .selected_text(shown)
             .show_ui(ui, |ui| {
@@ -151,7 +151,9 @@ pub(crate) fn show(
         .id_salt("history_columns")
         .auto_shrink(false)
         .show(ui, |ui| {
-            let table_id = ui.id().with(egui::IdSalt::new(("history_table", shown)));
+            let table_id = ui
+                .scope_id()
+                .with(egui::IdSalt::new(("history_table", shown)));
             let mut widths = Vec::new();
             let mut table = TableBuilder::new(ui)
                 .id_salt(("history_table", shown))

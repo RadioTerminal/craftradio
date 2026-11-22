@@ -168,7 +168,7 @@ pub(crate) fn show(
     // The countdowns of the decks count from the snapshot instant.
     let now_ts = view.now.timestamp();
     ui.ctx()
-        .data_mut(|d| d.insert_temp(egui::Id::new(NOW_KEY), now_ts));
+        .data_mut(|d| d.insert_temp(egui::Id::unique(NOW_KEY), now_ts));
     state.preview = view.preview;
     let labels = ['A', 'B', 'C', 'D'];
     for (i, label) in labels.iter().enumerate() {
@@ -389,7 +389,7 @@ fn card_fill(i: usize, deck: &DeckView, t: &Tokens) -> egui::Color32 {
 
 /// Where the card of deck `i` was drawn, for tests.
 pub(crate) fn card_rect_id(i: usize) -> egui::Id {
-    egui::Id::new(("deck_card_rect", i))
+    egui::Id::unique(("deck_card_rect", i))
 }
 
 fn deck_body(
@@ -887,7 +887,7 @@ fn now_playing(ui: &mut egui::Ui, view: &StationView, t: &Tokens) {
             );
             badge.widget_info(|| {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::Label,
+                    egui::Role::Label,
                     true,
                     format!("Deck {} on air", deck.label),
                 )
@@ -1103,7 +1103,7 @@ fn live_chip(
         .stroke(Stroke::new(size::HAIRLINE, ink))
         .min_size(egui::vec2(0.0, size::CONTROL_SM));
     let resp = ui.add(chip).on_hover_text(hint);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, word));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, word));
     if resp.clicked() {
         actions.push(Action::OpenIcecast);
     }
@@ -1217,7 +1217,7 @@ fn out_meter(
         db(m.peak_db[1])
     );
     let resp = resp.on_hover_text(hint);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Out meter"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Out meter"));
     if resp.clicked() {
         actions.push(Action::OpenWindow(crate::windows::ToolWindow::Mixer));
     }
@@ -1226,7 +1226,7 @@ fn out_meter(
 /// The instant of the snapshot, from the clock of the UI.
 fn now_ts(_deck: &DeckView, ui: &egui::Ui) -> Option<jiff::Timestamp> {
     ui.ctx()
-        .data(|d| d.get_temp::<jiff::Timestamp>(egui::Id::new(NOW_KEY)))
+        .data(|d| d.get_temp::<jiff::Timestamp>(egui::Id::unique(NOW_KEY)))
 }
 
 /// The key of the snapshot instant in the egui data, for the countdowns of the decks.

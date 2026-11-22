@@ -54,6 +54,7 @@ fn a_playlist_tab_scrolls_only_its_items_list() {
             delta: egui::vec2(0.0, -200.0),
             phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::NONE,
+            source: egui::MouseWheelSource::Wheel,
         });
         h.run_steps(2);
     }

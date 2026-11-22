@@ -2,7 +2,7 @@
 # Shared setup for the packaging scripts. Source it: `. "$(dirname "$0")/../env.sh"`.
 #
 # It exports ROOT, VERSION, DIST, CARGO_TARGET_DIR and the CRAFTRADIO_BUILD_* values.
-# It also sets BINS, CARGO_PKGS, APP_ID and the LAME_* values. Comments below explain each.
+# It also sets BINS, CARGO_PKGS and APP_ID. Comments below explain each.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ROOT
@@ -46,11 +46,6 @@ BINS=(craftradio craftradio-cli)
 CARGO_PKGS=(-p radio -p radio-cli)
 }
 
-# LAME 3.100 is the last LAME release. Only the app links it. The CLI does not.
-LAME_VERSION=3.100
-LAME_URL="https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/lame-$LAME_VERSION.tar.gz"
-LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
-
 # Run a command a maximum of five times, with 15 s between tries.
 # Use it for remote services. The Apple notarization service sometimes drops connections.
 retry() {
@@ -73,37 +68,6 @@ copy_docs() {
   for f in README.md LICENSE-MIT LICENSE-APACHE; do
     if [ -f "$ROOT/$f" ]; then cp "$ROOT/$f" "$dest/"; fi
   done
-}
-
-# Put the LAME licence and replacement steps next to a bundled libmp3lame.
-# The LGPL relinking terms need them (docs/mp3-release.md).
-# $1 is the destination folder. $2 tells a person where the library is.
-copy_lame_notice() {
-  local dest="$1" where="$2"
-  cp "$ROOT/packaging/lame/COPYING" "$dest/LICENSE-LAME.txt"
-  cat >"$dest/LAME.txt" <<NOTE
-CraftRadio encodes MP3 with LAME $LAME_VERSION (https://lame.sourceforge.io), licensed under the
-GNU LGPL (LICENSE-LAME.txt). LAME is not built into CraftRadio: it is the separate shared library
-$where. To use your own build of LAME, build LAME $LAME_VERSION or a compatible
-version as a shared library from its source ($LAME_URL) and replace that file.
-NOTE
-}
-
-# Download the LAME source into folder $1, check it and unpack it. Print the unpacked folder.
-fetch_lame() {
-  local dir="$1" tgz="$1/lame-$LAME_VERSION.tar.gz"
-  mkdir -p "$dir"
-  [ -f "$tgz" ] || retry curl -fsSL -o "$tgz" "$LAME_URL" >&2
-  if [ "$(sha256 "$tgz")" != "$LAME_SHA256" ]; then
-    echo "error: $tgz does not match LAME_SHA256" >&2
-    rm -f "$tgz"
-    return 1
-  fi
-  rm -rf "$dir/lame-$LAME_VERSION"
-  tar -xzf "$tgz" -C "$dir"
-  # LAME 3.100 exports a symbol that it does not define. New linkers refuse this export list.
-  sed -i.bak '/lame_init_old/d' "$dir/lame-$LAME_VERSION/include/libmp3lame.sym"
-  echo "$dir/lame-$LAME_VERSION"
 }
 
 # Print the SHA-256 of a file, on Linux and macOS.

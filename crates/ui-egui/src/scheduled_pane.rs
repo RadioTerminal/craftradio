@@ -186,9 +186,7 @@ fn upcoming(
         let resp = ui
             .button(text)
             .on_hover_text("Play a file, a library item, a stream or the live input at a set time");
-        resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add one-off")
-        });
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Add one-off"));
         if resp.clicked() {
             actions.push(Action::OneOff(Box::new(OneOffDialog::new(view))));
         }
@@ -279,7 +277,7 @@ fn upcoming(
                 resp.rect = resp.rect.intersect(clip_rect);
                 resp.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::SelectableLabel,
+                        egui::Role::Button,
                         true,
                         format!(
                             "{} {} {} {} {}",

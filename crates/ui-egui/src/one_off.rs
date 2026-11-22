@@ -28,7 +28,7 @@ const OPEN: &str = "one_off_dialog_open";
 /// True when the dialog was open in the last frame. Then Escape closes the dialog and does
 /// not stop the carts. The call clears the mark.
 pub(crate) fn escape_claimed(ctx: &egui::Context) -> bool {
-    ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new(OPEN)))
+    ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique(OPEN)))
         .unwrap_or(false)
 }
 
@@ -381,7 +381,7 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
         }
         Kind::Live => {
             label(ui, "Input device", t);
-            egui::ComboBox::from_id_salt("one_off_live_device")
+            craft_ui::ComboBox::from_id_salt("one_off_live_device")
                 .width(size::COMBO_W)
                 .selected_text(d.device.as_str())
                 .show_ui(ui, |ui| {
@@ -420,12 +420,12 @@ pub(crate) fn show(
     let Some(d) = slot.as_mut() else {
         return;
     };
-    ctx.data_mut(|data| data.insert_temp(egui::Id::new(OPEN), true));
+    ctx.data_mut(|data| data.insert_temp(egui::Id::unique(OPEN), true));
     let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let new = d.id == 0;
     let title = if new { "Add one-off" } else { "Edit one-off" };
     egui::Window::new(title)
-        .id(egui::Id::new("one_off_dialog"))
+        .id(egui::Id::unique("one_off_dialog"))
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .resizable(false)
@@ -449,7 +449,7 @@ pub(crate) fn show(
                             let name = format!("{} source", k.label());
                             r.widget_info(|| {
                                 egui::WidgetInfo::selected(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     enabled,
                                     d.kind == k,
                                     &name,
@@ -509,7 +509,7 @@ pub(crate) fn show(
                     .on_disabled_hover_text("A hard one-off starts at its time sharp");
                     ui.end_row();
                     label(ui, "Repeat", t);
-                    egui::ComboBox::from_id_salt("one_off_repeat")
+                    craft_ui::ComboBox::from_id_salt("one_off_repeat")
                         .width(size::COMBO_W)
                         .selected_text(d.repeat.label())
                         .show_ui(ui, |ui| {

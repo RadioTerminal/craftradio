@@ -19,8 +19,7 @@ and MAY are used as in RFC 2119.
    (operator, 2026-11-22):** the WebRTC listener page `site/index.html`. The station serves it
    (`radio --webrtc`) and GitHub Pages publishes it. Keep it one small file with no build step.
 5. Fix what a lint reports; don't silence it with `allow`. Non-test code SHOULD NOT panic.
-   `unsafe_code = "forbid"` workspace-wide. The one place with unsafe code is `ffi/lame`, the LAME
-   bindings, kept outside the workspace with every `unsafe` block documented.
+   `unsafe_code = "forbid"` workspace-wide.
 6. **Panels change engine state only through commands**, so the CLI and MCP can do anything
    a panel does. Every feature SHOULD also work without the GUI.
 7. **No placeholder shown as success.** Something unsupported or not yet built (no audio in
@@ -36,11 +35,8 @@ and MAY are used as in RFC 2119.
 11. Keep secrets and personal details out of code, logs and fixtures. Fixture names, titles and
     artists are invented, never real songs.
 12. A new dependency MUST be MIT, Apache-2.0, BSD, ISC, Zlib, Unicode, CC0-1.0 or MPL-2.0 licensed (fonts may also be OFL-1.1 or the Ubuntu Font Licence, as egui's default fonts and the template's own fonts are). No
-    GPL/LGPL/AGPL crates. **One exception (operator, 2026-11-21):** LAME (LGPL-2.0) for MP3
-    encoding of the Icecast output only, kept in its own crate (`crates/stream`) behind a cargo
-    feature `mp3` (on by default in the stream crate and explicitly enabled by the radio app). Release builds must meet the LGPL relinking terms: link LAME
-    dynamically where the platform allows it, or ship the object files needed to relink. Dynamically linking an OS-provided system library
-    (for example libasound on Linux through cpal) is allowed.
+    GPL/LGPL/AGPL crates. Dynamically linking an OS-provided system library (for example
+    libasound on Linux through cpal) is allowed.
 13. Dates and times use `jiff`. This departs from the template's `chrono` rule, because
     DST-correct local time zones are core to scheduling. Never hand-roll calendar or UTC math.
 

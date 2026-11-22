@@ -110,18 +110,17 @@ An MCP server is planned on the same commands (`docs/superpowers/plans/2026-11-2
 A Rust workspace in layers: plain data (`model`), DST-safe time (`timing`), scheduling and the
 media library, audio (decks, mixer, outputs) and the JavaScript runtime, the engine with its
 command registry and as-played log, and the egui desktop UI on top. Audio is decoded with
-Symphonia, levelled with EBU R128, and encoded with Opus or LAME for Icecast. The spec is
+Symphonia, levelled with EBU R128, and encoded with Opus or craft-audio's native MP3 encoder for Icecast. The spec is
 [docs/2026-11-21-radio-station-manager-design.md](docs/2026-11-21-radio-station-manager-design.md)
 and the rules for changing the code are in [AGENTS.md](AGENTS.md).
 
 ## Get started
 
-Requires Rust **1.97 or newer**, CMake (for Opus) and LAME as a shared library (MP3 output,
-[docs/mp3-release.md](docs/mp3-release.md)):
+Requires Rust **1.97 or newer** and CMake (for Opus):
 
 ```sh
-brew install lame cmake                               # macOS
-sudo apt-get install libmp3lame-dev libasound2-dev cmake pkg-config   # Debian/Ubuntu
+brew install cmake                                    # macOS
+sudo apt-get install libasound2-dev cmake pkg-config  # Debian/Ubuntu
 ```
 
 Then:
@@ -175,15 +174,14 @@ every file. How a release is made: [docs/releasing.md](docs/releasing.md).
 |---|---|---|---|
 | AppImage | `craftradio-<ver>-linux-x86_64.AppImage` | `craftradio-<ver>-linux-aarch64.AppImage` | Runs anywhere; updates itself with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) (`.zsync` files) |
 | Flatpak | `craftradio-<ver>-linux-x86_64.flatpak` | `craftradio-<ver>-linux-aarch64.flatpak` | `flatpak install --user <file>` |
-| Debian/Ubuntu | `craftradio-<ver>-linux-x86_64.deb` | `craftradio-<ver>-linux-aarch64.deb` | Uses the distribution's LAME |
-| Fedora/RHEL/openSUSE | `craftradio-<ver>-linux-x86_64.rpm` | `craftradio-<ver>-linux-aarch64.rpm` | Uses the distribution's LAME |
+| Debian/Ubuntu | `craftradio-<ver>-linux-x86_64.deb` | `craftradio-<ver>-linux-aarch64.deb` | |
+| Fedora/RHEL/openSUSE | `craftradio-<ver>-linux-x86_64.rpm` | `craftradio-<ver>-linux-aarch64.rpm` | |
 | Tarball | `craftradio-<ver>-linux-x86_64.tar.gz` | `craftradio-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
 
 ## License and credits
 
 CraftRadio is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
-option. MP3 encoding uses [LAME](https://lame.sourceforge.io) (LGPL), which every package ships as
-a separate, replaceable shared library, through this repository's own bindings in `ffi/lame`
-([docs/mp3-release.md](docs/mp3-release.md)).
+option. MP3 encoding uses the native encoder of
+[craft-audio](https://github.com/storytold/craft-libs) (MIT OR Apache-2.0).
 
 The screenshots show invented stations, artists and titles.

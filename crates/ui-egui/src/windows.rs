@@ -97,7 +97,7 @@ impl ToolWindow {
 
     /// The egui id of the floating form of the window.
     pub fn area_id(self) -> Id {
-        Id::new(("tool_window", self.title()))
+        Id::unique(("tool_window", self.title()))
     }
 
     fn index(self) -> usize {
@@ -167,7 +167,7 @@ fn page_step(last: Option<PageFit>, natural: Option<egui::Vec2>, now: egui::Vec2
 /// A settings page calls this each frame it draws, with the size that it needs. Its tool
 /// window then fits the page, and goes back to its old size when the page closes.
 pub(crate) fn page_fits(ctx: &egui::Context, natural: egui::Vec2) {
-    ctx.data_mut(|d| d.insert_temp(Id::new(PAGE_FIT), natural));
+    ctx.data_mut(|d| d.insert_temp(Id::unique(PAGE_FIT), natural));
 }
 
 /// True when the content area of the window has a definite size: a native window, or a
@@ -177,7 +177,7 @@ pub(crate) fn definite_width(ui: &egui::Ui) -> bool {
     !ui.is_sizing_pass()
         && ui
             .ctx()
-            .data(|d| d.get_temp::<bool>(Id::new(DEFINITE)).unwrap_or(false))
+            .data(|d| d.get_temp::<bool>(Id::unique(DEFINITE)).unwrap_or(false))
 }
 
 /// A sizing pass measures the natural width of the content this often.
@@ -234,8 +234,8 @@ pub(crate) fn toggles(ui: &mut egui::Ui, open: &mut Open, t: &Tokens) {
 /// that a person set by hand.
 pub(crate) fn fit_item(ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
-    let user = ctx.data(|d| d.get_temp::<bool>(Id::new(USER_SIZED)).unwrap_or(false));
-    let target = ctx.data(|d| d.get_temp::<Id>(Id::new(FIT_TARGET)));
+    let user = ctx.data(|d| d.get_temp::<bool>(Id::unique(USER_SIZED)).unwrap_or(false));
+    let target = ctx.data(|d| d.get_temp::<Id>(Id::unique(FIT_TARGET)));
     if let (true, Some(target)) = (user, target)
         && ui
             .button("Fit to content")
@@ -294,7 +294,7 @@ pub(crate) fn show(
     }
     let i = w.index();
     let mut change = None;
-    let fit_id = Id::new(("tool_window_fit", w.title()));
+    let fit_id = Id::unique(("tool_window_fit", w.title()));
     {
         let fit = &mut open.fit[i];
         if !fit.loaded {
@@ -312,16 +312,16 @@ pub(crate) fn show(
     }
     let user = open.fit[i].user;
     ctx.data_mut(|d| {
-        d.insert_temp(Id::new(USER_SIZED), user.is_some());
-        d.insert_temp(Id::new(FIT_TARGET), fit_id);
+        d.insert_temp(Id::unique(USER_SIZED), user.is_some());
+        d.insert_temp(Id::unique(FIT_TARGET), fit_id);
     });
     let min = egui::Vec2::from(w.min_size());
     let max = max_size(ctx, min);
     let stays = if ctx.embed_viewports() {
-        ctx.data_mut(|d| d.insert_temp(Id::new(DEFINITE), user.is_some()));
+        ctx.data_mut(|d| d.insert_temp(Id::unique(DEFINITE), user.is_some()));
         floating(ctx, w, user, (min, max), t, &mut add)
     } else {
-        ctx.data_mut(|d| d.insert_temp(Id::new(DEFINITE), true));
+        ctx.data_mut(|d| d.insert_temp(Id::unique(DEFINITE), true));
         let (stays, c) = native(ctx, w, &mut open.fit[i], (min, max), t, &mut add);
         change = c.or(change);
         stays
@@ -330,9 +330,9 @@ pub(crate) fn show(
         open.set(w, false);
     }
     ctx.data_mut(|d| {
-        d.insert_temp(Id::new(USER_SIZED), false);
-        d.insert_temp(Id::new(DEFINITE), false);
-        d.remove_temp::<egui::Vec2>(Id::new(PAGE_FIT));
+        d.insert_temp(Id::unique(USER_SIZED), false);
+        d.insert_temp(Id::unique(DEFINITE), false);
+        d.remove_temp::<egui::Vec2>(Id::unique(PAGE_FIT));
     });
     change
 }
@@ -461,7 +461,7 @@ fn native(
             // back to its old size when the page closes.
             let natural = ui
                 .ctx()
-                .data_mut(|d| d.remove_temp::<egui::Vec2>(Id::new(PAGE_FIT)));
+                .data_mut(|d| d.remove_temp::<egui::Vec2>(Id::unique(PAGE_FIT)));
             let size_now = ui.input(|i| i.viewport().inner_rect.map(|r| r.size()));
             let current = size_now.or(fit.seen).unwrap_or(start);
             match page_step(fit.page, natural, current) {

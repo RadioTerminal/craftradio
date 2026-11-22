@@ -3,7 +3,6 @@
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build].
 # Signing uses MACOS_SIGN_IDENTITY and MACOS_KEYCHAIN. Notarization also uses the APPLE_* values.
 # Without MACOS_SIGN_IDENTITY, the script signs ad-hoc for local tests.
-# The script builds LAME and puts it in CraftRadio.app/Contents/Frameworks (docs/mp3-release.md).
 set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
@@ -34,7 +33,6 @@ WORK="$CARGO_TARGET_DIR/macos-package"
 APP="$WORK/CraftRadio.app"
 DMG="$DIST/craftradio-$VERSION-macos-$ARCH.dmg"
 CLI_ZIP="$DIST/craftradio-cli-$VERSION-macos-$ARCH.zip"
-LAME_DYLIB=libmp3lame.0.dylib
 
 NOTARIZE=0
 if [[ "$IDENTITY" = "-" ]]; then
@@ -47,54 +45,11 @@ fi
 
 echo "==> CraftRadio $VERSION for macOS ($ARCH), identity: $IDENTITY, notarize: $NOTARIZE"
 
-# ---- LAME --------------------------------------------------------------------------------------
-# Build one shared library per architecture, then join them with lipo.
-# The install name is @rpath, so the app finds the copy in its own Frameworks folder.
-LAME_OUT="$WORK/lame"
-build_lame() {
-  local src lipo_inputs=() t arch host prefix
-  src="$(fetch_lame "$CARGO_TARGET_DIR/lame-src")"
-  for t in "${TARGETS[@]}"; do
-    case "$t" in
-      aarch64-*) arch=arm64; host=aarch64-apple-darwin ;;
-      x86_64-*) arch=x86_64; host=x86_64-apple-darwin ;;
-    esac
-    prefix="$CARGO_TARGET_DIR/lame-$arch"
-    rm -rf "$prefix" "$src-build-$arch"
-    cp -R "$src" "$src-build-$arch"
-    (
-      cd "$src-build-$arch"
-      CFLAGS="-arch $arch -O2 -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET" \
-        LDFLAGS="-arch $arch -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET" \
-        ./configure --host="$host" --prefix="$prefix" --enable-shared --disable-static \
-        --disable-frontend --disable-dependency-tracking >/dev/null
-      make -j"$(sysctl -n hw.ncpu)" >/dev/null
-      make install >/dev/null
-    )
-    lipo_inputs+=("$prefix/lib/$LAME_DYLIB")
-  done
-  rm -rf "$LAME_OUT"
-  mkdir -p "$LAME_OUT"
-  lipo -create -output "$LAME_OUT/$LAME_DYLIB" "${lipo_inputs[@]}"
-  install_name_tool -id "@rpath/$LAME_DYLIB" "$LAME_OUT/$LAME_DYLIB"
-  # The linker looks for libmp3lame.dylib. The fat file serves both architectures.
-  ln -sf "$LAME_DYLIB" "$LAME_OUT/libmp3lame.dylib"
-  lipo -info "$LAME_OUT/$LAME_DYLIB"
-}
-
 # ---- build -------------------------------------------------------------------------------------
-# --skip-build keeps an earlier LAME build when there is one.
-if [[ "$SKIP_BUILD" = 0 || ! -f "$LAME_OUT/$LAME_DYLIB" ]]; then
-  build_lame
-fi
 if [[ "$SKIP_BUILD" = 0 ]]; then
   args=()
   for t in "${TARGETS[@]}"; do args+=(--target "$t"); done
-  # LAME_LIB_DIR tells ffi/lame to link this LAME build.
-  # The rpath lets the app find the library in Contents/Frameworks.
-  (cd "$ROOT" && LAME_LIB_DIR="$LAME_OUT" \
-    RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,@executable_path/../Frameworks" \
-    cargo build --release --locked "${CARGO_PKGS[@]}" "${args[@]}")
+  (cd "$ROOT" && cargo build --release --locked "${CARGO_PKGS[@]}" "${args[@]}")
 fi
 
 rm -rf "${WORK:?}/bin"
@@ -105,18 +60,19 @@ for bin in "${BINS[@]}"; do
   lipo -create -output "$WORK/bin/$bin" "${inputs[@]}"
   lipo -info "$WORK/bin/$bin"
 done
-# The app must load LAME through @rpath, not from a path on the build machine.
-if ! otool -L "$WORK/bin/craftradio" | grep -q "@rpath/$LAME_DYLIB"; then
-  otool -L "$WORK/bin/craftradio" >&2
-  echo "error: craftradio does not load @rpath/$LAME_DYLIB" >&2
-  exit 1
-fi
+# The programs must load only the system's libraries, never one from the build machine.
+for bin in "${BINS[@]}"; do
+  if otool -L "$WORK/bin/$bin" | tail -n +2 | grep -vqE '^[[:space:]]+(/usr/lib/|/System/)'; then
+    otool -L "$WORK/bin/$bin" >&2
+    echo "error: $bin loads a library that is not part of macOS" >&2
+    exit 1
+  fi
+done
 
 # ---- signing helpers ---------------------------------------------------------------------------
 sign() {
   # A real identity gets a secure timestamp. Ad-hoc signatures cannot have one.
   # A real identity also gets the hardened runtime, which notarization needs.
-  # Ad-hoc code has no Team ID, so the hardened runtime would refuse to load the bundled LAME.
   local ts=(--timestamp --options runtime)
   [[ "$IDENTITY" = "-" ]] && ts=(--timestamp=none)
   local kc=()
@@ -144,14 +100,12 @@ notarize() {
 # ---- CraftRadio.app ----------------------------------------------------------------------------
 echo "==> assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$WORK/bin/craftradio" "$APP/Contents/MacOS/craftradio"
 cp "$WORK/bin/craftradio-cli" "$APP/Contents/MacOS/craftradio-cli"
-cp "$LAME_OUT/$LAME_DYLIB" "$APP/Contents/Frameworks/$LAME_DYLIB"
 cp "$ROOT/assets/app-icon/craftradio.icns" "$APP/Contents/Resources/craftradio.icns"
 mkdir -p "$APP/Contents/Resources/Licenses"
 copy_docs "$APP/Contents/Resources/Licenses"
-copy_lame_notice "$APP/Contents/Resources/Licenses" "CraftRadio.app/Contents/Frameworks/$LAME_DYLIB"
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" \
   -e "s/@BUILD_SHA@/${CRAFTRADIO_BUILD_SHA:-unknown}/g" \
   "$HERE/Info.plist.in" >"$APP/Contents/Info.plist"
@@ -159,12 +113,11 @@ plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
 
 # Sign the nested code first, then the bundle. The bundle signature does not use --deep.
-sign --identifier "$APP_ID.lame" "$APP/Contents/Frameworks/$LAME_DYLIB"
 sign --identifier "$APP_ID-cli" "$APP/Contents/MacOS/craftradio-cli"
 sign --entitlements "$HERE/entitlements.plist" "$APP/Contents/MacOS/craftradio"
 sign --entitlements "$HERE/entitlements.plist" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
-# The app must start with the bundled LAME. It answers --version before it opens a window.
+# The app must start. It answers --version before it opens a window.
 "$APP/Contents/MacOS/craftradio" --version
 
 if [[ "$NOTARIZE" = 1 ]]; then

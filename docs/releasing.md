@@ -35,8 +35,7 @@ A dry run of the unsigned platforms from any branch: `gh workflow run release.ym
 On macOS, Windows and Linux, using the files attached to the draft:
 
 1. Install or unpack the package. Run `craftradio --version` and `craftradio-cli --version` from the
-   installed location; both must print the candidate version. The app only starts if it finds its
-   LAME library, so this also checks that LAME shipped.
+   installed location; both must print the candidate version.
 2. Open the app, load a station and play an item to the sound card.
 3. Start Icecast output with MP3 to a test server and listen to the stream.
 
@@ -57,28 +56,10 @@ Plus `SHA256SUMS.txt` (and its signature when `LINUX_SIGNING_KEY` is set).
 The shared workflow can also build FreeBSD, Arch Linux, riscv64 and WebAssembly; `release.yml`
 turns those off.
 
-## MP3 and LAME
-
-LAME is LGPL, so it is never compiled into CraftRadio (AGENTS.md rule 12, `docs/mp3-release.md`).
-`ffi/lame`, this repository's own MIT/Apache binding, links the LAME shared library, and each package gets it like this:
-
-| Package | LAME |
-|---|---|
-| macOS app | `package.sh` builds LAME 3.100 from its checked source for both architectures into `CraftRadio.app/Contents/Frameworks/libmp3lame.0.dylib`; the app finds it through its rpath |
-| Windows MSI and zip | `package.ps1` builds vcpkg's `mp3lame` as `libmp3lame.dll` (static C runtime) next to `craftradio.exe` |
-| deb, rpm | depend on the distribution's `libmp3lame0` / `libmp3lame.so.0` |
-| AppImage, tar.gz, Flatpak | carry the build host's `libmp3lame.so.0` in `lib/craftradio/`; the app's RUNPATH is `$ORIGIN/../lib/craftradio` |
-
-Every bundled copy sits next to `LICENSE-LAME.txt` (LAME's own `COPYING`, kept in
-`packaging/lame/`) and `LAME.txt`, which says how to replace it.
-
-The macOS CLI zip has no LAME: only the app links it.
-
 ## Known gaps
 
 - **Windows opens a console window with the app.** `craftradio.exe` is a console program so that
   `craftradio --headless` can print; `package.ps1` checks for that.
-- **vcpkg is not pinned.** The Windows runners' vcpkg checkout decides the `mp3lame` port version.
 - **The shared workflow is pinned, its actions are not.** `release.yml` pins the reusable workflow
   to a commit, because it comes from another organisation and receives the signing secrets. The
   workflow itself still calls `storytold/craft-common-actions/actions/*@main` (43 places), so
