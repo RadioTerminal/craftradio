@@ -30,6 +30,11 @@ accuracy outrank features.
    browsers over WHEP, with public STUN for the address outside the NAT. The listener page is
    `site/index.html`, on GitHub Pages too. It is for quick trials, not a CDN: each listener
    costs the station's own upload, and there is no TURN.
+   Listen link (added 2026-11-22): the station keeps an Ed25519 key in its data folder, and
+   `https://radioterminal.github.io/craftradio/#<public key>` plays it from anywhere. The
+   station answers offers through public WebTorrent trackers over `wss://` (no port-forward),
+   signs each answer, and the page checks the signature. Title, artist and cover art go to
+   listeners on a WebRTC data channel.
 9. Every action also exists as a CLI command and an MCP tool, following the template.
 
 ## 3. Non-goals (v1)

@@ -16,6 +16,10 @@ radio-lame = { workspace = true, optional = true }
 percent-encoding.workspace = true
 opus.workspace = true
 str0m.workspace = true
+ring.workspace = true
+tungstenite.workspace = true
+serde_json.workspace = true
+lofty.workspace = true
 ogg.workspace = true
 rtrb.workspace = true
 base64.workspace = true

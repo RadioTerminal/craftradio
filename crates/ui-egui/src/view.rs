@@ -896,6 +896,9 @@ pub struct OutputStatus {
     pub webrtc: Status,
     /// How many WebRTC listeners play now, while the server listens.
     pub webrtc_listeners: Option<usize>,
+    /// The link that plays the station from anywhere. It is set only while a tracker
+    /// carries the offers, because without one the link does not work.
+    pub listen_link: Option<String>,
 }
 
 /// The job of an audio device.

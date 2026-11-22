@@ -6,7 +6,7 @@ use crate::view::{DeckRole, StreamState};
 use jiff::Timestamp;
 use radio_audio::{CHANNELS, DeckId, LoadOptions, SAMPLE_RATE};
 use radio_engine::Mode;
-use radio_model::{Item, Source, stream_title};
+use radio_model::{Item, PublishMode, Source, stream_title};
 use radio_scheduler::{Entry, Origin};
 use radio_stream::{StreamInput, StreamInputHandle};
 use std::time::Duration;
@@ -188,7 +188,18 @@ impl Core {
             ice.set_title(title.clone());
         }
         if let Some(w) = &self.webrtc {
-            w.set_title(title.clone());
+            // Listeners see the tags and the cover only when the item shows its own tags.
+            match shown.meta.publish {
+                PublishMode::FromTags => {
+                    let file = match &item.source {
+                        Source::File { path } => Some(std::path::PathBuf::from(path)),
+                        _ => None,
+                    };
+                    w.set_now(shown.meta.title.clone(), shown.meta.artist.clone(), file);
+                }
+                PublishMode::KeepPrevious => {}
+                PublishMode::Custom | PublishMode::Hide => w.set_title(title.clone()),
+            }
         }
         self.title = title;
     }

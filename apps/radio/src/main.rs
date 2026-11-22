@@ -66,9 +66,6 @@ struct Args {
     webrtc: Option<std::net::SocketAddr>,
 }
 
-/// The project site that plays a station from any browser.
-const LISTEN_SITE: &str = "https://radioterminal.github.io/craftradio/";
-
 /// A port such as `8000` (all addresses), or an address such as `127.0.0.1:8000`.
 fn parse_listen(text: &str) -> Result<std::net::SocketAddr, String> {
     if let Ok(port) = text.parse::<u16>() {
@@ -190,7 +187,11 @@ fn real(args: &Args) -> Result<(), String> {
     };
     let mut cfg = PlayoutConfig::new(Arc::new(SystemClock), output);
     cfg.icecast = icecast;
-    cfg.webrtc = args.webrtc.map(radio_stream::WebRtcConfig::new);
+    cfg.webrtc = args.webrtc.map(|bind| {
+        let mut w = radio_stream::WebRtcConfig::new(bind);
+        w.identity = station_identity(&dir);
+        w
+    });
     cfg.station_name = STATION_NAME.to_owned();
     let fallback = dir.join("Fallback");
     cfg.fallback_folder = fallback.is_dir().then_some(fallback);
@@ -293,6 +294,34 @@ fn headless(
     Ok(())
 }
 
+/// The station key for the listen link. The first start makes it; later starts read it,
+/// so the link stays the same.
+fn station_identity(dir: &std::path::Path) -> Option<Vec<u8>> {
+    let path = dir.join("webrtc-identity.pk8");
+    if let Ok(key) = std::fs::read(&path)
+        && radio_stream::Identity::new(&key).is_some()
+    {
+        return Some(key);
+    }
+    let key = radio_stream::Identity::generate()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    match options
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &key))
+    {
+        Ok(()) => Some(key),
+        Err(e) => {
+            eprintln!(
+                "radio: the station key could not be saved ({e}); the listen link changes on each start"
+            );
+            Some(key)
+        }
+    }
+}
+
 /// Prints the WebRTC state, with the addresses that listeners open.
 fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool) {
     use radio_stream::WebRtcStatus;
@@ -304,24 +333,22 @@ fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool) {
             url,
             public,
             listeners,
+            link,
+            relays,
             ..
         } => {
-            println!("radio: WebRTC listening, {listeners} listeners");
+            println!("radio: WebRTC listening, {listeners} listeners, {relays} trackers connected");
             if !addresses {
                 return;
             }
-            println!("radio: WebRTC page on this network: {url}");
-            let port = url.rsplit(':').next().unwrap_or("").trim_end_matches('/');
-            println!(
-                "radio: WebRTC page from the project site: {LISTEN_SITE}?station=http://localhost:{port}"
-            );
-            match public {
-                Some(p) => println!(
-                    "radio: WebRTC public address (STUN): {p}. Remote listeners need an HTTPS address for the page, such as a tunnel"
-                ),
-                None => println!(
+            if let Some(link) = link {
+                println!("radio: listen from anywhere: {link}");
+            }
+            println!("radio: listen on this network: {url}");
+            if public.is_none() {
+                println!(
                     "radio: WebRTC has no public address: no STUN server answered, so only this network can listen"
-                ),
+                );
             }
         }
         WebRtcStatus::Failed(e) => println!("radio: WebRTC failed: {e}"),

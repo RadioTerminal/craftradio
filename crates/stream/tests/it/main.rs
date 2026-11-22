@@ -477,5 +477,6 @@ fn short_source_connections_keep_increasing_backoff() {
     server.join().unwrap();
 }
 
+mod relay;
 mod tls;
 mod webrtc;

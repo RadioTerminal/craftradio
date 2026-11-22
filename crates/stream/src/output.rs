@@ -171,19 +171,28 @@ static SYSTEM_TLS: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
 
 fn tls_config(cfg: &SourceConfig) -> Result<Arc<rustls::ClientConfig>, String> {
     if cfg.extra_roots.is_empty() {
-        if let Some(config) = SYSTEM_TLS.get() {
-            cfg.dropped_system_roots
-                .set(SYSTEM_ROOTS.get().map_or(0, |roots| roots.dropped));
-            return Ok(config.clone());
-        }
-        let config = build_tls_config(cfg)?;
-        let _ = SYSTEM_TLS.set(config.clone());
+        let config = system_tls()?;
+        cfg.dropped_system_roots
+            .set(SYSTEM_ROOTS.get().map_or(0, |roots| roots.dropped));
         return Ok(config);
     }
-    build_tls_config(cfg)
+    let (config, dropped) = build_tls_config(&cfg.extra_roots)?;
+    cfg.dropped_system_roots.set(dropped);
+    Ok(config)
 }
 
-fn build_tls_config(cfg: &SourceConfig) -> Result<Arc<rustls::ClientConfig>, String> {
+/// The TLS client settings with the system trust roots, built once.
+pub(crate) fn system_tls() -> Result<Arc<rustls::ClientConfig>, String> {
+    if let Some(config) = SYSTEM_TLS.get() {
+        return Ok(config.clone());
+    }
+    let (config, _) = build_tls_config(&[])?;
+    let _ = SYSTEM_TLS.set(config.clone());
+    Ok(config)
+}
+
+/// Returns the settings and the count of system roots that did not load.
+fn build_tls_config(extra_roots: &[Vec<u8>]) -> Result<(Arc<rustls::ClientConfig>, usize), String> {
     let loaded;
     let system = if let Some(system) = SYSTEM_ROOTS.get() {
         system
@@ -199,9 +208,8 @@ fn build_tls_config(cfg: &SourceConfig) -> Result<Arc<rustls::ClientConfig>, Str
             &loaded
         }
     };
-    cfg.dropped_system_roots.set(system.dropped);
     let mut roots = system.store.clone();
-    for der in &cfg.extra_roots {
+    for der in extra_roots {
         roots
             .add(der.clone().into())
             .map_err(|_| "invalid extra root")?;
@@ -219,7 +227,7 @@ fn build_tls_config(cfg: &SourceConfig) -> Result<Arc<rustls::ClientConfig>, Str
     .map_err(|_| "configuration failed")?
     .with_root_certificates(roots)
     .with_no_client_auth();
-    Ok(Arc::new(config))
+    Ok((Arc::new(config), system.dropped))
 }
 
 /// Apply the total limit inside complete_io, which can perform many reads.
