@@ -172,6 +172,7 @@ fn main() -> ExitCode {
             "rules-items",
             Scene::Click(l(&["    Jingles", "Jingles rules", "Items & source"])),
         ),
+        ("playlist-tab", Scene::Click(l(&["    Jingles"]))),
         ("context-menu", Scene::Menu(ROW.into(), String::new())),
         ("add-menu", Scene::Click(l(&["Add to Music"]))),
         ("add-url", Scene::Click(l(&["Add to Music", "Add URL…"]))),

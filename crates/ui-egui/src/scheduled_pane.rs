@@ -461,6 +461,8 @@ fn playlist(
             actions.push(remove_items(p, decks, sel));
         }
     }
+    // The bottom of the pane: the items list stretches down to it.
+    let pane_bottom = ui.max_rect().bottom().min(ui.clip_rect().bottom());
     egui::ScrollArea::vertical()
         .id_salt(("playlist_scroll", &p.name))
         .show(ui, |ui| {
@@ -504,9 +506,16 @@ fn playlist(
                     ui.set_width(ui.available_width());
                     let hint = RichText::new("Drop a library title or files here to add them");
                     ui.label(hint.font(theme::text(theme::CAPTION)).color(t.text_muted));
+                    // The list fills the pane down to its bottom edge, never less than its
+                    // minimum height.
+                    // Leave room for the header row and the card's bottom edge.
+                    let edge = f32::from(pad::TIGHT.bottom) + size::HAIRLINE;
+                    let fill = (pane_bottom - ui.cursor().top() - size::DIVIDER_ROW - edge)
+                        .max(size::PLAYLIST_TABLE_H);
                     TableBuilder::new(ui)
                         .id_salt("items")
-                        .max_scroll_height(size::PLAYLIST_TABLE_H)
+                        .min_scrolled_height(fill)
+                        .max_scroll_height(fill)
                         .sense(Sense::click())
                         .auto_shrink(false)
                         .cell_layout(Layout::left_to_right(Align::Center))

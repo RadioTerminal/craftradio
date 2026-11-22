@@ -58,9 +58,30 @@ pub(crate) fn show(
     let old_hours = parts::u32(view, parts::HISTORY, "hours_back", MAX_HOURS_BACK);
     let mut shown = old_shown;
     let mut hours_back = old_hours;
-    let mut open = state.settings;
-    settings::header(ui, "History", &mut open, |_| {});
-    state.settings = open;
+    // One row: the filters on the left, the settings button far right.
+    ui.horizontal(|ui| {
+        let hint = "Filter by title or playlist";
+        let edit = egui::TextEdit::singleline(&mut state.filter).hint_text(hint);
+        ui.add(edit.desired_width(size::FIELD_W))
+            .on_hover_text("History filter");
+        let shown = state.playlist.as_deref().unwrap_or("All playlists");
+        egui::ComboBox::from_id_salt("history_playlist")
+            .width(size::COMBO_W)
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                widgets::selectable_value(ui, &mut state.playlist, None, "All playlists");
+                let mut names: Vec<&str> =
+                    view.history.iter().map(|r| r.playlist.as_str()).collect();
+                names.sort_unstable();
+                names.dedup();
+                for n in names {
+                    widgets::selectable_value(ui, &mut state.playlist, Some(n.to_owned()), n);
+                }
+            });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            settings::settings_button(ui, "History", &mut state.settings);
+        });
+    });
     if state.settings {
         settings::section(ui, "History", view.preview, t, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -87,26 +108,6 @@ pub(crate) fn show(
     if hours_back != old_hours {
         actions.push(parts::set(parts::HISTORY, "hours_back", hours_back));
     }
-    ui.horizontal(|ui| {
-        let hint = "Filter by title or playlist";
-        let edit = egui::TextEdit::singleline(&mut state.filter).hint_text(hint);
-        ui.add(edit.desired_width(size::FIELD_W))
-            .on_hover_text("History filter");
-        let shown = state.playlist.as_deref().unwrap_or("All playlists");
-        egui::ComboBox::from_id_salt("history_playlist")
-            .width(size::COMBO_W)
-            .selected_text(shown)
-            .show_ui(ui, |ui| {
-                widgets::selectable_value(ui, &mut state.playlist, None, "All playlists");
-                let mut names: Vec<&str> =
-                    view.history.iter().map(|r| r.playlist.as_str()).collect();
-                names.sort_unstable();
-                names.dedup();
-                for n in names {
-                    widgets::selectable_value(ui, &mut state.playlist, Some(n.to_owned()), n);
-                }
-            });
-    });
     ui.add_space(space::S);
 
     let needle = state.filter.to_lowercase();
@@ -161,7 +162,19 @@ pub(crate) fn show(
             if let Some(i) = scroll {
                 table = table.scroll_to_row(i, Some(Align::Center));
             }
+            // The title takes the width that is left, so the table fills the window. Without a
+            // title column the last column does.
+            let fill = if cols.contains(&Col::Title) {
+                Some(Col::Title)
+            } else {
+                cols.last().copied()
+            };
             for c in &cols {
+                if Some(*c) == fill {
+                    table =
+                        table.column(Column::remainder().at_least(size::TEXT_COL_MIN).clip(true));
+                    continue;
+                }
                 table = table.column(match c {
                     Col::Aired => Column::exact(size::COL_TIME),
                     Col::Playlist => Column::initial(parts::f32(
