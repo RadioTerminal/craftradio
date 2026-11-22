@@ -180,7 +180,7 @@ pub(crate) fn show(
             grid_w.min(ui.available_width()),
             size::CONTROL_MD,
         ));
-    let keys = shortcuts::label(ui.ctx(), &shortcuts::STOP_CARTS);
+    let keys = shortcuts::label(ui.ctx(), shortcuts::STOP_CARTS);
     let audio = if view.preview {
         format!(" · {NO_AUDIO}")
     } else {

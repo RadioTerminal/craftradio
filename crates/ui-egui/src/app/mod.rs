@@ -841,7 +841,7 @@ fn status_line(
                 );
             }
             if let Some((text, undo)) = toast {
-                let label = format!("Undo ({})", shortcuts::label(ui.ctx(), &shortcuts::UNDO));
+                let label = format!("Undo ({})", shortcuts::label(ui.ctx(), shortcuts::UNDO));
                 if undo && ui.small_button(label).clicked() {
                     actions.push(Action::Edit(Edit::Undo));
                 }

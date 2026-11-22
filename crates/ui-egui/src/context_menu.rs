@@ -3,7 +3,7 @@
 //! Each row of a menu is a `menu_item`. A row shows its keyboard shortcut on the right.
 //! The accessible name of each row starts with its label.
 
-use egui::{KeyboardShortcut, RichText};
+use egui::RichText;
 
 use crate::theme::Tokens;
 
@@ -18,11 +18,7 @@ pub(crate) fn not_here(view: &crate::view::StationView) -> String {
 pub(crate) use crate::shortcuts::{COPY, CUT, DELETE, DUPLICATE, PASTE};
 
 /// A row of a menu. It returns true on a click, and then closes the menu.
-pub(crate) fn menu_item(
-    ui: &mut egui::Ui,
-    label: &str,
-    shortcut: Option<KeyboardShortcut>,
-) -> bool {
+pub(crate) fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: Option<&str>) -> bool {
     menu_item_if(ui, true, label, shortcut)
 }
 
@@ -31,11 +27,14 @@ pub(crate) fn menu_item_if(
     ui: &mut egui::Ui,
     enabled: bool,
     label: &str,
-    shortcut: Option<KeyboardShortcut>,
+    shortcut: Option<&str>,
 ) -> bool {
     let mut button = egui::Button::new(label);
-    if let Some(s) = shortcut {
-        button = button.shortcut_text(ui.ctx().format_shortcut(&s));
+    if let Some(text) = shortcut
+        .map(|id| crate::shortcuts::label(ui.ctx(), id))
+        .filter(|t| !t.is_empty())
+    {
+        button = button.shortcut_text(text);
     }
     let clicked = ui.add_enabled(enabled, button).clicked();
     if clicked {

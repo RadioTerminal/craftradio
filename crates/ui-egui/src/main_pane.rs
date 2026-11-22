@@ -428,7 +428,7 @@ fn row_menu(
     ui.separator();
     match sel.iter().find_map(|id| prep.protected(*id)) {
         Some(why) => {
-            let label = format!("Remove ({})", shortcuts::label(ui.ctx(), &DELETE));
+            let label = format!("Remove ({})", shortcuts::label(ui.ctx(), DELETE));
             ui.add_enabled(false, egui::Button::new(label))
                 .on_disabled_hover_text(why);
         }
