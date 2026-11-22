@@ -1235,6 +1235,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-control"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
@@ -1260,6 +1270,14 @@ dependencies = [
  "unicode-bidi",
  "windows-registry",
  "writeable",
+]
+
+[[package]]
+name = "craft-mcp-server"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -4424,6 +4442,7 @@ dependencies = [
  "eframe",
  "hound",
  "jiff",
+ "radio-control",
  "radio-engine",
  "radio-library",
  "radio-model",
@@ -4468,11 +4487,25 @@ dependencies = [
  "clap",
  "jiff",
  "radio-engine",
+ "radio-mcp",
  "radio-model",
  "radio-scheduler",
  "serde_json",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "radio-control"
+version = "0.1.0"
+dependencies = [
+ "craft-control",
+ "dirs",
+ "jiff",
+ "radio-engine",
+ "radio-model",
+ "radio-playout",
+ "serde_json",
 ]
 
 [[package]]
@@ -4504,6 +4537,17 @@ dependencies = [
  "symphonia-adapter-libopus",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "radio-mcp"
+version = "0.1.0"
+dependencies = [
+ "craft-mcp-server",
+ "radio-control",
+ "radio-engine",
+ "radio-playout",
+ "serde_json",
 ]
 
 [[package]]

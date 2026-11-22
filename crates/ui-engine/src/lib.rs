@@ -66,6 +66,8 @@ pub struct SourceOptions {
 
 /// The real station as a [`ViewSource`].
 pub struct EngineSource {
+    /// Things that hold a sender of the playout (the control channel), so they drop first.
+    companions: Vec<Box<dyn Send>>,
     /// The fader thread holds a sender of the playout, so it drops first.
     merger: Option<fader::Merger>,
     /// The answers to merged commands, checked for errors.
@@ -188,6 +190,7 @@ impl EngineSource {
         let meter_reader = std::sync::Mutex::new(playout.meters());
         let mode = playout.snapshot().mode;
         let mut source = Self {
+            companions: Vec::new(),
             merger,
             replies,
             meter_reader,
@@ -241,6 +244,13 @@ impl EngineSource {
             let _ = source.send("", radio_engine::Command::ModeSet { mode: Mode::Auto });
         }
         source
+    }
+
+    /// The same source, keeping `companion` until it ends and dropping it before the playout:
+    /// for something that holds a sender of the playout, such as the control channel.
+    pub fn with_companion(mut self, companion: Box<dyn Send>) -> Self {
+        self.companions.push(companion);
+        self
     }
 
     /// The same source with another store for the Icecast password.

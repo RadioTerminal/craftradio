@@ -56,7 +56,7 @@ pub enum Route {
     CueOnly,
 }
 
-/// Who may run a command (spec 6.14). MCP gets `ReadOnly` by default.
+/// Who may run a command (spec 6.14). MCP exposes both tiers and marks `ReadOnly` tools as such.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Tier {
     ReadOnly,

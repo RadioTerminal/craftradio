@@ -1,0 +1,17 @@
+[package]
+name = "radio-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+craft-mcp-server.workspace = true
+radio-control.workspace = true
+radio-engine.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+radio-playout.workspace = true

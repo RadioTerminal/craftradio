@@ -18,7 +18,11 @@ fn tone(path: &std::path::Path) {
 }
 
 fn radio() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_craftradio"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_craftradio"));
+    // The station's control channel keeps its token files here, not in the user's own folder.
+    let control = std::env::temp_dir().join(format!("craftradio-control-{}", std::process::id()));
+    cmd.env("CRAFTRADIO_CONTROL_DIR", control);
+    cmd
 }
 
 /// The preview runs without a window and stops by itself.

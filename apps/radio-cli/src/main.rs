@@ -52,6 +52,13 @@ enum Command {
     },
     /// List the engine commands: id, tier and summary.
     Commands,
+    /// Serve MCP on stdio: every engine command as a tool, run on the running station through
+    /// its control channel (docs/control.md).
+    Mcp {
+        /// The control port of the station. Defaults to the station started last.
+        #[arg(long)]
+        port: Option<u16>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -104,6 +111,14 @@ fn run_command(data_dir: &std::path::Path, json: &str) -> Result<u8, String> {
 fn run(cli: Cli) -> Result<u8, String> {
     match cli.command {
         Command::Cmd { data_dir, command } => run_command(&data_dir, &command),
+        Command::Mcp { port } => {
+            // The token comes from CRAFTRADIO_CONTROL_TOKEN or the station's token file, never
+            // from the command line, where other users could read it.
+            let station = radio_mcp::Running::new(port, None);
+            radio_mcp::serve(station, io::stdin().lock(), io::stdout().lock())
+                .map_err(|e| format!("the MCP connection failed: {e}"))?;
+            Ok(0)
+        }
         Command::Commands => {
             let mut out = io::stdout().lock();
             for spec in radio_engine::registry() {

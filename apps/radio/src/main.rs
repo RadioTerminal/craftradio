@@ -64,6 +64,13 @@ struct Args {
     /// run. Without it, the switch in the status line turns streaming on, on port 8000.
     #[arg(long, value_parser = parse_listen)]
     webrtc: Option<std::net::SocketAddr>,
+    /// Listen for the CLI and MCP on this loopback port (docs/control.md). Without it, the
+    /// control channel takes port 17470 or the next free one.
+    #[arg(long, conflicts_with = "no_control")]
+    control: Option<u16>,
+    /// Start no control channel: the CLI and MCP cannot reach this station.
+    #[arg(long)]
+    no_control: bool,
 }
 
 /// A port such as `8000` (all addresses), or an address such as `127.0.0.1:8000`.
@@ -199,10 +206,11 @@ fn real(args: &Args) -> Result<(), String> {
     cfg.fallback_folder = fallback.is_dir().then_some(fallback);
     let playout = Playout::start(engine, cfg).map_err(|e| format!("the playout failed: {e}"))?;
     println!("radio: station at {}", dir.join("station.db").display());
+    let control = control_channel(args, &playout);
     if args.headless {
-        return headless(playout, args.run_for, tz);
+        return headless(playout, control, args.run_for, tz);
     }
-    let source = EngineSource::new(
+    let mut source = EngineSource::new(
         playout,
         SourceOptions {
             tz,
@@ -210,12 +218,38 @@ fn real(args: &Args) -> Result<(), String> {
         },
     )
     .with_secrets(Arc::new(secrets));
+    if let Some(control) = control {
+        source = source.with_companion(Box::new(control));
+    }
     window(args, Box::new(source), Box::new(Timestamp::now), "Radio")
+}
+
+/// Starts the control channel of the CLI and MCP, unless `--no-control`. A channel that
+/// cannot start is reported, and the station runs without it.
+fn control_channel(args: &Args, playout: &Playout) -> Option<radio_control::Control> {
+    if args.no_control {
+        println!(
+            "radio: no control channel (--no-control): the CLI and MCP cannot reach this station"
+        );
+        return None;
+    }
+    let sender = playout.command_sender()?;
+    match radio_control::start(sender, args.control) {
+        Ok(control) => {
+            println!("radio: control channel on 127.0.0.1:{}", control.port());
+            Some(control)
+        }
+        Err(e) => {
+            eprintln!("radio: no control channel: {e}; the CLI and MCP cannot reach this station");
+            None
+        }
+    }
 }
 
 /// Runs the station without a window, and prints what an operator should know.
 fn headless(
     playout: Playout,
+    control: Option<radio_control::Control>,
     run_for: Option<Duration>,
     tz: jiff::tz::TimeZone,
 ) -> Result<(), String> {
@@ -230,6 +264,9 @@ fn headless(
             station_name: STATION_NAME.to_owned(),
         },
     );
+    if let Some(control) = control {
+        source = source.with_companion(Box::new(control));
+    }
     let _ = source.snapshot(Timestamp::now());
     println!("radio: folder watches started");
     let until = run_for.map(|d| Instant::now() + d);

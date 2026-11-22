@@ -106,9 +106,11 @@ skip, end a live item…) is a typed command in `engine`. The UI, scripts, CLI a
 through it, the same pattern the template uses for its tools. If approach B is wanted later,
 the engine can move into its own process without the UI changing much.
 
-**How the CLI reaches a running app (my call):** the app listens on a local control socket
-(a Unix socket on Linux/macOS, a named pipe on Windows). It's for local control only, not a
-network API.
+**How the CLI reaches a running app (my call):** the app listens on a local control channel.
+It's for local control only, not a network API. Built (2026-11-22) as craft-control's channel
+instead of a Unix socket or named pipe: JSON lines on a loopback TCP port, behind a per-launch
+token in a file only the station's user can read, which keeps other users out as the socket's
+permissions would. See `docs/control.md`.
 
 ### 6.3 Timing and fixed-time events
 
@@ -595,7 +597,9 @@ The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§
 - **Ending a live item on silence** is opt-in per item, with a long threshold (default 60 s),
   because quiet speech would trigger it.
 - **Control socket permissions:** only the station's OS user can open it. Commands come in two
-  tiers, *read-only* and *on-air*; MCP gets read-only by default.
+  tiers, *read-only* and *on-air*. **MCP exposes both tiers (operator, 2026-11-22):** every
+  command is a tool; read-only ones are marked read-only, and on-air ones say they change the
+  running station, so a client can ask the person first.
 - **Library:** moved files can be relinked by content hash. The playlist view only draws the
   rows on screen, so a 24-hour playlist stays fast.
 

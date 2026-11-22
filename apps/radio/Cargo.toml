@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 radio-ui-egui.workspace = true
 radio-ui-engine.workspace = true
+radio-control.workspace = true
 radio-engine.workspace = true
 radio-playout.workspace = true
 radio-model.workspace = true
