@@ -108,7 +108,7 @@ pub enum WebRtcStatus {
         link: Option<String>,
         /// Trackers with a connection now. Without one, the link does not work.
         relays: usize,
-        /// The address that the home router forwards to the station (UPnP), while it does.
+        /// The address that the home router forwards to the station (UPnP or NAT-PMP), while it does.
         mapped: Option<SocketAddr>,
     },
     Failed(String),

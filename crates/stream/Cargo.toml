@@ -17,6 +17,7 @@ percent-encoding.workspace = true
 opus.workspace = true
 str0m.workspace = true
 igd-next.workspace = true
+natpmp.workspace = true
 ring.workspace = true
 tungstenite.workspace = true
 serde_json.workspace = true

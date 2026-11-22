@@ -18,6 +18,8 @@ ring = "0.17"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "__rustls-tls"] }
 # UPnP port mapping on the home router for WebRTC listening.
 igd-next = { version = "0.18", default-features = false, features = ["io_sync"] }
+# NAT-PMP port mapping, for routers without UPnP. No async runtime.
+natpmp = { version = "0.5", default-features = false }
 str0m = { version = "0.25", default-features = false, features = ["aws-lc-rs"] }
 lofty = "0.22"
 ebur128 = "0.1"

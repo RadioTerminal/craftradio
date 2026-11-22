@@ -1094,7 +1094,8 @@ fn live_chip(
             format!("\nRouter: forwards {addr}, so phones on mobile data reach the station")
         }
         (None, true) => {
-            "\nRouter: no port forwarded (no UPnP), so some listeners may not connect".to_owned()
+            "\nRouter: no port forwarded (no UPnP or NAT-PMP), so some listeners may not connect"
+                .to_owned()
         }
         (None, false) => String::new(),
     };

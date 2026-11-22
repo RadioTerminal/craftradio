@@ -1,4 +1,4 @@
-//! UPnP port mapping on the home router for WebRTC listening.
+//! Port mapping on the home router for WebRTC listening: UPnP, else NAT-PMP.
 //!
 //! The router forwards the UDP port of the station. Then listeners behind a strict NAT,
 //! such as most phones on mobile data, reach the station too. Without a router that
@@ -37,13 +37,20 @@ pub(crate) fn start(
         .spawn(move || run(local, &mapped, &running));
 }
 
+/// A mapping that the router keeps, and how to remove it.
+enum Mapping {
+    Upnp(igd_next::Gateway, u16),
+    Pmp,
+}
+
 fn run(local: SocketAddr, mapped: &Mapped, running: &dyn Fn() -> bool) {
-    let mut current: Option<(igd_next::Gateway, u16)> = None;
+    let mut current: Option<Mapping> = None;
     while running() {
-        let wait = match map(local) {
-            Ok((gateway, external)) => {
+        let result = map(local).map(|(g, a)| (Mapping::Upnp(g, a.port()), a));
+        let wait = match result.or_else(|_| map_pmp(local, LEASE_S).map(|a| (Mapping::Pmp, a))) {
+            Ok((mapping, external)) => {
                 set(mapped, Some(external));
-                current = Some((gateway, external.port()));
+                current = Some(mapping);
                 RENEW
             }
             Err(_) => {
@@ -56,8 +63,15 @@ fn run(local: SocketAddr, mapped: &Mapped, running: &dyn Fn() -> bool) {
             thread::sleep(Duration::from_millis(500));
         }
     }
-    if let Some((gateway, port)) = current {
-        let _ = gateway.remove_port(PortMappingProtocol::UDP, port);
+    match current {
+        Some(Mapping::Upnp(gateway, port)) => {
+            let _ = gateway.remove_port(PortMappingProtocol::UDP, port);
+        }
+        // A lifetime of 0 removes the mapping.
+        Some(Mapping::Pmp) => {
+            let _ = map_pmp(local, 0);
+        }
+        None => {}
     }
     set(mapped, None);
 }
@@ -92,4 +106,96 @@ fn map(local: SocketAddr) -> Result<(igd_next::Gateway, SocketAddr), String> {
             .map_err(|e| e.to_string())?,
     };
     Ok((gateway, SocketAddr::new(ip, port)))
+}
+
+/// The longest wait for one NAT-PMP answer.
+const PMP_WAIT: std::time::Duration = Duration::from_secs(4);
+
+/// Asks the default gateway for a NAT-PMP mapping of the same port, for `lifetime` seconds.
+fn map_pmp(local: SocketAddr, lifetime: u32) -> Result<SocketAddr, String> {
+    let gateway = natpmp::get_default_gateway().map_err(|e| e.to_string())?;
+    map_pmp_at(gateway, local, lifetime)
+}
+
+fn map_pmp_at(
+    gateway: std::net::Ipv4Addr,
+    local: SocketAddr,
+    lifetime: u32,
+) -> Result<SocketAddr, String> {
+    let mut pmp = natpmp::Natpmp::new_with(gateway).map_err(|e| e.to_string())?;
+    pmp.send_public_address_request()
+        .map_err(|e| e.to_string())?;
+    let ip = match pmp_answer(&mut pmp)? {
+        natpmp::Response::Gateway(g) => *g.public_address(),
+        _ => return Err("the router gave no public address".into()),
+    };
+    if !crate::webrtc::is_public(std::net::IpAddr::V4(ip)) {
+        return Err(format!("the router has the private address {ip}"));
+    }
+    pmp.send_port_mapping_request(natpmp::Protocol::UDP, local.port(), local.port(), lifetime)
+        .map_err(|e| e.to_string())?;
+    match pmp_answer(&mut pmp)? {
+        natpmp::Response::UDP(m) => Ok(SocketAddr::new(ip.into(), m.public_port())),
+        _ => Err("the router did not map the port".into()),
+    }
+}
+
+/// Waits for the answer to the request in flight, at most [`PMP_WAIT`].
+fn pmp_answer(pmp: &mut natpmp::Natpmp) -> Result<natpmp::Response, String> {
+    let until = Instant::now() + PMP_WAIT;
+    loop {
+        match pmp.read_response_or_retry() {
+            Ok(answer) => return Ok(answer),
+            Err(natpmp::Error::NATPMP_TRYAGAIN) if Instant::now() < until => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, UdpSocket};
+
+    /// A router that answers NAT-PMP on this computer, as RFC 6886 describes.
+    fn fake_router(public: Ipv4Addr, mapped_port: u16) -> thread::JoinHandle<Vec<u8>> {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 5351)).expect("port 5351 is free");
+        socket.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        thread::spawn(move || {
+            let mut asked = Vec::new();
+            let mut buf = [0u8; 16];
+            for _ in 0..2 {
+                let Ok((n, from)) = socket.recv_from(&mut buf) else {
+                    break;
+                };
+                let op = buf[1];
+                asked.push(op);
+                let mut reply = vec![0, 128 + op, 0, 0, 0, 0, 0, 1];
+                if op == 0 {
+                    reply.extend(public.octets());
+                } else if n >= 12 {
+                    reply.extend(&buf[4..6]);
+                    reply.extend(mapped_port.to_be_bytes());
+                    reply.extend(&buf[8..12]);
+                }
+                socket.send_to(&reply, from).ok();
+            }
+            asked
+        })
+    }
+
+    #[test]
+    fn a_nat_pmp_router_gives_the_public_address_and_port() {
+        let router = fake_router(Ipv4Addr::new(81, 2, 69, 160), 40000);
+        let local: SocketAddr = (Ipv4Addr::new(192, 168, 1, 20), 8000).into();
+        let mapped = map_pmp_at(Ipv4Addr::LOCALHOST, local, LEASE_S);
+        assert_eq!(mapped, Ok("81.2.69.160:40000".parse().unwrap()));
+        assert_eq!(
+            router.join().unwrap(),
+            vec![0, 1],
+            "address, then a UDP mapping"
+        );
+    }
 }
