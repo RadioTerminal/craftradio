@@ -261,8 +261,8 @@ fn soft(item: Item, start: DateTime) -> Command {
     }
 }
 
-/// Songs that the fitter may neither move nor trim. With `lock`, a person placed them.
-fn fixed_songs(tag: &str, lock: bool) -> Engine {
+/// Songs that the fitter may neither move nor trim. A person placed the `locked` ones.
+fn fixed_songs(tag: &str, locked: &[u64]) -> Engine {
     let main: Vec<_> = (1..=6)
         .map(|i| {
             let path = wav(&format!("{tag}-song{i}"), 4.0, Side::Left);
@@ -278,10 +278,53 @@ fn fixed_songs(tag: &str, lock: bool) -> Engine {
             playlist: radio_model::PlaylistId(1),
             items: main,
             at: None,
-            lock,
+            lock: false,
         })
         .unwrap();
+    lock_items(&mut engine, locked);
     engine
+}
+
+fn lock_items(engine: &mut Engine, ids: &[u64]) {
+    for &id in ids {
+        engine
+            .dispatch(Command::ItemLock {
+                item: radio_model::ItemId(id),
+            })
+            .unwrap();
+    }
+}
+
+/// The songs `ids` aired one after the other, each at the segue of the one before it.
+/// So no soft event moved a locked song.
+fn assert_back_to_back(p: &Playout, ids: &[u64]) {
+    let rows = p.history(t0(), 40).unwrap();
+    let start = |id: u64| {
+        let title = format!("Song {id}");
+        rows.iter()
+            .find(|r| r.entry.title == title)
+            .unwrap()
+            .entry
+            .start
+    };
+    for w in ids.windows(2) {
+        let gap = start(w[1]).duration_since(start(w[0])).as_secs_f64();
+        assert!(
+            (gap - 3.5).abs() < 0.05,
+            "locked Song {} starts at the segue of Song {}: {gap} s",
+            w[1],
+            w[0]
+        );
+    }
+}
+
+/// When the song with `id` hands over, from its row in the history.
+fn handover(p: &Playout, id: u64) -> usize {
+    let title = format!("Song {id}");
+    let rows = p.history(t0(), 40).unwrap();
+    let row = rows.iter().find(|r| r.entry.title == title).unwrap();
+    let secs = row.entry.start.duration_since(t0()).as_secs_f64() + 3.5;
+    (secs * SR as f64) as usize
 }
 
 /// The soft one-off airs late, after the song in its way, with no song on top of it. The
@@ -328,7 +371,7 @@ fn added_id(p: &Playout, cmd: Command) -> u64 {
 #[test]
 fn a_soft_one_off_behind_an_untrimmable_song_airs_late_with_an_alarm() {
     // Song 2 starts at 3.5 s and hands over at 7 s, past 5 s + 1 s. Nothing may move or trim.
-    let mut engine = fixed_songs("oo7", false);
+    let mut engine = fixed_songs("oo7", &[]);
     let cmd = soft(promo("oo7-promo", "Soft promo"), at(13, 0, 5));
     let id = engine
         .dispatch(cmd)
@@ -344,9 +387,10 @@ fn a_soft_one_off_behind_an_untrimmable_song_airs_late_with_an_alarm() {
 }
 
 #[test]
-fn a_soft_one_off_among_locked_songs_airs_after_the_song_in_its_way() {
-    // A person placed the songs, so they are locked: nothing moves or trims them.
-    let mut engine = fixed_songs("oo8", true);
+fn a_soft_one_off_among_locked_songs_waits_for_the_last_locked_song_in_its_way() {
+    // A person placed songs 1 to 3, so they are locked. The one-off at 5 s falls in song 2,
+    // and song 3 follows it. Locked songs never move, so the one-off waits for song 3.
+    let mut engine = fixed_songs("oo8", &[1, 2, 3]);
     let cmd = soft(promo("oo8-promo", "Soft promo"), at(13, 0, 5));
     let id = engine
         .dispatch(cmd)
@@ -356,15 +400,21 @@ fn a_soft_one_off_among_locked_songs_airs_after_the_song_in_its_way() {
         .unwrap();
     let (p, clock) = offline(engine, |_| {});
     let alarms = p.alarms().unwrap();
-    let program = run(&p, &clock, 14.0);
+    let program = run(&p, &clock, 16.0);
     let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
     assert_aired_late(&p, &program, &raised, id, 5 * SR);
+    assert_back_to_back(&p, &[1, 2, 3]);
+    let start = first_audible(&program, 1, 0).unwrap();
+    assert!(
+        start + SR / 100 >= handover(&p, 3),
+        "it starts after the last locked song in its way: {start}"
+    );
 }
 
 #[test]
 fn a_soft_one_off_added_while_the_decks_are_full_still_airs() {
     // At 9 s the three next songs wait on decks. The one-off at 12 s goes before two of them.
-    let engine = fixed_songs("oo9", false);
+    let engine = fixed_songs("oo9", &[]);
     let (p, clock) = offline(engine, |_| {});
     let alarms = p.alarms().unwrap();
     let before = run(&p, &clock, 9.0);
@@ -394,10 +444,52 @@ fn a_soft_one_off_in_dead_air_never_starts_before_its_tolerance() {
 
 #[test]
 fn music_added_while_a_soft_one_off_waits_on_a_deck_plays_before_it() {
-    // The one-off loads at once on a quiet station. Then a person adds songs, so they
-    // are locked. A song covers 20 s, so the one-off airs late, after that song.
+    // The one-off loads at once on a quiet station. Then a person adds songs and locks the
+    // first three, so they stay before the one-off and keep their starts.
     let mut engine = Engine::open_in_memory().unwrap();
-    let cmd = soft(promo("oo11-promo", "Soft promo"), at(13, 0, 20));
+    engine
+        .dispatch(soft(promo("oo11-promo", "Soft promo"), at(13, 0, 20)))
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let mut program = run(&p, &clock, 2.0);
+    let main: Vec<_> = (1..=6)
+        .map(|i| {
+            let path = wav(&format!("oo11-song{i}"), 4.0, Side::Left);
+            file_item(100 + i, &format!("Song {}", 100 + i), &path, 4.0, 3.5, 0.5)
+        })
+        .collect();
+    let mut cmds = vec![Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: main,
+        at: None,
+        lock: false,
+    }];
+    cmds.extend((101..=103).map(|i| Command::ItemLock {
+        item: radio_model::ItemId(i),
+    }));
+    p.dispatch(Command::StationBatch { commands: cmds })
+        .unwrap();
+    program.extend(run(&p, &clock, 20.0));
+
+    let song = first_audible(&program, 0, 0).expect("the songs play");
+    assert!(
+        song < 4 * SR,
+        "the songs start soon after they are added: {song}"
+    );
+    assert_back_to_back(&p, &[101, 102, 103]);
+    let start = first_audible(&program, 1, 0).expect("the one-off airs");
+    assert!(
+        start.abs_diff(20 * SR) <= SR,
+        "it starts in its tolerance: {start}"
+    );
+}
+
+#[test]
+fn a_soft_one_off_waiting_on_a_deck_waits_for_locked_songs_added_in_its_way() {
+    // The one-off at 20 s loads at once on a quiet station. Then a person adds eight songs
+    // and locks the first seven. Songs 106 and 107 run from 19.5 s to 26.5 s, past its time.
+    let mut engine = Engine::open_in_memory().unwrap();
+    let cmd = soft(promo("oo12-promo", "Soft promo"), at(13, 0, 20));
     let id = engine
         .dispatch(cmd)
         .unwrap()
@@ -406,28 +498,32 @@ fn music_added_while_a_soft_one_off_waits_on_a_deck_plays_before_it() {
         .unwrap();
     let (p, clock) = offline(engine, |_| {});
     let alarms = p.alarms().unwrap();
-    let before = run(&p, &clock, 2.0);
-    let main: Vec<_> = (1..=6)
+    let mut program = run(&p, &clock, 2.0);
+    let main: Vec<_> = (1..=8)
         .map(|i| {
-            let path = wav(&format!("oo11-song{i}"), 4.0, Side::Left);
-            file_item(100 + i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5)
+            let path = wav(&format!("oo12-song{i}"), 4.0, Side::Left);
+            file_item(100 + i, &format!("Song {}", 100 + i), &path, 4.0, 3.5, 0.5)
         })
         .collect();
-    p.dispatch(Command::PlaylistAddItems {
+    let mut cmds = vec![Command::PlaylistAddItems {
         playlist: radio_model::PlaylistId(1),
         items: main,
         at: None,
-        lock: true,
-    })
-    .unwrap();
-    let after = run(&p, &clock, 26.0);
-    let program = [before, after].concat();
+        lock: false,
+    }];
+    cmds.extend((101..=107).map(|i| Command::ItemLock {
+        item: radio_model::ItemId(i),
+    }));
+    p.dispatch(Command::StationBatch { commands: cmds })
+        .unwrap();
+    program.extend(run(&p, &clock, 30.0));
 
-    let song = first_audible(&program, 0, 0).expect("the songs play");
-    assert!(
-        song < 4 * SR,
-        "the songs start soon after they are added: {song}"
-    );
     let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
     assert_aired_late(&p, &program, &raised, id, 20 * SR);
+    assert_back_to_back(&p, &[101, 102, 103, 104, 105, 106, 107]);
+    let start = first_audible(&program, 1, 0).unwrap();
+    assert!(
+        start + SR / 100 >= handover(&p, 107),
+        "it starts after the last locked song in its way: {start}"
+    );
 }
