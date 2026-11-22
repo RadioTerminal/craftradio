@@ -311,6 +311,7 @@ fn open_output(
     config: MixerConfig,
     dynamics: Option<ProgramDynamics>,
     taps: usize,
+    device_meter: &Arc<radio_stream::LevelMeter>,
 ) -> Result<OpenedOutput, PlayoutError> {
     let (mut mixer, handle, live) = Mixer::new(config);
     mixer.set_dynamics(dynamics)?;
@@ -339,6 +340,7 @@ fn open_output(
         OutputChoice::Device { name } => {
             let mut source = ProgramSource::new(mixer, tap_tx);
             source.cue = cue_tx.take();
+            source.device_meter = Some(device_meter.clone());
             let source = Box::new(source);
             match crate::device::Device::open(name.clone(), source) {
                 Ok((out, name, clock)) => {
@@ -428,6 +430,7 @@ pub(crate) struct Core {
     pub(crate) webrtc: Option<WebRtcHandle>,
     /// Program for the WebRTC server, kept while the server is off.
     pub(crate) webrtc_tap: Option<TapSlot>,
+    pub(crate) output_meters: crate::OutputMeters,
     /// The address of the running server.
     pub(crate) webrtc_bind: Option<std::net::SocketAddr>,
     /// The thread that stops the last server and frees its ports.
@@ -480,20 +483,27 @@ impl Core {
         let engine_rx = engine.events();
         let log = engine.log_handle()?;
         let carts = Carts::new(cfg.mixer.cart_slots);
+        let meters = crate::OutputMeters::default();
         let tap = usize::from(cfg.icecast.is_some()) + usize::from(cfg.webrtc.is_some());
         // The setting that a person stored wins over the default of the config. A stored
         // setting that the processors refuse falls back to that default.
         let stored = engine.state().dynamics.map(|d| ProgramDynamics::from(&d));
         let mut opened = match stored {
-            Some(d) => open_output(&cfg.output, cfg.mixer, Some(d), tap)
-                .or_else(|_| open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap))?,
-            None => open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap)?,
+            Some(d) => {
+                open_output(&cfg.output, cfg.mixer, Some(d), tap, &meters.device).or_else(|_| {
+                    open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap, &meters.device)
+                })?
+            }
+            None => open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap, &meters.device)?,
         };
         let mut taps = std::mem::take(&mut opened.taps).into_iter();
-        let icecast = cfg
-            .icecast
-            .clone()
-            .and_then(|ice| Some(IcecastClient::start(ice, taps.next()?)));
+        let icecast = cfg.icecast.clone().and_then(|ice| {
+            Some(IcecastClient::start_metered(
+                ice,
+                taps.next()?,
+                meters.icecast.clone(),
+            ))
+        });
         let webrtc_tap = cfg
             .webrtc
             .as_ref()
@@ -565,6 +575,7 @@ impl Core {
             icecast,
             webrtc: None,
             webrtc_tap,
+            output_meters: meters,
             webrtc_bind: None,
             webrtc_stopping: None,
             webrtc_now: None,
