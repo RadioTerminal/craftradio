@@ -20,6 +20,9 @@ use crate::view::{
     DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
 };
 
+/// The settings part where the view source keeps the audio devices.
+const AUDIO_PART: &str = "audio";
+
 /// The dB marks beside a meter.
 const SCALE_DB: [f32; 5] = [0.0, -6.0, -12.0, -20.0, -40.0];
 const NOTE: &str = "preview — simulated levels, no audio";
@@ -433,13 +436,18 @@ fn khz(rate: u32) -> String {
 
 fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
     let roles = &view.device_roles;
+    // The output device opens when the playout starts: a new pick waits for the next start,
+    // so the row shows the pick, and a note says which device plays until then.
+    let saved_out = view
+        .settings
+        .get(AUDIO_PART)
+        .and_then(|a| a.get("out"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|d| !d.is_empty())
+        .map(str::to_owned);
+    let out = saved_out.clone().unwrap_or_else(|| roles.out.clone());
     for (label, id, role, current) in [
-        (
-            "Output device (Out)",
-            "out_device",
-            DeviceRole::Out,
-            &roles.out,
-        ),
+        ("Output device (Out)", "out_device", DeviceRole::Out, &out),
         (
             "Cue device (PFL)",
             "cue_device",
@@ -464,6 +472,24 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
         });
         if let Some(device) = picked {
             actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
+        }
+        if role == DeviceRole::Out
+            && !view.preview
+            && saved_out.as_ref().is_some_and(|s| *s != roles.out)
+        {
+            let now = if roles.out.is_empty() {
+                "no sound card"
+            } else {
+                roles.out.as_str()
+            };
+            settings::form_note(
+                ui,
+                RichText::new(format!(
+                    "Opens at the next start. Until then the sound goes to {now}."
+                ))
+                .font(theme::text(theme::CAPTION))
+                .color(t.warn),
+            );
         }
     }
     let (mut left, mut right) = input_channels(view);
