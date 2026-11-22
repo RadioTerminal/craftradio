@@ -7,7 +7,7 @@
 
 use egui::{Id, RichText, ViewportBuilder, ViewportClass, ViewportCommand, ViewportId};
 
-use crate::theme::{self, Tokens, size, space};
+use crate::theme::{self, Tokens, pad, size, space};
 
 /// List windows show about this many rows before they scroll.
 const LIST_ROWS: f32 = 20.0;
@@ -15,6 +15,8 @@ const LIST_ROWS: f32 = 20.0;
 const WORK_AREA: f32 = 0.9;
 /// The settings key of a size that a person set by hand.
 pub(crate) const SIZE_KEY: &str = "window_size";
+/// The part setting that keeps where a person put a tool window: its top-left corner.
+pub(crate) const POS_KEY: &str = "window_pos";
 /// The temporary data that tells a settings section about its window.
 /// The temporary data where a settings page puts its natural size each frame it draws.
 const PAGE_FIT: &str = "tool_window_page_fit";
@@ -95,6 +97,20 @@ impl ToolWindow {
         }
     }
 
+    /// The icon in the window's header.
+    pub(crate) fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Self::Cartwall => Icon::LayoutGrid,
+            Self::Mixer => Icon::SlidersVertical,
+            Self::Clock => Icon::Clock,
+            Self::History => Icon::History,
+            Self::Library => Icon::Library,
+            Self::Alarms => Icon::Bell,
+            Self::Preferences => Icon::Settings,
+        }
+    }
+
     /// True for the windows that are mostly a long list.
     fn is_list(self) -> bool {
         matches!(self, Self::History | Self::Library | Self::Alarms)
@@ -132,6 +148,30 @@ struct Fit {
     content: Option<egui::Vec2>,
     /// While a settings page shows: the size of the window before it.
     page: Option<PageFit>,
+    /// The saved place of the window, where it opens.
+    pos: Option<egui::Pos2>,
+    /// The place of the window in the last frame.
+    pos_seen: Option<egui::Pos2>,
+    /// A move that has not been saved yet: it is saved once the window stops.
+    pos_moving: bool,
+}
+
+/// Follows where the window is. A move is reported once, in the first frame the window stands
+/// still again, so a drag saves one place and not one per frame.
+fn track_pos(fit: &mut Fit, now: Option<egui::Pos2>) -> Option<SizeChange> {
+    let now = now?;
+    let mut change = None;
+    match fit.pos_seen {
+        Some(seen) if (seen - now).length() > size::FIT_SLACK => fit.pos_moving = true,
+        Some(_) if fit.pos_moving => {
+            fit.pos_moving = false;
+            fit.pos = Some(now);
+            change = Some(SizeChange::Moved([now.x, now.y]));
+        }
+        _ => {}
+    }
+    fit.pos_seen = Some(now);
+    change
 }
 
 /// The window size while a settings page shows in place of the window content.
@@ -214,14 +254,21 @@ impl Open {
 pub(crate) enum SizeChange {
     /// A person resized the window to this size.
     Manual([f32; 2]),
+    /// A person moved the window: its top-left corner is here now.
+    Moved([f32; 2]),
+}
+
+/// What the settings kept of a tool window: the size and the place a person gave it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Saved {
+    pub size: Option<[f32; 2]>,
+    pub pos: Option<[f32; 2]>,
 }
 
 /// A row of toggle buttons, one per tool window.
-pub(crate) fn toggles(ui: &mut egui::Ui, open: &mut Open, t: &Tokens) {
+pub(crate) fn toggles(ui: &mut egui::Ui, open: &mut Open, _t: &Tokens) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
-        let caption = RichText::new("Windows").font(theme::text(theme::CAPTION));
-        ui.label(caption.color(t.text_muted));
         for w in ToolWindow::ALL {
             let on = open.get(w);
             let text = RichText::new(w.title()).font(theme::text(theme::LABEL));
@@ -272,7 +319,7 @@ pub(crate) fn show(
     ctx: &egui::Context,
     w: ToolWindow,
     open: &mut Open,
-    saved: Option<[f32; 2]>,
+    saved: Saved,
     t: &Tokens,
     mut add: impl FnMut(&mut egui::Ui),
 ) -> Option<SizeChange> {
@@ -284,7 +331,8 @@ pub(crate) fn show(
     {
         let fit = &mut open.fit[i];
         if !fit.loaded {
-            fit.user = saved.map(egui::Vec2::from);
+            fit.user = saved.size.map(egui::Vec2::from);
+            fit.pos = saved.pos.map(egui::Pos2::from);
             fit.loaded = true;
         }
     }
@@ -293,7 +341,11 @@ pub(crate) fn show(
     let max = max_size(ctx, min);
     let stays = if ctx.embed_viewports() {
         ctx.data_mut(|d| d.insert_temp(Id::unique(DEFINITE), user.is_some()));
-        floating(ctx, w, user, (min, max), t, &mut add)
+        let pos = open.fit[i].pos;
+        let stays = floating(ctx, w, (user, pos), (min, max), t, &mut add);
+        let at = ctx.memory(|m| m.area_rect(w.area_id())).map(|r| r.min);
+        change = track_pos(&mut open.fit[i], at);
+        stays
     } else {
         ctx.data_mut(|d| d.insert_temp(Id::unique(DEFINITE), true));
         let (stays, c) = native(ctx, w, &mut open.fit[i], (min, max), t, &mut add);
@@ -315,7 +367,7 @@ pub(crate) fn show(
 fn floating(
     ctx: &egui::Context,
     w: ToolWindow,
-    user: Option<egui::Vec2>,
+    (user, pos): (Option<egui::Vec2>, Option<egui::Pos2>),
     (min, max): (egui::Vec2, egui::Vec2),
     t: &Tokens,
     add: &mut impl FnMut(&mut egui::Ui),
@@ -323,11 +375,15 @@ fn floating(
     let mut is_open = true;
     let window = egui::Window::new(w.title())
         .id(w.area_id())
-        .open(&mut is_open)
+        .title_bar(false)
         .collapsible(false)
-        .frame(theme::panel_frame(t))
+        .frame(theme::dialog_frame(t))
         .min_size(min)
         .max_size(max);
+    let window = match pos {
+        Some(p) => window.default_pos(p),
+        None => window,
+    };
     // A list scrolls by itself, so its window starts at about LIST_ROWS rows and the person
     // can resize it.
     let list = egui::vec2(w.size()[0], list_height(min, max));
@@ -337,13 +393,21 @@ fn floating(
         (None, false) => window.auto_sized(),
     };
     window.show(ctx, |ui| {
-        if w.is_list() {
-            add(ui);
-        } else {
-            egui::ScrollArea::both()
-                .max_height(max.y)
-                .show(ui, |ui| add(ui));
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // The header, as SolidCraft's windows have: a drag on its empty part moves the window.
+        if crate::chrome::header(ui, w.icon(), w.title(), true, t) {
+            is_open = false;
         }
+        egui::Frame::new().inner_margin(pad::PANEL).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = ui.style().spacing.item_spacing.y;
+            if w.is_list() {
+                add(ui);
+            } else {
+                egui::ScrollArea::both()
+                    .max_height(max.y)
+                    .show(ui, |ui| add(ui));
+            }
+        });
     });
     is_open
 }
@@ -376,6 +440,10 @@ fn native(
         .with_title(w.title())
         .with_inner_size(start)
         .with_min_inner_size(min);
+    let builder = match fit.pos {
+        Some(p) => builder.with_position(p),
+        None => builder,
+    };
     let mut change = None;
     let closed = ctx.show_viewport_immediate(
         ViewportId::from_hash_of(("tool_window", w.title())),
@@ -484,6 +552,10 @@ fn native(
                     }
                 }
             }
+            let at = ui.input(|i| i.viewport().outer_rect.map(|r| r.min));
+            if let Some(moved) = track_pos(fit, at) {
+                change = change.or(Some(moved));
+            }
             ui.input(|i| i.viewport().close_requested())
         },
     );
@@ -493,6 +565,35 @@ fn native(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drag_saves_one_place_once_the_window_stands_still() {
+        let mut fit = Fit::default();
+        let at = |x: f32| Some(egui::pos2(x, 100.0));
+        assert_eq!(
+            track_pos(&mut fit, at(10.0)),
+            None,
+            "the first place is not a move"
+        );
+        assert_eq!(
+            track_pos(&mut fit, at(10.0)),
+            None,
+            "standing still is not a move"
+        );
+        for x in [40.0, 80.0, 120.0] {
+            assert_eq!(
+                track_pos(&mut fit, at(x)),
+                None,
+                "nothing is saved during the drag"
+            );
+        }
+        assert_eq!(
+            track_pos(&mut fit, at(120.0)),
+            Some(SizeChange::Moved([120.0, 100.0])),
+            "the place where the drag ended is saved"
+        );
+        assert_eq!(track_pos(&mut fit, at(120.0)), None, "and only once");
+    }
 
     #[test]
     fn a_page_keeps_the_size_before_it_and_gives_it_back() {

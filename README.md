@@ -184,4 +184,9 @@ CraftRadio is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APA
 option. MP3 encoding uses the native encoder of
 [craft-audio](https://github.com/storytold/craft-libs) (MIT OR Apache-2.0).
 
+The layout of the Preferences window follows
+[SolidCraft](https://github.com/tangency-labs/solidcraft)'s, whose interface design is under the
+SolidCraft Brand and Interface Licence. It is adapted here with the SolidCraft maintainers'
+permission. No SolidCraft code, icons or theme tokens are included.
+
 The screenshots show invented stations, artists and titles.

@@ -1,6 +1,8 @@
 //! The one-off dialog of Upcoming. It picks a source, a local start time, the timing and a
 //! repeat. The view source schedules the one-off.
 
+use crate::chrome::{Answer, Dialog};
+use crate::icons::Icon;
 use crate::numbers;
 use crate::widgets;
 use std::time::Duration;
@@ -11,7 +13,7 @@ use jiff::{RoundMode, ToSpan, Unit};
 
 use crate::add_menu::{self, DEFAULT_PLANNED_MIN, KEEP_ALIVE_LABEL};
 use crate::app::Action;
-use crate::theme::{self, Tokens, pad, size, space};
+use crate::theme::{self, Tokens, size, space};
 use crate::view::{Edit, OneOffRepeat, OneOffSource, OneOffView, StationView, check_stream_url};
 
 /// The tolerance of a soft one-off that nobody set, in seconds (spec 6.3).
@@ -427,138 +429,145 @@ pub(crate) fn show(
     let mut close = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let new = d.id == 0;
     let title = if new { "Add one-off" } else { "Edit one-off" };
-    egui::Window::new(title)
-        .id(egui::Id::unique("one_off_dialog"))
-        .collapsible(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .resizable(false)
-        .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
-        .show(ctx, |ui| {
-            let checked = egui::Grid::new("one_off_grid")
-                .num_columns(2)
-                .spacing(egui::vec2(space::M, space::S))
-                .show(ui, |ui| {
-                    label(ui, "Source", t);
-                    ui.horizontal(|ui| {
-                        for k in Kind::ALL {
-                            let live = k == Kind::Live;
-                            let enabled = !live || !view.input_devices.is_empty();
-                            let on = d.kind == k;
-                            let r = ui
-                                .add_enabled_ui(enabled, |ui| {
-                                    widgets::selectable(ui, on, k.label())
-                                })
-                                .inner;
-                            let name = format!("{} source", k.label());
-                            r.widget_info(|| {
-                                egui::WidgetInfo::selected(
-                                    egui::Role::Button,
-                                    enabled,
-                                    d.kind == k,
-                                    &name,
-                                )
+    let word = if new { "Add" } else { "Save" };
+    let mut checked = None;
+    let mut answer = Dialog::new("one_off", Icon::CalendarClock, title)
+        .ok(word, true)
+        .width(size::DIALOG_WIDE_W)
+        .show(
+            ctx,
+            t,
+            |ui| {
+                checked = Some(
+                    egui::Grid::new("one_off_grid")
+                        .num_columns(2)
+                        .spacing(egui::vec2(space::M, space::S))
+                        .show(ui, |ui| {
+                            label(ui, "Source", t);
+                            ui.horizontal(|ui| {
+                                for k in Kind::ALL {
+                                    let live = k == Kind::Live;
+                                    let enabled = !live || !view.input_devices.is_empty();
+                                    let on = d.kind == k;
+                                    let r = ui
+                                        .add_enabled_ui(enabled, |ui| {
+                                            widgets::selectable(ui, on, k.label())
+                                        })
+                                        .inner;
+                                    let name = format!("{} source", k.label());
+                                    r.widget_info(|| {
+                                        egui::WidgetInfo::selected(
+                                            egui::Role::Button,
+                                            enabled,
+                                            d.kind == k,
+                                            &name,
+                                        )
+                                    });
+                                    let r = if live {
+                                        r.on_disabled_hover_text("No input device is available")
+                                    } else {
+                                        r
+                                    };
+                                    if r.clicked() && d.kind != k {
+                                        d.kind = k;
+                                        d.focus = true;
+                                    }
+                                }
                             });
-                            let r = if live {
-                                r.on_disabled_hover_text("No input device is available")
-                            } else {
-                                r
+                            ui.end_row();
+                            source_rows(ui, d, view, t);
+                            let l = label(ui, "Date", t);
+                            ui.horizontal(|ui| {
+                                let edit =
+                                    egui::TextEdit::singleline(&mut d.date).hint_text("YYYY-MM-DD");
+                                ui.add_sized([size::COMBO_W, size::CONTROL_SM], edit)
+                                    .labelled_by(l.id);
+                                let l = label(ui, "Time", t);
+                                let edit =
+                                    egui::TextEdit::singleline(&mut d.time).hint_text("HH:MM:SS");
+                                ui.add_sized(
+                                    [size::COMBO_W / 2.0 + space::L, size::CONTROL_SM],
+                                    edit,
+                                )
+                                .labelled_by(l.id);
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            let zone = view.now.time_zone().iana_name().unwrap_or("station time");
+                            ui.label(
+                                RichText::new(format!("Local time in {zone}"))
+                                    .font(theme::text(theme::CAPTION))
+                                    .color(t.text_muted),
+                            );
+                            ui.end_row();
+                            label(ui, "Timing", t);
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut d.hard, true, "Hard — cuts in at the time");
+                                ui.radio_value(&mut d.hard, false, "Soft — fitted");
+                            });
+                            ui.end_row();
+                            let l = label(ui, "Tolerance", t);
+                            ui.add_enabled_ui(!d.hard, |ui| {
+                                ui.add(numbers::field(
+                                    ui,
+                                    DragValue::new(&mut d.tolerance_s)
+                                        .range(0.0..=MAX_TOLERANCE_S)
+                                        .speed(0.1)
+                                        .fixed_decimals(1)
+                                        .prefix("± ")
+                                        .suffix(" s"),
+                                ))
+                                .labelled_by(l.id);
+                            })
+                            .response
+                            .on_disabled_hover_text("A hard one-off starts at its time sharp");
+                            ui.end_row();
+                            label(ui, "Repeat", t);
+                            craft_ui::ComboBox::from_id_salt("one_off_repeat")
+                                .width(size::COMBO_W)
+                                .selected_text(d.repeat.label())
+                                .show_ui(ui, |ui| {
+                                    for r in OneOffRepeat::ALL {
+                                        widgets::selectable_value(ui, &mut d.repeat, r, r.label());
+                                    }
+                                });
+                            ui.end_row();
+                            let checked = d.check(view);
+                            let line = match &checked {
+                                Err(e) if d.tried => Some((e.clone(), t.danger)),
+                                Ok((_, Some(note))) => Some((note.clone(), t.warn)),
+                                _ => None,
                             };
-                            if r.clicked() && d.kind != k {
-                                d.kind = k;
-                                d.focus = true;
+                            if let Some((text, colour)) = line {
+                                ui.label("");
+                                ui.label(
+                                    RichText::new(text)
+                                        .font(theme::text(theme::CAPTION))
+                                        .color(colour),
+                                );
+                                ui.end_row();
                             }
-                        }
-                    });
-                    ui.end_row();
-                    source_rows(ui, d, view, t);
-                    let l = label(ui, "Date", t);
-                    ui.horizontal(|ui| {
-                        let edit = egui::TextEdit::singleline(&mut d.date).hint_text("YYYY-MM-DD");
-                        ui.add_sized([size::COMBO_W, size::CONTROL_SM], edit)
-                            .labelled_by(l.id);
-                        let l = label(ui, "Time", t);
-                        let edit = egui::TextEdit::singleline(&mut d.time).hint_text("HH:MM:SS");
-                        ui.add_sized([size::COMBO_W / 2.0 + space::L, size::CONTROL_SM], edit)
-                            .labelled_by(l.id);
-                    });
-                    ui.end_row();
-                    ui.label("");
-                    let zone = view.now.time_zone().iana_name().unwrap_or("station time");
-                    ui.label(
-                        RichText::new(format!("Local time in {zone}"))
-                            .font(theme::text(theme::CAPTION))
-                            .color(t.text_muted),
-                    );
-                    ui.end_row();
-                    label(ui, "Timing", t);
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut d.hard, true, "Hard — cuts in at the time");
-                        ui.radio_value(&mut d.hard, false, "Soft — fitted");
-                    });
-                    ui.end_row();
-                    let l = label(ui, "Tolerance", t);
-                    ui.add_enabled_ui(!d.hard, |ui| {
-                        ui.add(numbers::field(
-                            ui,
-                            DragValue::new(&mut d.tolerance_s)
-                                .range(0.0..=MAX_TOLERANCE_S)
-                                .speed(0.1)
-                                .fixed_decimals(1)
-                                .prefix("± ")
-                                .suffix(" s"),
-                        ))
-                        .labelled_by(l.id);
-                    })
-                    .response
-                    .on_disabled_hover_text("A hard one-off starts at its time sharp");
-                    ui.end_row();
-                    label(ui, "Repeat", t);
-                    craft_ui::ComboBox::from_id_salt("one_off_repeat")
-                        .width(size::COMBO_W)
-                        .selected_text(d.repeat.label())
-                        .show_ui(ui, |ui| {
-                            for r in OneOffRepeat::ALL {
-                                widgets::selectable_value(ui, &mut d.repeat, r, r.label());
-                            }
-                        });
-                    ui.end_row();
-                    let checked = d.check(view);
-                    let line = match &checked {
-                        Err(e) if d.tried => Some((e.clone(), t.danger)),
-                        Ok((_, Some(note))) => Some((note.clone(), t.warn)),
-                        _ => None,
-                    };
-                    if let Some((text, colour)) = line {
-                        ui.label("");
-                        ui.label(
-                            RichText::new(text)
-                                .font(theme::text(theme::CAPTION))
-                                .color(colour),
-                        );
-                        ui.end_row();
-                    }
-                    checked
-                })
-                .inner;
-            ui.add_space(space::S);
-            ui.horizontal(|ui| {
-                let word = if new { "Add" } else { "Save" };
-                let go = egui::Button::new(RichText::new(word).color(t.canvas)).fill(t.accent);
-                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
-                if ui.add(go).clicked() || enter {
-                    match &checked {
-                        Ok((one_off, _)) => {
-                            actions.push(Action::Edit(Edit::ScheduleOneOff(one_off.clone())));
-                            close = true;
-                        }
-                        Err(_) => d.tried = true,
-                    }
-                }
-                if ui.button("Cancel").clicked() {
-                    close = true;
-                }
-            });
-        });
+                            checked
+                        })
+                        .inner,
+                );
+            },
+            |_| {},
+        );
+    if ctx.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command) {
+        answer = Some(Answer::Ok);
+    }
+    match answer {
+        Some(Answer::Ok) => match &checked {
+            Some(Ok((one_off, _))) => {
+                actions.push(Action::Edit(Edit::ScheduleOneOff(one_off.clone())));
+                close = true;
+            }
+            _ => d.tried = true,
+        },
+        Some(Answer::Cancel) => close = true,
+        None => {}
+    }
     if close {
         *slot = None;
         // The fields of the dialog are gone, so the lists get the keys again.

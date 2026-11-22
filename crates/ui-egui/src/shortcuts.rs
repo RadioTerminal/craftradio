@@ -28,6 +28,8 @@ pub(crate) const PLAY_PAUSE: &str = "deck.play_pause";
 pub(crate) const STOP_CARTS: &str = "cart.stop_all";
 /// Preferences, as in every Craft app.
 pub(crate) const PREFERENCES: &str = "app.preferences";
+/// The search field of Preferences takes the focus.
+pub(crate) const FIND: &str = "app.search_preferences";
 pub(crate) const UP: &str = "list.up";
 pub(crate) const DOWN: &str = "list.down";
 /// Focus deck `{"deck": 0..=3}`, and fire cart `{"cart": 0..=11}` of the page on show.
@@ -74,6 +76,7 @@ pub(crate) fn catalog() -> Vec<Bindable> {
         entry(DELETE.into(), "Remove", "Edit", &["Delete", "Backspace"]),
         entry(SELECT_ALL.into(), "Select All", "Edit", &["Cmd+A"]),
         entry(PREFERENCES.into(), "Preferences", "Edit", &["Cmd+,"]),
+        entry(FIND.into(), "Search Preferences", "Edit", &["Cmd+F"]),
         entry(PLAY_NEXT.into(), "Play Next", "Playout", &["Cmd+Shift+N"]),
         entry(FADE.into(), "Fade Out", "Playout", &["Cmd+Shift+F"]),
         entry(PLAY_PAUSE.into(), "Play or Pause", "Playout", &["Space"]),
@@ -166,6 +169,8 @@ pub(crate) struct Pressed {
     pub redo: bool,
     pub play_next: bool,
     pub preferences: bool,
+    /// Search Preferences: its search field takes the focus.
+    pub find: bool,
     pub fade: bool,
     pub play_pause: bool,
     pub stop_carts: bool,
@@ -190,6 +195,7 @@ impl Pressed {
             redo: self.redo | other.redo,
             play_next: self.play_next | other.play_next,
             preferences: self.preferences | other.preferences,
+            find: self.find | other.find,
             fade: self.fade | other.fade,
             play_pause: self.play_pause | other.play_pause,
             stop_carts: self.stop_carts | other.stop_carts,
@@ -221,7 +227,8 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
     // It also closes an open settings page under the pointer or the focus.
     let menu = egui::Popup::is_any_open(ctx)
         | crate::settings::escape_claimed(ctx)
-        | crate::one_off::escape_claimed(ctx);
+        | crate::one_off::escape_claimed(ctx)
+        | crate::chrome::escape_claimed(ctx);
     let map = keymap(ctx);
     let take = |i: &mut egui::InputState, command: &CommandRef| {
         map.bindings(command)
@@ -247,6 +254,7 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.undo = take(i, &UNDO.into());
         p.play_next = take(i, &PLAY_NEXT.into());
         p.preferences = take(i, &PREFERENCES.into());
+        p.find = take(i, &FIND.into());
         p.fade = take(i, &FADE.into());
         p.duplicate = take(i, &DUPLICATE.into());
         p.delete = take(i, &DELETE.into());
@@ -284,6 +292,7 @@ mod tests {
             (PLAY_NEXT, "Cmd+Shift+N"),
             (FADE, "Cmd+Shift+F"),
             (PREFERENCES, "Cmd+,"),
+            (FIND, "Cmd+F"),
             (PLAY_PAUSE, "Space"),
             (STOP_CARTS, "Escape"),
             (SELECT_ALL, "Cmd+A"),

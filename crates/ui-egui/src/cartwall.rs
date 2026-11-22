@@ -114,6 +114,7 @@ pub(crate) fn show(
         (Some(name), false) => format!("{name} fired"),
         (None, false) => String::new(),
     };
+    let mut stop_pressed = false;
     settings::header_to(ui, "Cartwall", Page::Cartwall, actions, |ui| {
         if wall.pages.len() > size::PAGE_TABS_MAX {
             // Many pages: one picker instead of a row of tabs that runs out of the window.
@@ -140,6 +141,24 @@ pub(crate) fn show(
                 }
             }
         }
+        // Stop all carts, before the pages: easy to find in a hurry, in the danger colour.
+        let text = RichText::new(icons::lead(Icon::Square, "Stop all carts"))
+            .font(theme::text(theme::LABEL))
+            .color(t.text);
+        let stop = egui::Button::new(text)
+            .fill(t.danger_fill)
+            .stroke(Stroke::new(size::HAIRLINE, t.danger))
+            .min_size(egui::vec2(size::STOP_W, size::CONTROL_SM));
+        let keys = shortcuts::label(ui.ctx(), shortcuts::STOP_CARTS);
+        let audio = if view.preview {
+            format!(" · {NO_AUDIO}")
+        } else {
+            String::new()
+        };
+        let hint = format!("Stop every playing cart now ({keys}){audio}");
+        if ui.add(stop).on_hover_text(hint).clicked() {
+            stop_pressed = true;
+        }
         ui.add(
             egui::Label::new(
                 RichText::new(caption)
@@ -149,10 +168,16 @@ pub(crate) fn show(
             .truncate(),
         );
     });
+    if stop_pressed {
+        state.stop_all();
+        actions.push(Action::EditQuiet(Edit::StopCarts));
+    }
     ui.add_space(space::S);
 
-    // The bar under the grid is as wide as the grid, so an auto-sized window fits the carts.
-    let grid_w = cols as f32 * size::CART_W + cols.saturating_sub(1) as f32 * space::S;
+    // Tiles share the width: wider in a wide window, never under the least tile.
+    let gaps = cols.saturating_sub(1) as f32 * space::S;
+    let tile_w = ((ui.available_width() - gaps) / cols as f32).max(size::CART_W);
+    let tile = egui::vec2(tile_w, (tile_w * size::CART_ASPECT).max(size::CART_H));
     let first = state.page * wall.per_page;
     egui::Grid::new("cartwall_grid")
         .spacing(egui::vec2(space::S, space::S))
@@ -161,36 +186,19 @@ pub(crate) fn show(
                 let i = first + n;
                 if let Some(name) = view.carts.get(i) {
                     let slot = wall.slots.get(i).copied().unwrap_or(DEFAULT_SLOT);
-                    cart(ui, i, name, slot, state, actions, t);
+                    let c = Tile {
+                        i,
+                        name,
+                        slot,
+                        size: tile,
+                    };
+                    cart(ui, c, state, actions, t);
                 }
                 if (n + 1) % cols == 0 {
                     ui.end_row();
                 }
             }
         });
-    // A wide gap and a full-width bar: easy to find in a hurry, hard to hit by mistake.
-    ui.add_space(space::XL);
-    let text = RichText::new(icons::lead(Icon::Square, "Stop all carts"))
-        .font(theme::text(theme::BODY))
-        .color(t.text);
-    let stop = egui::Button::new(text)
-        .fill(t.danger_fill)
-        .stroke(Stroke::new(size::HAIRLINE, t.danger))
-        .min_size(egui::vec2(
-            grid_w.min(ui.available_width()),
-            size::CONTROL_MD,
-        ));
-    let keys = shortcuts::label(ui.ctx(), shortcuts::STOP_CARTS);
-    let audio = if view.preview {
-        format!(" · {NO_AUDIO}")
-    } else {
-        String::new()
-    };
-    let hint = format!("Stop every playing cart now ({keys}){audio}");
-    if ui.add(stop).on_hover_text(hint).clicked() {
-        state.stop_all();
-        actions.push(Action::EditQuiet(Edit::StopCarts));
-    }
 }
 
 /// The settings of a cart that the source does not know.
@@ -200,60 +208,163 @@ const DEFAULT_SLOT: CartSlot = CartSlot {
     colour: None,
 };
 
+/// A cart to draw: its index, name and settings, and the size of its tile.
+struct Tile<'a> {
+    i: usize,
+    name: &'a str,
+    slot: CartSlot,
+    size: egui::Vec2,
+}
+
+/// One cart: a tile in its colour with the name in the middle, the mode at the top left, a
+/// menu at the top right, and the key that fires it and its mode along the bottom. An empty
+/// cart is a muted tile that asks for a title.
 fn cart(
     ui: &mut egui::Ui,
-    i: usize,
-    name: &str,
-    slot: CartSlot,
+    tile: Tile<'_>,
     state: &mut State,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    let Tile {
+        i,
+        name,
+        slot,
+        size: tile,
+    } = tile;
     let now = ui.input(|i| i.time);
     // The place on the page, for the key that fires the cart.
     let n = i % state.per_page.max(1);
     let empty = name.is_empty();
-    let name = if empty { "empty" } else { name };
     let until = state.flash_until[i];
     let lit = until > now;
-    let (fill, ink, edge) = if lit {
-        (t.flash, t.flash_ink, t.flash)
-    } else {
-        (
-            t.field,
-            if empty { t.text_muted } else { t.text },
-            t.card_border,
-        )
-    };
-    let text = RichText::new(name)
-        .font(theme::text(theme::LABEL))
-        .color(ink);
-    // Every cart has one size. A long name truncates, and the tooltip shows all of it.
-    let button = egui::Button::new(text)
-        .truncate()
-        .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, edge));
-    let resp = ui.add_sized(egui::vec2(size::CART_W, size::CART_H), button);
     let colour = slot.colour.and_then(|c| theme::PALETTE.get(c));
-    if let Some(c) = colour {
-        let mut bar = resp.rect;
-        bar.set_width(size::CART_BAR);
-        ui.painter()
-            .rect_filled(bar, t.radius_sm, Tokens::playlist(c.1));
+    let fill = match (lit, empty, colour) {
+        (true, _, _) => t.flash,
+        (false, true, _) => t.card,
+        (false, false, Some(c)) => Tokens::playlist(c.1),
+        (false, false, None) => t.field,
+    };
+    // Dark or light ink, whichever reads on the tile.
+    let ink = if lit {
+        t.flash_ink
+    } else if empty {
+        t.text_muted
+    } else if theme::contrast(fill, t.text) >= theme::contrast(fill, t.canvas) {
+        t.text
+    } else {
+        t.canvas
+    };
+    let (rect, resp) = ui.allocate_exact_size(tile, egui::Sense::click());
+    let label = if empty { "Empty cart" } else { name };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let edge = if resp.has_focus() {
+            Stroke::new(size::HAIRLINE * 2.0, t.accent_ink)
+        } else if resp.hovered() {
+            Stroke::new(size::HAIRLINE, t.field_border)
+        } else {
+            Stroke::new(size::HAIRLINE, t.card_border)
+        };
+        p.rect(rect, t.radius_lg, fill, edge, egui::StrokeKind::Inside);
+        let inner = rect.shrink(space::S);
+        // The mode, top left.
+        let mode = match slot.mode {
+            CartMode::OneShot => Icon::Play,
+            CartMode::Loop => Icon::Repeat,
+            CartMode::Restart => Icon::RotateCcw,
+        };
+        p.text(
+            inner.left_top(),
+            egui::Align2::LEFT_TOP,
+            icons::glyph(mode),
+            icons::font(theme::ICON_SM),
+            ink.gamma_multiply(size::CART_DIM),
+        );
+        // The name, in the middle, on up to two lines.
+        if empty {
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drag audio here",
+                theme::text(theme::CAPTION),
+                ink,
+            );
+        } else {
+            let job = egui::text::LayoutJob {
+                wrap: egui::text::TextWrapping {
+                    max_width: inner.width(),
+                    max_rows: 2,
+                    break_anywhere: false,
+                    overflow_character: Some('…'),
+                },
+                halign: egui::Align::Center,
+                ..egui::text::LayoutJob::single_section(
+                    name.to_owned(),
+                    egui::TextFormat::simple(theme::text(theme::LEAD), ink),
+                )
+            };
+            let galley = ui.fonts_mut(|f| f.layout_job(job));
+            let at = egui::pos2(rect.center().x, rect.center().y - galley.size().y / 2.0);
+            p.galley(at, galley, ink);
+        }
+        // The key and the mode along the bottom.
+        if let Some(key) = shortcuts::cart_label(ui.ctx(), n) {
+            p.text(
+                inner.left_bottom(),
+                egui::Align2::LEFT_BOTTOM,
+                key,
+                theme::mono(theme::CAPTION),
+                ink,
+            );
+        }
+        if !empty {
+            let word = if slot.duck_db < 0.0 {
+                format!("{} · {:.0} dB", slot.mode.label(), slot.duck_db)
+            } else {
+                slot.mode.label().to_owned()
+            };
+            p.text(
+                inner.right_bottom(),
+                egui::Align2::RIGHT_BOTTOM,
+                word,
+                theme::text(theme::CAPTION),
+                ink.gamma_multiply(size::CART_DIM),
+            );
+        }
     }
-    if let Some(key) = shortcuts::cart_label(ui.ctx(), n) {
-        // The key that fires the cart, in the top-right corner.
-        let at = resp.rect.right_top() + egui::vec2(-size::KEY_INSET, size::KEY_INSET);
-        let ink = if lit { t.flash_ink } else { t.text_muted };
+    // The menu, top right: the same as a right-click.
+    let more = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.right() - size::CART_MENU - space::XS,
+            rect.top() + space::XS,
+        ),
+        egui::Vec2::splat(size::CART_MENU),
+    );
+    let more_resp = ui.interact(
+        more,
+        ui.scope_id().with(("cart_more", i)),
+        egui::Sense::click(),
+    );
+    more_resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{label} menu"))
+    });
+    if ui.is_rect_visible(more) {
+        if more_resp.hovered() {
+            ui.painter()
+                .rect_filled(more, t.radius_sm, ink.gamma_multiply(size::CART_HOVER));
+        }
         ui.painter().text(
-            at,
-            egui::Align2::RIGHT_TOP,
-            key,
-            theme::mono(theme::CAPTION),
+            more.center(),
+            egui::Align2::CENTER_CENTER,
+            icons::glyph(Icon::Ellipsis),
+            icons::font(theme::ICON_SM),
             ink,
         );
     }
     let has_clip = state.has_clip;
+    egui::Popup::menu(&more_resp).show(|ui| cart_menu(ui, i, slot, has_clip, actions));
     resp.context_menu(|ui| cart_menu(ui, i, slot, has_clip, actions));
     if let Some(drag) = resp.dnd_release_payload::<LibraryDrag>() {
         actions.push(Action::Drop {
@@ -264,7 +375,7 @@ fn cart(
     if resp.dnd_hover_payload::<LibraryDrag>().is_some() {
         let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
         ui.painter()
-            .rect_stroke(resp.rect, t.radius, edge, egui::StrokeKind::Outside);
+            .rect_stroke(rect, t.radius_lg, edge, egui::StrokeKind::Outside);
     }
     let colour_name = colour.map_or("no colour", |c| c.0);
     // The tooltip text is made only while the tooltip shows.
@@ -275,7 +386,7 @@ fn cart(
         } else {
             String::new()
         };
-        ui.label(name);
+        ui.label(label);
         ui.label(format!(
             "Fire the cart{key}{audio} · {} · {colour_name} · ducking {:.0} dB",
             slot.mode.label(),
@@ -379,95 +490,99 @@ fn cart_settings(
     let old_rows = parts::u32(view, parts::CARTWALL, "rows", default_side);
     let (mut cols, mut rows) = (old_cols, old_rows);
     state.names.resize(wall.pages.len(), String::new());
-    egui::Grid::new("cart_settings")
-        .spacing(egui::vec2(space::M, space::S))
-        .show(ui, |ui| {
-            settings::label(ui, "Grid", t);
-            ui.horizontal(|ui| {
-                ui.add(numbers::field(
-                    ui,
-                    DragValue::new(&mut cols)
-                        .range(1..=MAX_GRID)
-                        .suffix(" columns"),
-                ));
-                ui.add(numbers::field(
-                    ui,
-                    DragValue::new(&mut rows)
-                        .range(1..=MAX_GRID)
-                        .suffix(" rows"),
-                ));
+    settings::section(ui, "Layout", t, |ui| {
+        egui::Grid::new("cart_settings")
+            .spacing(egui::vec2(space::M, space::S))
+            .show(ui, |ui| {
+                settings::label(ui, "Grid", t);
+                ui.horizontal(|ui| {
+                    ui.add(numbers::field(
+                        ui,
+                        DragValue::new(&mut cols)
+                            .range(1..=MAX_GRID)
+                            .suffix(" columns"),
+                    ));
+                    ui.add(numbers::field(
+                        ui,
+                        DragValue::new(&mut rows)
+                            .range(1..=MAX_GRID)
+                            .suffix(" rows"),
+                    ));
+                });
+                ui.end_row();
+                settings::label(ui, "Pages", t);
+                ui.vertical(|ui| {
+                    for (page, name) in state.names.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            let edit = ui
+                                .add(egui::TextEdit::singleline(name).desired_width(size::COMBO_W));
+                            let current = wall.pages.get(page).map_or("", String::as_str);
+                            if edit.lost_focus() && name != current && !name.trim().is_empty() {
+                                actions.push(Action::Edit(Edit::RenameCartPage {
+                                    page,
+                                    name: name.trim().to_owned(),
+                                }));
+                            }
+                            if ui.small_button("Remove").clicked() {
+                                actions.push(Action::Edit(Edit::RemoveCartPage { page }));
+                            }
+                        });
+                    }
+                    if ui
+                        .small_button(icons::lead(Icon::Plus, "Add page"))
+                        .clicked()
+                    {
+                        let name = format!("Page {}", wall.pages.len() + 1);
+                        state.names.push(name.clone());
+                        actions.push(Action::Edit(Edit::AddCartPage { name }));
+                    }
+                });
+                ui.end_row();
             });
-            ui.end_row();
-            settings::label(ui, "Pages", t);
-            ui.vertical(|ui| {
-                for (page, name) in state.names.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        let edit =
-                            ui.add(egui::TextEdit::singleline(name).desired_width(size::COMBO_W));
-                        let current = wall.pages.get(page).map_or("", String::as_str);
-                        if edit.lost_focus() && name != current && !name.trim().is_empty() {
-                            actions.push(Action::Edit(Edit::RenameCartPage {
-                                page,
-                                name: name.trim().to_owned(),
-                            }));
-                        }
-                        if ui.small_button("Remove").clicked() {
-                            actions.push(Action::Edit(Edit::RemoveCartPage { page }));
-                        }
-                    });
-                }
-                if ui
-                    .small_button(icons::lead(Icon::Plus, "Add page"))
-                    .clicked()
-                {
-                    let name = format!("Page {}", wall.pages.len() + 1);
-                    state.names.push(name.clone());
-                    actions.push(Action::Edit(Edit::AddCartPage { name }));
-                }
-            });
-            ui.end_row();
-        });
+    });
     // Both sides go together, so the source sees one grid.
     if cols != old_cols || rows != old_rows {
         actions.push(parts::set(parts::CARTWALL, "cols", cols));
         actions.push(parts::set(parts::CARTWALL, "rows", rows));
     }
-    ui.add_space(space::S);
-    settings::label(
-        ui,
-        "Ducking per cart on this page (dB under the main output)",
-        t,
-    );
-    not_played_yet(ui);
-    let first = state.page * wall.per_page;
-    egui::Grid::new("cart_ducking")
-        .spacing(egui::vec2(space::M, space::XS))
-        .show(ui, |ui| {
-            let carts = view
-                .carts
-                .iter()
-                .enumerate()
-                .skip(first)
-                .take(wall.per_page);
-            for (n, (i, name)) in carts.enumerate() {
-                let shown = if name.is_empty() { "empty" } else { name };
-                ui.label(RichText::new(shown).font(theme::text(theme::LABEL)));
-                let mut duck = wall.slots.get(i).map_or(0.0, |s| s.duck_db);
-                let field = numbers::field(
-                    ui,
-                    DragValue::new(&mut duck)
-                        .range(MAX_DUCK_DB..=0.0)
-                        .speed(0.5)
-                        .suffix(" dB"),
-                );
-                if ui.add(field).changed() {
-                    actions.push(set_cart(i, CartChange::Duck(duck)));
+    settings::section(ui, "Ducking", t, |ui| {
+        settings::form_note(
+            ui,
+            RichText::new("Per cart on this page, in dB under the main output.")
+                .font(theme::text(theme::CAPTION))
+                .color(t.text_muted),
+        );
+        not_played_yet(ui);
+        let first = state.page * wall.per_page;
+        egui::Grid::new("cart_ducking")
+            .spacing(egui::vec2(space::M, space::XS))
+            .show(ui, |ui| {
+                let carts = view
+                    .carts
+                    .iter()
+                    .enumerate()
+                    .skip(first)
+                    .take(wall.per_page);
+                for (n, (i, name)) in carts.enumerate() {
+                    let shown = if name.is_empty() { "empty" } else { name };
+                    ui.label(RichText::new(shown).font(theme::text(theme::LABEL)));
+                    let mut duck = wall.slots.get(i).map_or(0.0, |s| s.duck_db);
+                    let field = numbers::field(
+                        ui,
+                        DragValue::new(&mut duck)
+                            .range(MAX_DUCK_DB..=0.0)
+                            .speed(0.5)
+                            .suffix(" dB"),
+                    );
+                    if ui.add(field).changed() {
+                        actions.push(set_cart(i, CartChange::Duck(duck)));
+                    }
+                    if (n + 1) % DUCK_COLS == 0 {
+                        ui.end_row();
+                    }
                 }
-                if (n + 1) % DUCK_COLS == 0 {
-                    ui.end_row();
-                }
-            }
-        });
+            });
+    });
 }
 
 impl State {

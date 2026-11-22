@@ -11,6 +11,7 @@ mod loudness;
 mod meters;
 mod overflow;
 mod preferences;
+mod prefs_window;
 mod smoke;
 mod steady;
 mod tabs;

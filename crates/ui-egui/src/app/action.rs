@@ -404,7 +404,7 @@ impl RadioApp {
                 self.shortcuts_dialog = Some(craft_keymap::ui::DialogState::new());
             }
             Action::OpenPreferences(page) => {
-                self.preferences.page = page;
+                self.preferences.open_at(page);
                 self.open.set(ToolWindow::Preferences, true);
             }
             Action::OpenWindow(w) => {

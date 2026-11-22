@@ -7,7 +7,9 @@ use crate::numbers;
 use crate::widgets;
 use egui::{RichText, TextEdit};
 
-use crate::theme::{self, Tokens, pad, size, space};
+use crate::chrome::{Answer, Dialog};
+use crate::icons::Icon;
+use crate::theme::{self, Tokens, size, space};
 use crate::view::{ItemMeta, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource};
 
 const NOT_WRITTEN: &str = "preview — not written";
@@ -117,160 +119,161 @@ pub(crate) fn show(
     t: &Tokens,
 ) -> Option<Vec<(MetaTarget, ItemMeta)>> {
     let ed = slot.as_mut()?;
-    let mut open = true;
     let mut close = false;
     let mut applied = None;
-    egui::Window::new(ed.title())
-        .id(egui::Id::unique("meta_editor"))
-        .open(&mut open)
-        .collapsible(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .resizable(false)
-        .default_width(size::EDITOR_W)
-        .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
-        .show(ctx, |ui| {
-            caption(ui, "TAGS", t);
-            egui::Grid::new("meta_fields")
-                .spacing(egui::vec2(space::M, space::XS))
-                .show(ui, |ui| {
-                    for (i, name) in FIELDS.iter().enumerate() {
-                        let label = ui.label(RichText::new(*name).color(t.text_muted));
-                        let hint = if ed.mixed[i] && !ed.touched[i] {
-                            "(mixed)"
-                        } else {
-                            ""
-                        };
-                        let edit = TextEdit::singleline(field(&mut ed.draft, i))
-                            .hint_text(hint)
+    let title = ed.title();
+    let ok_label = match ed.targets.len() {
+        1 => "Apply to this item".to_owned(),
+        n => format!("Apply to {n} items"),
+    };
+    let (note_shown, base_preview) = (ed.note, ed.base_preview);
+    let mut write_pressed = false;
+    let answer = Dialog::new("meta_editor", Icon::Tag, &title)
+        .ok(&ok_label, true)
+        .width(size::EDITOR_W)
+        .show(
+            ctx,
+            t,
+            |ui| {
+                caption(ui, "TAGS", t);
+                egui::Grid::new("meta_fields")
+                    .spacing(egui::vec2(space::M, space::XS))
+                    .show(ui, |ui| {
+                        for (i, name) in FIELDS.iter().enumerate() {
+                            let label = ui.label(RichText::new(*name).color(t.text_muted));
+                            let hint = if ed.mixed[i] && !ed.touched[i] {
+                                "(mixed)"
+                            } else {
+                                ""
+                            };
+                            let edit = TextEdit::singleline(field(&mut ed.draft, i))
+                                .hint_text(hint)
+                                .desired_width(size::FIELD_W * 2.0);
+                            if ui
+                                .add_sized([size::FIELD_W * 2.0, size::CONTROL_SM], edit)
+                                .labelled_by(label.id)
+                                .changed()
+                            {
+                                ed.touched[i] = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(space::M);
+                caption(ui, "STREAM TITLE", t);
+                ui.horizontal(|ui| {
+                    for mode in PublishMode::ALL {
+                        if widgets::selectable(ui, ed.draft.publish == mode, mode.label()).clicked()
+                        {
+                            ed.draft.publish = mode;
+                            ed.publish_touched = true;
+                        }
+                    }
+                });
+                ui.add_enabled_ui(ed.draft.publish == PublishMode::Custom, |ui| {
+                    ui.horizontal(|ui| {
+                        let label = ui.label(RichText::new("Custom text").color(t.text_muted));
+                        let edit = TextEdit::singleline(&mut ed.draft.custom)
+                            .hint_text("{artist} – {title}")
                             .desired_width(size::FIELD_W * 2.0);
                         if ui
                             .add_sized([size::FIELD_W * 2.0, size::CONTROL_SM], edit)
                             .labelled_by(label.id)
                             .changed()
                         {
-                            ed.touched[i] = true;
+                            ed.custom_touched = true;
                         }
-                        ui.end_row();
-                    }
+                    });
+                    caption(ui, &format!("Placeholders: {}", PLACEHOLDERS.join(" ")), t);
                 });
-            ui.add_space(space::M);
-            caption(ui, "STREAM TITLE", t);
-            ui.horizontal(|ui| {
-                for mode in PublishMode::ALL {
-                    if widgets::selectable(ui, ed.draft.publish == mode, mode.label()).clicked() {
-                        ed.draft.publish = mode;
-                        ed.publish_touched = true;
-                    }
-                }
-            });
-            ui.add_enabled_ui(ed.draft.publish == PublishMode::Custom, |ui| {
-                ui.horizontal(|ui| {
-                    let label = ui.label(RichText::new("Custom text").color(t.text_muted));
-                    let edit = TextEdit::singleline(&mut ed.draft.custom)
-                        .hint_text("{artist} – {title}")
-                        .desired_width(size::FIELD_W * 2.0);
-                    if ui
-                        .add_sized([size::FIELD_W * 2.0, size::CONTROL_SM], edit)
-                        .labelled_by(label.id)
-                        .changed()
-                    {
-                        ed.custom_touched = true;
-                    }
-                });
-                caption(ui, &format!("Placeholders: {}", PLACEHOLDERS.join(" ")), t);
-            });
-            let first = ed
-                .targets
-                .first()
-                .map(|(_, m)| ed.merged(m))
-                .unwrap_or_default();
-            // The source makes the stream title, so the preview and the stream always agree.
-            let row = Row {
-                meta: first,
-                ..ed.base.clone()
-            };
-            let text = source.stream_title(&row);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Icecast gets:").color(t.text_muted));
-                let shown = RichText::new(format!("“{text}”")).font(theme::mono(theme::CODE));
-                ui.label(shown.color(t.accent_ink));
-            });
-            if ed.targets.len() > 1 {
-                caption(ui, "The line shows the first selected item.", t);
-            }
-            if let Some(keep) = ed.draft.keep_alive.as_mut() {
-                ui.add_space(space::S);
-                caption(ui, "STREAM", t);
-                if ui
-                    .checkbox(keep, crate::add_menu::KEEP_ALIVE_LABEL)
-                    .changed()
-                {
-                    ed.keep_alive_touched = true;
-                }
-            }
-            if let Some(trim) = ed.draft.gain_trim_db.as_mut() {
-                ui.add_space(space::S);
-                caption(ui, "LOUDNESS", t);
-                ui.horizontal(|ui| {
-                    let label = ui.label(RichText::new("Gain trim").color(t.text_muted));
-                    let (lo, hi) = radio_model::loudness_range::TRIM_DB;
-                    let field = numbers::field(
-                        ui,
-                        egui::DragValue::new(trim)
-                            .range(lo..=hi)
-                            .speed(0.1)
-                            .max_decimals(1)
-                            .suffix(" dB"),
-                    );
-                    if ui
-                        .add_sized([size::FIELD_W, size::CONTROL_SM], field)
-                        .labelled_by(label.id)
-                        .changed()
-                    {
-                        ed.trim_touched = true;
-                    }
-                });
-                let note = if ed.trim_mixed && !ed.trim_touched {
-                    "The items have different trims. A change sets one trim on all of them."
-                } else {
-                    "On top of the loudness gain. The peak guard and the caps still apply."
+                let first = ed
+                    .targets
+                    .first()
+                    .map(|(_, m)| ed.merged(m))
+                    .unwrap_or_default();
+                // The source makes the stream title, so the preview and the stream always agree.
+                let row = Row {
+                    meta: first,
+                    ..ed.base.clone()
                 };
-                caption(ui, note, t);
-            }
-            ui.add_space(space::S);
-            caption(ui, "Cue points can't be edited in this build.", t);
-            ui.separator();
-            ui.horizontal(|ui| {
-                let apply = egui::Button::new(
-                    RichText::new(match ed.targets.len() {
-                        1 => "Apply to this item".to_owned(),
-                        n => format!("Apply to {n} items"),
-                    })
-                    .color(t.canvas),
-                )
-                .fill(t.accent);
-                if ui.add(apply).clicked() {
-                    let out = ed.targets.iter().map(|(k, m)| (*k, ed.merged(m))).collect();
-                    applied = Some(out);
-                    close = true;
+                let text = source.stream_title(&row);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Icecast gets:").color(t.text_muted));
+                    let shown = RichText::new(format!("“{text}”")).font(theme::mono(theme::CODE));
+                    ui.label(shown.color(t.accent_ink));
+                });
+                if ed.targets.len() > 1 {
+                    caption(ui, "The line shows the first selected item.", t);
                 }
+                if let Some(keep) = ed.draft.keep_alive.as_mut() {
+                    ui.add_space(space::S);
+                    caption(ui, "STREAM", t);
+                    if ui
+                        .checkbox(keep, crate::add_menu::KEEP_ALIVE_LABEL)
+                        .changed()
+                    {
+                        ed.keep_alive_touched = true;
+                    }
+                }
+                if let Some(trim) = ed.draft.gain_trim_db.as_mut() {
+                    ui.add_space(space::S);
+                    caption(ui, "LOUDNESS", t);
+                    ui.horizontal(|ui| {
+                        let label = ui.label(RichText::new("Gain trim").color(t.text_muted));
+                        let (lo, hi) = radio_model::loudness_range::TRIM_DB;
+                        let field = numbers::field(
+                            ui,
+                            egui::DragValue::new(trim)
+                                .range(lo..=hi)
+                                .speed(0.1)
+                                .max_decimals(1)
+                                .suffix(" dB"),
+                        );
+                        if ui
+                            .add_sized([size::FIELD_W, size::CONTROL_SM], field)
+                            .labelled_by(label.id)
+                            .changed()
+                        {
+                            ed.trim_touched = true;
+                        }
+                    });
+                    let note = if ed.trim_mixed && !ed.trim_touched {
+                        "The items have different trims. A change sets one trim on all of them."
+                    } else {
+                        "On top of the loudness gain. The peak guard and the caps still apply."
+                    };
+                    caption(ui, note, t);
+                }
+                ui.add_space(space::S);
+                caption(ui, "Cue points can't be edited in this build.", t);
+            },
+            |ui| {
                 if ui.button("Write tags to file").clicked() {
-                    ed.note = true;
+                    write_pressed = true;
                 }
-                if ui.button("Cancel").clicked() {
-                    close = true;
-                }
-                if ed.note {
-                    let note = if ed.base_preview {
+                if note_shown {
+                    let note = if base_preview {
                         NOT_WRITTEN
                     } else {
                         "Writing tags to files is not in this build yet"
                     };
                     ui.label(RichText::new(note).color(t.warn));
                 }
-            });
-        });
-    if close || !open {
+            },
+        );
+    if write_pressed {
+        ed.note = true;
+    }
+    match answer {
+        Some(Answer::Ok) => {
+            let out = ed.targets.iter().map(|(k, m)| (*k, ed.merged(m))).collect();
+            applied = Some(out);
+            close = true;
+        }
+        Some(Answer::Cancel) => close = true,
+        None => {}
+    }
+    if close {
         *slot = None;
     }
     applied

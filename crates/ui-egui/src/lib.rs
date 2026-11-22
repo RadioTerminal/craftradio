@@ -24,6 +24,7 @@ mod app;
 mod app_prefs;
 mod capture;
 mod cartwall;
+mod chrome;
 mod clock_window;
 mod context_menu;
 mod decks;

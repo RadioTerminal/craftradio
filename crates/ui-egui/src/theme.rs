@@ -49,6 +49,10 @@ pub mod pad {
     pub const GROUP: Margin = Margin::same(8);
     pub const BAR: Margin = Margin::symmetric(12, 8);
     pub const GUTTER: Margin = Margin::symmetric(16, 12);
+    /// The body of a dialog, between its header and its footer.
+    pub const DIALOG_BODY: Margin = Margin::symmetric(18, 16);
+    /// The footer of a dialog, around its buttons.
+    pub const DIALOG_FOOTER: Margin = Margin::symmetric(16, 8);
 }
 
 /// Layout sizes of the console.
@@ -115,6 +119,12 @@ pub mod size {
     pub const DECK_TINY_W: f32 = 184.0;
     /// The widest text of a dialog. Help text wraps at this width.
     pub const DIALOG_W: f32 = 420.0;
+    /// A dialog with a form of two columns: the one-off and the add dialogs.
+    pub const DIALOG_WIDE_W: f32 = 600.0;
+    /// The header of a dialog or a floating window: icon, title and close.
+    pub const WINDOW_HEADER: f32 = 40.0;
+    /// The least width of a dialog's footer button.
+    pub const DIALOG_BUTTON_W: f32 = 88.0;
     /// The deck badge on a row of a list.
     pub const DECK_MARK: f32 = 16.0;
     /// The bar in the deck colour at the left edge of a row on a deck.
@@ -160,6 +170,14 @@ pub mod size {
     pub const CART_COLS: usize = 4;
     pub const CART_W: f32 = 132.0;
     pub const CART_H: f32 = CONTROL_MD;
+    /// A cart tile's height for its width.
+    pub const CART_ASPECT: f32 = 0.62;
+    /// The menu button in a cart tile's corner.
+    pub const CART_MENU: f32 = 22.0;
+    /// How far the secondary marks of a cart tile fade into it.
+    pub const CART_DIM: f32 = 0.75;
+    /// The fill of a cart tile's menu button under the pointer.
+    pub const CART_HOVER: f32 = 0.18;
     pub const STOP_W: f32 = 168.0;
     /// The time that a pressed cart flashes, in seconds.
     pub const CART_FLASH_S: f64 = 1.0;
@@ -189,10 +207,10 @@ pub mod size {
     pub const ALARMS_MIN_W: f32 = 560.0;
     pub const ALARMS_MIN_H: f32 = 280.0;
     /// The Preferences window: the page rail and one settings form.
-    pub const PREFERENCES_W: f32 = 640.0;
-    pub const PREFERENCES_H: f32 = 540.0;
-    pub const PREFERENCES_MIN_W: f32 = 480.0;
-    pub const PREFERENCES_MIN_H: f32 = 360.0;
+    pub const PREFERENCES_W: f32 = 900.0;
+    pub const PREFERENCES_H: f32 = 760.0;
+    pub const PREFERENCES_MIN_W: f32 = 720.0;
+    pub const PREFERENCES_MIN_H: f32 = 420.0;
     /// The width of the severity column and of the source column.
     pub const COL_SEVERITY: f32 = 96.0;
     pub const COL_SOURCE: f32 = 86.0;
@@ -224,12 +242,24 @@ pub mod size {
     pub const FIELD_W: f32 = 220.0;
     /// A settings page: the tab rail, the label column and the one width of every control.
     /// A narrow window shrinks the controls to the least width, never below it.
-    pub const SETTINGS_RAIL: f32 = 96.0;
-    pub const SETTINGS_LABEL: f32 = 124.0;
-    pub const SETTINGS_FIELD: f32 = FIELD_W;
+    pub const SETTINGS_RAIL: f32 = 208.0;
+    pub const SETTINGS_LABEL: f32 = 168.0;
+    pub const SETTINGS_FIELD: f32 = 320.0;
     pub const SETTINGS_FIELD_MIN: f32 = 132.0;
     /// The height of a settings page with its header. A shorter window scrolls the form.
-    pub const SETTINGS_PAGE_H: f32 = 480.0;
+    pub const SETTINGS_PAGE_H: f32 = 700.0;
+    /// The least height of Preferences in a window sized by hand.
+    pub const SETTINGS_PAGE_MIN_H: f32 = 360.0;
+    /// A page of the Preferences rail.
+    pub const SETTINGS_RAIL_ROW: f32 = CONTROL_MD;
+    /// A group heading of the Preferences rail.
+    pub const SETTINGS_GROUP_H: f32 = 18.0;
+    /// The search field in the top bar of Preferences.
+    pub const SETTINGS_SEARCH_W: f32 = 300.0;
+    /// The least width of Done in the footer of Preferences.
+    pub const SETTINGS_DONE_W: f32 = 96.0;
+    /// The extra gap between the letters of a heading in capitals.
+    pub const CAPS_TRACKING: f32 = 0.8;
     /// The cart colour bar at the left edge of a cart.
     pub const CART_BAR: f32 = 4.0;
     /// The longest list in the rules editor before it scrolls.
@@ -490,6 +520,26 @@ pub fn card_frame(t: &Tokens) -> egui::Frame {
 /// A panel on the canvas with even padding.
 pub fn panel_frame(t: &Tokens) -> egui::Frame {
     egui::Frame::new().fill(t.canvas).inner_margin(pad::PANEL)
+}
+
+/// The dim over the window behind a dialog.
+pub fn backdrop(_t: &Tokens) -> Color32 {
+    Color32::from_black_alpha(150)
+}
+
+/// A dialog or a floating window: a card with a shadow and no inner margin, so its header and
+/// footer reach its edges.
+pub fn dialog_frame(t: &Tokens) -> egui::Frame {
+    egui::Frame::new()
+        .fill(t.card)
+        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
+        .corner_radius(t.radius_lg)
+        .shadow(egui::Shadow {
+            offset: [0, 8],
+            blur: 28,
+            spread: 0,
+            color: Color32::from_black_alpha(120),
+        })
 }
 
 /// A bar across the window, for the decks, the cartwall and the status line.
