@@ -53,10 +53,10 @@ fn render_with_dynamics_does_not_allocate() {
     let tone = tone_samples(1.0, 1_000.0, -3.0);
     let (mut mixer, _handle, _live) = ring_mixer(&tone, with_compressor());
     let mut program = vec![0.0f32; 480 * 2];
-    let mut pfl = vec![0.0f32; 480 * 2];
+    let mut monitor = vec![0.0f32; 480 * 2];
     assert_no_alloc::reset_violation_count();
     for _ in 0..50 {
-        assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut pfl));
+        assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut monitor));
     }
     assert_eq!(
         assert_no_alloc::violation_count(),

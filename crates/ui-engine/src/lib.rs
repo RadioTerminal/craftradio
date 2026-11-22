@@ -1057,7 +1057,7 @@ impl ViewSource for EngineSource {
                 .cloned()
                 .chain(self.files.iter().map(|f| f.view.clone()))
                 .collect(),
-            cue_open: pv.cue_open,
+            cue_open: pv.monitor_open,
             devices: self.devices.clone(),
             input_devices: self.input_devices.clone(),
             device_roles: DeviceRoles {

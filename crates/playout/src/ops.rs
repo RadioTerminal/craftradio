@@ -166,7 +166,7 @@ impl Core {
                     return Check::Now(false);
                 };
                 self.mixer
-                    .set_pfl(strip, pfl && !self.cue_device().is_empty());
+                    .set_snd(strip, pfl && !self.cue_device().is_empty());
                 let db = if mute { f32::NEG_INFINITY } else { gain_db };
                 let at = self.mixer.now();
                 let cmd = Cmd::new(at, CommandKind::SetGain { strip, db });
@@ -578,7 +578,7 @@ impl Core {
         for (name, gain, mute, pfl) in strips {
             if let Some(strip) = strip_of(&name) {
                 self.mixer
-                    .set_pfl(strip, pfl && !self.cue_device().is_empty());
+                    .set_snd(strip, pfl && !self.cue_device().is_empty());
                 let db = if mute { f32::NEG_INFINITY } else { gain };
                 let cmd = Cmd::new(self.mixer.now(), CommandKind::SetGain { strip, db });
                 let _ = self.mixer.send(cmd);

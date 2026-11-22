@@ -26,11 +26,11 @@ fn a_playing_deck_reaches_program_and_the_out_meter_without_allocating() {
     handle.send(play(0, DeckId::A)).expect("send");
 
     let mut program = vec![0.0f32; 480 * 2];
-    let mut pfl = vec![0.0f32; 480 * 2];
+    let mut monitor = vec![0.0f32; 480 * 2];
     let mut loudest = f32::NEG_INFINITY;
     assert_no_alloc::reset_violation_count();
     for _ in 0..100 {
-        assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut pfl));
+        assert_no_alloc::assert_no_alloc(|| mixer.render(&mut program, &mut monitor));
         loudest = loudest.max(peak_db(&program));
     }
     assert_eq!(
@@ -271,7 +271,7 @@ fn ring_fed_deck_starts_on_its_sample_and_underruns_without_stalling() {
 }
 
 #[test]
-fn pfl_is_pre_fader_and_never_added_to_program() {
+fn snd_is_pre_fader_and_never_added_to_program() {
     let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
     let (mut tx, rx) = rtrb::RingBuffer::new(4096);
     while tx.slots() >= 2 {
@@ -290,20 +290,20 @@ fn pfl_is_pre_fader_and_never_added_to_program() {
             },
         ))
         .unwrap();
-    handle.set_pfl(Strip::Deck(DeckId::A), true);
+    handle.set_snd(Strip::Deck(DeckId::A), true);
     handle.send(play(0, DeckId::A)).unwrap();
-    let (program, pfl) = radio_audio::render_offline_buses(&mut mixer, 1024);
+    let (program, monitor) = radio_audio::render_offline_buses(&mut mixer, 1024);
     assert!(
-        pfl.iter().skip(512).all(|x| *x > 0.1),
-        "PFL must receive the pre-fader signal"
+        monitor.iter().skip(512).all(|x| *x > 0.1),
+        "SND must receive the pre-fader signal"
     );
     assert!(
         program.iter().skip(512).all(|x| x.abs() < 0.001),
-        "PFL leaked into Program"
+        "SND leaked into Program"
     );
-    handle.set_pfl(Strip::Deck(DeckId::A), false);
-    let (_, pfl) = radio_audio::render_offline_buses(&mut mixer, 128);
-    assert!(pfl.iter().all(|x| *x == 0.0));
+    handle.set_snd(Strip::Deck(DeckId::A), false);
+    let (_, monitor) = radio_audio::render_offline_buses(&mut mixer, 128);
+    assert!(monitor.iter().all(|x| *x == 0.0));
 }
 
 #[test]
@@ -333,11 +333,11 @@ fn captured_deck_uses_live_strip() {
             },
         ))
         .unwrap();
-    handle.set_pfl(Strip::Live, true);
+    handle.set_snd(Strip::Live, true);
     handle.send(play(0, DeckId::A)).unwrap();
-    let (program, pfl) = radio_audio::render_offline_buses(&mut mixer, 512);
+    let (program, monitor) = radio_audio::render_offline_buses(&mut mixer, 512);
     assert!(program.iter().skip(256).all(|x| *x > 0.1));
-    assert!(pfl.iter().all(|x| *x > 0.1));
+    assert!(monitor.iter().all(|x| *x > 0.1));
     handle
         .send(Command::new(
             handle.now(),
@@ -347,7 +347,7 @@ fn captured_deck_uses_live_strip() {
             },
         ))
         .unwrap();
-    let (program, pfl) = radio_audio::render_offline_buses(&mut mixer, 512);
+    let (program, monitor) = radio_audio::render_offline_buses(&mut mixer, 512);
     assert!(program.iter().skip(512).all(|x| x.abs() < 0.001));
-    assert!(pfl.iter().all(|x| *x > 0.1));
+    assert!(monitor.iter().all(|x| *x > 0.1));
 }

@@ -12,7 +12,7 @@ pub(crate) struct ProgramSource {
     pub(crate) scratch: Vec<f32>,
     pub(crate) taps: Vec<rtrb::Producer<f32>>,
     pub(crate) cue: Option<rtrb::Producer<f32>>,
-    pfl: Vec<f32>,
+    monitor: Vec<f32>,
 }
 
 impl ProgramSource {
@@ -22,7 +22,7 @@ impl ProgramSource {
             scratch: vec![0.0; SCRATCH_FRAMES * CHANNELS],
             taps,
             cue: None,
-            pfl: vec![0.0; SCRATCH_FRAMES * CHANNELS],
+            monitor: vec![0.0; SCRATCH_FRAMES * CHANNELS],
         }
     }
 }
@@ -59,9 +59,9 @@ impl AudioSource for ProgramSource {
                 chunk.fill(0.0);
                 continue;
             };
-            let pfl = &mut self.pfl[..frames * CHANNELS];
-            self.mixer.render(program, pfl);
-            feed_tap(&mut self.cue, pfl);
+            let monitor = &mut self.monitor[..frames * CHANNELS];
+            self.mixer.render(program, monitor);
+            feed_tap(&mut self.cue, monitor);
             feed_taps(&mut self.taps, program);
             for (d, s) in chunk
                 .chunks_exact_mut(channels)

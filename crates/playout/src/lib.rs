@@ -8,11 +8,11 @@
 mod alarm;
 mod clock;
 mod core;
-mod cue;
 mod deadair;
 mod device;
 mod input;
 mod loudness;
+mod monitor;
 mod one_off;
 pub use input::{Capture, OpenInput, open_input};
 mod ops;
