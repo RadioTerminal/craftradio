@@ -1360,10 +1360,9 @@ pub(crate) fn preferences(
                     .speed(0.1)
                     .suffix(" s"),
             );
-            ui.add(field).labelled_by(name.id).on_hover_text(
-                "Stored for this deck. Fade out in the header now uses the fade-out \
-                     of the item, or 1 s",
-            );
+            ui.add(field)
+                .labelled_by(name.id)
+                .on_hover_text("Fade out (in the header, or its key) fades this deck out so long");
         });
         if fade_out != old_out {
             actions.push(parts::set(parts::DECKS, &out_key, f64::from(fade_out)));
