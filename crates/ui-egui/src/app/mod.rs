@@ -158,6 +158,10 @@ pub struct RadioApp {
     prefs: crate::app_prefs::AppPrefs,
     /// The window layout last kept, once the app has a store.
     layout: Option<(Vec<&'static str>, bool)>,
+    /// Menu commands for the next frame, as the keys of the same commands.
+    menu_keys: shortcuts::Pressed,
+    /// The native menu bar (macOS), once the desktop app installs it.
+    native_menu: Option<craft_menu::NativeMenu>,
     clock_state: clock_window::State,
     history: history::State,
     alarms: alarms::State,
@@ -191,6 +195,9 @@ pub struct RadioApp {
     /// True while sound moves the Out meter, the one meter of the main window.
     out_moving: bool,
 }
+
+/// The share of the top row that the in-window menus may take; the window toggles take the rest.
+const MENU_SHARE: f32 = 0.4;
 
 /// The settings key of the open tool windows, and of the docked Library.
 const OPEN_KEY: &str = "open";
@@ -226,6 +233,8 @@ impl RadioApp {
             preferences: crate::preferences::State::default(),
             prefs: crate::app_prefs::AppPrefs::memory(),
             layout: None,
+            menu_keys: shortcuts::Pressed::default(),
+            native_menu: None,
             clock_state: clock_window::State::default(),
             history: history::State::default(),
             alarms: alarms::State::default(),
@@ -337,6 +346,94 @@ impl RadioApp {
             crate::parts::bool(&self.view, crate::parts::WINDOWS, DOCKED_KEY, false);
         self.layout = Some(self.current_layout());
         self
+    }
+
+    /// Installs the native menu bar (macOS), once, from the desktop app's creator. False when
+    /// AppKit refused it: the menus stay in the window.
+    #[cfg(target_os = "macos")]
+    pub fn install_native_menu(&mut self, ctx: &egui::Context) -> bool {
+        let bar =
+            craft_menu::mac_layout(&crate::menus::bar(&self.open), &crate::menus::options()).bar;
+        self.native_menu = craft_menu::mac::install(ctx, &bar);
+        self.native_menu.is_some()
+    }
+
+    /// What may run from the menus now: nothing of the app's while a dialog is open.
+    fn menu_gate(&self, ctx: &egui::Context) -> craft_menu::Gate {
+        craft_menu::Gate {
+            modal: self.confirm.is_some()
+                || self.clear.is_some()
+                || self.rename.is_some()
+                || self.meta.is_some()
+                || self.add_dialog.is_some()
+                || self.one_off.is_some(),
+            recording_shortcut: false,
+            text_editing: ctx.egui_wants_keyboard_input(),
+        }
+    }
+
+    /// Runs a menu command as its shortcut would: in this frame's keys, or on a window.
+    fn run_menu(&mut self, command: &craft_keymap::CommandRef) {
+        match crate::menus::run(command) {
+            crate::menus::Run::Keys(p) => self.menu_keys = self.menu_keys.or(p),
+            crate::menus::Run::Window(w) => {
+                if !(w == ToolWindow::Library && self.library.docked) {
+                    let on = self.open.get(w);
+                    self.open.set(w, !on);
+                }
+            }
+            crate::menus::Run::Nothing => {}
+        }
+    }
+
+    /// The native menu's clicks since the last frame, run before this frame reads its keys.
+    fn native_menu_clicks(&mut self, ctx: &egui::Context) {
+        let gate = self.menu_gate(ctx);
+        let Some(menu) = self.native_menu.as_mut() else {
+            return;
+        };
+        menu.set_gate(gate);
+        for command in menu.take_clicks(ctx) {
+            self.run_menu(&command);
+        }
+    }
+
+    /// Brings the native menu in step with the app after this frame.
+    fn sync_native_menu(&mut self) {
+        if self.native_menu.is_none() {
+            return;
+        }
+        let layout =
+            craft_menu::mac_layout(&crate::menus::bar(&self.open), &crate::menus::options());
+        if let Some(menu) = self.native_menu.as_mut() {
+            let _ = menu.sync(layout);
+        }
+    }
+
+    /// The menu bar drawn in the window, where there is no native one.
+    fn menu_bar_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let options = crate::menus::options();
+        let bar = craft_menu::layout(
+            &crate::menus::bar(&self.open),
+            craft_menu::Target::current(),
+            &options,
+        )
+        .bar;
+        let gate = self.menu_gate(&ctx);
+        let label: &dyn Fn(&'static str) -> String = &|english| (options.label)(english);
+        // The bar takes its titles' width, and folds the titles that don't fit into its "…".
+        let chosen = craft_menu::MenuBarUi::new(&bar)
+            .gate(gate)
+            .label(label)
+            .id(egui::Id::unique("radio-menu-bar"))
+            .shrink_to_fit(ui.available_width() * MENU_SHARE)
+            .show(ui);
+        for command in chosen {
+            self.run_menu(&command);
+            // The command runs with the next frame's keys.
+            ctx.request_repaint();
+        }
     }
 
     /// The open tool windows, by title, and whether the Library is docked.
@@ -546,6 +643,13 @@ impl RadioApp {
 }
 
 impl eframe::App for RadioApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // The native menu's key equivalents reach egui as the keys they are.
+        if let Some(menu) = &mut self.native_menu {
+            menu.raw_input(raw_input);
+        }
+    }
+
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.prefs.flush();
     }
@@ -592,13 +696,22 @@ impl eframe::App for RadioApp {
         let mut actions = Vec::new();
         self.link.has_clip = !self.clip.items.is_empty();
         self.link.file_target = None;
-        self.link.keys = shortcuts::read(&ctx);
+        self.native_menu_clicks(&ctx);
+        self.link.keys = shortcuts::read(&ctx).or(std::mem::take(&mut self.menu_keys));
 
         egui::Panel::top("decks")
             .resizable(false)
             .frame(theme::bar_frame(&t, pad::GUTTER))
             .show(ui, |ui| {
-                windows::toggles(ui, &mut self.open, &t);
+                // The menus open the row where there is no native menu bar, as in the Craft
+                // apps; the window toggles follow them.
+                ui.horizontal(|ui| {
+                    if self.native_menu.is_none() {
+                        self.menu_bar_ui(ui);
+                        ui.separator();
+                    }
+                    windows::toggles(ui, &mut self.open, &t);
+                });
                 ui.add_space(space::S);
                 decks::show(ui, &self.view, &mut self.decks, &mut actions, &t);
             });
@@ -666,6 +779,7 @@ impl eframe::App for RadioApp {
         self.keep_layout();
         self.global_keys(&ctx, &mut actions);
         self.dialogs(&ctx, &mut actions, &t);
+        self.sync_native_menu();
 
         if let Some(tab) = rules_editor::show(&ctx, &mut self.editor, &mut self.link, &t) {
             let text = match self.source.apply_rules(tab) {

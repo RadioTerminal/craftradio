@@ -19,6 +19,7 @@ craft-ui = { workspace = true, features = ["system_fonts"] }
 craft-i18n.workspace = true
 craft-settings.workspace = true
 craft-keymap.workspace = true
+craft-menu.workspace = true
 rfd.workspace = true
 serde_json.workspace = true
 serde.workspace = true

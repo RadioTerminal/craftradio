@@ -32,6 +32,7 @@ mod history;
 mod icons;
 mod library;
 mod main_pane;
+mod menus;
 mod meta_editor;
 mod mixer;
 pub mod mock;

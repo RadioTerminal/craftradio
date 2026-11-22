@@ -644,3 +644,35 @@ fn cart_ducking_says_it_is_not_played_yet() {
         "the ducking rows say they are not played yet"
     );
 }
+
+/// Where there is no native menu bar, the window draws the menus, and an item runs its
+/// command: Window ▸ Mixer opens the Mixer.
+#[test]
+fn the_window_menu_opens_a_tool_window() {
+    use egui::accesskit::Role;
+    let mut harness = harness();
+    assert!(
+        !shows(&harness, "Mixer preferences"),
+        "the mixer starts closed"
+    );
+    harness
+        .get(
+            egui_kittest::kittest::By::new()
+                .label("Window")
+                .role(Role::MenuItem),
+        )
+        .click();
+    harness.run_steps(FRAMES);
+    let item = harness
+        .query_all_by_label("Mixer")
+        .find(|n| {
+            matches!(
+                n.accesskit_node().role(),
+                Role::MenuItemCheckBox | Role::MenuItem | Role::MenuItemRadio
+            )
+        })
+        .expect("Mixer in the Window menu");
+    item.click();
+    harness.run_steps(FRAMES);
+    assert!(shows(&harness, "Mixer preferences"), "the mixer opens");
+}

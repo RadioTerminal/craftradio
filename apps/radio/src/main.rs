@@ -518,6 +518,12 @@ fn window(
             for w in open {
                 app.set_window(w, true);
             }
+            // The menus go in the macOS menu bar; elsewhere, or if AppKit refuses them, the
+            // window draws them.
+            #[cfg(target_os = "macos")]
+            if !app.install_native_menu(&cc.egui_ctx) {
+                eprintln!("radio: the macOS menu bar refused the menus; they show in the window");
+            }
             Ok(Box::new(app))
         }),
     )

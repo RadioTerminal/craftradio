@@ -103,7 +103,7 @@ pub(crate) fn catalog() -> Vec<Bindable> {
 }
 
 /// The keymap of this platform: the catalog's defaults.
-fn keymap() -> Arc<Keymap> {
+pub(crate) fn keymap() -> Arc<Keymap> {
     static MAP: OnceLock<Arc<Keymap>> = OnceLock::new();
     MAP.get_or_init(|| Arc::new(Keymap::new(catalog(), Scopes::new(), Platform::current())))
         .clone()
@@ -162,9 +162,43 @@ pub(crate) struct Pressed {
     pub step: i32,
 }
 
+impl Pressed {
+    /// The shortcuts of `self` and of `other`: a menu click joins the keys of its frame.
+    pub(crate) fn or(self, other: Pressed) -> Pressed {
+        Pressed {
+            cut: self.cut | other.cut,
+            copy: self.copy | other.copy,
+            paste: self.paste | other.paste,
+            duplicate: self.duplicate | other.duplicate,
+            delete: self.delete | other.delete,
+            select_all: self.select_all | other.select_all,
+            undo: self.undo | other.undo,
+            redo: self.redo | other.redo,
+            play_next: self.play_next | other.play_next,
+            preferences: self.preferences | other.preferences,
+            fade: self.fade | other.fade,
+            play_pause: self.play_pause | other.play_pause,
+            stop_carts: self.stop_carts | other.stop_carts,
+            focus_deck: self.focus_deck.or(other.focus_deck),
+            cart: self.cart.or(other.cart),
+            step: if self.step == 0 {
+                other.step
+            } else {
+                self.step
+            },
+        }
+    }
+}
+
 /// Read the shortcuts of this frame, once. A focused text field keeps all keys for itself.
 pub(crate) fn read(ctx: &egui::Context) -> Pressed {
     if ctx.egui_wants_keyboard_input() {
+        return Pressed::default();
+    }
+    // The in-window menu bar holds the keys while a menu is open or it has the keyboard (an
+    // Alt tap); a command shortcut takes the keyboard off it first and runs.
+    craft_menu::bar::leave_for_shortcut(ctx);
+    if craft_menu::bar::is_open(ctx) || craft_menu::bar::is_focused(ctx) {
         return Pressed::default();
     }
     // Space and the arrows belong to a focused button, slider or list, when there is one.
