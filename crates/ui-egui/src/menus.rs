@@ -15,6 +15,9 @@ pub(crate) const APP_NAME: &str = "CraftRadio";
 /// Open the Keyboard Shortcuts dialog.
 pub(crate) const SHORTCUTS: &str = "app.keyboard_shortcuts";
 
+/// Help ▸ Check for Updates.
+pub(crate) const CHECK_UPDATES: &str = "app.check_for_updates";
+
 /// Open or close a tool window: `{"window": title}`.
 const WINDOW: &str = "window.toggle";
 
@@ -44,8 +47,9 @@ pub(crate) fn options() -> LayoutOptions<'static> {
     }
 }
 
-/// The menus as the app is now: which tool windows are open.
-pub(crate) fn bar(open: &Open, keymap: &craft_keymap::Keymap) -> MenuBar {
+/// The menus as the app is now: which tool windows are open, and whether the app checks
+/// for updates. A build without the updater shows no Check for Updates.
+pub(crate) fn bar(open: &Open, keymap: &craft_keymap::Keymap, updates: bool) -> MenuBar {
     let edit = Menu::new(
         "Edit",
         vec![
@@ -82,12 +86,18 @@ pub(crate) fn bar(open: &Open, keymap: &craft_keymap::Keymap) -> MenuBar {
         .filter(|w| *w != ToolWindow::Preferences)
         .map(|w| Node::Item(Item::new(window(w), w.title()).check(open.get(w))))
         .collect();
+    let mut menus = vec![
+        edit,
+        Menu::new("Playout", playout),
+        Menu::new("Window", windows).role(MenuRole::Window),
+    ];
+    if updates {
+        menus.push(
+            Menu::new("Help", vec![item(CHECK_UPDATES, "Check for Updates…")]).role(MenuRole::Help),
+        );
+    }
     let mut bar = MenuBar {
-        menus: vec![
-            edit,
-            Menu::new("Playout", playout),
-            Menu::new("Window", windows).role(MenuRole::Window),
-        ],
+        menus,
         documents: Vec::new(),
     };
     craft_menu::apply_keymap(&mut bar, keymap);
@@ -99,6 +109,7 @@ pub(crate) enum Run {
     Keys(Pressed),
     Window(ToolWindow),
     Shortcuts,
+    CheckUpdates,
     Nothing,
 }
 
@@ -130,6 +141,7 @@ pub(crate) fn run(command: &CommandRef) -> Run {
         shortcuts::FOCUS_DECK => p.focus_deck = param("deck"),
         shortcuts::FIRE_CART => p.cart = param("cart"),
         SHORTCUTS => return Run::Shortcuts,
+        CHECK_UPDATES => return Run::CheckUpdates,
         WINDOW => {
             let title = command
                 .params
@@ -152,7 +164,7 @@ mod tests {
     #[test]
     fn every_menu_item_does_what_its_shortcut_does_and_shows_it() {
         let open = Open::default();
-        let bar = bar(&open, &shortcuts::default_keymap());
+        let bar = bar(&open, &shortcuts::default_keymap(), true);
         for item in bar.items() {
             assert!(
                 !matches!(run(&item.command), Run::Nothing),

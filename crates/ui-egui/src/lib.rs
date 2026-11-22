@@ -49,6 +49,7 @@ mod select;
 mod settings;
 mod shortcuts;
 pub mod theme;
+mod updates;
 pub mod view;
 mod widgets;
 pub mod windows;

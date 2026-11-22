@@ -168,6 +168,10 @@ pub struct RadioApp {
     keymap_installed: bool,
     /// The Keyboard Shortcuts dialog while it is open.
     shortcuts_dialog: Option<craft_keymap::ui::DialogState>,
+    /// Update checks and self-update, when the desktop app asks for them.
+    updates: Option<crate::updates::Updates>,
+    /// Help ▸ Check for Updates was chosen. The check starts in the next frame.
+    check_updates: bool,
     clock_state: clock_window::State,
     history: history::State,
     alarms: alarms::State,
@@ -244,6 +248,8 @@ impl RadioApp {
             keymap: shortcuts::default_keymap(),
             keymap_installed: false,
             shortcuts_dialog: None,
+            updates: None,
+            check_updates: false,
             clock_state: clock_window::State::default(),
             history: history::State::default(),
             alarms: alarms::State::default(),
@@ -359,12 +365,20 @@ impl RadioApp {
         self
     }
 
+    /// Checks for updates at start and on Help ▸ Check for Updates, and installs them.
+    /// Without this call the app never asks the network for releases (tests, previews).
+    #[must_use]
+    pub fn with_updates(mut self) -> Self {
+        self.updates = Some(crate::updates::Updates::new());
+        self
+    }
+
     /// Installs the native menu bar (macOS), once, from the desktop app's creator. False when
     /// AppKit refused it: the menus stay in the window.
     #[cfg(target_os = "macos")]
     pub fn install_native_menu(&mut self, ctx: &egui::Context) -> bool {
         let bar = craft_menu::mac_layout(
-            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx)),
+            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx), self.updates.is_some()),
             &crate::menus::options(),
         )
         .bar;
@@ -376,6 +390,10 @@ impl RadioApp {
     fn menu_gate(&self, ctx: &egui::Context) -> craft_menu::Gate {
         craft_menu::Gate {
             modal: self.shortcuts_dialog.is_some()
+                || self
+                    .updates
+                    .as_ref()
+                    .is_some_and(crate::updates::Updates::modal)
                 || self.confirm.is_some()
                 || self.clear.is_some()
                 || self.rename.is_some()
@@ -403,6 +421,7 @@ impl RadioApp {
             crate::menus::Run::Shortcuts => {
                 self.shortcuts_dialog = Some(craft_keymap::ui::DialogState::new());
             }
+            crate::menus::Run::CheckUpdates => self.check_updates = true,
             crate::menus::Run::Nothing => {}
         }
     }
@@ -446,7 +465,7 @@ impl RadioApp {
             return;
         }
         let layout = craft_menu::mac_layout(
-            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx)),
+            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx), self.updates.is_some()),
             &crate::menus::options(),
         );
         if let Some(menu) = self.native_menu.as_mut() {
@@ -459,7 +478,7 @@ impl RadioApp {
         let ctx = ui.ctx().clone();
         let options = crate::menus::options();
         let bar = craft_menu::layout(
-            &crate::menus::bar(&self.open, &shortcuts::keymap(&ctx)),
+            &crate::menus::bar(&self.open, &shortcuts::keymap(&ctx), self.updates.is_some()),
             craft_menu::Target::current(),
             &options,
         )
@@ -709,6 +728,9 @@ impl eframe::App for RadioApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.prefs.flush();
+        if let Some(updates) = &mut self.updates {
+            updates.exit();
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -758,6 +780,12 @@ impl eframe::App for RadioApp {
             self.keymap_installed = true;
         }
         self.native_menu_clicks(&ctx);
+        if let Some(updates) = &mut self.updates {
+            if std::mem::take(&mut self.check_updates) {
+                updates.check_now(&ctx);
+            }
+            updates.show(&ctx);
+        }
         // While the Keyboard Shortcuts dialog is open its keys are its own: a chord being
         // recorded runs nothing.
         let pressed = if self.shortcuts_dialog.is_some() {

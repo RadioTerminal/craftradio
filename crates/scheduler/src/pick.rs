@@ -1,7 +1,7 @@
 use radio_model::{Item, ItemId, PickOrder, Playlist};
 use rand_chacha::{
     ChaCha8Rng,
-    rand_core::{RngCore, SeedableRng},
+    rand_core::{Rng, SeedableRng},
 };
 
 use crate::PlayHistory;
