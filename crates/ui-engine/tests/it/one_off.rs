@@ -82,7 +82,8 @@ fn a_one_off_file_shows_in_upcoming_without_a_tab_and_remove_takes_it_out() {
 fn a_url_one_off_without_a_title_is_titled_by_its_host() {
     let (mut source, clock) = source(Vec::new());
     let _ = wait_for(&mut source, &clock, |_| true);
-    let mut o = file_one_off(String::new(), 0);
+    // Past the stream pre-roll, so playout opens no connection while the clock stands still.
+    let mut o = file_one_off(String::new(), 3);
     o.source = OneOffSource::Url {
         url: "https://relay.example.org/live".into(),
         title: String::new(),

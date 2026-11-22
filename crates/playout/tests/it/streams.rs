@@ -54,8 +54,55 @@ fn keep_alive_stream_does_not_advance_when_down() {
     assert!(relay_deck.is_some_and(|d| d.phase == DeckPhase::Playing));
     assert!(view.stream_states.iter().any(|s| s.keep_alive && !s.up));
     assert!(view.alarms.iter().any(|a| {
-        matches!(a.alarm, Alarm::StreamReconnecting { item } if item.0 == 1) && a.cleared.is_none()
+        matches!(a.alarm, Alarm::StreamReconnecting { item, .. } if item.0 == 1)
+            && a.cleared.is_none()
     }));
     let rows = p.history(t0(), 10).unwrap();
     assert!(rows.iter().all(|r| r.entry.title != "Next"));
+}
+
+/// A server that answers each connection in plain HTTP, so a TLS client fails at once.
+fn plain_text_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("https://{}/live", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            use std::io::Write;
+            let _ = conn.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+        }
+    });
+    url
+}
+
+/// The alarm of a keep-alive stream says why its https connection failed.
+#[test]
+fn a_stream_whose_tls_fails_says_why_in_its_alarm() {
+    let mut relay = file_item(1, "Relay", "unused", 1.0, 1.0, 0.0);
+    relay.source = Source::Stream {
+        url: plain_text_server(),
+        keep_alive: true,
+    };
+    relay.timing = None;
+    relay.planned_len = Some(Duration::from_secs(20));
+    let engine = engine_with(vec![relay]);
+    let (p, clock) = offline(engine, |_| {});
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let reason = loop {
+        run(&p, &clock, 0.5);
+        let found = p.snapshot().alarms.iter().find_map(|a| match &a.alarm {
+            Alarm::StreamReconnecting {
+                item,
+                reason: Some(r),
+            } if item.0 == 1 => Some(r.clone()),
+            _ => None,
+        });
+        if let Some(r) = found {
+            break r;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no alarm with a reason"
+        );
+    };
+    assert!(reason.starts_with("TLS: "), "{reason}");
 }

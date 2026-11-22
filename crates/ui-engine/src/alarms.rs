@@ -191,13 +191,15 @@ pub(crate) fn alarm_text(n: &Names<'_>, a: &Alarm) -> String {
         Alarm::EmergencyFallback { reason } => {
             format!("The emergency fallback folder is playing: {reason}")
         }
-        Alarm::StreamReconnecting { item } => format!(
-            "The stream \"{}\" has no audio and reconnects; a bed plays under it",
-            n.item(*item)
+        Alarm::StreamReconnecting { item, reason } => format!(
+            "The stream \"{}\" has no audio and reconnects; a bed plays under it{}",
+            n.item(*item),
+            because(reason)
         ),
-        Alarm::StreamDown { item } => format!(
-            "The stream \"{}\" had no audio for too long, so playout skipped it",
-            n.item(*item)
+        Alarm::StreamDown { item, reason } => format!(
+            "The stream \"{}\" had no audio for too long, so playout skipped it{}",
+            n.item(*item),
+            because(reason)
         ),
         Alarm::DeckUnderrun { deck } => {
             format!("Deck {} ran out of decoded audio on air", deck_name(*deck))
@@ -285,8 +287,8 @@ fn alarm_source(a: &Alarm) -> AlarmSource {
 fn alarm_item(a: &Alarm) -> Option<ItemId> {
     match a {
         Alarm::ItemSkipped { item, .. }
-        | Alarm::StreamReconnecting { item }
-        | Alarm::StreamDown { item }
+        | Alarm::StreamReconnecting { item, .. }
+        | Alarm::StreamDown { item, .. }
         | Alarm::HardEventNotLoaded { item }
         | Alarm::FixedLate { item, .. }
         | Alarm::HardEventMissed { item, .. }
@@ -414,6 +416,13 @@ pub(crate) fn csv(rows: &[AlarmView]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The reason of a stream alarm as the end of its sentence, or nothing.
+fn because(reason: &Option<String>) -> String {
+    reason
+        .as_ref()
+        .map_or_else(String::new, |r| format!(". Last error: {r}"))
 }
 
 #[cfg(test)]
