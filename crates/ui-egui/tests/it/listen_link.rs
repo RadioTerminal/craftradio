@@ -49,18 +49,17 @@ fn harness(link: Option<&str>) -> Harness<'static, RadioApp> {
 }
 
 #[test]
-fn the_status_line_copies_the_listen_link_only_while_it_works() {
+fn share_copies_the_listen_link_and_hides_while_there_is_nothing_to_share() {
     let without = harness(None);
     assert!(
-        without
-            .query_all_by_label_contains("Copy listen link")
-            .next()
-            .is_none(),
-        "a link that no tracker carries must not show"
+        without.query_by_label("Share").is_none(),
+        "nothing to share while streaming is off"
     );
 
     let mut with = harness(Some(LINK));
-    with.get_by_label_contains("Copy listen link").click();
+    with.get_by_label("Share").click();
+    with.run_steps(2);
+    with.get_by_label("Copy listen link").click();
     with.step();
     let copied = with
         .output()
@@ -68,11 +67,11 @@ fn the_status_line_copies_the_listen_link_only_while_it_works() {
         .commands
         .iter()
         .any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == LINK));
-    assert!(copied, "the click copies the link");
+    assert!(copied, "the menu copies the link");
 }
 
 #[test]
-fn the_streaming_switch_turns_streaming_on_and_shows_off_until_then() {
+fn the_on_air_chip_turns_streaming_on_and_the_status_says_off_until_then() {
     let mut h = harness(None);
     let texts: Vec<String> = h
         .root()
@@ -84,12 +83,13 @@ fn the_streaming_switch_turns_streaming_on_and_shows_off_until_then() {
         .collect();
     assert!(
         texts.iter().any(|t| t.ends_with(" off")),
-        "the status says off while the switch is off: {texts:?}"
+        "the status says off while streaming is off: {texts:?}"
     );
-    let switch = h.get_by_label("Stream to listeners");
-    assert_eq!(switch.accesskit_node().toggled(), Some(Toggled::False));
-    switch.click();
+    // The preview sends no audio, so its chip says PREVIEW; it still switches streaming.
+    let chip = h.get_by_label("PREVIEW");
+    assert_eq!(chip.accesskit_node().toggled(), Some(Toggled::False));
+    chip.click();
     h.run_steps(4);
-    let switch = h.get_by_label("Stream to listeners");
-    assert_eq!(switch.accesskit_node().toggled(), Some(Toggled::True));
+    let chip = h.get_by_label("PREVIEW");
+    assert_eq!(chip.accesskit_node().toggled(), Some(Toggled::True));
 }

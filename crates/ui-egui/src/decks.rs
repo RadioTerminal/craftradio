@@ -37,6 +37,8 @@ pub(crate) enum Guarded {
 
 /// The deck view state. The fade times and the confirm switch come from the view source.
 pub(crate) struct State {
+    /// The covers on the decks in the last frame. egui forgets a cover when it leaves.
+    covers: Vec<String>,
     fade_s: [f32; 4],
     fade_in_s: [f32; 4],
     settings: [bool; 4],
@@ -55,6 +57,7 @@ pub(crate) struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            covers: Vec::new(),
             fade_s: [DEFAULT_FADE_S; 4],
             fade_in_s: [DEFAULT_FADE_IN_S; 4],
             settings: [false; 4],
@@ -171,6 +174,15 @@ pub(crate) fn show(
     ui.ctx()
         .data_mut(|d| d.insert_temp(egui::Id::unique(NOW_KEY), now_ts));
     state.preview = view.preview;
+    let covers: Vec<String> = view
+        .decks
+        .iter()
+        .filter_map(|d| d.cover.as_ref().map(|c| c.uri.clone()))
+        .collect();
+    for gone in state.covers.iter().filter(|u| !covers.contains(u)) {
+        ui.ctx().forget_image(gone);
+    }
+    state.covers = covers;
     let labels = ['A', 'B', 'C', 'D'];
     for (i, label) in labels.iter().enumerate() {
         state.fade_s[i] = parts::f32(view, parts::DECKS, &fade_key(*label), DEFAULT_FADE_S);
@@ -543,35 +555,25 @@ fn deck_body(
     } else {
         deck.title.as_str()
     };
-    let label = egui::Label::new(RichText::new(title).font(theme::text(theme::BODY)));
-    let title = ui.add(label.truncate().sense(Sense::click()));
-    // The playlist of the item, as a chip: its colour and its name. An empty deck keeps the row.
-    ui.horizontal(|ui| {
-        let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
-        let (name, colour) = if deck.state == DeckState::Empty {
-            ("Empty: nothing planned", t.text_muted)
-        } else if deck.playlist.is_empty() {
-            ("No playlist", t.text_muted)
-        } else {
-            ui.painter().circle_filled(
-                dot.center(),
-                size::DOT_R,
-                Tokens::playlist(deck.playlist_color),
-            );
-            (
-                deck.playlist.as_str(),
-                t.readable(deck.playlist_color, card_fill(i, deck, t)),
-            )
-        };
-        let name = RichText::new(name).font(theme::text(theme::CAPTION));
-        // The item gain sits at the end of the row; the playlist name truncates first.
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            gain_caption(ui, deck, state.preview, t);
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                widgets::truncated_label(ui, name.color(colour));
-            });
-        });
-    });
+    // The cover of the file sits left of the title and the playlist, as tall as both rows.
+    let cover = deck
+        .cover
+        .as_ref()
+        .filter(|_| deck.state != DeckState::Empty);
+    let title = ui
+        .horizontal(|ui| {
+            if let Some(c) = cover {
+                ui.add(
+                    egui::Image::from_bytes(c.uri.clone(), c.bytes.clone())
+                        .fit_to_exact_size(egui::Vec2::splat(size::DECK_COVER))
+                        .corner_radius(t.radius)
+                        .alt_text("Cover"),
+                );
+            }
+            ui.vertical(|ui| title_rows(ui, i, deck, title, state, t))
+                .inner
+        })
+        .inner;
     progress(ui, deck, t);
     let left = deck.len.saturating_sub(deck.elapsed);
     let muted = |s: &str| {
@@ -618,6 +620,48 @@ fn deck_body(
         .map_or("Nothing planned", String::as_str);
     ui.add(egui::Label::new(muted(line)).wrap_mode(egui::TextWrapMode::Extend));
     head.inner.union(title)
+}
+
+/// The title and the playlist row of a deck card. The title takes the right-click.
+fn title_rows(
+    ui: &mut egui::Ui,
+    i: usize,
+    deck: &DeckView,
+    title: &str,
+    state: &State,
+    t: &Tokens,
+) -> egui::Response {
+    ui.spacing_mut().item_spacing.y = space::S;
+    let label = egui::Label::new(RichText::new(title).font(theme::text(theme::BODY)));
+    let title = ui.add(label.truncate().sense(Sense::click()));
+    // The playlist of the item, as a chip: its colour and its name. An empty deck keeps the row.
+    ui.horizontal(|ui| {
+        let (dot, _) = ui.allocate_exact_size(egui::Vec2::splat(size::DOT_R * 2.0), Sense::hover());
+        let (name, colour) = if deck.state == DeckState::Empty {
+            ("Empty: nothing planned", t.text_muted)
+        } else if deck.playlist.is_empty() {
+            ("No playlist", t.text_muted)
+        } else {
+            ui.painter().circle_filled(
+                dot.center(),
+                size::DOT_R,
+                Tokens::playlist(deck.playlist_color),
+            );
+            (
+                deck.playlist.as_str(),
+                t.readable(deck.playlist_color, card_fill(i, deck, t)),
+            )
+        };
+        let name = RichText::new(name).font(theme::text(theme::CAPTION));
+        // The item gain sits at the end of the row; the playlist name truncates first.
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            gain_caption(ui, deck, state.preview, t);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                widgets::truncated_label(ui, name.color(colour));
+            });
+        });
+    });
+    title
 }
 
 /// A gain in dB as text, with a real minus sign: "−3.2 dB", "+1.5 dB", "0.0 dB".
@@ -798,6 +842,7 @@ fn cluster(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = space::XS;
                 live_chip(ui, view, false, actions, t);
+                share_button(ui, view);
                 ui.label(
                     RichText::new(hms(&view.now))
                         .font(theme::mono(theme::TITLE))
@@ -835,7 +880,11 @@ fn cluster(
                 |ui| {
                     ui.set_width(right_w);
                     ui.spacing_mut().item_spacing.y = space::XS;
-                    ui.horizontal(|ui| live_chip(ui, view, true, actions, t));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::XS;
+                        live_chip(ui, view, true, actions, t);
+                        share_button(ui, view);
+                    });
                     ui.label(
                         RichText::new(hms(&view.now))
                             .font(theme::mono(theme::TITLE))
@@ -1024,8 +1073,9 @@ fn stop_after(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
     }
 }
 
-/// What the listeners get: LIVE only while Icecast is connected and Out has sound.
-/// The preview never shows LIVE. A word and an icon carry the state, not the colour alone.
+/// The on-air chip, and the switch for streaming to listeners. A click turns streaming
+/// on or off. It shows ON AIR while listeners can tune in and Out has sound.
+/// The preview never shows ON AIR. A word and an icon carry the state, not the colour alone.
 fn live_chip(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -1036,7 +1086,12 @@ fn live_chip(
     let out = view.meters.iter().find(|m| m.label == "Out");
     let sound =
         out.is_some_and(|m| !m.mute && m.level_db[0].max(m.level_db[1]) > size::METER_MIN_DB);
-    let (icon, word, ink, fill, why) = match (&view.output.local, &view.output.icecast) {
+    let on = view.output.streaming.unwrap_or(false);
+    let listeners = view
+        .output
+        .webrtc_listeners
+        .map_or(String::new(), |n| format!(", {n} listeners"));
+    let (icon, word, ink, fill, why) = match (&view.output.local, &view.output.webrtc) {
         (Status::Preview, _) => (
             Icon::Eye,
             "PREVIEW",
@@ -1044,58 +1099,54 @@ fn live_chip(
             t.field,
             "UI preview: no audio goes out".to_owned(),
         ),
-        (_, Status::Connected) if sound => (
+        (_, Status::Connected) if on && sound => (
             Icon::Radio,
-            "LIVE",
+            "ON AIR",
             t.on_air,
             t.on_air_bg,
-            "on air".to_owned(),
+            format!("streaming to listeners{listeners}"),
         ),
-        (_, Status::Connected) => (
+        (_, Status::Connected) if on => (
             Icon::VolumeX,
             "SILENT",
             t.warn,
             t.warn_fill,
-            "connected, but Out is silent".to_owned(),
+            format!("streaming, but Out is silent{listeners}"),
         ),
-        (_, Status::Reconnecting { attempt }) => (
+        (_, Status::Reconnecting { .. }) if on => (
             Icon::RefreshCw,
-            "RECONNECTING",
+            "STARTING",
             t.warn,
             t.warn_fill,
-            format!("reconnecting, try {attempt}"),
+            "streaming starts".to_owned(),
         ),
-        (_, Status::Failed(e)) => (
+        (_, Status::Failed(e)) if on => (
+            Icon::Circle,
+            "OFF AIR",
+            t.danger,
+            t.field,
+            format!("streaming failed: {e}"),
+        ),
+        _ => (
             Icon::Circle,
             "OFF AIR",
             t.text_muted,
             t.field,
-            format!("down: {e}"),
-        ),
-        (_, _) => (
-            Icon::Circle,
-            "OFF AIR",
-            t.text_muted,
-            t.field,
-            "Icecast is not connected".to_owned(),
+            "not streaming to listeners".to_owned(),
         ),
     };
-    let ice = &view.icecast;
-    let listeners = view
-        .output
-        .listeners
-        .map_or("listeners unknown".to_owned(), |n| format!("{n} listeners"));
-    let clear = if ice.password_in_clear() {
-        format!("\n{}", crate::mixer::PASSWORD_IN_CLEAR)
-    } else {
-        String::new()
+    let icecast = match &view.output.icecast {
+        Status::Connected => "connected",
+        Status::Reconnecting { .. } => "reconnecting",
+        Status::Failed(_) => "failed",
+        Status::Preview | Status::NotConnected => "not connected",
     };
-    let hint = format!(
-        "{word}: {why}\nMount {} · {listeners} · {} {} kbps{clear}\nClick for the Icecast settings",
-        ice.mount,
-        ice.format.label(),
-        ice.kbps
-    );
+    let click = match view.output.streaming {
+        Some(true) => "Click to stop streaming",
+        Some(false) => "Click to stream to listeners, with a link anyone can open",
+        None => "This station has no streaming to listeners",
+    };
+    let hint = format!("{word}: {why}\nIcecast: {icecast}\n{click}");
     // A narrow cluster keeps only the icon of the chip. The tooltip still has the words.
     let label = if wide {
         icons::lead(icon, word)
@@ -1109,11 +1160,46 @@ fn live_chip(
         .fill(fill)
         .stroke(Stroke::new(size::HAIRLINE, ink))
         .min_size(egui::vec2(0.0, size::CONTROL_SM));
-    let resp = ui.add(chip).on_hover_text(hint);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, word));
+    let resp = ui
+        .add_enabled(view.output.streaming.is_some(), chip)
+        .on_hover_text(hint)
+        .on_disabled_hover_text(format!("{word}: {why}"));
+    // Screen readers hear a switch named by its word, on while streaming is on.
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, word));
     if resp.clicked() {
-        actions.push(Action::OpenIcecast);
+        actions.push(Action::Edit(Edit::SetStreaming(!on)));
     }
+}
+
+/// The Share button beside the on-air chip, while streaming runs. Its menu copies the
+/// link that plays the station from anywhere, and the address on the local network.
+fn share_button(ui: &mut egui::Ui, view: &StationView) {
+    let anywhere = view.output.listen_link.as_deref();
+    let local = view.output.local_link.as_deref();
+    if anywhere.is_none() && local.is_none() {
+        return;
+    }
+    let button = widgets::icon_button_sized(
+        ui,
+        Icon::Share2,
+        false,
+        "Share",
+        "Share the station: copy a link that listeners open",
+        size::CONTROL_SM,
+    );
+    egui::Popup::menu(&button).show(|ui| {
+        // The link works only while a tracker carries it, so the row waits for one.
+        if context_menu::menu_item_if(ui, anywhere.is_some(), "Copy listen link", None)
+            && let Some(link) = anywhere
+        {
+            ui.ctx().copy_text(link.to_owned());
+        }
+        if context_menu::menu_item_if(ui, local.is_some(), "Copy local address", None)
+            && let Some(link) = local
+        {
+            ui.ctx().copy_text(link.to_owned());
+        }
+    });
 }
 
 /// The levels of the dB scale under the Out meter.

@@ -37,6 +37,15 @@ pub struct DeckView {
     /// The item gain that the deck applies to a file (the loudness gain). `None` for an
     /// empty deck, a stream or live input.
     pub gain: Option<radio_model::ItemGain>,
+    /// The cover from the tags of the file, when it has one.
+    pub cover: Option<Cover>,
+}
+
+/// A cover picture for egui. The `uri` names the picture in the image cache.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cover {
+    pub uri: String,
+    pub bytes: std::sync::Arc<[u8]>,
 }
 
 /// How well a fixed-time item fits its slot.
@@ -899,6 +908,8 @@ pub struct OutputStatus {
     /// The link that plays the station from anywhere. It is set only while a tracker
     /// carries the offers, because without one the link does not work.
     pub listen_link: Option<String>,
+    /// The address of the listener page on the local network, while streaming runs.
+    pub local_link: Option<String>,
     /// The streaming switch: `None` when this station has no WebRTC output.
     pub streaming: Option<bool>,
 }

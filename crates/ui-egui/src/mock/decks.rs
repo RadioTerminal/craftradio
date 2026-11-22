@@ -77,6 +77,7 @@ pub(super) fn deck(
             waiting: false,
             item: None,
             gain: None,
+            cover: None,
         },
         None => DeckView {
             label,
@@ -91,6 +92,7 @@ pub(super) fn deck(
             waiting: false,
             item: None,
             gain: None,
+            cover: None,
         },
     }
 }

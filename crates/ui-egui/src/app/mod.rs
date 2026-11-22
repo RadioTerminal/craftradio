@@ -450,6 +450,7 @@ impl eframe::App for RadioApp {
         let ctx = ui.ctx().clone();
         if !self.styled {
             theme::apply(&ctx);
+            egui_extras::install_image_loaders(&ctx);
             self.styled = true;
         }
         self.refresh(false);
@@ -657,19 +658,6 @@ fn status_line(
             .output
             .webrtc_listeners
             .map(|n| format!("listening, {n} listeners"));
-        // The switch for streaming to listeners. It sends a command; the status after it
-        // shows what the server really does.
-        if let Some(on) = view.output.streaming {
-            let mut wanted = on;
-            let label = RichText::new("Stream to listeners").font(theme::text(theme::LABEL));
-            if ui
-                .checkbox(&mut wanted, label)
-                .on_hover_text("Plays the station in browsers, with a link to share")
-                .changed()
-            {
-                actions.push(Action::Edit(Edit::SetStreaming(wanted)));
-            }
-        }
         for (name, status, connected) in [
             ("Local", &view.output.local, None),
             ("Icecast", &view.output.icecast, None),
@@ -693,22 +681,19 @@ fn status_line(
                 Status::Failed(e) => (Icon::Circle, format!("failed: {e}"), t.danger),
             };
             let text = format!("{name} {} {word}", icons::glyph(dot));
-            ui.label(
-                RichText::new(text)
-                    .font(theme::text(theme::LABEL))
-                    .color(colour),
-            );
-        }
-        // The link that anyone can open to listen, from anywhere.
-        if let Some(link) = &view.output.listen_link {
-            let label = RichText::new(icons::lead(Icon::Link, "Copy listen link"))
-                .font(theme::text(theme::LABEL));
-            if ui
-                .button(label)
-                .on_hover_text(format!("Copies {link}"))
-                .clicked()
-            {
-                ui.ctx().copy_text(link.clone());
+            let text = RichText::new(text)
+                .font(theme::text(theme::LABEL))
+                .color(colour);
+            // The Icecast state opens its settings, behind the Mixer's ⚙.
+            if name == "Icecast" {
+                let link = ui
+                    .add(egui::Label::new(text).sense(egui::Sense::click()))
+                    .on_hover_text("Click for the Icecast settings");
+                if link.clicked() {
+                    actions.push(Action::OpenIcecast);
+                }
+            } else {
+                ui.label(text);
             }
         }
         // The chip counts the alarms that nobody acknowledged, with the icon and colour of

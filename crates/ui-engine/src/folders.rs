@@ -163,6 +163,9 @@ impl EngineSource {
                         .notices
                         .push(format!("The as-played log did not read: {e}")),
                 },
+                crate::bg::Done::Cover { path, bytes } => {
+                    self.covers.insert(path, bytes);
+                }
                 crate::bg::Done::Exported {
                     path,
                     count,

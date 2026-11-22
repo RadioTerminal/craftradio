@@ -40,6 +40,10 @@ pub(crate) enum Job {
         since: Timestamp,
         limit: u32,
     },
+    /// Read the cover in the tags of the file at `path`.
+    Cover {
+        path: String,
+    },
     /// Write alarms as CSV to the file at `path`.
     ExportAlarms {
         path: String,
@@ -72,6 +76,11 @@ pub(crate) enum Done {
         result: Result<bool, String>,
     },
     History(Result<Vec<AsPlayed>, String>),
+    /// The cover of the file at `path`, or `None` when it has none.
+    Cover {
+        path: String,
+        bytes: Option<Arc<[u8]>>,
+    },
     /// The alarm export wrote `count` rows to `path`, or failed.
     Exported {
         path: String,
@@ -176,6 +185,10 @@ fn run(job: Job) -> Done {
         }
         Job::History { log, since, limit } => {
             Done::History(log.history(since, limit).map_err(|e| e.to_string()))
+        }
+        Job::Cover { path } => {
+            let bytes = radio_library::cover(&path).map(|c| Arc::from(c.bytes));
+            Done::Cover { path, bytes }
         }
         Job::ExportAlarms { path, rows } => {
             let result =

@@ -121,12 +121,14 @@ pub mod size {
     pub const DECK_BAR: f32 = 3.0;
     /// The least room in which a deck card shows its state word.
     pub const DECK_WORD_MIN_W: f32 = 40.0;
+    /// The cover on a deck card: as tall as the title and the playlist rows.
+    pub const DECK_COVER: f32 = 44.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
     /// The status cluster beside the decks, by width. Full: every label and the date. Mid: only
     /// Play next keeps its word. Narrow: one column, icons only, no date.
-    pub const CLOCK_W: f32 = 672.0;
-    pub const CLOCK_MID_W: f32 = 456.0;
+    pub const CLOCK_W: f32 = 620.0;
+    pub const CLOCK_MID_W: f32 = 420.0;
     pub const CLOCK_NARROW_W: f32 = 200.0;
     /// A deck strip at least this wide gives the cluster its mid width, and at the full
     /// width it gives the full one.

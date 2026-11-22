@@ -112,6 +112,7 @@ impl ViewSource for MockSource {
                 webrtc: Status::NotConnected,
                 webrtc_listeners: None,
                 listen_link: None,
+                local_link: None,
                 streaming: Some(self.streaming),
             },
             folders: self.folder_views(),

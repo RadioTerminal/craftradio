@@ -10,7 +10,9 @@ radio-model.workspace = true
 radio-timing.workspace = true
 eframe.workspace = true
 egui.workspace = true
-egui_extras = { workspace = true, features = ["syntect"] }
+egui_extras = { workspace = true, features = ["syntect", "image"] }
+# Only for its decoders: egui_extras shows covers in these formats.
+image.workspace = true
 jiff.workspace = true
 lucide-icons.workspace = true
 craft-ui.workspace = true

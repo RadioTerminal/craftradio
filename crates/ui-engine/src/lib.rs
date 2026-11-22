@@ -105,6 +105,9 @@ pub struct EngineSource {
     fixed_rows: HashSet<u64>,
     history: Vec<Row>,
     history_at: Option<(Timestamp, [Option<ItemId>; 4])>,
+    /// Covers of the files on the decks, by path. `None` while the background lane reads
+    /// the file, and for a file without a cover.
+    covers: HashMap<String, Option<Arc<[u8]>>>,
     /// The next item id that the source gives out, or 0 to start after the largest id.
     next_id: u64,
     /// Library files that no playlist holds.
@@ -211,6 +214,7 @@ impl EngineSource {
             fixed_rows: HashSet::new(),
             history: Vec::new(),
             history_at: None,
+            covers: HashMap::new(),
             next_id: 0,
             files: Vec::new(),
             next_file: 0,
@@ -457,6 +461,17 @@ impl EngineSource {
 
     fn decks(&mut self, pv: &PlayoutView, now: Timestamp) -> [DeckView; 4] {
         self.decks = std::array::from_fn(|i| pv.decks[i].item);
+        // Covers stay only for the files on the decks, so the cache stays small.
+        let on_decks: HashSet<String> = self
+            .decks
+            .iter()
+            .flatten()
+            .filter_map(|id| match &self.items.get(id)?.1.source {
+                radio_model::Source::File { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        self.covers.retain(|path, _| on_decks.contains(path));
         // NEXT 1: the deck that waits with the earliest start.
         self.next_ready = pv
             .decks
@@ -524,8 +539,31 @@ impl EngineSource {
                 state,
                 start: d.start.map(|s| self.zoned(s)),
                 gain: d.gain,
+                cover: self.deck_cover(d.item),
             }
         })
+    }
+
+    /// The cover of the file of item `id`. The background lane reads it once; until then,
+    /// and for a file without one, the deck shows no cover.
+    fn deck_cover(&mut self, id: Option<ItemId>) -> Option<radio_ui_egui::view::Cover> {
+        let path = match &self.items.get(&id?)?.1.source {
+            radio_model::Source::File { path } => path.clone(),
+            _ => return None,
+        };
+        match self.covers.get(&path) {
+            Some(bytes) => bytes.clone().map(|bytes| radio_ui_egui::view::Cover {
+                uri: format!("bytes://cover/{path}"),
+                bytes,
+            }),
+            None => {
+                self.covers.insert(path.clone(), None);
+                if let Some(w) = &self.worker {
+                    let _ = w.jobs.send(bg::Job::Cover { path });
+                }
+                None
+            }
+        }
     }
 
     /// The as-played rows. The source reads them again after a while or after a deck change.
@@ -697,6 +735,10 @@ impl EngineSource {
             webrtc,
             webrtc_listeners,
             listen_link,
+            local_link: match &pv.outputs.webrtc {
+                Some(WebRtcStatus::Listening { url, .. }) => Some(url.clone()),
+                _ => None,
+            },
             streaming: pv.outputs.webrtc_available.then(|| {
                 pv.state
                     .settings(radio_playout::WEBRTC_PART)

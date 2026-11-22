@@ -439,3 +439,41 @@ pub fn relink(
         .filter_map(|(id, h, _)| found.get(h).map(|p| (*id, p.clone())))
         .collect()
 }
+
+/// The largest cover that [`cover`] returns.
+const MAX_COVER: usize = 4 * 1024 * 1024;
+
+/// The front cover in the tags of an audio file, or its first picture. `None` when the
+/// file has no picture, or the picture is not JPEG, PNG, WebP or GIF.
+pub fn cover(path: impl AsRef<Path>) -> Option<Cover> {
+    use lofty::picture::PictureType;
+    let file = lofty::read_from_path(path.as_ref()).ok()?;
+    let tag = file.primary_tag().or_else(|| file.first_tag())?;
+    let pictures = tag.pictures();
+    let picture = pictures
+        .iter()
+        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .or_else(|| pictures.first())?;
+    let bytes = picture.data();
+    if bytes.is_empty() || bytes.len() > MAX_COVER {
+        return None;
+    }
+    let mime = picture.mime_type().map_or("image/jpeg", |m| m.as_str());
+    if !matches!(
+        mime,
+        "image/jpeg" | "image/png" | "image/webp" | "image/gif"
+    ) {
+        return None;
+    }
+    Some(Cover {
+        mime: mime.to_owned(),
+        bytes: bytes.to_vec(),
+    })
+}
+
+/// A picture from the tags of an audio file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cover {
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
