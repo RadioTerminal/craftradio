@@ -2,7 +2,7 @@ use crate::StreamError;
 use std::{
     io::{Read, Seek, SeekFrom},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -72,11 +72,17 @@ pub enum StreamInputEvent {
 pub struct StreamInputHandle {
     stop: Arc<AtomicBool>,
     title: Arc<Mutex<Option<String>>>,
+    error: Arc<Mutex<Option<String>>>,
     events: mpsc::Receiver<StreamInputEvent>,
 }
 impl StreamInputHandle {
     pub fn icy_title(&self) -> Option<String> {
         self.title.lock().ok().and_then(|t| t.clone())
+    }
+    /// Why the last connection failed or ended, for example a certificate that the trust
+    /// roots do not accept. A connection that brings audio clears it.
+    pub fn last_error(&self) -> Option<String> {
+        self.error.lock().ok().and_then(|e| e.clone())
     }
     pub fn try_event(&self) -> Option<StreamInputEvent> {
         self.events.try_recv().ok()
@@ -109,36 +115,62 @@ impl StreamInput {
     /// Opens an input with separate outage and audio-stall timeouts.
     pub fn open_with_timeouts(
         url: impl Into<String>,
-        mut frames: rtrb::Producer<f32>,
+        frames: rtrb::Producer<f32>,
         timeout: Duration,
         stall_timeout: Duration,
     ) -> Result<StreamInputHandle, StreamError> {
+        Self::open_with_extra_roots(url, frames, timeout, stall_timeout, Vec::new())
+    }
+
+    /// Opens an input that also trusts the DER certificates `extra_roots`. Tests use it
+    /// for a local TLS server with its own certificate.
+    #[doc(hidden)]
+    pub fn open_with_extra_roots(
+        url: impl Into<String>,
+        mut frames: rtrb::Producer<f32>,
+        timeout: Duration,
+        stall_timeout: Duration,
+        extra_roots: Vec<Vec<u8>>,
+    ) -> Result<StreamInputHandle, StreamError> {
         let url = url.into();
-        if !url.starts_with("http://") {
+        let scheme = url.split_once("://").map(|(s, _)| s.to_ascii_lowercase());
+        if !matches!(scheme.as_deref(), Some("http" | "https")) {
             return Err(StreamError::Invalid(
-                "expected plain HTTP URL (TLS input is unsupported)".into(),
+                "expected an http:// or https:// URL".into(),
             ));
         }
         let stop = Arc::new(AtomicBool::new(false));
         let title = Arc::new(Mutex::new(None));
+        let error = Arc::new(Mutex::new(None));
         let (tx, events) = mpsc::channel();
         let flag = stop.clone();
         let metadata = title.clone();
+        let failure = error.clone();
         thread::Builder::new()
             .name("stream-input".into())
             .spawn(move || {
+                // The trust roots load on this thread, so no caller waits for them.
+                let tls = tls_config(&extra_roots);
                 let mut last_audio = Instant::now();
                 let mut down = false;
                 while !flag.load(Ordering::Relaxed) {
-                    let _ = decode(
-                        &url,
-                        &mut frames,
-                        &flag,
-                        &metadata,
-                        &mut last_audio,
-                        &mut down,
-                        stall_timeout,
-                    );
+                    let result = match &tls {
+                        Ok(tls) => {
+                            let link = Link {
+                                url: &url,
+                                tls,
+                                stop: &flag,
+                                title: &metadata,
+                                error: &failure,
+                                stall_timeout,
+                            };
+                            decode(&link, &mut frames, &mut last_audio, &mut down)
+                        }
+                        Err(e) => Err(e.clone().into()),
+                    };
+                    if let (Err(e), Ok(mut slot)) = (result, failure.lock()) {
+                        *slot = Some(e.to_string());
+                    }
                     if last_audio.elapsed() >= timeout && !down {
                         let _ = tx.send(StreamInputEvent::Down);
                         down = true;
@@ -154,10 +186,40 @@ impl StreamInput {
         Ok(StreamInputHandle {
             stop,
             title,
+            error,
             events,
         })
     }
 }
+
+/// The system trust roots as DER, loaded once per process.
+static SYSTEM_ROOTS: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+
+/// The TLS settings of an input: the ring provider, and the system trust roots plus
+/// `extra`. Certificate checks are always on.
+fn tls_config(extra: &[Vec<u8>]) -> Result<ureq::tls::TlsConfig, String> {
+    let system = SYSTEM_ROOTS.get_or_init(|| {
+        rustls_native_certs::load_native_certs()
+            .certs
+            .into_iter()
+            .map(|c| c.to_vec())
+            .collect()
+    });
+    let certs: Vec<ureq::tls::Certificate<'static>> = system
+        .iter()
+        .chain(extra)
+        .map(|der| ureq::tls::Certificate::from_der(der).to_owned())
+        .collect();
+    if certs.is_empty() {
+        return Err("TLS: no trust roots found on this system".into());
+    }
+    Ok(ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::Rustls)
+        .root_certs(ureq::tls::RootCerts::Specific(Arc::new(certs)))
+        .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .build())
+}
+
 struct IcyReader {
     reader: Box<dyn Read + Send + Sync>,
     metaint: usize,
@@ -225,28 +287,66 @@ impl MediaSource for IcyReader {
         None
     }
 }
+/// A connection error in words. A TLS error says so, for example a certificate that the
+/// trust roots do not accept.
+fn describe(e: ureq::Error) -> String {
+    let tls = match &e {
+        ureq::Error::Rustls(t) => Some(t),
+        // A handshake error reaches ureq inside an I/O error.
+        ureq::Error::Io(io) => io.get_ref().and_then(|i| i.downcast_ref::<rustls::Error>()),
+        _ => None,
+    };
+    match tls {
+        Some(rustls::Error::InvalidCertificate(reason)) => {
+            format!("TLS: certificate not trusted ({reason:?})")
+        }
+        Some(other) => format!("TLS: {other}"),
+        None => e.to_string(),
+    }
+}
+
+/// What each connection of one input shares.
+struct Link<'a> {
+    url: &'a str,
+    tls: &'a ureq::tls::TlsConfig,
+    stop: &'a Arc<AtomicBool>,
+    title: &'a Arc<Mutex<Option<String>>>,
+    error: &'a Arc<Mutex<Option<String>>>,
+    stall_timeout: Duration,
+}
+
 fn decode(
-    url: &str,
+    link: &Link,
     frames: &mut rtrb::Producer<f32>,
-    stop: &Arc<AtomicBool>,
-    title: &Arc<Mutex<Option<String>>>,
     last_audio: &mut Instant,
     down: &mut bool,
-    stall_timeout: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let Link {
+        url,
+        tls,
+        stop,
+        title,
+        error,
+        stall_timeout,
+    } = *link;
     let deadline = Arc::new(Mutex::new(None));
     let config = ureq::Agent::config_builder()
         .timeout_global(None)
         .timeout_connect(Some(Duration::from_secs(2)))
         .timeout_recv_response(Some(Duration::from_secs(2)))
         .timeout_per_read(Some(stall_timeout))
+        .tls_config(tls.clone())
         .build();
     let agent = ureq::Agent::with_parts(
         config,
         DefaultConnector::default().chain(StallConnector(deadline.clone())),
         ureq::unversioned::resolver::DefaultResolver::default(),
     );
-    let response = agent.get(url).header("Icy-MetaData", "1").call()?;
+    let response = agent
+        .get(url)
+        .header("Icy-MetaData", "1")
+        .call()
+        .map_err(describe)?;
     let metaint = response
         .headers()
         .get("icy-metaint")
@@ -324,6 +424,9 @@ fn decode(
         }
         *last_audio = Instant::now();
         *down = false;
+        if let Ok(mut e) = error.lock() {
+            *e = None;
+        }
     }
     Ok(())
 }

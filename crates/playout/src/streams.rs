@@ -63,13 +63,16 @@ impl Core {
                 continue;
             }
             let item = s.item.id;
+            let reason = st.handle.last_error();
             let down = self.mixer.underrun(DeckId::ALL[i]);
             let (keep_alive, down_since, bed) = (st.keep_alive, st.down_since, st.bed);
             if !down {
                 if down_since.is_some() {
                     self.set_stream(i, None, None);
-                    self.alarms
-                        .clear(now, |a| *a == Alarm::StreamReconnecting { item });
+                    self.alarms.clear(
+                        now,
+                        |a| matches!(a, Alarm::StreamReconnecting { item: x, .. } if *x == item),
+                    );
                     if let Some((deck, tag)) = bed {
                         self.end_bed(deck, tag);
                     }
@@ -81,8 +84,26 @@ impl Core {
                 self.set_stream(i, Some(now), bed);
             }
             if keep_alive {
-                self.alarms
-                    .raise_once(now, Alarm::StreamReconnecting { item });
+                // The reason often comes after the alarm. A new reason replaces the alarm.
+                let same = |a: &Alarm| matches!(a, Alarm::StreamReconnecting { item: x, .. } if *x == item);
+                let alarm = Alarm::StreamReconnecting { item, reason };
+                let active = self
+                    .alarms
+                    .recent
+                    .iter()
+                    .find(|r| r.cleared.is_none() && same(&r.alarm))
+                    .map(|r| r.alarm.clone());
+                let newer = matches!(
+                    &alarm,
+                    Alarm::StreamReconnecting {
+                        reason: Some(_),
+                        ..
+                    }
+                );
+                if active.is_none() || (newer && active.as_ref() != Some(&alarm)) {
+                    self.alarms.clear(now, same);
+                    self.alarms.raise(now, alarm);
+                }
                 let bed_on = bed
                     .is_some_and(|(d, tag)| self.slots[d].as_ref().is_some_and(|b| b.tag == tag));
                 if !bed_on {
@@ -90,7 +111,7 @@ impl Core {
                     self.set_stream(i, Some(since_down), bed);
                 }
             } else if since(since_down, now) >= self.cfg.stream_timeout {
-                self.alarms.raise(now, Alarm::StreamDown { item });
+                self.alarms.raise(now, Alarm::StreamDown { item, reason });
                 let at = self.mixer.now();
                 self.fade_at(i, at, Duration::ZERO, true);
                 if !self.hold && self.engine.state().mode == Mode::Auto {

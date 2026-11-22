@@ -26,9 +26,17 @@ pub enum Alarm {
     /// Skipping did not help: the emergency fallback folder is playing.
     EmergencyFallback { reason: String },
     /// A keep-alive stream on air has no audio and reconnects. A bed plays under it.
-    StreamReconnecting { item: ItemId },
+    /// `reason` is why the last connection failed, if the input knows it.
+    StreamReconnecting {
+        item: ItemId,
+        reason: Option<String>,
+    },
     /// A stream without keep-alive had no audio past the timeout. Playout skipped it.
-    StreamDown { item: ItemId },
+    /// `reason` is why the last connection failed, if the input knows it.
+    StreamDown {
+        item: ItemId,
+        reason: Option<String>,
+    },
     /// A file deck ran out of decoded audio while on air.
     DeckUnderrun { deck: u8 },
     /// The wall clock and the sample clock stepped apart; the estimates re-anchored.

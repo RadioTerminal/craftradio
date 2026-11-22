@@ -227,3 +227,138 @@ fn slow_tls_handshake_has_total_deadline_and_stop_finishes() {
     }
     server.join().unwrap();
 }
+
+/// Answers one GET on `stream` with live audio: a WAV header, then a tone. It keeps the
+/// connection open until `done` says so.
+fn serve_audio(stream: &mut (impl Read + Write), done: mpsc::Receiver<()>) {
+    let request = tls_header(stream);
+    assert!(request.starts_with("GET /live HTTP/1.1\r\n"), "{request}");
+    stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+    stream.write_all(&live_wav_header()).unwrap();
+    let mut tone = Vec::new();
+    for i in 0..24_000u32 {
+        tone.extend((((i as f32 * 0.1).sin() * 4000.0) as i16).to_le_bytes());
+    }
+    for chunk in tone.chunks(4096) {
+        if stream
+            .write_all(chunk)
+            .and_then(|_| stream.flush())
+            .is_err()
+        {
+            break;
+        }
+    }
+    let _ = done.recv_timeout(Duration::from_secs(10));
+}
+
+/// Waits until `consumer` holds audio that is not silence.
+fn hears_audio(consumer: &mut rtrb::Consumer<f32>) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        while let Ok(x) = consumer.pop() {
+            if x.abs() > 0.01 {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
+fn input_plays_an_https_stream_from_a_trusted_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tls, root) = server_config();
+    let (done, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || serve_audio(&mut accept(&listener, tls), wait));
+    let (producer, mut consumer) = rtrb::RingBuffer::new(48_000);
+    let input = StreamInput::open_with_extra_roots(
+        format!("https://127.0.0.1:{port}/live"),
+        producer,
+        Duration::from_secs(15),
+        Duration::from_secs(3),
+        vec![root],
+    )
+    .unwrap();
+    assert!(hears_audio(&mut consumer), "the https stream plays");
+    assert_eq!(input.last_error(), None);
+    done.send(()).unwrap();
+    input.stop();
+    server.join().unwrap();
+}
+
+#[test]
+fn input_follows_a_redirect_from_http_to_https() {
+    let secure = TcpListener::bind("127.0.0.1:0").unwrap();
+    let secure_port = secure.local_addr().unwrap().port();
+    let plain = TcpListener::bind("127.0.0.1:0").unwrap();
+    let plain_port = plain.local_addr().unwrap().port();
+    let (tls, root) = server_config();
+    let redirect = std::thread::spawn(move || {
+        let (mut socket, _) = plain.accept().unwrap();
+        request_header(&mut socket);
+        let answer = format!(
+            "HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:{secure_port}/live\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        socket.write_all(answer.as_bytes()).unwrap();
+    });
+    let (done, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || serve_audio(&mut accept(&secure, tls), wait));
+    let (producer, mut consumer) = rtrb::RingBuffer::new(48_000);
+    let input = StreamInput::open_with_extra_roots(
+        format!("http://127.0.0.1:{plain_port}/live"),
+        producer,
+        Duration::from_secs(15),
+        Duration::from_secs(3),
+        vec![root],
+    )
+    .unwrap();
+    assert!(hears_audio(&mut consumer), "the redirected stream plays");
+    done.send(()).unwrap();
+    input.stop();
+    redirect.join().unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn input_refuses_an_untrusted_certificate_and_says_why() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tls, _) = server_config();
+    let server = std::thread::spawn(move || {
+        // The client stops in the handshake, so no request reaches the server.
+        let mut stream = accept(&listener, tls);
+        let mut bytes = [0; 4096];
+        !matches!(stream.read(&mut bytes), Ok(n) if n > 0)
+    });
+    let (producer, mut consumer) = rtrb::RingBuffer::new(48_000);
+    // No extra root: the self-signed certificate is not trusted.
+    let input = StreamInput::open_with_timeouts(
+        format!("https://127.0.0.1:{port}/live"),
+        producer,
+        Duration::from_secs(15),
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let error = loop {
+        if let Some(e) = input.last_error() {
+            break e;
+        }
+        assert!(std::time::Instant::now() < deadline, "no error reported");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(error.starts_with("TLS: certificate not trusted"), "{error}");
+    assert!(consumer.pop().is_err(), "no audio from an untrusted server");
+    input.stop();
+    assert!(server.join().unwrap(), "no request was sent");
+}
+
+#[test]
+fn input_refuses_a_url_that_is_not_http() {
+    let (producer, _consumer) = rtrb::RingBuffer::new(16);
+    let result = StreamInput::open("ftp://radio.example/live", producer);
+    assert!(result.is_err());
+}
