@@ -100,7 +100,7 @@ pub(super) fn tabs() -> Vec<PlaylistTab> {
         playlist(
             "Jingles",
             JINGLES,
-            Pick::Rotate,
+            Pick::LeastRecentlyPlayed,
             vec![jingles],
             (1..=3)
                 .map(|n| (format!("Station ID {n}"), secs(6)))
@@ -119,14 +119,14 @@ pub(super) fn tabs() -> Vec<PlaylistTab> {
         playlist(
             "News",
             NEWS,
-            Pick::Latest,
+            Pick::InOrder,
             vec![news],
             vec![("News".to_owned(), secs(5 * 60))],
         ),
         playlist(
             "Shows",
             SHOWS,
-            Pick::ByDate,
+            Pick::InOrder,
             vec![shows],
             vec![("Jazz Hour.mp3".to_owned(), secs(58 * 60 + 40))],
         ),

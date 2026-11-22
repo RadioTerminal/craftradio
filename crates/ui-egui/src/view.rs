@@ -332,48 +332,40 @@ pub struct FolderSource {
     pub watch: bool,
 }
 
-/// The order in which a playlist picks its items.
+/// The order in which a playlist picks its items: the four orders of the spec.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {
     InOrder,
-    Rotate,
     Shuffle,
-    Latest,
-    ByDate,
     Weighted,
+    LeastRecentlyPlayed,
 }
 
 impl Pick {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 4] = [
         Self::InOrder,
-        Self::Rotate,
         Self::Shuffle,
-        Self::Latest,
-        Self::ByDate,
         Self::Weighted,
+        Self::LeastRecentlyPlayed,
     ];
 
     /// The words a person reads.
     pub fn label(self) -> &'static str {
         match self {
             Self::InOrder => "in order",
-            Self::Rotate => "rotate in order",
             Self::Shuffle => "shuffle",
-            Self::Latest => "latest item",
-            Self::ByDate => "by date",
             Self::Weighted => "weighted",
+            Self::LeastRecentlyPlayed => "least recently played",
         }
     }
 
-    /// The name in the rules script.
+    /// The name in the rules script, as the script engine reads it.
     pub fn key(self) -> &'static str {
         match self {
-            Self::InOrder => "in-order",
-            Self::Rotate => "rotate",
+            Self::InOrder => "in_order",
             Self::Shuffle => "shuffle",
-            Self::Latest => "latest",
-            Self::ByDate => "by-date",
             Self::Weighted => "weighted",
+            Self::LeastRecentlyPlayed => "least_recently_played",
         }
     }
 }

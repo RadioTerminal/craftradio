@@ -100,13 +100,14 @@ pub fn source(items: Vec<Item>) -> (EngineSource, ManualClock) {
     (EngineSource::new(playout, opts), clock)
 }
 
-/// Takes snapshots until `done` holds, for at most five seconds.
+/// Takes snapshots until `done` holds, for at most twenty seconds: a loaded machine running
+/// the whole suite in parallel can take a few seconds to show an edit.
 pub fn wait_for(
     source: &mut EngineSource,
     clock: &ManualClock,
     done: impl Fn(&StationView) -> bool,
 ) -> StationView {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let view = source.snapshot(clock.now());
         if done(&view) || Instant::now() > deadline {

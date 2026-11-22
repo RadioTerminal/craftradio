@@ -102,7 +102,7 @@ fn pick_of(p: &PickOrder) -> Pick {
         PickOrder::InOrder => Pick::InOrder,
         PickOrder::Shuffle { .. } => Pick::Shuffle,
         PickOrder::Weighted { .. } => Pick::Weighted,
-        PickOrder::LeastRecentlyPlayed => Pick::Rotate,
+        PickOrder::LeastRecentlyPlayed => Pick::LeastRecentlyPlayed,
     }
 }
 

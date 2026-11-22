@@ -4,13 +4,13 @@
 
 use std::fmt::Write as _;
 
-use crate::view::{Placement, PlaylistTab, RuleView, Trigger};
+use crate::view::{Pick, Placement, PlaylistTab, RuleView, Trigger};
 
 /// The rules of `tab` as JavaScript: one `pick(..)` call, then one `rule(..)` call per rule.
 pub fn generate(tab: &PlaylistTab) -> String {
     // A name with a line break would end the comment early.
     let name = tab.name.replace(['\n', '\r'], " ");
-    let mut out = format!("// {name} — rules\npick(\"{}\");\n", tab.order.key());
+    let mut out = format!("// {name} — rules\n{}", pick_call(tab));
     for rule in &tab.visual {
         out.push_str(&rule_call(rule));
     }
@@ -25,6 +25,24 @@ pub fn refresh(tab: &mut PlaylistTab) {
     if !tab.script_by_hand {
         tab.script = generate(tab);
     }
+}
+
+/// The `pick(..)` call. A weighted pick carries the weight of each item by its id.
+fn pick_call(tab: &PlaylistTab) -> String {
+    if tab.order != Pick::Weighted {
+        return format!("pick(\"{}\");\n", tab.order.key());
+    }
+    let weights: Vec<String> = tab
+        .ids
+        .iter()
+        .zip(tab.weights.iter().chain(std::iter::repeat(&1)))
+        .map(|(id, w)| format!("[\"{id}\", {w}]"))
+        .collect();
+    format!(
+        "pick(\"{}\", {{ weights: [{}] }});\n",
+        tab.order.key(),
+        weights.join(", ")
+    )
 }
 
 fn rule_call(rule: &RuleView) -> String {
