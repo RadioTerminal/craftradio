@@ -9,7 +9,7 @@ use radio_audio::{CHANNELS, DeckId, LoadOptions, SAMPLE_RATE};
 use radio_engine::Mode;
 use radio_model::{Item, PublishMode, Source, stream_title};
 use radio_scheduler::{Entry, Origin};
-use radio_stream::{StreamInput, StreamInputHandle, WebRtcHandle, WebRtcServer};
+use radio_stream::{Played, StreamInput, StreamInputHandle, WebRtcHandle, WebRtcServer};
 use std::time::Duration;
 
 /// The ring of a stream deck holds this much audio.
@@ -189,6 +189,8 @@ impl Core {
             ice.set_title(title.clone());
         }
         // Listeners see the tags and the cover only when the item shows its own tags.
+        // An item that hides its title stays out of the history too.
+        let at = self.cfg.clock.now();
         let now = match shown.meta.publish {
             PublishMode::FromTags => Some(NowPlaying {
                 title: shown.meta.title.clone(),
@@ -197,17 +199,37 @@ impl Core {
                     Source::File { path } => Some(std::path::PathBuf::from(path)),
                     _ => None,
                 },
+                at,
+                listed: true,
             }),
             PublishMode::KeepPrevious => None,
             PublishMode::Custom | PublishMode::Hide => Some(NowPlaying {
                 title: title.clone(),
                 artist: String::new(),
                 file: None,
+                at,
+                listed: shown.meta.publish == PublishMode::Custom,
             }),
         };
         if let Some(now) = now {
+            if let Some(before) = self.webrtc_now.take()
+                && before.listed
+                && !before.title.is_empty()
+            {
+                self.webrtc_played.push_front(Played {
+                    title: before.title,
+                    artist: before.artist,
+                    at: before.at,
+                });
+            }
+            let hour_ago = at
+                .checked_sub(jiff::SignedDuration::from_hours(1))
+                .unwrap_or(at);
+            self.webrtc_played
+                .retain(|p| p.at >= hour_ago && p.at <= at);
+            self.webrtc_played.truncate(PLAYED_MAX);
             if let Some(w) = &self.webrtc {
-                now.send(w);
+                now.send(w, &self.webrtc_played);
             }
             self.webrtc_now = Some(now);
         }
@@ -257,7 +279,7 @@ impl Core {
         cfg.bind = bind;
         let server = WebRtcServer::start_shared(cfg, tap.clone());
         if let Some(now) = &self.webrtc_now {
-            now.send(&server);
+            now.send(&server, &self.webrtc_played);
         }
         self.webrtc = Some(server);
         self.webrtc_bind = Some(bind);
@@ -269,11 +291,24 @@ pub(crate) struct NowPlaying {
     title: String,
     artist: String,
     file: Option<std::path::PathBuf>,
+    /// When it started.
+    at: Timestamp,
+    /// It goes into the history after it: its title is not hidden.
+    listed: bool,
 }
 
+/// The longest history that listeners get.
+const PLAYED_MAX: usize = 40;
+
 impl NowPlaying {
-    fn send(&self, server: &WebRtcHandle) {
-        server.set_now(self.title.clone(), self.artist.clone(), self.file.clone());
+    fn send(&self, server: &WebRtcHandle, played: &std::collections::VecDeque<Played>) {
+        let history: Vec<Played> = played.iter().cloned().collect();
+        server.set_now(
+            self.title.clone(),
+            self.artist.clone(),
+            self.file.clone(),
+            &history,
+        );
     }
 }
 

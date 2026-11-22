@@ -7,7 +7,7 @@ mod output;
 mod relay;
 mod webrtc;
 pub use input::*;
-pub use now::cover_messages;
+pub use now::{Played, cover_messages, history_message};
 pub use output::*;
 pub use relay::{DEFAULT_TRACKERS, Identity, SIGNATURE_LINE};
 pub use webrtc::*;
