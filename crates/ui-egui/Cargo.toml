@@ -15,7 +15,7 @@ egui_extras = { workspace = true, features = ["syntect", "image"] }
 image.workspace = true
 jiff.workspace = true
 lucide-icons.workspace = true
-craft-ui.workspace = true
+craft-ui = { workspace = true, features = ["system_fonts"] }
 craft-i18n.workspace = true
 craft-settings.workspace = true
 rfd.workspace = true

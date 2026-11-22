@@ -1,81 +1,76 @@
-//! Fallback fonts from the operating system, for scripts that the fonts of egui do not cover.
+//! The font stack: craft-ui's `UiFonts`, the order every Craft app draws text in.
 //!
-//! The app ships no extra font. It reads one font per script group from the system, so
-//! Japanese, Chinese, Arabic and other scripts show as letters, not as boxes.
+//! egui's own faces come first (Ubuntu for text, Hack for numbers, code and symbols), then any
+//! font installed on the system that has a character they lack, found when a title needs it, so a
+//! Thai, Hindi, Hebrew, Khmer or Japanese title draws as letters. egui's emoji faces come after.
+//! The app ships no extra text font. The first such title waits once for craft-ui's index of the
+//! installed fonts (under half a second in a release build; the index is reused after that).
+//!
+//! The Lucide icons are a family of their own (`icons`) and a fallback of the text families, so
+//! an icon can sit inside a string.
 
-use std::sync::{Arc, OnceLock};
+use craft_ui::fonts::{I18nScripts, UiFonts};
+use egui::{FontData, FontFamily};
 
-/// Font files to try, per script group, in order. The first file that exists wins.
-const GROUPS: [&[(&str, u32)]; 2] = [
-    // Chinese, Japanese and Korean.
-    &[
-        ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
-        ("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc", 0),
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
-        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
-        (
-            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-            0,
-        ),
-        ("C:\\Windows\\Fonts\\YuGothR.ttc", 0),
-        ("C:\\Windows\\Fonts\\msyh.ttc", 0),
-    ],
-    // Arabic, Hebrew and the other scripts of a wide font.
-    &[
-        ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
-        (
-            "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
-            0,
-        ),
-        ("/usr/share/fonts/noto/NotoSansArabic-Regular.ttf", 0),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
-        ("C:\\Windows\\Fonts\\segoeui.ttf", 0),
-        ("C:\\Windows\\Fonts\\arial.ttf", 0),
-    ],
-];
+/// The text families of the UI.
+const TEXT: [FontFamily; 2] = [FontFamily::Proportional, FontFamily::Monospace];
 
-/// The fallback fonts that this system has, read once.
-fn system_fallbacks() -> &'static [(String, Arc<egui::FontData>)] {
-    static FONTS: OnceLock<Vec<(String, Arc<egui::FontData>)>> = OnceLock::new();
-    FONTS.get_or_init(|| {
-        GROUPS
-            .iter()
-            .enumerate()
-            .filter_map(|(g, group)| {
-                group.iter().find_map(|(path, index)| {
-                    let bytes = std::fs::read(path).ok()?;
-                    let mut data = egui::FontData::from_owned(bytes);
-                    data.index = *index;
-                    Some((format!("system-fallback-{g}"), Arc::new(data)))
-                })
-            })
-            .collect()
-    })
+/// Installs the font stack in `ctx`.
+pub(crate) fn install(ctx: &egui::Context) {
+    let mut fonts = UiFonts::new(&I18nScripts);
+    // A lookup that waits for the index of installed fonts the first time a character needs
+    // one, so a title never draws as boxes while the index is built.
+    if let Some(system) = craft_ui::fonts::system_font_provider("en") {
+        fonts = fonts.system_provider(system);
+    }
+    let mut stack = fonts
+        // Hack has the arrows and symbols Ubuntu lacks (→, ±, ▸).
+        .egui_face("Hack", &[FontFamily::Proportional])
+        // egui's emoji faces, ahead of the system fonts' own emoji.
+        .egui_face("NotoEmoji-Regular", &TEXT)
+        .egui_face("emoji-icon-font", &TEXT)
+        .stack();
+    let lucide = crate::icons::FONT_NAME;
+    let data = FontData::from_static(lucide_icons::LUCIDE_FONT_BYTES);
+    stack.insert(&crate::icons::family(), 0, lucide, data.clone());
+    for family in &TEXT {
+        let end = stack.chain(family).len();
+        stack.insert(family, end, lucide, data.clone());
+    }
+    stack.install(ctx);
 }
 
-/// Adds the system fallback fonts after the fonts of egui, in both families.
-pub(crate) fn install(ctx: &egui::Context) {
-    let mut defs = egui::FontDefinitions::default();
-    // The Lucide icons: a family of their own, and a fallback of the text families, so an
-    // icon inside a text string draws in the same galley.
-    let lucide = crate::icons::FONT_NAME.to_owned();
-    defs.font_data.insert(
-        lucide.clone(),
-        Arc::new(egui::FontData::from_static(lucide_icons::LUCIDE_FONT_BYTES)),
-    );
-    defs.families
-        .insert(crate::icons::family(), vec![lucide.clone()]);
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        defs.families
-            .entry(family)
-            .or_default()
-            .push(lucide.clone());
+#[cfg(test)]
+mod tests {
+    use egui_kittest::Harness;
+
+    /// Titles in scripts that egui's faces lack draw as letters from the fonts installed on the
+    /// machine: the test harness fails on any character no face can draw. It needs a system
+    /// with fonts for these scripts, as macOS and most desktop Linux installs have.
+    #[test]
+    fn titles_in_other_scripts_draw_from_the_system_fonts() {
+        const TITLES: [&str; 5] = [
+            "เพลงกลางคืน", // Thai
+            "रात का गीत", // Hindi (Devanagari)
+            "שיר הלילה",  // Hebrew
+            "ចម្រៀងពេលយប់", // Khmer
+            "የሌሊት ዘፈን",   // Amharic (Ethiopic)
+        ];
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 300.0))
+            .build_ui(|ui| {
+                // The stack binds from the frame after it is installed.
+                if ui
+                    .ctx()
+                    .fonts(|f| !f.families().contains(&crate::icons::family()))
+                {
+                    super::install(ui.ctx());
+                    return;
+                }
+                for title in TITLES {
+                    ui.label(title);
+                }
+            });
+        harness.run();
     }
-    for (name, data) in system_fallbacks() {
-        defs.font_data.insert(name.clone(), Arc::clone(data));
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            defs.families.entry(family).or_default().push(name.clone());
-        }
-    }
-    ctx.set_fonts(defs);
 }
