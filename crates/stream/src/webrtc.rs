@@ -741,8 +741,7 @@ impl Http {
         let Ok(mut map) = self.pending.lock() else {
             return Err(Response::text(503, "the station is not ready"));
         };
-        let waiting = map.entry(peer).or_insert(0);
-        if *waiting >= PENDING_PER_ADDRESS {
+        if map.get(&peer).copied().unwrap_or(0) >= PENDING_PER_ADDRESS {
             return Err(Response::text(
                 503,
                 "this address already has listeners that connect",
@@ -756,7 +755,8 @@ impl Http {
                 "the station has its maximum of listeners",
             ));
         }
-        *waiting += 1;
+        // Only a reservation that passes both checks adds an entry, so refusals cannot grow the map.
+        *map.entry(peer).or_insert(0) += 1;
         Ok(())
     }
 
