@@ -2,7 +2,7 @@
 
 A release is whatever is on the `release` branch. Pushing to it runs
 `.github/workflows/release.yml`, which calls the shared release workflow of the Craft apps
-(`storytold/craft-common-actions/.github/workflows/release.yml@main`, the same one
+(`storytold/craft-common-actions/.github/workflows/release.yml`, pinned to a commit; the same one
 [craft-anything](https://github.com/storytold/craft-anything) uses). That workflow runs this
 repository's own `packaging/<platform>/package.*` scripts, signs what they produce and attaches it
 to a **draft** GitHub Release named **CraftRadio vX.Y.Z**. A maintainer publishes the draft once
@@ -82,6 +82,11 @@ The macOS CLI zip has no LAME: only the app links it.
 - **Windows opens a console window with the app.** `craftradio.exe` is a console program so that
   `craftradio --headless` can print; `package.ps1` checks for that.
 - **vcpkg is not pinned.** The Windows runners' vcpkg checkout decides the `mp3lame` port version.
+- **The shared workflow is pinned, its actions are not.** `release.yml` pins the reusable workflow
+  to a commit, because it comes from another organisation and receives the signing secrets. The
+  workflow itself still calls `storytold/craft-common-actions/actions/*@main` (43 places), so
+  that organisation can still change what runs with the secrets. Vendoring the workflow would
+  close that. `packages: write` stays: the shared Flatpak job asks for it.
 - **The macOS job runs on `macos-15-xlarge`**, a paid larger runner. RadioTerminal needs it enabled
   (and billed) or the job waits for a runner that never comes.
 - **No CI gate yet.** There is no `ci.yml`; run the checks in `AGENTS.md` before a release.

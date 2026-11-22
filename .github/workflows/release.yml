@@ -23,8 +23,9 @@ concurrency:
 jobs:
   release:
     # The shared workflow of the Craft apps. It runs packaging/<platform>/package.* of this repository.
-    # It follows @main, as the Craft apps do, so fixes arrive without a change here.
-    uses: storytold/craft-common-actions/.github/workflows/release.yml@main
+    # It is in another organisation and gets the signing secrets, so a commit SHA pins it.
+    # Update the SHA on purpose, after a read of the changes. Its own actions still follow @main.
+    uses: storytold/craft-common-actions/.github/workflows/release.yml@ced652cd37cffe0b2e3c24dfd9a67f566a986b4e # main on 2026-11-22
     with:
       app-name: craftradio
       app-title: "CraftRadio"
