@@ -222,68 +222,70 @@ fn strip_ui(
     let mut gain = meter.gain_db;
     let mut mute = meter.mute;
 
-    let fill = if is_out { t.selection } else { t.card };
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
-        .corner_radius(t.radius_lg)
-        .inner_margin(pad::TIGHT)
-        .show(ui, |ui| {
-            ui.set_width(size::STRIP_W);
-            ui.vertical_centered(|ui| {
-                // Every name row has the height of a settings button, so all strips line up.
-                let row = egui::vec2(ui.available_width(), size::BADGE);
-                ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
-                    let name = RichText::new(&meter.label).font(theme::mono(theme::CARD));
-                    let r = ui.add(egui::Label::new(name.strong()).sense(Sense::click()));
-                    r.context_menu(|ui| {
-                        if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
-                            settings_wanted = Some(tab);
-                        }
-                    });
-                    if is_out {
-                        settings::settings_button(ui, &meter.label, &mut devices);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    meter_bars(ui, meter.level_db, meter.peak_db, t).context_menu(|ui| {
-                        if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
-                            settings_wanted = Some(tab);
-                        }
-                    });
-                    ui.spacing_mut().slider_width = size::METER_H;
-                    let range = size::METER_MIN_DB..=size::METER_MAX_DB;
-                    let fader = egui::Slider::new(&mut gain, range)
-                        .vertical()
-                        .show_value(false);
-                    ui.add(fader)
-                        .on_hover_text(format!("{} fader", meter.label));
-                });
-                let level = meter.level_db[0].max(meter.level_db[1]);
-                let peak = meter.peak_db[0].max(meter.peak_db[1]);
-                let small = |s: String| RichText::new(s).font(theme::mono(theme::CAPTION));
-                ui.label(RichText::new(db(level)).font(theme::mono(theme::CODE)));
-                ui.label(small(format!("pk {}", db(peak))).color(t.text_muted));
-                ui.label(small(format!("gain {gain:+.1}")).color(t.text_muted));
-                ui.horizontal(|ui| {
-                    // Framed toggles: the word and the fill change, so the state does not hang on colour.
-                    // Each name starts with the visible word and says which strip it is.
-                    let word = if mute { "MUTED" } else { "Mute" };
-                    let fill = if mute { t.danger_fill } else { t.field };
-                    if toggle(ui, true, word, &meter.label, fill, t).clicked() {
-                        mute = !mute;
-                    }
-                    let on = cue && meter.snd;
-                    let word = if on { "SND ON" } else { "SND" };
-                    let fill = if on { t.warn_fill } else { t.field };
-                    let snd = toggle(ui, cue, word, &meter.label, fill, t)
-                        .on_disabled_hover_text(SND_NEEDS);
-                    if snd.clicked() {
-                        actions.push(strip_edit(&meter.strip, StripChange::Snd(!meter.snd)));
-                    }
-                });
+    strip_frame(ui, t, |ui| {
+        let font = theme::mono(theme::CARD);
+        let gear = is_out.then_some(&mut devices);
+        let head = strip_head(ui, &meter.label, font, is_out, gear, t);
+        head.context_menu(|ui| {
+            if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
+                settings_wanted = Some(tab);
+            }
+        });
+        ui.horizontal_top(|ui| {
+            meter_bars(ui, meter.level_db, meter.peak_db, t).context_menu(|ui| {
+                if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
+                    settings_wanted = Some(tab);
+                }
+            });
+            // The fader sits in the middle of the room beside the bars.
+            let room = egui::vec2(ui.available_width(), size::METER_H);
+            ui.allocate_ui_with_layout(room, Layout::top_down(Align::Center), |ui| {
+                ui.spacing_mut().slider_width = size::METER_H;
+                let range = size::METER_MIN_DB..=size::METER_MAX_DB;
+                let fader = egui::Slider::new(&mut gain, range)
+                    .vertical()
+                    .show_value(false);
+                ui.add(fader)
+                    .on_hover_text(format!("{} fader", meter.label));
             });
         });
+        // Under the bars the held peak; at the right, under the fader, its gain.
+        let peak = meter.peak_db[0].max(meter.peak_db[1]);
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), size::CONTROL_SM),
+            Sense::hover(),
+        );
+        let p = ui.painter();
+        let small = theme::mono(theme::CAPTION);
+        p.text(
+            egui::pos2(row.left() + bars_centre(), row.center().y),
+            egui::Align2::CENTER_CENTER,
+            db_short(peak),
+            small.clone(),
+            t.text,
+        );
+        p.text(
+            egui::pos2(row.right(), row.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{gain:+.1}"),
+            small,
+            t.text_muted,
+        );
+        // Framed toggles: the word and the fill change, so the state does not hang on
+        // colour. Each name starts with the visible word and says which strip it is.
+        let word = if mute { "MUTED" } else { "Mute" };
+        let fill = if mute { t.danger_fill } else { t.field };
+        if toggle(ui, true, word, &meter.label, fill, t).clicked() {
+            mute = !mute;
+        }
+        let on = cue && meter.snd;
+        let word = if on { "SND ON" } else { "SND" };
+        let fill = if on { t.warn_fill } else { t.field };
+        let snd = toggle(ui, cue, word, &meter.label, fill, t).on_disabled_hover_text(SND_NEEDS);
+        if snd.clicked() {
+            actions.push(strip_edit(&meter.strip, StripChange::Snd(!meter.snd)));
+        }
+    });
     if gain != meter.gain_db {
         actions.push(strip_edit(&meter.strip, StripChange::Gain(gain)));
     }
@@ -296,6 +298,70 @@ fn strip_ui(
         Some(SettingsTab::Devices)
     } else {
         settings_wanted
+    }
+}
+
+/// The card of one strip, at the strip width, with its parts centred.
+fn strip_frame(ui: &mut egui::Ui, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(t.card)
+        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
+        .corner_radius(t.radius_lg)
+        .inner_margin(pad::TIGHT)
+        .show(ui, |ui| {
+            ui.set_width(size::STRIP_W);
+            ui.spacing_mut().item_spacing.y = space::XS;
+            ui.vertical_centered(body);
+        });
+}
+
+/// The name band at the top of a strip. Program's band has the selection fill, and its name
+/// says so too. With `gear`, a ⚙ at the right opens the strip's Preferences page. It returns
+/// the name, which takes a right-click.
+fn strip_head(
+    ui: &mut egui::Ui,
+    label: &str,
+    font: egui::FontId,
+    accent: bool,
+    gear: Option<&mut bool>,
+    t: &Tokens,
+) -> egui::Response {
+    let (band, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), size::BADGE),
+        Sense::hover(),
+    );
+    let fill = if accent { t.selection } else { t.field };
+    ui.painter().rect_filled(band, t.radius_sm, fill);
+    let mut name_rect = band;
+    if let Some(open) = gear {
+        let side = band.height();
+        let at = egui::Rect::from_min_size(
+            egui::pos2(band.right() - side, band.top()),
+            egui::Vec2::splat(side),
+        );
+        name_rect.set_right(at.left());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
+            settings::settings_button_sized(ui, label, open, side);
+        });
+    }
+    let name = RichText::new(label).font(font).color(t.text).strong();
+    ui.put(
+        name_rect,
+        egui::Label::new(name).truncate().sense(Sense::click()),
+    )
+}
+
+/// The x of the middle of the two bars, from the left edge of [`meter_bars`].
+fn bars_centre() -> f32 {
+    size::METER_SCALE_W + space::XS + size::METER_BAR_W + space::XXS / 2.0
+}
+
+/// A level as a short number for under a meter. Silence shows as "−∞".
+fn db_short(v: f32) -> String {
+    if v <= size::METER_MIN_DB {
+        "−∞".to_owned()
+    } else {
+        format!("{v:.1}")
     }
 }
 
@@ -322,7 +388,8 @@ fn toggle(
         .color(t.text);
     let button = egui::Button::new(text)
         .fill(fill)
-        .stroke(Stroke::new(size::HAIRLINE, t.field_border));
+        .stroke(Stroke::new(size::HAIRLINE, t.field_border))
+        .min_size(egui::vec2(ui.available_width(), size::CONTROL_SM));
     let r = ui.add_enabled(enabled, button);
     r.widget_info(|| {
         egui::WidgetInfo::labeled(egui::Role::Button, enabled, format!("{word} {strip}"))
@@ -334,45 +401,47 @@ fn toggle(
 /// output shows empty bars. Its ⚙ returns the page of that output.
 fn output_strip(ui: &mut egui::Ui, out: &OutputMeterView, t: &Tokens) -> Option<Page> {
     let mut open = false;
-    egui::Frame::new()
-        .fill(t.card)
-        .stroke(Stroke::new(size::HAIRLINE, t.card_border))
-        .corner_radius(t.radius_lg)
-        .inner_margin(pad::TIGHT)
-        .show(ui, |ui| {
-            ui.set_width(size::STRIP_W);
-            ui.vertical_centered(|ui| {
-                let row = egui::vec2(ui.available_width(), size::BADGE);
-                ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
-                    let name = RichText::new(&out.label).font(theme::mono(theme::CAPTION));
-                    ui.add(egui::Label::new(name.strong()).truncate());
-                    settings::settings_button(ui, &out.label, &mut open);
-                });
-                let silent = [size::METER_MIN_DB; 2];
-                let (level, peak) = if out.live {
-                    (out.level_db, out.peak_db)
-                } else {
-                    (silent, silent)
-                };
-                meter_bars(ui, level, peak, t);
-                let colour = if out.live { t.text } else { t.text_muted };
-                let note = ui.add(
-                    egui::Label::new(
-                        RichText::new(&out.note)
-                            .font(theme::text(theme::CAPTION))
-                            .color(colour),
-                    )
-                    .wrap(),
-                );
-                note.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::Role::Label,
-                        true,
-                        format!("{}: {}", out.label, out.note),
-                    )
-                });
+    strip_frame(ui, t, |ui| {
+        let font = theme::text(theme::CAPTION);
+        strip_head(ui, &out.label, font, false, Some(&mut open), t);
+        let silent = [size::METER_MIN_DB; 2];
+        let (level, peak) = if out.live {
+            (out.level_db, out.peak_db)
+        } else {
+            (silent, silent)
+        };
+        meter_bars(ui, level, peak, t);
+        let row = egui::vec2(ui.available_width(), size::CONTROL_SM);
+        let (row, _) = ui.allocate_exact_size(row, Sense::hover());
+        ui.painter().text(
+            row.center(),
+            egui::Align2::CENTER_CENTER,
+            db_short(peak[0].max(peak[1])),
+            theme::mono(theme::CAPTION),
+            if out.live { t.text } else { t.text_muted },
+        );
+        // The state in words, in the room that the toggles take on a mixing strip.
+        let foot = egui::vec2(
+            ui.available_width(),
+            size::CONTROL_SM * 2.0 + ui.spacing().item_spacing.y,
+        );
+        let centred = Layout::top_down(Align::Center).with_main_align(Align::Center);
+        ui.allocate_ui_with_layout(foot, centred, |ui| {
+            ui.set_min_size(foot);
+            let colour = if out.live { t.text } else { t.text_muted };
+            let text = RichText::new(&out.note)
+                .font(theme::text(theme::CAPTION))
+                .color(colour);
+            let note = ui.add(egui::Label::new(text).wrap());
+            note.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Label,
+                    true,
+                    format!("{}: {}", out.label, out.note),
+                )
             });
         });
+    });
     open.then_some(match out.kind {
         OutputKind::Device => Page::Devices,
         OutputKind::Icecast => Page::Icecast,
@@ -391,15 +460,6 @@ fn mute_action(meter: &MeterView, is_out: bool, mute: bool) -> Action {
         }
     } else {
         edit
-    }
-}
-
-/// A level as text. Silence shows as "−∞ dB".
-fn db(v: f32) -> String {
-    if v <= size::METER_MIN_DB {
-        "−∞ dB".to_owned()
-    } else {
-        format!("{v:.1} dB")
     }
 }
 
@@ -448,57 +508,61 @@ fn strip_menu(
     })
 }
 
-/// Two meter bars (left and right) with green, amber and red zones and a peak line.
+/// Two LED meter bars (left and right) with green, amber and red zones and a held peak, and
+/// the dB scale at their left. Unlit LEDs show their zone faintly.
 fn meter_bars(
     ui: &mut egui::Ui,
     level_db: [f32; 2],
     peak_db: [f32; 2],
     t: &Tokens,
 ) -> egui::Response {
-    let w = size::METER_BAR_W * 2.0 + space::XXS;
-    let full = w + size::METER_SCALE_W;
+    let bars_w = size::METER_BAR_W * 2.0 + space::XXS;
+    let full = size::METER_SCALE_W + space::XS + bars_w;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(full, size::METER_H), Sense::click());
     let p = ui.painter();
+    let bars_left = rect.right() - bars_w;
+    let step = size::METER_SEG_H + size::METER_SEG_GAP;
+    let count = (rect.height() / step).floor().max(1.0);
+    let span = size::METER_MAX_DB - size::METER_MIN_DB;
     for ch in 0..2 {
-        let left = rect.left() + ch as f32 * (size::METER_BAR_W + space::XXS);
-        let bar = egui::Rect::from_min_size(
-            egui::pos2(left, rect.top()),
-            egui::vec2(size::METER_BAR_W, rect.height()),
-        );
-        p.rect_filled(bar, t.radius_sm, t.canvas);
-        let y_of = |v: f32| bar.bottom() - bar.height() * frac(v);
-        let level = level_db[ch];
-        for (lo, hi, colour) in [
-            (size::METER_MIN_DB, size::METER_AMBER_DB, t.meter_low),
-            (size::METER_AMBER_DB, size::METER_RED_DB, t.meter_mid),
-            (size::METER_RED_DB, size::METER_MAX_DB, t.meter_high),
-        ] {
-            if level > lo {
-                let seg =
-                    egui::Rect::from_x_y_ranges(bar.x_range(), y_of(level.min(hi))..=y_of(lo));
-                p.rect_filled(seg, 0.0, colour);
-            }
-        }
-        let peak = peak_db[ch];
-        if peak > size::METER_MIN_DB {
-            p.hline(
-                bar.x_range(),
-                y_of(peak),
-                Stroke::new(size::HAIRLINE * 2.0, t.text),
-            );
+        let left = bars_left + ch as f32 * (size::METER_BAR_W + space::XXS);
+        let x = egui::Rangef::new(left, left + size::METER_BAR_W);
+        let peak_led = ((frac(peak_db[ch]) * count).ceil() - 1.0).max(-1.0);
+        let mut k = 0.0;
+        while k < count {
+            // The LED is lit when the level passes its lower edge.
+            let low = size::METER_MIN_DB + span * k / count;
+            let zone = if low >= size::METER_RED_DB {
+                t.meter_high
+            } else if low >= size::METER_AMBER_DB {
+                t.meter_mid
+            } else {
+                t.meter_low
+            };
+            let colour = if k == peak_led {
+                t.text
+            } else if level_db[ch] > low {
+                zone
+            } else {
+                zone.gamma_multiply(size::METER_UNLIT)
+            };
+            let bottom = rect.bottom() - k * step;
+            let led = egui::Rect::from_x_y_ranges(x, (bottom - size::METER_SEG_H)..=bottom);
+            p.rect_filled(led, 0.0, colour);
+            k += 1.0;
         }
     }
-    // The scale: a mark at each step, and its number where it does not touch the last one.
+    // The scale: a short mark at each step, and its number where it does not touch the last.
     let font = theme::mono(theme::TINY);
     let line = ui.fonts_mut(|f| f.row_height(&font));
     let mut last_label = f32::NEG_INFINITY;
     for v in SCALE_DB {
         let y = rect.bottom() - rect.height() * frac(v);
-        let bars = egui::Rangef::new(rect.left(), rect.left() + w);
-        p.hline(bars, y, Stroke::new(size::HAIRLINE, t.field_border));
+        let mark = egui::Rangef::new(bars_left - space::XS, bars_left - space::XXS);
+        p.hline(mark, y, Stroke::new(size::HAIRLINE, t.text_muted));
         if y - last_label >= line {
             p.text(
-                egui::pos2(rect.right(), y),
+                egui::pos2(bars_left - space::XS - space::XXS, y),
                 egui::Align2::RIGHT_CENTER,
                 format!("{v:.0}"),
                 font.clone(),

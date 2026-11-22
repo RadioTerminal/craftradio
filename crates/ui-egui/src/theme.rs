@@ -186,8 +186,8 @@ pub mod size {
     pub const CART_PAGE: usize = 16;
     pub const CARTWALL_W: f32 = 640.0;
     pub const CARTWALL_H: f32 = 300.0;
-    pub const MIXER_W: f32 = 760.0;
-    pub const MIXER_H: f32 = 440.0;
+    pub const MIXER_W: f32 = 1160.0;
+    pub const MIXER_H: f32 = 460.0;
     pub const CLOCK_WIN_W: f32 = 520.0;
     pub const CLOCK_WIN_H: f32 = 520.0;
     pub const HISTORY_W: f32 = 820.0;
@@ -268,11 +268,16 @@ pub mod size {
     pub const TOAST_S: f64 = 4.0;
 
     /// Mixer strips.
-    pub const STRIP_W: f32 = 104.0;
+    pub const STRIP_W: f32 = 96.0;
+    /// One LED of a meter bar, and the gap to the next.
+    pub const METER_SEG_H: f32 = 3.0;
+    pub const METER_SEG_GAP: f32 = 1.0;
+    /// How strongly an unlit LED shows its colour.
+    pub const METER_UNLIT: f32 = 0.16;
     /// The dB numbers beside a mixer meter.
     pub const METER_SCALE_W: f32 = 22.0;
     pub const METER_H: f32 = 220.0;
-    pub const METER_BAR_W: f32 = 8.0;
+    pub const METER_BAR_W: f32 = 12.0;
     pub const FADER_W: f32 = 20.0;
     /// The meter scale in dB.
     pub const METER_MIN_DB: f32 = -60.0;
