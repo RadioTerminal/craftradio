@@ -12,7 +12,7 @@ pub use output::*;
 pub use relay::{DEFAULT_TRACKERS, Identity, SIGNATURE_LINE};
 pub use webrtc::*;
 
-/// True when this build can encode MP3 (the `mp3` feature, LAME).
+/// True when this build can encode MP3 (the `mp3` feature).
 pub const MP3: bool = cfg!(feature = "mp3");
 
 /// Errors from configuration, codecs, or transport.
