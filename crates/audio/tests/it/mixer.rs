@@ -351,3 +351,67 @@ fn captured_deck_uses_live_strip() {
     assert!(program.iter().skip(512).all(|x| x.abs() < 0.001));
     assert!(monitor.iter().all(|x| *x > 0.1));
 }
+
+/// Loads a deck with a constant level on both channels, enough for 2048 frames, and plays it.
+fn constant_deck(handle: &mut radio_audio::MixerHandle, deck: DeckId, level: f32) {
+    let (mut tx, rx) = rtrb::RingBuffer::new(4096);
+    while tx.slots() >= 2 {
+        tx.push(level).unwrap();
+        tx.push(level).unwrap();
+    }
+    handle.load_ring(deck, rx, LoadOptions::default()).unwrap();
+    handle.send(play(0, deck)).unwrap();
+}
+
+#[test]
+fn program_snd_puts_what_listeners_hear_on_the_monitor() {
+    for dynamics in [None, Some(radio_audio::ProgramDynamics::default())] {
+        let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+        mixer.set_dynamics(dynamics).unwrap();
+        constant_deck(&mut handle, DeckId::A, 0.25);
+        handle.set_snd(Strip::Out, true);
+        let (program, monitor) = radio_audio::render_offline_buses(&mut mixer, 1024);
+        assert!(program.iter().skip(1024).all(|x| x.abs() > 0.1));
+        assert_eq!(&monitor[1024..], &program[1024..], "dynamics: {dynamics:?}");
+    }
+}
+
+#[test]
+fn program_snd_is_silent_while_program_is_muted() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    constant_deck(&mut handle, DeckId::A, 0.25);
+    handle
+        .send(Command::new(
+            0,
+            CommandKind::SetGain {
+                strip: Strip::Out,
+                db: f32::NEG_INFINITY,
+            },
+        ))
+        .unwrap();
+    handle.set_snd(Strip::Out, true);
+    let (_, monitor) = radio_audio::render_offline_buses(&mut mixer, 1024);
+    assert!(monitor.iter().skip(512).all(|x| x.abs() < 0.001));
+}
+
+#[test]
+fn monitor_never_exceeds_full_scale_with_many_snds() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    for deck in DeckId::ALL {
+        constant_deck(&mut handle, deck, 0.9);
+        handle.set_snd(Strip::Deck(deck), true);
+    }
+    handle.set_snd(Strip::Out, true);
+    let (_, monitor) = radio_audio::render_offline_buses(&mut mixer, 1024);
+    assert!(monitor.iter().skip(512).any(|x| x.abs() > 0.5));
+    assert!(monitor.iter().all(|x| x.abs() <= 1.0));
+}
+
+#[test]
+fn no_snd_means_a_silent_monitor() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    constant_deck(&mut handle, DeckId::A, 0.25);
+    let (program, monitor) = radio_audio::render_offline_buses(&mut mixer, 1024);
+    assert!(program.iter().skip(512).any(|x| x.abs() > 0.1));
+    assert!(monitor.iter().all(|x| *x == 0.0));
+}

@@ -552,6 +552,15 @@ impl Mixer {
         for c in mon_iter {
             *c = [0.0; CHANNELS];
         }
+        // The source SNDs pass the soft limit; Program, already limited, adds unchanged, so
+        // Program SND alone is exactly what listeners hear. The sum never leaves full scale.
+        let program_snd = snd_mask & (1 << Strip::Out.index()) != 0;
+        for (m, y) in mon_frames.iter_mut().zip(out_frames.iter()) {
+            for (c, p) in m.iter_mut().zip(y) {
+                let program = if program_snd { *p } else { 0.0 };
+                *c = (limit(*c) + program).clamp(-1.0, 1.0);
+            }
+        }
         mon_rest.fill(0.0);
         self.board.publish(&self.meters.snapshot(self.sample));
         self.shared.now.store(self.sample, Ordering::Release);
@@ -1196,11 +1205,9 @@ impl MixerHandle {
             .map_err(|_| AudioError::QueueFull)
     }
 
-    /// Routes a strip to the SND monitor bus, or takes it off. Program out has no SND yet.
+    /// Routes a strip to the SND monitor bus, or takes it off. A source strip is heard before its
+    /// fader and mute; Program out is heard as listeners hear it, after dynamics and mute.
     pub fn set_snd(&self, strip: Strip, on: bool) {
-        if strip == Strip::Out {
-            return;
-        }
         let bit = 1u8 << strip.index();
         if on {
             self.shared.snd.fetch_or(bit, Ordering::Relaxed);
