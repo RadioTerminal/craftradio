@@ -32,7 +32,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3da8f27636015191b2264ee1df681503170a632cafd832fdc1edfdd4e3a2fd3"
 dependencies = [
  "accesskit",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
 ]
 
 [[package]]
@@ -43,7 +43,7 @@ checksum = "a5280724673bbfa8b30a838c013500b719392989be3b97c5a9964062c252c232"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "objc2 0.5.3",
  "objc2-foundation 0.2.2",
  "objc2-ui-kit 0.2.2",
@@ -57,7 +57,7 @@ checksum = "123828ceeec755b05255e3976cb0852993202de98a0626c97dd8d34246991f84"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "objc2 0.5.3",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
@@ -89,7 +89,7 @@ checksum = "498668b90da9995302a0055aaecad4756932333da2ddef6baee1c00844c430fc"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "static_assertions",
  "windows",
  "windows-core",
@@ -2238,7 +2238,7 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6688bc1294fe7117d788937b6c53480169b29c566954af490830d4c09da9516a"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "linebender_resource_handle",
  "memmap2",
  "objc2 0.6.5",
@@ -2451,7 +2451,7 @@ checksum = "282a26c1e23de04bdab3e34a21b6f877a479b96737792516b9b8b8f69b6661be"
 dependencies = [
  "bytemuck",
  "foldhash 0.2.0",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "log",
  "peniko",
  "skrifa",
@@ -2606,9 +2606,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.17.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+checksum = "735eaa21a6a5ffb2e84362faaeb90c05ba8e19797ca30428478cb6ea3a4921bc"
 dependencies = [
  "allocator-api2",
  "equivalent",
@@ -2940,7 +2940,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
 ]
 
 [[package]]
@@ -3530,7 +3530,7 @@ dependencies = [
  "cfg_aliases",
  "codespan-reporting",
  "half",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "libm",
  "log",
@@ -3549,7 +3549,7 @@ version = "30.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14474170feb673cfb18b3565111a9869797cc1d290fb9ec969c53f5e1e231c6d"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "rustc-hash 1.1.0",
  "thiserror 2.0.21",
@@ -5390,7 +5390,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
 dependencies = [
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "relative-path",
  "rquickjs-sys",
 ]
@@ -5633,9 +5633,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sctp-proto"
-version = "0.10.8"
+version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28aca56f649fa088cbdda778a5121f2227995ed057e77de462112b2e5890d591"
+checksum = "6f052184dccaad4d50eaf4f748a9c732da07a9adbdce584128747fe588009622"
 dependencies = [
  "bytes",
  "crc",
@@ -6814,7 +6814,7 @@ checksum = "ace506ca414548966fcf3c283be94eb1cad8254de488791ee698bf438b0890a9"
 dependencies = [
  "bytemuck",
  "glifo",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "vello_common",
 ]
 
@@ -7097,7 +7097,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "document-features",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "js-sys",
  "log",
  "naga",
@@ -7128,7 +7128,7 @@ dependencies = [
  "bytemuck",
  "cfg_aliases",
  "document-features",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "indexmap",
  "log",
  "naga",
@@ -7204,7 +7204,7 @@ dependencies = [
  "glow",
  "glutin_wgl_sys",
  "gpu-allocator",
- "hashbrown 0.17.1",
+ "hashbrown 0.17.2",
  "js-sys",
  "khronos-egl",
  "libc",
