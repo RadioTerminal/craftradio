@@ -250,3 +250,127 @@ fn an_update_just_before_air_keeps_both_hard_one_offs_on_time() {
         "{raised:?}"
     );
 }
+
+fn soft(item: Item, start: DateTime) -> Command {
+    Command::ScheduleAdd {
+        one_off: Box::new(item),
+        start,
+        fix: FixMode::Soft,
+        tolerance: Duration::from_secs(1),
+        repeat: Repeat::Once,
+    }
+}
+
+/// Songs that the fitter may neither move nor trim. With `lock`, a person placed them.
+fn fixed_songs(tag: &str, lock: bool) -> Engine {
+    let main: Vec<_> = (1..=6)
+        .map(|i| {
+            let path = wav(&format!("{tag}-song{i}"), 4.0, Side::Left);
+            let mut item = file_item(i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5);
+            item.movable = false;
+            item.trimmable = false;
+            item
+        })
+        .collect();
+    let mut engine = Engine::open_in_memory().unwrap();
+    engine
+        .dispatch(Command::PlaylistAddItems {
+            playlist: radio_model::PlaylistId(1),
+            items: main,
+            at: None,
+            lock,
+        })
+        .unwrap();
+    engine
+}
+
+/// The soft one-off airs late, after the song in its way, with no song on top of it. The
+/// alarm says it was late, and it leaves the schedule.
+fn assert_aired_late(p: &Playout, program: &[f32], raised: &[Alarm], id: u64, target: usize) {
+    let start = first_audible(program, 1, 0).expect("the soft one-off airs");
+    assert!(
+        start > target + SR,
+        "it starts after its tolerance: {start}"
+    );
+    assert!(
+        peak(program, 0, start + 6 * SR / 10, start + 95 * SR / 100) < 0.01,
+        "no song plays on top of it"
+    );
+    assert!(
+        raised
+            .iter()
+            .any(|a| matches!(a, Alarm::FixedLate { item, .. } if item.0 == id)),
+        "a late soft event raises the alarm: {raised:?}"
+    );
+    assert!(
+        !raised
+            .iter()
+            .any(|a| matches!(a, Alarm::OneOffMissed { .. })),
+        "{raised:?}"
+    );
+    assert!(
+        p.history(t0(), 40)
+            .unwrap()
+            .iter()
+            .any(|r| r.entry.title == "Soft promo")
+    );
+    assert_eq!(one_offs(p), 0, "it aired, so it leaves");
+}
+
+fn added_id(p: &Playout, cmd: Command) -> u64 {
+    p.dispatch(cmd)
+        .unwrap()
+        .data
+        .and_then(|d| d.as_u64())
+        .unwrap()
+}
+
+#[test]
+fn a_soft_one_off_behind_an_untrimmable_song_airs_late_with_an_alarm() {
+    // Song 2 starts at 3.5 s and hands over at 7 s, past 5 s + 1 s. Nothing may move or trim.
+    let mut engine = fixed_songs("oo7", false);
+    let cmd = soft(promo("oo7-promo", "Soft promo"), at(13, 0, 5));
+    let id = engine
+        .dispatch(cmd)
+        .unwrap()
+        .data
+        .and_then(|d| d.as_u64())
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let alarms = p.alarms().unwrap();
+    let program = run(&p, &clock, 14.0);
+    let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
+    assert_aired_late(&p, &program, &raised, id, 5 * SR);
+}
+
+#[test]
+fn a_soft_one_off_among_locked_songs_airs_after_the_song_in_its_way() {
+    // A person placed the songs, so they are locked: nothing moves or trims them.
+    let mut engine = fixed_songs("oo8", true);
+    let cmd = soft(promo("oo8-promo", "Soft promo"), at(13, 0, 5));
+    let id = engine
+        .dispatch(cmd)
+        .unwrap()
+        .data
+        .and_then(|d| d.as_u64())
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let alarms = p.alarms().unwrap();
+    let program = run(&p, &clock, 14.0);
+    let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
+    assert_aired_late(&p, &program, &raised, id, 5 * SR);
+}
+
+#[test]
+fn a_soft_one_off_added_while_the_decks_are_full_still_airs() {
+    // At 9 s the three next songs wait on decks. The one-off at 12 s goes before two of them.
+    let engine = fixed_songs("oo9", false);
+    let (p, clock) = offline(engine, |_| {});
+    let alarms = p.alarms().unwrap();
+    let before = run(&p, &clock, 9.0);
+    let id = added_id(&p, soft(promo("oo9-promo", "Soft promo"), at(13, 0, 12)));
+    let after = run(&p, &clock, 12.0);
+    let program = [before, after].concat();
+    let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
+    assert_aired_late(&p, &program, &raised, id, 12 * SR);
+}

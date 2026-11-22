@@ -397,14 +397,10 @@ impl<'a> Fitter<'a> {
         e.fixed.is_none() && !e.locked && self.item(e).is_some_and(|i| i.trimmable)
     }
 
-    /// Precedence for overlapping anchors: a `Hard` event (2) beats a locked entry (1),
-    /// which beats a `Soft` event (0); then the higher playlist priority.
-    fn rank(&self, e: &Entry) -> (u8, i32) {
-        let tier = match &e.fixed {
-            Some(f) if f.mode == FixMode::Hard => 2,
-            Some(_) => 0,
-            None => 1,
-        };
+    /// Precedence for overlapping fixed events: a `Hard` event beats a `Soft` event. Then
+    /// the higher playlist priority wins.
+    fn rank(&self, e: &Entry) -> (bool, i32) {
+        let tier = is_hard(e);
         let priority = self.playlist(e.playlist).map_or_else(
             || e.fixed.as_ref().map_or(0, |f| f.priority),
             |p| p.priority,
@@ -520,18 +516,58 @@ impl<'a> Fitter<'a> {
         None
     }
 
-    /// The start slot of each anchor. The higher [`Fitter::rank`] is placed first, then the
-    /// earlier target, then the earlier listed. An entry whose time is taken moves to the first free
-    /// time after the entries in its way.
+    /// Returns the start slot of each anchor. The fixed events go first, by rank, target and
+    /// list order. Then the locked entries and the soft events go in time order. A locked
+    /// entry goes first at the same time. A soft event starts after the locked entry in its
+    /// way. The later locked entries start after the soft event, as after a hard event.
     fn resolve(&self, events: &[Entry]) -> Vec<Timestamp> {
         let target = |e: &Entry| e.fixed.as_ref().map_or(e.start, |f| f.target);
-        let mut order: Vec<usize> = (0..events.len()).collect();
+        let mut order: Vec<usize> = (0..events.len())
+            .filter(|&i| events[i].fixed.is_some())
+            .collect();
         order.sort_by_key(|&i| (Reverse(self.rank(&events[i])), target(&events[i]), i));
-        let mut placed: Vec<(Timestamp, Timestamp)> = Vec::with_capacity(events.len());
+        let wanted: Vec<Timestamp> = events.iter().map(target).collect();
+        let fixed_slots = self.place(events, &order, &wanted, Vec::new());
+
+        let (hard, mut rest): (Vec<usize>, Vec<usize>) =
+            (0..events.len()).partition(|&i| is_hard(&events[i]));
+        let placed: Vec<(Timestamp, Timestamp)> = hard
+            .iter()
+            .map(|&i| {
+                (
+                    fixed_slots[i],
+                    later(fixed_slots[i], self.natural(&events[i])),
+                )
+            })
+            .collect();
+        let mut wanted = fixed_slots.clone();
+        for (i, e) in events.iter().enumerate() {
+            if e.fixed.is_none() {
+                wanted[i] = e.start;
+            }
+        }
+        rest.sort_by_key(|&i| (wanted[i], events[i].fixed.is_some(), i));
+        let mut slots = self.place(events, &rest, &wanted, placed);
+        for i in hard {
+            slots[i] = fixed_slots[i];
+        }
+        slots
+    }
+
+    /// Gives a slot to each entry of `order`, one after the other. Each entry starts at
+    /// its `wanted` time, or at the first free time after it. The entries in `placed` and
+    /// the entries before it in `order` keep their times. Other entries get `Timestamp::MIN`.
+    fn place(
+        &self,
+        events: &[Entry],
+        order: &[usize],
+        wanted: &[Timestamp],
+        mut placed: Vec<(Timestamp, Timestamp)>,
+    ) -> Vec<Timestamp> {
         let mut slots = vec![Timestamp::MIN; events.len()];
-        for i in order {
+        for &i in order {
             let len = self.natural(&events[i]);
-            let mut t = target(&events[i]);
+            let mut t = wanted[i];
             // Each pass moves `t` past at least one placed entry, so this ends.
             for _ in 0..=placed.len() {
                 let end = later(t, len);
@@ -936,9 +972,10 @@ pub(crate) fn drop_adjacent_clashes(
 /// before one moves after it. Only a non-trimmable item in the way makes a locked entry
 /// start late, with `Warning::LockedMoved`.
 ///
-/// Overlapping anchors rank `Hard` event > locked entry > `Soft` event, then by playlist
-/// priority. A locked entry that loses its slot to a `Hard` event starts right after it,
-/// with `Warning::LockedMoved`.
+/// A `Hard` event beats a locked entry. A locked entry that loses its slot to it starts
+/// right after it, with `Warning::LockedMoved`. A `Soft` event starts after the locked
+/// entry in its way, with `Warning::FixedConflict`. The locked entries after that start
+/// after the `Soft` event, with `Warning::LockedMoved`.
 ///
 /// Overlapping fixed entries: the higher rank keeps its time (then the earlier target, then
 /// the earlier listed); the other starts right after it and gets `Warning::FixedConflict`.

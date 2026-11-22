@@ -769,6 +769,7 @@ impl Core {
         }
         // Hard events claim a deck first, so a queued item cannot take it back.
         self.ensure_hard(now);
+        self.make_room_for_soft();
         self.load_ahead(now);
         self.cue_starts(now);
         self.cue_ends(now);
@@ -1169,12 +1170,51 @@ impl Core {
     /// Takes the plan items that wait on decks off them, so a new plan can move them after
     /// the play-next items. Hard events and operator items stay.
     fn unload_waiting_plan_items(&mut self) {
+        self.unload_where(|s| !s.is_hard());
+    }
+
+    /// Makes room for a soft event that the plan puts before items on decks. It takes
+    /// those items off their decks. The event then loads first, and they load after it.
+    /// Else the event never loads, and its time passes.
+    fn make_room_for_soft(&mut self) {
+        let on_deck: Vec<Entry> = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|s| s.entry.clone())
+            .collect();
+        let Some(event) = self.timeline.entries.iter().position(|e| {
+            e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Soft)
+                && !on_deck.iter().any(|d| same_event(d, e))
+                && !self.aired_fixed.iter().any(|a| same_occurrence(a, e))
+        }) else {
+            return;
+        };
+        let after: Vec<ItemId> = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|s| s.item.id)
+            .filter(|id| {
+                self.timeline
+                    .entries
+                    .iter()
+                    .position(|e| e.item == *id && e.fixed.is_none())
+                    .is_some_and(|k| k > event)
+            })
+            .collect();
+        self.unload_where(|s| s.entry.fixed.is_none() && after.contains(&s.item.id));
+    }
+
+    /// Takes off their decks the plan items that wait there and match `which`. Items on
+    /// the play-next queue stay.
+    fn unload_where(&mut self, which: impl Fn(&Slot) -> bool) {
         let queue = self.engine.state().queue.clone();
         for i in 0..4 {
             let waiting = self.slots[i].as_ref().is_some_and(|s| {
                 s.role == DeckRole::Plan
                     && s.not_started()
-                    && !s.is_hard()
+                    && which(s)
                     && !queue.contains(&s.item.id)
             });
             if waiting && let Some(s) = self.slots[i].take() {
