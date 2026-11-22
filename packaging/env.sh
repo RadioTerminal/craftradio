@@ -80,7 +80,7 @@ copy_docs() {
 # $1 is the destination folder. $2 tells a person where the library is.
 copy_lame_notice() {
   local dest="$1" where="$2"
-  cp "$ROOT/vendor/mp3lame-sys/LICENSE" "$dest/LICENSE-LAME.txt"
+  cp "$ROOT/packaging/lame/COPYING" "$dest/LICENSE-LAME.txt"
   cat >"$dest/LAME.txt" <<NOTE
 CraftRadio encodes MP3 with LAME $LAME_VERSION (https://lame.sourceforge.io), licensed under the
 GNU LGPL (LICENSE-LAME.txt). LAME is not built into CraftRadio: it is the separate shared library

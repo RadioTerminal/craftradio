@@ -69,7 +69,12 @@ LAME is LGPL, so it is never compiled into CraftRadio (AGENTS.md rule 12, `docs/
 | deb, rpm | depend on the distribution's `libmp3lame0` / `libmp3lame.so.0` |
 | AppImage, tar.gz, Flatpak | carry the build host's `libmp3lame.so.0` in `lib/craftradio/`; the app's RUNPATH is `$ORIGIN/../lib/craftradio` |
 
-Every bundled copy sits next to `LICENSE-LAME.txt` and `LAME.txt`, which says how to replace it.
+Every bundled copy sits next to `LICENSE-LAME.txt` (LAME's own `COPYING`, kept in
+`packaging/lame/`) and `LAME.txt`, which says how to replace it.
+
+> [!WARNING]
+> **Release blocker:** the Rust wrapper `mp3lame-encoder` and the bindings in `vendor/mp3lame-sys`
+> are LGPL-3.0 and still compiled into the app statically. See `docs/mp3-release.md`.
 The macOS CLI zip has no LAME: only the app links it.
 
 ## Known gaps
@@ -77,6 +82,8 @@ The macOS CLI zip has no LAME: only the app links it.
 - **Windows opens a console window with the app.** `craftradio.exe` is a console program so that
   `craftradio --headless` can print; `package.ps1` checks for that.
 - **vcpkg is not pinned.** The Windows runners' vcpkg checkout decides the `mp3lame` port version.
+- **The macOS job runs on `macos-15-xlarge`**, a paid larger runner. RadioTerminal needs it enabled
+  (and billed) or the job waits for a runner that never comes.
 - **No CI gate yet.** There is no `ci.yml`; run the checks in `AGENTS.md` before a release.
 
 ## App-specific choices

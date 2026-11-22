@@ -28,7 +28,7 @@
 <p align="center">
   <img src="docs/screenshots/ui-preview.png" alt="The CraftRadio main window: four decks A to D with the on-air deck counting down, a level meter and clock, the main playlist with a start time for every item, and the upcoming items of the other playlists with how well each fixed-time event fits" width="100%">
   <br>
-  <sub>The main window: four decks, the main playlist with a start time for every item, and what the other playlists weave in next.</sub>
+  <sub>The main window in the UI preview (<code>--demo</code>, mock data): four decks, the main playlist with a start time for every item, and what the other playlists weave in next.</sub>
 </p>
 
 <p align="center">
@@ -54,7 +54,7 @@
     </td>
     <td width="25%" valign="top">
       <h3>📻 On air</h3>
-      Music, jingles, ads, live sound-card input and internet streams, played to the sound card and to Icecast (MP3 or Opus, with TLS).
+      Music, jingles, ads and internet streams, played to the sound card and to Icecast (MP3 or Opus, with TLS).
     </td>
     <td width="25%" valign="top">
       <h3>🧩 Scriptable</h3>
@@ -140,8 +140,10 @@ cargo install --path apps/radio-cli                   # the CLI, as `craftradio-
 >
 > - **Works today:** the desktop app, headless mode and the CLI; four decks with R128 loudness;
 >   the scheduler with fixed-time events and JavaScript rules; the library, cartwall, clock,
->   history and alarms windows; live input, internet streams and Icecast output with TLS.
-> - **Not there yet:** the MCP server, the reliability milestone (silence detector, fallback
+>   history and alarms windows; internet streams and Icecast output with TLS.
+> - **Partly there:** live sound-card input and PFL to a cue device.
+> - **Not there yet:** the MCP server, a licence-clean MP3 build for release (the LGPL Rust wrapper
+>   around LAME is still linked statically, [docs/mp3-release.md](docs/mp3-release.md)), the reliability milestone (silence detector, fallback
 >   playlist, webhook alarms, 24 h soaks), and a first signed release.
 >
 > The milestones are in [docs/superpowers/plans/2026-11-21-roadmap.md](docs/superpowers/plans/2026-11-21-roadmap.md).
@@ -182,6 +184,7 @@ every file. How a release is made: [docs/releasing.md](docs/releasing.md).
 
 CraftRadio is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
 option. MP3 encoding uses [LAME](https://lame.sourceforge.io) (LGPL), which every package ships as
-a separate, replaceable shared library ([docs/mp3-release.md](docs/mp3-release.md)).
+a separate, replaceable shared library. The LGPL-3.0 Rust wrapper around it is still linked
+statically, which must be resolved before a release ([docs/mp3-release.md](docs/mp3-release.md)).
 
 The screenshots show invented stations, artists and titles.

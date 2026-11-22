@@ -115,7 +115,7 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 foreach ($exe in 'craftradio.exe', 'craftradio-cli.exe') { Copy-Item (Join-Path $Bin $exe) $Stage }
 Copy-Item $LameDll $Stage
 # The LGPL notice next to the DLL. packaging/env.sh writes the same text for the other platforms.
-Copy-Item (Join-Path $Root 'vendor\mp3lame-sys\LICENSE') (Join-Path $Stage 'LICENSE-LAME.txt')
+Copy-Item (Join-Path $Root 'packaging\lame\COPYING') (Join-Path $Stage 'LICENSE-LAME.txt')
 Set-Content -Path (Join-Path $Stage 'LAME.txt') -Value @"
 CraftRadio encodes MP3 with LAME $LameVersion (https://lame.sourceforge.io), licensed under the
 GNU LGPL (LICENSE-LAME.txt). LAME is not built into CraftRadio: it is the separate shared library
