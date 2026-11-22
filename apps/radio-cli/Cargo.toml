@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 radio-engine.workspace = true
+radio-mcp.workspace = true
 radio-model.workspace = true
 radio-scheduler.workspace = true
 clap.workspace = true

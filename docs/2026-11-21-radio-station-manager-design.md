@@ -597,7 +597,9 @@ The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§
 - **Ending a live item on silence** is opt-in per item, with a long threshold (default 60 s),
   because quiet speech would trigger it.
 - **Control socket permissions:** only the station's OS user can open it. Commands come in two
-  tiers, *read-only* and *on-air*; MCP gets read-only by default.
+  tiers, *read-only* and *on-air*. **MCP exposes both tiers (operator, 2026-11-22):** every
+  command is a tool; read-only ones are marked read-only, and on-air ones say they change the
+  running station, so a client can ask the person first.
 - **Library:** moved files can be relinked by content hash. The playlist view only draws the
   rows on screen, so a 24-hour playlist stays fast.
 

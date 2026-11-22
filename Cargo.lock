@@ -1273,6 +1273,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-mcp-server"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "craft-media"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
@@ -4479,6 +4487,7 @@ dependencies = [
  "clap",
  "jiff",
  "radio-engine",
+ "radio-mcp",
  "radio-model",
  "radio-scheduler",
  "serde_json",
@@ -4528,6 +4537,17 @@ dependencies = [
  "symphonia-adapter-libopus",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "radio-mcp"
+version = "0.1.0"
+dependencies = [
+ "craft-mcp-server",
+ "radio-control",
+ "radio-engine",
+ "radio-playout",
+ "serde_json",
 ]
 
 [[package]]

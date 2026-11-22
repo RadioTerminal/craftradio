@@ -33,3 +33,16 @@ the token; a connection without it is closed.
 
 A failure is `{"ok": false, "error": "…"}`. A command runs on the playout as a panel's would, so
 the window shows its change. `craftradio-cli commands` lists the ids.
+
+## MCP
+
+`craftradio-cli mcp` serves MCP on stdio for an AI client: every engine command is a tool named
+by its id with `_` for `.` (`schedule.add` is `schedule_add`), with the command's argument
+schema. Read-only commands are marked read-only; the others say they change the running
+station. A call runs on the station started last, or on `--port PORT`; the token comes from
+`CRAFTRADIO_CONTROL_TOKEN` or the token file, never from the command line. With no station
+running, a call is an error result. For Claude Code:
+
+```sh
+claude mcp add craftradio -- craftradio-cli mcp
+```
