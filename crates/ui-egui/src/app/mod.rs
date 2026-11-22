@@ -653,12 +653,21 @@ fn status_line(
                 .color(t.text_muted)
         };
         // Only a connected output shows a filled green dot. Every other state is hollow and muted.
-        for (name, status) in [
-            ("Local", &view.output.local),
-            ("Icecast", &view.output.icecast),
+        let webrtc_word = view
+            .output
+            .webrtc_listeners
+            .map(|n| format!("listening, {n} listeners"));
+        for (name, status, connected) in [
+            ("Local", &view.output.local, None),
+            ("Icecast", &view.output.icecast, None),
+            ("WebRTC", &view.output.webrtc, webrtc_word.as_deref()),
         ] {
             let (dot, word, colour) = match status {
-                Status::Connected => (Icon::CircleDot, "connected".to_owned(), t.ok),
+                Status::Connected => (
+                    Icon::CircleDot,
+                    connected.unwrap_or("connected").to_owned(),
+                    t.ok,
+                ),
                 Status::Preview => (Icon::Circle, "preview (no audio)".to_owned(), t.text_muted),
                 Status::NotConnected => (Icon::Circle, "not connected".to_owned(), t.text_muted),
                 Status::Reconnecting { attempt } => (

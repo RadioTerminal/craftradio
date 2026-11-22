@@ -154,14 +154,21 @@ impl Core {
 
     /// Sends the stream title for an item that just started.
     pub(crate) fn send_title(&mut self, item: &Item) {
-        let Some(ice) = &self.icecast else { return };
+        if self.icecast.is_none() && self.webrtc.is_none() {
+            return;
+        }
         let mut shown = item.clone();
         if shown.meta.title.is_empty() {
             shown.meta.title.clone_from(&item.title);
             shown.meta.artist = item.artist.clone().unwrap_or_default();
         }
         let title = stream_title(&shown, &self.title, &self.cfg.station_name);
-        ice.set_title(title.clone());
+        if let Some(ice) = &self.icecast {
+            ice.set_title(title.clone());
+        }
+        if let Some(w) = &self.webrtc {
+            w.set_title(title.clone());
+        }
         self.title = title;
     }
 

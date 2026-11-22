@@ -33,7 +33,7 @@ use radio_audio::{MeterReader, MixerConfig, ProgramDynamics};
 use radio_engine::{AsPlayed, Command, Engine, EngineError, LogHandle, Outcome};
 use radio_model::Timing;
 use radio_scheduler::PlanOptions;
-use radio_stream::IcecastConfig;
+use radio_stream::{IcecastConfig, WebRtcConfig};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -82,6 +82,8 @@ pub struct PlayoutConfig {
     pub fallback_folder: Option<PathBuf>,
     /// One Icecast mount that gets Program.
     pub icecast: Option<IcecastConfig>,
+    /// A WebRTC server that browsers play Program from, peer to peer.
+    pub webrtc: Option<WebRtcConfig>,
     /// The stream title for items that hide their own title.
     pub station_name: String,
     /// Playout sends each alarm to this URL as a JSON POST, but it never waits for it.
@@ -140,6 +142,7 @@ impl PlayoutConfig {
             emergency_retry: Duration::from_secs(30),
             fallback_folder: None,
             icecast: None,
+            webrtc: None,
             station_name: String::new(),
             webhook: None,
             confirm_timeout: Duration::from_secs(1),

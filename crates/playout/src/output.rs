@@ -6,21 +6,21 @@ use radio_audio_device::AudioSource;
 /// Frames per pass through the scratch buffer.
 const SCRATCH_FRAMES: usize = 1024;
 
-/// The mixer as an [`AudioSource`], with an optional tap of Program for Icecast.
+/// The mixer as an [`AudioSource`], with taps of Program for Icecast and WebRTC.
 pub(crate) struct ProgramSource {
     pub(crate) mixer: Mixer,
     pub(crate) scratch: Vec<f32>,
-    pub(crate) tap: Option<rtrb::Producer<f32>>,
+    pub(crate) taps: Vec<rtrb::Producer<f32>>,
     pub(crate) cue: Option<rtrb::Producer<f32>>,
     pfl: Vec<f32>,
 }
 
 impl ProgramSource {
-    pub(crate) fn new(mixer: Mixer, tap: Option<rtrb::Producer<f32>>) -> Self {
+    pub(crate) fn new(mixer: Mixer, taps: Vec<rtrb::Producer<f32>>) -> Self {
         Self {
             mixer,
             scratch: vec![0.0; SCRATCH_FRAMES * CHANNELS],
-            tap,
+            taps,
             cue: None,
             pfl: vec![0.0; SCRATCH_FRAMES * CHANNELS],
         }
@@ -31,6 +31,16 @@ impl ProgramSource {
 /// the mixer.
 pub(crate) fn feed_tap(tap: &mut Option<rtrb::Producer<f32>>, program: &[f32]) {
     if let Some(tap) = tap {
+        let room = tap.slots() / CHANNELS * CHANNELS;
+        if let Some(part) = program.get(..room.min(program.len())) {
+            let _ = tap.push_entire_slice(part);
+        }
+    }
+}
+
+/// Pushes Program into each tap. Each tap loses audio on its own when its reader is slow.
+pub(crate) fn feed_taps(taps: &mut [rtrb::Producer<f32>], program: &[f32]) {
+    for tap in taps {
         let room = tap.slots() / CHANNELS * CHANNELS;
         if let Some(part) = program.get(..room.min(program.len())) {
             let _ = tap.push_entire_slice(part);
@@ -52,7 +62,7 @@ impl AudioSource for ProgramSource {
             let pfl = &mut self.pfl[..frames * CHANNELS];
             self.mixer.render(program, pfl);
             feed_tap(&mut self.cue, pfl);
-            feed_tap(&mut self.tap, program);
+            feed_taps(&mut self.taps, program);
             for (d, s) in chunk
                 .chunks_exact_mut(channels)
                 .zip(program.as_chunks::<CHANNELS>().0)

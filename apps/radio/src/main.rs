@@ -60,6 +60,22 @@ struct Args {
     /// Open this tool window at the start: cartwall, mixer, clock, history or library.
     #[arg(long)]
     open: Vec<String>,
+    /// Serve Program to browsers over WebRTC on this port (TCP and UDP), such as 8000 or
+    /// 0.0.0.0:8000. Listeners open the address in a browser.
+    #[arg(long, value_parser = parse_listen)]
+    webrtc: Option<std::net::SocketAddr>,
+}
+
+/// The project site that plays a station from any browser.
+const LISTEN_SITE: &str = "https://radioterminal.github.io/craftradio/";
+
+/// A port such as `8000` (all addresses), or an address such as `127.0.0.1:8000`.
+fn parse_listen(text: &str) -> Result<std::net::SocketAddr, String> {
+    if let Ok(port) = text.parse::<u16>() {
+        return Ok(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
+    }
+    text.parse()
+        .map_err(|_| format!("not a port or address: {text}"))
 }
 
 /// A length such as `500ms`, `5s`, `2m` or `1h`. A bare number counts seconds.
@@ -174,6 +190,7 @@ fn real(args: &Args) -> Result<(), String> {
     };
     let mut cfg = PlayoutConfig::new(Arc::new(SystemClock), output);
     cfg.icecast = icecast;
+    cfg.webrtc = args.webrtc.map(radio_stream::WebRtcConfig::new);
     cfg.station_name = STATION_NAME.to_owned();
     let fallback = dir.join("Fallback");
     cfg.fallback_folder = fallback.is_dir().then_some(fallback);
@@ -202,6 +219,7 @@ fn headless(
     let alarms = playout.alarms().map_err(|e| e.to_string())?;
     let view = playout.snapshot();
     println!("radio: output {:?}", view.outputs.local);
+    let mut webrtc = None;
     let mut source = EngineSource::new(
         playout,
         SourceOptions {
@@ -217,6 +235,15 @@ fn headless(
         let _ = source.snapshot(Timestamp::now());
         for notice in source.take_notices() {
             println!("radio: {notice}");
+        }
+        let now_webrtc = source.playout().snapshot().outputs.webrtc;
+        if now_webrtc != webrtc {
+            if let Some(status) = &now_webrtc {
+                let was_listening =
+                    matches!(webrtc, Some(radio_stream::WebRtcStatus::Listening { .. }));
+                print_webrtc(status, !was_listening);
+            }
+            webrtc = now_webrtc;
         }
         // The item gain that playout sent to each deck, when it changes.
         let view = source.playout().snapshot();
@@ -264,6 +291,42 @@ fn headless(
     );
     drop(source);
     Ok(())
+}
+
+/// Prints the WebRTC state, with the addresses that listeners open.
+fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool) {
+    use radio_stream::WebRtcStatus;
+    match status {
+        WebRtcStatus::Starting => {
+            println!("radio: WebRTC starting (asking STUN for the public address)")
+        }
+        WebRtcStatus::Listening {
+            url,
+            public,
+            listeners,
+            ..
+        } => {
+            println!("radio: WebRTC listening, {listeners} listeners");
+            if !addresses {
+                return;
+            }
+            println!("radio: WebRTC page on this network: {url}");
+            let port = url.rsplit(':').next().unwrap_or("").trim_end_matches('/');
+            println!(
+                "radio: WebRTC page from the project site: {LISTEN_SITE}?station=http://localhost:{port}"
+            );
+            match public {
+                Some(p) => println!(
+                    "radio: WebRTC public address (STUN): {p}. Remote listeners need an HTTPS address for the page, such as a tunnel"
+                ),
+                None => println!(
+                    "radio: WebRTC has no public address: no STUN server answered, so only this network can listen"
+                ),
+            }
+        }
+        WebRtcStatus::Failed(e) => println!("radio: WebRTC failed: {e}"),
+        WebRtcStatus::Stopped => println!("radio: WebRTC stopped"),
+    }
 }
 
 fn window(

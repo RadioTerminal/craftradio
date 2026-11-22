@@ -15,7 +15,9 @@ and MAY are used as in RFC 2119.
 
 3. One change per commit or PR. Moving code and changing behaviour SHOULD be separate commits.
 4. Rust only. No handwritten JavaScript/TypeScript, Electron or webview in the app (user
-   scripts run inside the embedded JS engine; they aren't app code).
+   scripts run inside the embedded JS engine; they aren't app code). **One exception
+   (operator, 2026-11-22):** the WebRTC listener page `site/index.html`. The station serves it
+   (`radio --webrtc`) and GitHub Pages publishes it. Keep it one small file with no build step.
 5. Fix what a lint reports; don't silence it with `allow`. Non-test code SHOULD NOT panic.
    `unsafe_code = "forbid"` workspace-wide.
 6. **Panels change engine state only through commands**, so the CLI and MCP can do anything

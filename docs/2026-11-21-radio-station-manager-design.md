@@ -26,6 +26,10 @@ accuracy outrank features.
 6. Cartwall: carts that play over whatever is on air, with optional ducking.
 7. JavaScript scripting of events, playlist changes, carts and custom rules.
 8. Outputs: local audio device(s) and Icecast, with now-playing metadata.
+   WebRTC listening (added 2026-11-22): `--webrtc <port>` serves Program peer to peer to
+   browsers over WHEP, with public STUN for the address outside the NAT. The listener page is
+   `site/index.html`, on GitHub Pages too. It is for quick trials, not a CDN: each listener
+   costs the station's own upload, and there is no TURN.
 9. Every action also exists as a CLI command and an MCP tool, following the template.
 
 ## 3. Non-goals (v1)
