@@ -4,7 +4,8 @@
 //! shows the script, and a person can edit it by hand. Apply stores the copy in the view source.
 //! Nothing reaches a scheduler yet, and the window says so.
 
-use egui::{Align, ComboBox, DragValue, Layout, RichText, Stroke, TextEdit};
+use craft_ui::ComboBox;
+use egui::{Align, DragValue, Layout, RichText, Stroke, TextEdit};
 use egui_extras::{Column, TableBuilder};
 
 use crate::app::{FileTarget, Linked, mmss};

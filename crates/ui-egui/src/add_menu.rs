@@ -260,7 +260,7 @@ pub(crate) fn dialog(
                             device.clone_from(&view.device_roles.input);
                         }
                         ui.label(RichText::new("Input device").color(t.text_muted));
-                        egui::ComboBox::from_id_salt("add_live_device")
+                        craft_ui::ComboBox::from_id_salt("add_live_device")
                             .width(size::COMBO_W)
                             .selected_text(device.as_str())
                             .show_ui(ui, |ui| {

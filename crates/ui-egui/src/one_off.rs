@@ -381,7 +381,7 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
         }
         Kind::Live => {
             label(ui, "Input device", t);
-            egui::ComboBox::from_id_salt("one_off_live_device")
+            craft_ui::ComboBox::from_id_salt("one_off_live_device")
                 .width(size::COMBO_W)
                 .selected_text(d.device.as_str())
                 .show_ui(ui, |ui| {
@@ -509,7 +509,7 @@ pub(crate) fn show(
                     .on_disabled_hover_text("A hard one-off starts at its time sharp");
                     ui.end_row();
                     label(ui, "Repeat", t);
-                    egui::ComboBox::from_id_salt("one_off_repeat")
+                    craft_ui::ComboBox::from_id_salt("one_off_repeat")
                         .width(size::COMBO_W)
                         .selected_text(d.repeat.label())
                         .show_ui(ui, |ui| {

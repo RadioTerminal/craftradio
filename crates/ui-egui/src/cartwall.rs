@@ -112,7 +112,7 @@ pub(crate) fn show(
         if wall.pages.len() > size::PAGE_TABS_MAX {
             // Many pages: one picker instead of a row of tabs that runs out of the window.
             let current = wall.pages.get(state.page).cloned().unwrap_or_default();
-            egui::ComboBox::from_id_salt("cart_page")
+            craft_ui::ComboBox::from_id_salt("cart_page")
                 .width(size::COMBO_W)
                 .truncate()
                 .selected_text(current)

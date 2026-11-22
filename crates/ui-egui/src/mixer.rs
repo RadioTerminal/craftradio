@@ -440,7 +440,7 @@ fn device_pick(
     devices: &[String],
     picked: &mut Option<String>,
 ) -> egui::Response {
-    egui::ComboBox::from_id_salt(id)
+    craft_ui::ComboBox::from_id_salt(id)
         .width(ui.available_width())
         .truncate()
         .selected_text(if current.is_empty() { "None" } else { current })
@@ -524,7 +524,7 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
     }
     let rate = parts::u32(view, parts::MIXER, "sample_rate", DEFAULT_RATE);
     settings::form_row(ui, "Sample rate", t, |ui| {
-        egui::ComboBox::from_id_salt("sample_rate")
+        craft_ui::ComboBox::from_id_salt("sample_rate")
             .width(ui.available_width())
             .selected_text(khz(rate))
             .show_ui(ui, |ui| {
@@ -541,7 +541,7 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
 fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
     for m in &view.meters {
         settings::form_row(ui, &m.label, t, |ui| {
-            egui::ComboBox::from_id_salt(("route", &m.label))
+            craft_ui::ComboBox::from_id_salt(("route", &m.label))
                 .width(ui.available_width())
                 .selected_text(m.route.label())
                 .show_ui(ui, |ui| {
@@ -906,7 +906,7 @@ fn icecast_tab(
         all.unwrap_or_else(|| ui.label(""))
     });
     settings::form_row(ui, "Bitrate", t, |ui| {
-        egui::ComboBox::from_id_salt("ice_kbps")
+        craft_ui::ComboBox::from_id_salt("ice_kbps")
             .width(ui.available_width())
             .selected_text(format!("{} kbit/s", ice.kbps))
             .show_ui(ui, |ui| {
@@ -944,4 +944,40 @@ fn icecast_tab(
             *ice = view.icecast.clone();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    /// A device name too long for its form cell is cut short on the button, and hovering the
+    /// button shows the whole name.
+    #[test]
+    fn a_long_device_name_shows_whole_on_hover() {
+        const NAME: &str = "Studio Interface Line Outputs 3 and 4 (Rack B)";
+        let devices = vec![NAME.to_owned()];
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(140.0, 200.0))
+            .build_ui(move |ui| {
+                ui.style_mut().interaction.tooltip_delay = 0.0;
+                // As in the form, the row label names the picker.
+                let label = ui.label("Output");
+                let mut picked = None;
+                device_pick(ui, "out_device", NAME, &devices, &mut picked).labelled_by(label.id);
+            });
+        harness.run();
+        let button = harness.get_by_role(egui::accesskit::Role::ComboBox);
+        assert!(
+            button.rect().width() < 140.0,
+            "the button fits its cell, so the name is cut short"
+        );
+        button.hover();
+        harness.run_steps(4);
+        assert!(
+            harness.query_by_label(NAME).is_some(),
+            "the tooltip shows the whole name"
+        );
+    }
 }
