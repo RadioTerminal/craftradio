@@ -4,8 +4,8 @@
 listeners no longer depends on the station's upload. A relaying listener cannot change the
 audio without being caught. Second goal: the station needs fewer third-party servers.
 
-**Status (2026-11-22):** design only. Nothing is built. The open decisions (§8) need the
-operator before phase 1 starts.
+**Status (2026-11-22):** P1 is built (§9). P2–P4 are not. The open decisions (§8) need the
+operator before P2.
 
 **Spec:** `docs/2026-11-21-radio-station-manager-design.md` §2 item 8 (WebRTC listening, listen
 link). Roadmap: `docs/superpowers/plans/2026-11-21-roadmap.md` (proposed row in §9).
@@ -64,8 +64,10 @@ Binary message, all integers big-endian:
 | n | the Opus packet |
 
 A relay raises `hops` by one when it forwards. `hops` is not signed; it only steers the
-choice of parent (§5) and is clamped. Turn on Opus in-band FEC in `OpusEncoder` so a single
-lost packet can be recovered from the next one.
+choice of parent (§5) and is clamped.
+
+No Opus in-band FEC: it works only in the SILK and hybrid modes, and Program at 96 kbps stereo
+with `Application::Audio` is coded in CELT. Two parents (P3) cover loss instead.
 
 ### `sig` channel (reliable, ordered; the existing `now` channel can carry it)
 
@@ -90,8 +92,12 @@ second costs the station little. The page verifies 5 signatures per second with
 ### Verify, then play
 
 The page plays a packet only after its block has been verified. The first packet of a block
-waits up to 200 ms for that block, so the jitter buffer never goes below 250 ms (§4). Inside
-that buffer, checking adds no further delay. A packet with no verified hash when its time comes counts as lost (§4).
+waits up to 200 ms for that block, so playback starts with 400 ms (20 packets) of checked
+audio (§4). Inside that buffer, checking adds no further delay.
+
+A page that tunes in by address (`http://…`, not a link) has no station key. It trusts the
+DTLS link to the station and plays packets without blocks. Relaying (P2) needs the key, so
+it works only from a link. A packet with no verified hash when its time comes counts as lost (§4).
 Playing first and checking later was rejected: it would let a bad relay put up to 200 ms of
 its own audio on air for every listener below it.
 
@@ -104,15 +110,17 @@ correction. The page has to do all three itself. This is the real cost of the de
   Support is **to verify** per browser: Chrome and Edge have it. Firefox and Safari have
   WebCodecs audio in recent versions, but Opus in `AudioDecoder` has to be checked with
   `AudioDecoder.isConfigSupported`. When it is not supported, use RTP (§2 item 5).
-- **Jitter buffer:** packets wait in order of `seq` up to a target depth (start 300 ms; move
-  between 250 and 600 ms with the measured jitter; never below 250 ms, see §3).
-- **Loss:** a missing packet is decoded from the next packet's FEC when it is there. Otherwise
-  it becomes 20 ms of silence faded in and out over 2–3 ms. With two parents, most losses
-  never reach this point.
+- **Jitter buffer:** checked packets are decoded in order of `seq` as soon as they are
+  ready. The worklet's queue of decoded audio is the buffer. Playback starts once 20 checked
+  packets (400 ms) wait. On loopback the queue held 15–28 packets (300–560 ms).
+- **Loss:** when fewer than 3 packets are queued and a later packet is ready, the missing one
+  becomes 20 ms of silence. The worklet fades out and back in over 2.5 ms (120 samples). With
+  two parents, most losses never reach this point.
 - **Clock drift:** the station's clock and the listener's sound card differ by up to a few
-  hundred ppm. When the buffer sits above its target for a while, skip one 20 ms packet.
-  When it runs low, play one packet twice. Both crossfade over 5 ms. Resampling is not
-  needed at radio quality.
+  hundred ppm. When the worklet holds more than 40 packets (800 ms), it fades out and drops
+  one. When the queue runs dry, the page waits for 20 packets again (one rebuffer, about once
+  an hour at 100 ppm), rather than repeating packets. Resampling is not needed at radio
+  quality.
 - **AudioWorklet in one file:** the worklet's code is a string in the page, loaded through a
   Blob URL (`audioWorklet.addModule(URL.createObjectURL(new Blob([...])))`). Decoded
   `AudioData` goes to the worklet through a `MessagePort` (transferable buffers).
@@ -205,15 +213,22 @@ guarantee.
   It must never look like the measured number.
 - `ChannelOpen(id, label)`: the station matches channels by label (`now`, `audio`) instead of
   taking the first one.
-- The station keeps sending RTP to the listeners that use the fallback. A page that opens
-  `audio` gets no RTP track. It offers `recvonly` audio only on the fallback path.
+- The page always offers `recvonly` RTP audio, so an older station, which sends only RTP,
+  still plays. The station stops RTP to a listener once its `audio` channel opens. When no
+  packet is decoded within 4 s of connecting (an older station, or a browser that can't decode
+it), or the decoder fails more than 10 times, the page closes `audio` and plays the RTP track
+instead. The page
+  opens `audio` before `now`, because an older station takes the last channel as `now`.
+  `?rtp` in the page address forces the RTP track, to compare the two.
 
 ## 8. Open decisions (operator)
 
-1. **Page size (rule 4).** The page grows by an estimated **350–450 lines**: about 150 for
-   decoding, the jitter buffer, loss and drift, about 150 for relaying and choosing parents,
-   and about 100 for checking signatures, several connections and the fallback. It roughly
-   doubles. It stays one file with no build step. Is that still "small"?
+Decided: packet playback is the default from P1 on, before relaying ships, despite its
+0.4–0.6 s more delay than RTP (operator, 2026-11-22).
+
+1. **Page size (rule 4).** P1 took the page from 590 to 809 lines (decoding, buffer, loss,
+   drift, checking blocks, the fallback). Relaying and choosing parents (P2, P3) add an
+   estimated 150–250 more. It stays one file with no build step. Is that still "small"?
 2. **Relaying is on by default or off.** A relaying listener's IP address is seen by its
    children and parents. Today only the station and the trackers see it. Proposal: on by
    default, with a visible "Sharing the stream with N listeners" line and a switch on the
@@ -228,7 +243,9 @@ guarantee.
 Each phase ships on its own and leaves the station working.
 
 **P1: Opus over a signed data channel, station only.** Station: the `audio` and `sig`
-channels, block signing, FEC, channels matched by label, RTP kept for the fallback. Page:
+channels, block signing, channels matched by label, RTP kept for the fallback. What plays
+now holds at most 64 KiB of the connection's shared 128 KiB send buffer, so covers leave room
+for the audio. Page:
 `AudioDecoder`, the worklet, the jitter buffer, loss and drift, verify-then-play, the
 fallback. No relaying yet.
 - Tests (`crates/stream/tests/it/webrtc.rs`): a str0m client in the test opens `audio` and
@@ -241,6 +258,17 @@ fallback. No relaying yet.
 - Manual check: Chrome, Firefox and Safari each play for 10 minutes with no audible gap.
   Throttle the network in DevTools: the buffer grows and comes back down, and there is no
   drift over 10 minutes.
+- Done (2026-11-22), in the app's Chromium browser pane against a local tone station:
+  - by address: plays from packets;
+  - by link through the public trackers: plays checked packets, the queue held 15–28 packets
+    over 20 s and never ran dry;
+  - a byte flipped in every 50th packet: all 10 rejected, no underrun;
+  - `?rtp`: plays the RTP track;
+  - an older station (channel renamed in the page): falls back to RTP;
+  - a decoder made to fail against a new station: the page closes `audio`, and the station
+    sends RTP again;
+  - `cargo test` of the audio channel test, 20 runs in a row: no flakes.
+  Not done: Firefox, Safari, 10-minute runs, throttled networks.
 
 **P2: listeners relay, one parent each.** Page: announce in the swarm, answer offers, forward
 `audio` and `sig`, accept unsigned relay answers, one connection per offer, the `hops` and
