@@ -63,15 +63,15 @@ if (-not $SkipBuild) {
 $Bin = Join-Path $TargetDir "$Target\release"
 
 # Check the PE headers before packaging. The machine must match -Arch.
-# Both programs use subsystem 3 (console), so the output of `craftradio --headless` is visible.
-# Thus a console window opens with the app (docs/releasing.md, "Known gaps").
+# craftradio.exe is subsystem 2 (windowed), so no console window opens with the app.
+# craftradio-cli.exe is subsystem 3 (console), so its output shows in the terminal.
 function Get-PeHeader([string] $Path) {
   $bytes = [System.IO.File]::ReadAllBytes($Path)
   $pe = [BitConverter]::ToInt32($bytes, 0x3C)
   return @{ Machine = [BitConverter]::ToUInt16($bytes, $pe + 4); Subsystem = [BitConverter]::ToUInt16($bytes, $pe + 0x5C) }
 }
 $Machine = switch ($Arch) { 'x64' { 0x8664 } 'arm64' { 0xAA64 } }
-foreach ($check in @(@('craftradio.exe', 3), @('craftradio-cli.exe', 3))) {
+foreach ($check in @(@('craftradio.exe', 2), @('craftradio-cli.exe', 3))) {
   $h = Get-PeHeader (Join-Path $Bin $check[0])
   if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
   if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
