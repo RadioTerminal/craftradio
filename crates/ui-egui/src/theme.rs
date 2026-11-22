@@ -188,6 +188,11 @@ pub mod size {
     pub const ALARMS_H: f32 = 480.0;
     pub const ALARMS_MIN_W: f32 = 560.0;
     pub const ALARMS_MIN_H: f32 = 280.0;
+    /// The Preferences window: the page rail and one settings form.
+    pub const PREFERENCES_W: f32 = 640.0;
+    pub const PREFERENCES_H: f32 = 540.0;
+    pub const PREFERENCES_MIN_W: f32 = 480.0;
+    pub const PREFERENCES_MIN_H: f32 = 360.0;
     /// The width of the severity column and of the source column.
     pub const COL_SEVERITY: f32 = 96.0;
     pub const COL_SOURCE: f32 = 86.0;

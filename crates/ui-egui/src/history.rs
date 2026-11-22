@@ -10,6 +10,7 @@ use jiff::SignedDuration;
 use crate::app::{Action, Linked, Pane, hms, mmss};
 use crate::context_menu::{COPY, menu_item};
 use crate::parts;
+use crate::preferences::Page;
 use crate::select::Selection;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
@@ -40,7 +41,6 @@ const MAX_HOURS_BACK: u32 = 3;
 pub(crate) struct State {
     filter: String,
     playlist: Option<String>,
-    settings: bool,
     selected: Selection,
 }
 
@@ -55,10 +55,8 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let old_shown = COLS.map(|(_, _, key)| parts::bool(view, parts::HISTORY, key, true));
-    let old_hours = parts::u32(view, parts::HISTORY, "hours_back", MAX_HOURS_BACK);
-    let mut shown = old_shown;
-    let mut hours_back = old_hours;
+    let shown = COLS.map(|(_, _, key)| parts::bool(view, parts::HISTORY, key, true));
+    let hours_back = parts::u32(view, parts::HISTORY, "hours_back", MAX_HOURS_BACK);
     // One row: the filters on the left, the settings button far right.
     ui.horizontal(|ui| {
         let hint = "Filter by title or playlist";
@@ -80,36 +78,13 @@ pub(crate) fn show(
                 }
             });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            settings::settings_button(ui, "History", &mut state.settings);
+            let mut open = false;
+            settings::settings_button(ui, "History", &mut open);
+            if open {
+                actions.push(Action::OpenPreferences(Page::History));
+            }
         });
     });
-    if state.settings {
-        settings::section(ui, "History", view.preview, t, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                settings::label(ui, "Columns", t);
-                for (i, (_, name, _)) in COLS.iter().enumerate() {
-                    ui.checkbox(&mut shown[i], *name);
-                }
-            });
-            ui.horizontal(|ui| {
-                settings::label(ui, "Show the last", t);
-                ui.add(numbers::field(
-                    ui,
-                    DragValue::new(&mut hours_back)
-                        .range(1..=MAX_HOURS_BACK)
-                        .suffix(" h"),
-                ));
-            });
-        });
-    }
-    for (i, (_, _, key)) in COLS.iter().enumerate() {
-        if shown[i] != old_shown[i] {
-            actions.push(parts::set(parts::HISTORY, key, shown[i]));
-        }
-    }
-    if hours_back != old_hours {
-        actions.push(parts::set(parts::HISTORY, "hours_back", hours_back));
-    }
     ui.add_space(space::S);
 
     let needle = state.filter.to_lowercase();
@@ -381,5 +356,41 @@ fn row_menu(
             vec![MetaTarget::Row(r.id)]
         };
         actions.push(Action::Metadata(targets));
+    }
+}
+
+/// The History page of Preferences.
+pub(crate) fn preferences(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let old_shown = COLS.map(|(_, _, key)| parts::bool(view, parts::HISTORY, key, true));
+    let old_hours = parts::u32(view, parts::HISTORY, "hours_back", MAX_HOURS_BACK);
+    let mut shown = old_shown;
+    let mut hours_back = old_hours;
+    ui.horizontal_wrapped(|ui| {
+        settings::label(ui, "Columns", t);
+        for (i, (_, name, _)) in COLS.iter().enumerate() {
+            ui.checkbox(&mut shown[i], *name);
+        }
+    });
+    ui.horizontal(|ui| {
+        settings::label(ui, "Show the last", t);
+        ui.add(numbers::field(
+            ui,
+            DragValue::new(&mut hours_back)
+                .range(1..=MAX_HOURS_BACK)
+                .suffix(" h"),
+        ));
+    });
+    for (i, (_, _, key)) in COLS.iter().enumerate() {
+        if shown[i] != old_shown[i] {
+            actions.push(parts::set(parts::HISTORY, key, shown[i]));
+        }
+    }
+    if hours_back != old_hours {
+        actions.push(parts::set(parts::HISTORY, "hours_back", hours_back));
     }
 }

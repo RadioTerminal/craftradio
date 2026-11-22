@@ -83,7 +83,7 @@ fn the_mixer_cog_shows_the_device_pickers() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
     assert!(!shows(&harness, "Output device (Out)"));
-    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Mixer preferences");
     assert!(shows(&harness, "Output device (Out)"));
     assert!(shows(&harness, "Cue device (PFL)"));
     assert!(shows(&harness, "Live input device"));
@@ -125,16 +125,12 @@ fn icon_buttons_keep_their_size_on_hover() {
         [
             h.get_by_label("Music rules").rect(),
             h.get_by_label_contains(" tracks · next").rect(),
-            h.get_by_label("Toggle Mixer settings").rect(),
-            h.get_by_label("Toggle Icecast settings").rect(),
+            h.get_by_label("Mixer preferences").rect(),
+            h.get_by_label("Icecast preferences").rect(),
         ]
     };
     let before = rects(&harness);
-    for cog in [
-        "Music rules",
-        "Toggle Mixer settings",
-        "Toggle Icecast settings",
-    ] {
+    for cog in ["Music rules", "Mixer preferences", "Icecast preferences"] {
         harness.get_by_label(cog).hover();
         harness.run_steps(FRAMES);
         assert_eq!(rects(&harness), before, "hovering {cog} moves nothing");
@@ -188,55 +184,54 @@ fn the_header_says_preview_and_never_live_with_the_mock() {
     assert!(!shows(&harness, "LIVE"), "the mock never claims to be live");
 }
 
-/// The Mixer ⚙ swaps the strips for the settings page. The page keeps one size on every
-/// tab, and Done brings the strips back at their size.
+/// The Mixer ⚙ opens Preferences on the mixer's pages beside the strips. Preferences keeps
+/// one size on every page, Done closes it, and the mixer keeps its size all along.
 #[test]
-fn the_mixer_settings_page_replaces_the_strips_and_done_brings_them_back() {
+fn the_mixer_cog_opens_preferences_beside_the_strips_and_done_closes_it() {
     let mut harness = harness();
     harness.state_mut().set_window(ToolWindow::Mixer, true);
     harness.run_steps(FRAMES);
-    let id = ToolWindow::Mixer.area_id();
-    let size = |h: &Harness<'_, RadioApp>| {
+    let size = |h: &Harness<'_, RadioApp>, w: ToolWindow| {
         h.ctx
-            .memory(|m| m.area_rect(id))
-            .expect("the mixer floats as an egui window")
+            .memory(|m| m.area_rect(w.area_id()))
+            .expect("the window floats as an egui window")
             .size()
     };
-    let strips = size(&harness);
-    click(&mut harness, "Toggle Mixer settings");
-    assert!(shows(&harness, "Done"), "the page opens");
+    let strips = size(&harness, ToolWindow::Mixer);
+    click(&mut harness, "Mixer preferences");
+    assert!(shows(&harness, "Done"), "Preferences opens");
     assert!(
-        !shows(&harness, "Toggle Icecast settings"),
-        "the strips give the page their place"
+        shows(&harness, "Output device (Out)"),
+        "on the mixer's Devices page"
     );
-    let devices = size(&harness);
+    assert!(
+        shows(&harness, "Icecast preferences"),
+        "the strips stay in the mixer"
+    );
+    let devices = size(&harness, ToolWindow::Preferences);
     for tab in ["Routing", "Processing", "Meters"] {
         click(&mut harness, tab);
-        let other = size(&harness);
+        let other = size(&harness, ToolWindow::Preferences);
         assert!(
             (other - devices).abs().max_elem() <= 2.0,
-            "the page keeps its size on {tab}: {devices:?} vs {other:?}"
+            "Preferences keeps its size on {tab}: {devices:?} vs {other:?}"
         );
     }
     click(&mut harness, "Done");
-    assert!(!shows(&harness, "Done"), "Done closes the page");
-    assert!(
-        shows(&harness, "Toggle Icecast settings"),
-        "the strips are back"
-    );
-    let again = size(&harness);
+    assert!(!shows(&harness, "Done"), "Done closes Preferences");
+    let again = size(&harness, ToolWindow::Mixer);
     assert!(
         (again - strips).abs().max_elem() <= 2.0,
-        "back to the size of the strips: {strips:?} vs {again:?}"
+        "the mixer keeps the size of the strips: {strips:?} vs {again:?}"
     );
 }
 
-/// The ⚙ of the Out strip opens the settings page on its Icecast tab.
+/// The ⚙ of the Out strip opens Preferences on the Icecast page.
 #[test]
-fn the_out_cog_opens_the_settings_page_on_icecast() {
+fn the_out_cog_opens_preferences_on_icecast() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    click(&mut harness, "Toggle Icecast settings");
+    click(&mut harness, "Icecast preferences");
     assert!(shows(&harness, "Done"), "the page opens");
     assert!(shows(&harness, "Password"), "on the Icecast tab");
     assert!(
@@ -256,20 +251,20 @@ fn the_output_chip_opens_the_mixer_on_the_icecast_tab() {
     assert!(shows(&harness, "Password"), "on the Icecast tab");
 }
 
-/// Escape over the settings page goes back to the strips, as Done does.
+/// Escape over Preferences closes it, as Done does.
 #[test]
-fn escape_over_the_settings_page_goes_back_to_the_strips() {
+fn escape_over_preferences_closes_it() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Mixer preferences");
     harness.get_by_label("Done").hover();
     harness.run_steps(FRAMES);
     harness.key_press(egui::Key::Escape);
     harness.run_steps(FRAMES);
-    assert!(!shows(&harness, "Done"), "Escape closes the page");
+    assert!(!shows(&harness, "Done"), "Escape closes Preferences");
     assert!(
-        shows(&harness, "Toggle Icecast settings"),
-        "the strips are back"
+        shows(&harness, "Icecast preferences"),
+        "the mixer stays open"
     );
 }
 
@@ -278,7 +273,7 @@ fn escape_over_the_settings_page_goes_back_to_the_strips() {
 fn the_icecast_form_controls_share_one_width() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    click(&mut harness, "Toggle Icecast settings");
+    click(&mut harness, "Icecast preferences");
     // The control is the widest node that a row label names; the label itself is narrower.
     let width = |label: &str| {
         harness
@@ -395,7 +390,7 @@ fn deck_cards_have_equal_height_whatever_their_state() {
 fn deck_card_icon_buttons_share_one_size() {
     let harness = harness();
     let play = harness.get_by_label("Play deck B").rect();
-    let cog = harness.get_by_label("Toggle Deck B settings").rect();
+    let cog = harness.get_by_label("Deck B preferences").rect();
     let pause = harness.get_by_label("Pause deck A").rect();
     assert!(
         (cog.size() - play.size()).abs().max_elem() < 0.5,
@@ -497,7 +492,7 @@ fn the_header_names_what_is_on_air() {
 fn the_arrow_keys_move_between_settings_tabs() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Mixer preferences");
     harness.get_by_label("Devices").focus();
     harness.run_steps(FRAMES);
     for _ in 0..3 {
@@ -517,7 +512,7 @@ fn the_arrow_keys_move_between_settings_tabs() {
 fn the_processing_tab_turns_the_compressor_on() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Mixer preferences");
     click(&mut harness, "Processing");
     // The switch takes its name from its row label, "Compressor", like the heading above it.
     let switch = By::new()
@@ -530,7 +525,61 @@ fn the_processing_tab_turns_the_compressor_on() {
     harness.get(switch.clone()).click();
     harness.run_steps(FRAMES);
     click(&mut harness, "Done");
-    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Mixer preferences");
     click(&mut harness, "Processing");
     assert!(compressor_on(&harness), "the source kept the compressor on");
+}
+
+/// Command+comma opens Preferences, as in every Craft app.
+#[test]
+fn command_comma_opens_preferences() {
+    let mut harness = harness();
+    assert!(!shows(&harness, "Done"));
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    harness.run_steps(FRAMES);
+    assert!(shows(&harness, "Done"), "Preferences opens");
+    assert!(
+        shows(&harness, "Deck A fade-out"),
+        "on its first page, Decks"
+    );
+}
+
+/// Each window's ⚙ opens Preferences on that window's page.
+#[test]
+fn each_settings_button_opens_its_own_page() {
+    for (window, button, row) in [
+        ("Clock", "Clock preferences", "Show the seconds ring"),
+        ("Alarms", "Alarms preferences", "Show acknowledged alarms"),
+        ("History", "History preferences", "Show the last"),
+    ] {
+        let mut harness = harness();
+        click(&mut harness, window);
+        click(&mut harness, button);
+        assert!(shows(&harness, row), "{button} shows {row}");
+    }
+    let mut harness = harness();
+    click(&mut harness, "Deck B preferences");
+    assert!(
+        shows(&harness, "Deck B fade-out"),
+        "a deck's ⚙ opens the Decks page"
+    );
+}
+
+/// A setting changed in Preferences reaches the view source and is there when Preferences
+/// opens again.
+#[test]
+fn a_setting_changed_in_preferences_stays_changed() {
+    let mut harness = harness();
+    click(&mut harness, "Clock");
+    click(&mut harness, "Clock preferences");
+    let h24 = |h: &Harness<'_, RadioApp>| {
+        h.get_by_label("24-hour time").accesskit_node().toggled()
+            == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(h24(&harness), "24-hour time starts on");
+    click(&mut harness, "24-hour time");
+    click(&mut harness, "Done");
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    harness.run_steps(FRAMES);
+    assert!(!h24(&harness), "the source kept it off");
 }

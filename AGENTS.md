@@ -27,8 +27,10 @@ and MAY are used as in RFC 2119.
    never like a working green state.
 8. **Colours, sizes, gaps and fonts come from theme tokens** in `crates/ui-egui/src/theme.rs`.
    Screens never write a size, padding or colour as a number.
-9. **No general settings screen.** Settings MUST live with the window or pane they configure,
-   behind that part's own ⚙.
+9. **One Preferences window, as in the Craft apps (operator, 2026-11-22).** Every setting
+   MUST live in Preferences (⌘,): a rail of pages, one per part, and that page's form. A window
+   or pane's ⚙ opens Preferences on its own page. A playlist's ⚙ still opens its rules editor,
+   which edits the playlist, not a setting.
 10. UI changes SHOULD work by keyboard, move egui focus (`request_focus`), give each control a
    name that starts with its visible label, keep 4.5:1 text and 3:1 control contrast, and never
    use colour as the only signal (a playlist's colour always comes with its name).

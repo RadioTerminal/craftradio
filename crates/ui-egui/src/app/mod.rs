@@ -151,6 +151,7 @@ pub struct RadioApp {
     open: windows::Open,
     carts: cartwall::State,
     mixer: mixer::State,
+    preferences: crate::preferences::State,
     clock_state: clock_window::State,
     history: history::State,
     alarms: alarms::State,
@@ -211,6 +212,7 @@ impl RadioApp {
             open: windows::Open::default(),
             carts,
             mixer: mixer::State::default(),
+            preferences: crate::preferences::State::default(),
             clock_state: clock_window::State::default(),
             history: history::State::default(),
             alarms: alarms::State::default(),
@@ -363,8 +365,8 @@ impl RadioApp {
             .rows
             .iter()
             .find(|r| is_on_air(r, self.view.now.timestamp()));
-        // Only the mixer shows the stream title, so only an open mixer asks for it.
-        let streaming = if self.open.get(ToolWindow::Mixer) {
+        // Only the Icecast page shows the stream title, so only open Preferences asks for it.
+        let streaming = if self.open.get(ToolWindow::Preferences) {
             on_air.map_or_else(String::new, |r| self.source.stream_title(r))
         } else {
             String::new()
@@ -416,6 +418,38 @@ impl RadioApp {
                 alarms::show(ui, view, &mut self.alarms, actions, t);
             }),
         );
+        let w = ToolWindow::Preferences;
+        let mut done = false;
+        let was_open = open.get(w);
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                let parts = crate::preferences::Parts {
+                    mixer: &mut self.mixer,
+                    carts: &mut self.carts,
+                    library: &mut self.library,
+                };
+                done = crate::preferences::show(
+                    ui,
+                    view,
+                    &mut self.preferences,
+                    parts,
+                    &streaming,
+                    actions,
+                    t,
+                );
+            }),
+        );
+        if done {
+            open.set(w, false);
+        }
+        if (was_open && !open.get(w)) || self.preferences.page != crate::preferences::Page::Cartwall
+        {
+            self.carts.leave_preferences();
+        }
+        if was_open && !open.get(w) {
+            self.mixer.drop_drafts();
+        }
         if self.library.docked {
             // The docked library takes the place of its window.
             open.set(ToolWindow::Library, false);
@@ -433,7 +467,6 @@ impl RadioApp {
         for (w, c) in sized {
             let value = match c {
                 windows::SizeChange::Manual([x, y]) => serde_json::json!([x, y]),
-                windows::SizeChange::Fit => serde_json::Value::Null,
             };
             actions.push(Action::EditQuiet(Edit::SetPartSetting {
                 part: w.part().to_owned(),
@@ -684,13 +717,13 @@ fn status_line(
             let text = RichText::new(text)
                 .font(theme::text(theme::LABEL))
                 .color(colour);
-            // The Icecast state opens its settings, behind the Mixer's ⚙.
+            // The Icecast state opens its page of Preferences.
             if name == "Icecast" {
                 let link = ui
                     .add(egui::Label::new(text).sense(egui::Sense::click()))
                     .on_hover_text("Click for the Icecast settings");
                 if link.clicked() {
-                    actions.push(Action::OpenIcecast);
+                    actions.push(Action::OpenPreferences(crate::preferences::Page::Icecast));
                 }
             } else {
                 ui.label(text);

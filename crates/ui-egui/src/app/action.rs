@@ -50,8 +50,8 @@ pub(crate) enum Action {
     },
     OpenRules(String),
     OpenWindow(ToolWindow),
-    /// Open the mixer with the Icecast settings of Out.
-    OpenIcecast,
+    /// Open Preferences on a page.
+    OpenPreferences(crate::preferences::Page),
     ShowInLibrary(String),
     /// Open the metadata editor for these items.
     Metadata(Vec<MetaTarget>),
@@ -390,9 +390,9 @@ impl RadioApp {
                     self.editor = Some(editor);
                 }
             }
-            Action::OpenIcecast => {
-                self.mixer.open_icecast();
-                self.open.set(ToolWindow::Mixer, true);
+            Action::OpenPreferences(page) => {
+                self.preferences.page = page;
+                self.open.set(ToolWindow::Preferences, true);
             }
             Action::OpenWindow(w) => {
                 if w == ToolWindow::Library && self.library.docked {

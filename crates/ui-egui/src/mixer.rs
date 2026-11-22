@@ -1,7 +1,7 @@
 //! The mixer: one strip per deck, the cart bus, the live input and the output.
 //! Levels come from the view-model. In the preview, the mock simulates them, and nothing plays.
 //! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
-//! The ⚙ swaps the strips for the settings page: Devices, Routing, Meters and Icecast.
+//! The ⚙ opens Preferences on the mixer's pages: Devices, Routing, Processing, Meters and Icecast.
 
 use crate::numbers;
 use crate::widgets;
@@ -11,7 +11,8 @@ use crate::app::Action;
 use crate::context_menu::{check_item, menu_item};
 use crate::icons::{self, Icon};
 use crate::parts;
-use crate::settings::{self, Dot, Tab};
+use crate::preferences::Page;
+use crate::settings::{self, Dot};
 use crate::theme::{self, Tokens, pad, size, space};
 use radio_model::{DynamicsSettings, LoudnessSettings, dynamics_range as range, loudness_range};
 
@@ -43,15 +44,7 @@ pub(crate) enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [Self; 5] = [
-        Self::Devices,
-        Self::Routing,
-        Self::Processing,
-        Self::Meters,
-        Self::Icecast,
-    ];
-
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Devices => "Devices",
             Self::Routing => "Routing",
@@ -60,19 +53,14 @@ impl SettingsTab {
             Self::Icecast => "Icecast",
         }
     }
-
-    fn index(self) -> usize {
-        self as usize
-    }
 }
 
-/// The view state of the window. The mixer settings live in the view source.
+/// The view state of the window. The mixer settings live in the view source; the drafts are
+/// the mixer's Preferences pages while a person edits them.
 #[derive(Default)]
 pub(crate) struct State {
-    /// The settings page shows in place of the strips, on this tab.
-    page: Option<SettingsTab>,
-    /// The Icecast fields while a person edits them. Apply sends them. They stay while the
-    /// page is open, across tabs.
+    /// The Icecast fields while a person edits them. Apply sends them. They stay while
+    /// Preferences is open, across pages.
     icecast: Option<IcecastView>,
     /// The processing on Program while a person edits it. A field sends it when the edit
     /// ends, so a drag does not rebuild the processors at each step.
@@ -82,17 +70,8 @@ pub(crate) struct State {
 }
 
 impl State {
-    /// Open the settings page on the Icecast tab, as the ⚙ of the Out strip does.
-    pub(crate) fn open_icecast(&mut self) {
-        self.open(SettingsTab::Icecast);
-    }
-
-    fn open(&mut self, tab: SettingsTab) {
-        self.page = Some(tab);
-    }
-
-    fn close(&mut self) {
-        self.page = None;
+    /// Drops the drafts, as Preferences closes.
+    pub(crate) fn drop_drafts(&mut self) {
         self.icecast = None;
         self.dynamics = None;
         self.loudness = None;
@@ -114,10 +93,7 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    if let Some(tab) = state.page {
-        settings_page(ui, view, state, tab, streaming, actions, t);
-        return;
-    }
+    let _ = (state, streaming);
     let mut open = false;
     settings::header(ui, "Mixer", &mut open, |ui| {
         if view.preview {
@@ -140,12 +116,22 @@ pub(crate) fn show(
         }
     });
     if let Some(tab) = wanted {
-        state.open(tab);
+        actions.push(Action::OpenPreferences(Page::from(tab)));
     }
 }
 
-/// The settings page in place of the strips.
-fn settings_page(
+/// The status dot of the Icecast page: connected or not, in words too.
+pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
+    let ice = icecast_status(view, t);
+    if ice.connected {
+        Dot::Good(ice.word)
+    } else {
+        Dot::Bad(ice.word)
+    }
+}
+
+/// The mixer's Preferences page `tab`.
+pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
     state: &mut State,
@@ -154,47 +140,19 @@ fn settings_page(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let ice = icecast_status(view, t);
-    let tabs = SettingsTab::ALL.map(|s| match s {
-        SettingsTab::Icecast => Tab {
-            label: s.label(),
-            dot: Some(if ice.connected {
-                Dot::Good(ice.word.clone())
-            } else {
-                Dot::Bad(ice.word.clone())
-            }),
-        },
-        _ => Tab::plain(s.label()),
-    });
-    let mut selected = tab.index();
-    let draft = &mut state.icecast;
-    let processing = &mut state.dynamics;
-    let loudness = &mut state.loudness;
-    let out = settings::page(
-        ui,
-        "Mixer settings",
-        view.preview,
-        &tabs,
-        &mut selected,
-        t,
-        |ui, i| match SettingsTab::ALL.get(i).copied().unwrap_or_default() {
-            SettingsTab::Devices => devices_tab(ui, view, actions, t),
-            SettingsTab::Routing => routing_tab(ui, view, actions, t),
-            SettingsTab::Processing => {
-                loudness_section(ui, view, loudness, actions, t);
-                processing_tab(ui, view, processing, actions, t);
-            }
-            SettingsTab::Meters => meters_tab(ui, view, actions, t),
-            SettingsTab::Icecast => {
-                let draft = draft.get_or_insert_with(|| view.icecast.clone());
-                icecast_tab(ui, view, draft, &ice, streaming, actions, t);
-            }
-        },
-    );
-    if out.done {
-        state.close();
-    } else if let Some(&s) = SettingsTab::ALL.get(selected) {
-        state.page = Some(s);
+    match tab {
+        SettingsTab::Devices => devices_tab(ui, view, actions, t),
+        SettingsTab::Routing => routing_tab(ui, view, actions, t),
+        SettingsTab::Processing => {
+            loudness_section(ui, view, &mut state.loudness, actions, t);
+            processing_tab(ui, view, &mut state.dynamics, actions, t);
+        }
+        SettingsTab::Meters => meters_tab(ui, view, actions, t),
+        SettingsTab::Icecast => {
+            let ice = icecast_status(view, t);
+            let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
+            icecast_tab(ui, view, draft, &ice, streaming, actions, t);
+        }
     }
 }
 

@@ -10,15 +10,14 @@ use crate::app::Action;
 use crate::context_menu::check_item;
 use crate::icons::{self, Icon};
 use crate::parts;
+use crate::preferences::Page;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{DeckState, StationView};
 
-/// Which view of the clock settings is open. The settings themselves live in the view source.
+/// The view state of the clock window. The settings live in the view source.
 #[derive(Default)]
-pub(crate) struct State {
-    settings: bool,
-}
+pub(crate) struct State {}
 
 /// The clock settings, read from the view source for one frame.
 #[derive(Clone, Copy, PartialEq)]
@@ -105,29 +104,40 @@ pub(crate) fn show(
 ) {
     let old = Prefs::read(view);
     let mut p = old;
-    body(ui, view, state, &mut p, t);
+    body(ui, view, state, &mut p, actions, t);
     p.write(old, actions);
 }
 
-fn body(ui: &mut egui::Ui, view: &StationView, state: &mut State, prefs: &mut Prefs, t: &Tokens) {
-    let mut open = state.settings;
-    settings::header(ui, "Clock", &mut open, |_| {});
-    state.settings = open;
-    if state.settings {
-        settings::section(ui, "Clock", view.preview, t, |ui| {
-            ui.checkbox(&mut prefs.h24, "24-hour time");
-            ui.checkbox(&mut prefs.show_date, "Show the date");
-            ui.checkbox(&mut prefs.show_ring, "Show the seconds ring");
-            ui.checkbox(
-                &mut prefs.show_next_fixed,
-                "Countdown to the next fixed event",
-            );
-            ui.checkbox(
-                &mut prefs.show_item_end,
-                "Countdown to the end of the current item",
-            );
-        });
-    }
+/// The Clock page of Preferences.
+pub(crate) fn preferences(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    actions: &mut Vec<Action>,
+    _t: &Tokens,
+) {
+    let old = Prefs::read(view);
+    let mut p = old;
+    ui.checkbox(&mut p.h24, "24-hour time");
+    ui.checkbox(&mut p.show_date, "Show the date");
+    ui.checkbox(&mut p.show_ring, "Show the seconds ring");
+    ui.checkbox(&mut p.show_next_fixed, "Countdown to the next fixed event");
+    ui.checkbox(
+        &mut p.show_item_end,
+        "Countdown to the end of the current item",
+    );
+    p.write(old, actions);
+}
+
+fn body(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    prefs: &mut Prefs,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let _ = state;
+    settings::opens_preferences(ui, "Clock", Page::Clock, actions);
 
     let now = &view.now;
     let avail = ui.available_size();

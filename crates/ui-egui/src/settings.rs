@@ -1,30 +1,58 @@
-//! Settings live with the part that they configure. There is no general settings window.
+//! The pieces of Preferences, the one window with every setting, as in the Craft apps.
 //!
-//! Each window and pane has a settings button in its header row. It opens a settings section inside that
-//! same window. In the preview, settings are local UI state, and the section says so.
+//! Each window and pane has a settings button in its header row. It opens Preferences on that
+//! part's page. In the preview, settings are local UI state, and the page says so.
 
 use egui::{Align, Layout, RichText, Stroke};
 
+use crate::app::Action;
 use crate::icons::Icon;
-use crate::theme::{self, Tokens, pad, size, space};
+use crate::preferences::Page;
+use crate::theme::{self, Tokens, size, space};
 use crate::widgets;
 
 pub(crate) const NOT_SAVED: &str = "preview — not saved";
 
-/// The settings toggle of `part`. Its accessible name is the tooltip text.
+/// A header row whose settings button opens Preferences on `page`: the button far right, then
+/// `extra`, the part's own controls and notes.
+pub(crate) fn header_to(
+    ui: &mut egui::Ui,
+    part: &str,
+    page: Page,
+    actions: &mut Vec<Action>,
+    extra: impl FnOnce(&mut egui::Ui),
+) {
+    let mut open = false;
+    header(ui, part, &mut open, extra);
+    if open {
+        actions.push(Action::OpenPreferences(page));
+    }
+}
+
+/// A header row with only the settings button, which opens Preferences on `page`.
+pub(crate) fn opens_preferences(
+    ui: &mut egui::Ui,
+    part: &str,
+    page: Page,
+    actions: &mut Vec<Action>,
+) {
+    header_to(ui, part, page, actions, |_| {});
+}
+
+/// The settings button of `part`. Its accessible name is the tooltip text.
 pub(crate) fn settings_button(ui: &mut egui::Ui, part: &str, open: &mut bool) {
     settings_button_sized(ui, part, open, size::ICON_BUTTON);
 }
 
 /// The settings toggle at the square `side`, for a row whose icon buttons share one size.
 pub(crate) fn settings_button_sized(ui: &mut egui::Ui, part: &str, open: &mut bool, side: f32) {
-    let name = format!("Toggle {part} settings");
+    let name = format!("{part} preferences");
     let resp = widgets::icon_button_sized(
         ui,
         Icon::Settings,
         *open,
         &name,
-        &format!("Show or hide the {part} settings"),
+        &format!("Open {part} in Preferences"),
         side,
     );
     if resp.clicked() {
@@ -47,39 +75,6 @@ pub(crate) fn header(
             extra(ui);
         });
     });
-}
-
-/// The settings section for `part`, in a card, with the "not saved" note.
-pub(crate) fn section(
-    ui: &mut egui::Ui,
-    part: &str,
-    preview: bool,
-    t: &Tokens,
-    add: impl FnOnce(&mut egui::Ui),
-) {
-    egui::Frame::new()
-        .fill(t.field)
-        .stroke(Stroke::new(size::HAIRLINE, t.accent))
-        .corner_radius(t.radius_lg)
-        .inner_margin(pad::CARD)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{part} settings"))
-                        .font(theme::text(theme::CARD))
-                        .strong(),
-                );
-                if preview {
-                    let note = RichText::new(NOT_SAVED).font(theme::text(theme::CAPTION));
-                    ui.label(note.color(t.text_muted));
-                }
-                crate::windows::fit_item(ui);
-            });
-            ui.add_space(space::S);
-            add(ui);
-        });
-    ui.add_space(space::S);
 }
 
 /// A label in the left column of a settings grid.

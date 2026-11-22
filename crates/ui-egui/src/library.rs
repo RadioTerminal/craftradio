@@ -13,6 +13,7 @@ use crate::app::{Action, FileTarget, Linked, Pane, mmss};
 use crate::context_menu::{self, COPY, menu_item};
 use crate::icons::{self, Icon};
 use crate::parts;
+use crate::preferences::Page;
 use crate::select::Selection;
 use crate::settings;
 use crate::theme::{self, Tokens, pad, size, space};
@@ -46,7 +47,6 @@ pub(crate) struct State {
     pub docked: bool,
     search: String,
     pick: Pick,
-    settings: bool,
     new_folder: String,
     new_category: String,
     /// The selected rows. The arrow keys move from the last one.
@@ -61,7 +61,6 @@ impl Default for State {
             docked: false,
             search: String::new(),
             pick: Pick::All,
-            settings: false,
             new_folder: String::new(),
             new_category: String::new(),
             selected: Selection::default(),
@@ -144,10 +143,9 @@ pub(crate) fn show(
         link.hover_files(FileTarget::Library);
     }
 
-    let mut open = state.settings;
     let mut docked = state.docked;
     let mut add = false;
-    settings::header(ui, "Library", &mut open, |ui| {
+    settings::header_to(ui, "Library", Page::Library, actions, |ui| {
         let label = if docked {
             "Undock to a window"
         } else {
@@ -160,15 +158,9 @@ pub(crate) fn show(
             add = true;
         }
     });
-    state.settings = open;
     state.docked = docked;
     if add && let Some(dir) = rfd::FileDialog::new().pick_folder() {
         state.add_folder(&dir.display().to_string(), actions);
-    }
-    if state.settings {
-        settings::section(ui, "Library", view.preview, t, |ui| {
-            library_settings(ui, view, state, actions, t)
-        });
     }
     ui.horizontal(|ui| {
         let name = ui.label("Search");
@@ -604,7 +596,8 @@ fn item_menu(ui: &mut egui::Ui, view: &StationView, item: &LibraryItem, actions:
     }
 }
 
-fn library_settings(
+/// The Library page of Preferences.
+pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
     state: &mut State,

@@ -36,6 +36,7 @@ pub mod mock;
 pub mod numbers;
 mod one_off;
 mod parts;
+mod preferences;
 mod prepared;
 mod rules_editor;
 pub mod rules_script;

@@ -43,7 +43,7 @@ fn deck_cards_show_the_item_gain_and_its_source() {
 fn the_processing_tab_turns_loudness_off() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Mixer preferences");
     click(&mut harness, "Processing");
     // The switch takes its name from its row label.
     let switch = By::new()
@@ -56,7 +56,7 @@ fn the_processing_tab_turns_loudness_off() {
     harness.get(switch.clone()).click();
     harness.run_steps(FRAMES);
     click(&mut harness, "Done");
-    click(&mut harness, "Toggle Mixer settings");
+    click(&mut harness, "Mixer preferences");
     click(&mut harness, "Processing");
     assert!(!on(&harness), "the source kept it off");
     assert!(

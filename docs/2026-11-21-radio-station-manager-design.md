@@ -545,17 +545,21 @@ panes.
 - **Library:** a folder/category tree plus a searchable table. Items are dragged onto the Main
   pane, onto a playlist or onto a cart; files dropped in from the OS file manager are imported.
 
-**Settings live with their part (user, 2026-11-21). There is no general settings dialog.**
-Every window and pane has its own ⚙ for that part only:
-- **Mixer:** audio devices, sample rate, routing and meters. The Out strip's ⚙ holds the
-  Icecast mount.
+**Settings live in one Preferences window, as in the Craft apps (user, 2026-11-22; this
+replaces the per-part settings of 2026-11-21).** Preferences (⌘,) has a rail of pages, one per
+part, and each window or pane's ⚙ opens it on that part's page. The pages:
+- **Mixer (Devices, Routing, Processing, Meters, Icecast):** audio devices, sample rate,
+  routing, loudness and Program processing, meters, and the Icecast output. The Out strip's ⚙
+  opens the Icecast page.
 - **Cartwall:** grid, pages and ducking.
 - **Clock:** format and countdowns.
 - **History:** columns and range.
 - **Library:** watched folders and categories.
-- **Playlists:** pick order and rules.
+- **Decks:** the confirm guard and each deck's fades.
+- **Alarms:** whether acknowledged alarms show.
 
-The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§6.6).
+A playlist's pick order and rules are not settings: the ⚙ on each playlist opens its rules
+editor, with Visual and Script tabs (§6.6).
 
 **Deck controls and metadata (user, 2026-11-21).**
 - **Deck controls (revised 2026-11-21):** each deck card has one button: *Play this deck*
