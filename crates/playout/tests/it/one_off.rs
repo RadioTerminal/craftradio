@@ -374,3 +374,20 @@ fn a_soft_one_off_added_while_the_decks_are_full_still_airs() {
     let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
     assert_aired_late(&p, &program, &raised, id, 12 * SR);
 }
+
+#[test]
+fn a_soft_one_off_in_dead_air_never_starts_before_its_tolerance() {
+    let mut engine = Engine::open_in_memory().unwrap();
+    engine
+        .dispatch(soft(promo("oo10-promo", "Soft in silence"), at(13, 0, 30)))
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let program = run(&p, &clock, 33.0);
+
+    let start = first_audible(&program, 1, 0).expect("the soft one-off airs");
+    assert!(
+        start + SR >= 30 * SR,
+        "it starts no earlier than its time less its tolerance: {start}"
+    );
+    assert!(start <= 31 * SR, "and no later than its tolerance: {start}");
+}

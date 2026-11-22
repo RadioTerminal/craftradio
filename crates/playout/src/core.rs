@@ -233,6 +233,15 @@ impl Slot {
         self.role == DeckRole::Plan || (self.role == DeckRole::Operator && !self.not_started())
     }
 
+    /// Tells if this is a soft event and `now` is before its target less its tolerance.
+    /// Then it may not start yet.
+    pub(crate) fn soft_too_early(&self, now: Timestamp) -> bool {
+        self.entry
+            .fixed
+            .as_ref()
+            .is_some_and(|f| f.mode == FixMode::Soft && now < sub(f.target, f.tolerance))
+    }
+
     pub(crate) fn is_hard(&self) -> bool {
         self.entry
             .fixed

@@ -213,6 +213,7 @@ impl Core {
             self.slots[i].as_ref().is_some_and(|s| {
                 s.role == DeckRole::Plan
                     && s.not_started()
+                    && !s.soft_too_early(now)
                     && self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Ready
             })
         });
