@@ -1,6 +1,6 @@
 //! Shared controls that the theme alone cannot make.
 
-use egui::{Align2, Sense, Stroke, StrokeKind, WidgetInfo, WidgetType};
+use egui::{Align2, Role, Sense, Stroke, StrokeKind, WidgetInfo};
 
 use crate::icons::{self, Icon};
 use crate::theme::{self, Tokens, size, space};
@@ -30,7 +30,7 @@ pub(crate) fn icon_button_sized(
     let t = Tokens::get(ui.ctx());
     let side = egui::Vec2::splat(side);
     let (rect, resp) = ui.allocate_exact_size(side, Sense::click());
-    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, name));
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, name));
     if ui.is_rect_visible(rect) {
         let (fill, edge) = if resp.is_pointer_button_down_on() {
             (t.pressed, t.accent)
@@ -87,7 +87,7 @@ pub(crate) fn guard_button_sized(
     let t = Tokens::get(ui.ctx());
     let side = egui::Vec2::splat(side);
     let (rect, resp) = ui.allocate_exact_size(side, Sense::click());
-    resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, true, name));
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, true, name));
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         let stroke = Stroke::new(size::HAIRLINE, t.danger);
@@ -166,7 +166,7 @@ pub(crate) fn deck_mark(ui: &mut egui::Ui, deck: Option<usize>, hint: &str) -> e
         return resp;
     };
     let letter = ['A', 'B', 'C', 'D'].get(d).copied().unwrap_or('?');
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, format!("Deck {letter}")));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Label, true, format!("Deck {letter}")));
     paint_deck_mark(ui.painter(), rect, ui.max_rect().left(), d, &t);
     resp.on_hover_text(hint)
 }
@@ -257,7 +257,7 @@ pub(crate) fn transport_button(
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), Sense::click());
     let name = armed.map_or(word, |a| a.name);
     let enabled = ui.is_enabled();
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, name));
     if ui.is_rect_visible(rect) {
         let (fill, edge, ink) = if armed.is_some() {
             (t.danger_fill, t.danger, t.text)

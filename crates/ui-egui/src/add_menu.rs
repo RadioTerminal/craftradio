@@ -61,7 +61,7 @@ pub(crate) fn button(
     let resp = ui.button(text).on_hover_text(format!(
         "Add files, a folder, a stream or a live input to {playlist}"
     ));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
     egui::Popup::menu(&resp).show(|ui| {
         // Say where new items go before the person picks.
         let place = match at {
@@ -189,7 +189,7 @@ pub(crate) fn dialog(
         AddDialog::Live { playlist, .. } => format!("Add live input to {playlist}"),
     };
     egui::Window::new(title)
-        .id(egui::Id::new("add_dialog"))
+        .id(egui::Id::unique("add_dialog"))
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .resizable(false)

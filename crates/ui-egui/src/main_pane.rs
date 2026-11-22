@@ -195,7 +195,7 @@ pub(crate) fn show(
                 }
                 if resp.dnd_hover_payload::<LibraryDrag>().is_some() || over {
                     let layer =
-                        egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dnd_insert"));
+                        egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("dnd_insert"));
                     let line = Stroke::new(size::ON_AIR_BAR, t.accent);
                     resp.ctx.layer_painter(layer).hline(
                         resp.rect.x_range(),
@@ -217,14 +217,14 @@ pub(crate) fn show(
     let top = last_bottom.unwrap_or(body.top()).max(body.top());
     if body.bottom() > top {
         let rest = egui::Rect::from_x_y_ranges(body.x_range(), top..=body.bottom());
-        let resp = ui.interact(rest, ui.id().with("main_empty"), Sense::click());
+        let resp = ui.interact(rest, ui.scope_id().with("main_empty"), Sense::click());
         resp.context_menu(|ui| empty_menu(ui, view, link, actions));
     }
 
     if files && pointer.is_some_and(|p| pane.contains(p)) {
         let at = file_row.map_or(Place::End, Place::After);
         link.hover_files(FileTarget::Main(at));
-        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("file_pane"));
+        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("file_pane"));
         let edge = Stroke::new(size::HAIRLINE * 2.0, t.accent);
         ui.ctx().layer_painter(layer).rect_stroke(
             pane,

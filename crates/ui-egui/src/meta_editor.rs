@@ -120,7 +120,7 @@ pub(crate) fn show(
     let mut close = false;
     let mut applied = None;
     egui::Window::new(ed.title())
-        .id(egui::Id::new("meta_editor"))
+        .id(egui::Id::unique("meta_editor"))
         .open(&mut open)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)

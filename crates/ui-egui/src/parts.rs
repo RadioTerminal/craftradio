@@ -89,7 +89,7 @@ mod tests {
     fn column_resize_saves_only_after_release() {
         let mut harness = Harness::builder().build_ui_state(
             |ui, actions: &mut Vec<Action>| {
-                let table_id = ui.id().with(egui::IdSalt::new("width_test"));
+                let table_id = ui.scope_id().with(egui::IdSalt::new("width_test"));
                 let mut widths = Vec::new();
                 egui_extras::TableBuilder::new(ui)
                     .id_salt("width_test")

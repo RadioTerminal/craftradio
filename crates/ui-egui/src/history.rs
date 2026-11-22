@@ -151,7 +151,9 @@ pub(crate) fn show(
         .id_salt("history_columns")
         .auto_shrink(false)
         .show(ui, |ui| {
-            let table_id = ui.id().with(egui::IdSalt::new(("history_table", shown)));
+            let table_id = ui
+                .scope_id()
+                .with(egui::IdSalt::new(("history_table", shown)));
             let mut widths = Vec::new();
             let mut table = TableBuilder::new(ui)
                 .id_salt(("history_table", shown))

@@ -2,7 +2,7 @@
 //! Processing tab, and the gain trim in the metadata editor.
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::{By, NodeT, Queryable};
 use radio_ui_egui::{MockSource, RadioApp};
 
 const FRAMES: usize = 4;
@@ -45,14 +45,16 @@ fn the_processing_tab_turns_loudness_off() {
     click(&mut harness, "Mixer");
     click(&mut harness, "Toggle Mixer settings");
     click(&mut harness, "Processing");
+    // The switch takes its name from its row label.
+    let switch = By::new()
+        .label("Loudness normalisation")
+        .role(egui::accesskit::Role::CheckBox);
     let on = |h: &Harness<'_, RadioApp>| {
-        h.get_by_label("Loudness normalisation on")
-            .accesskit_node()
-            .toggled()
-            == Some(egui::accesskit::Toggled::True)
+        h.get(switch.clone()).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
     };
     assert!(on(&harness), "normalisation starts on");
-    click(&mut harness, "Loudness normalisation on");
+    harness.get(switch.clone()).click();
+    harness.run_steps(FRAMES);
     click(&mut harness, "Done");
     click(&mut harness, "Toggle Mixer settings");
     click(&mut harness, "Processing");

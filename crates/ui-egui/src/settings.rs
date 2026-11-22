@@ -142,7 +142,7 @@ const CLAIM: &str = "settings_page_escape";
 /// True when an open settings page takes the Escape of this viewport. It reads the claim of
 /// the last frame once; the page claims again each frame that it draws.
 pub(crate) fn escape_claimed(ctx: &egui::Context) -> bool {
-    let Some(Some(c)) = ctx.data_mut(|d| d.remove_temp::<Option<Claim>>(egui::Id::new(CLAIM)))
+    let Some(Some(c)) = ctx.data_mut(|d| d.remove_temp::<Option<Claim>>(egui::Id::unique(CLAIM)))
     else {
         return false;
     };
@@ -163,7 +163,7 @@ pub(crate) fn page(
     t: &Tokens,
     add: impl FnOnce(&mut egui::Ui, usize),
 ) -> PageResponse {
-    let id = ui.id().with(("settings_page", title));
+    let id = ui.scope_id().with(("settings_page", title));
     let ctx = ui.ctx().clone();
     let last: Last = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
     let mut out = PageResponse::default();
@@ -282,7 +282,7 @@ pub(crate) fn page(
     ctx.data_mut(|d| {
         d.insert_temp(id, Last { text_focus });
         d.insert_temp(
-            egui::Id::new(CLAIM),
+            egui::Id::unique(CLAIM),
             Some(Claim {
                 viewport,
                 rect,
@@ -324,9 +324,7 @@ fn tab_button(
         Some(Dot::Good(w) | Dot::Bad(w)) => format!("{} — {w}", tab.label),
         None => tab.label.to_owned(),
     };
-    resp.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
-    });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
     if ui.is_rect_visible(rect) {
         let fill = if selected {
             t.selection

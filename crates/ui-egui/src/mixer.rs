@@ -630,18 +630,8 @@ fn loudness_section(
     );
     let mut commit = false;
     settings::form_row(ui, "Loudness normalisation", t, |ui| {
-        let on = l.enabled;
         let r = ui.checkbox(&mut l.enabled, "On");
         commit |= r.changed();
-        // The name says which switch it is: the row label, then "on".
-        r.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::WidgetType::Checkbox,
-                true,
-                on,
-                "Loudness normalisation on",
-            )
-        });
         r
     });
     ui.add_enabled_ui(l.enabled, |ui| {
@@ -706,13 +696,8 @@ fn processing_tab(
     heading(ui, "Compressor");
     let c = &mut d.compressor;
     settings::form_row(ui, "Compressor", t, |ui| {
-        let on = c.enabled;
         let r = ui.checkbox(&mut c.enabled, "On");
         commit |= r.changed();
-        // The name says which switch it is: the row label, then "on".
-        r.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Compressor on")
-        });
         r
     });
     ui.add_enabled_ui(c.enabled, |ui| {
@@ -757,13 +742,8 @@ fn processing_tab(
     heading(ui, "Limiter");
     let l = &mut d.limiter;
     settings::form_row(ui, "Limiter", t, |ui| {
-        let on = l.enabled;
         let r = ui.checkbox(&mut l.enabled, "On");
         commit |= r.changed();
-        // The name says which switch it is: the row label, then "on".
-        r.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Limiter on")
-        });
         r
     });
     ui.add_enabled_ui(l.enabled, |ui| {
@@ -880,7 +860,7 @@ fn icecast_tab(
         let edit = egui::TextEdit::singleline(text)
             .desired_width(ui.available_width())
             .min_size(egui::vec2(0.0, size::CONTROL_SM))
-            .vertical_align(Align::Center);
+            .align(egui::Align2::LEFT_CENTER);
         ui.add(edit)
     };
     settings::form_row(ui, "Host", t, |ui| field(ui, &mut ice.host));
@@ -903,7 +883,7 @@ fn icecast_tab(
             .password(true)
             .hint_text(hint)
             .min_size(egui::vec2(0.0, size::CONTROL_SM))
-            .vertical_align(Align::Center);
+            .align(egui::Align2::LEFT_CENTER);
         ui.add(edit.desired_width(ui.available_width()))
     });
     settings::form_row(ui, "Format", t, |ui| {

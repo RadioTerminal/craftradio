@@ -1,5 +1,5 @@
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::{By, NodeT, Queryable};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::{MockSource, RadioApp, ToolWindow};
@@ -519,12 +519,16 @@ fn the_processing_tab_turns_the_compressor_on() {
     click(&mut harness, "Mixer");
     click(&mut harness, "Toggle Mixer settings");
     click(&mut harness, "Processing");
+    // The switch takes its name from its row label, "Compressor", like the heading above it.
+    let switch = By::new()
+        .label("Compressor")
+        .role(egui::accesskit::Role::CheckBox);
     let compressor_on = |h: &Harness<'_, RadioApp>| {
-        h.get_by_label("Compressor on").accesskit_node().toggled()
-            == Some(egui::accesskit::Toggled::True)
+        h.get(switch.clone()).accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
     };
     assert!(!compressor_on(&harness), "the compressor starts off");
-    click(&mut harness, "Compressor on");
+    harness.get(switch.clone()).click();
+    harness.run_steps(FRAMES);
     click(&mut harness, "Done");
     click(&mut harness, "Toggle Mixer settings");
     click(&mut harness, "Processing");

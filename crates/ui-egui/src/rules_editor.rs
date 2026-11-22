@@ -75,7 +75,7 @@ pub(crate) fn show(
     let mut close = false;
     let mut applied = None;
     egui::Window::new(format!("{} — rules", editor.draft.name))
-        .id(egui::Id::new("rules_editor"))
+        .id(egui::Id::unique("rules_editor"))
         .open(&mut open)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -218,11 +218,7 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
                                         "Delete this rule. Cancel throws the change away.",
                                     );
                                     r.widget_info(|| {
-                                        egui::WidgetInfo::labeled(
-                                            egui::WidgetType::Button,
-                                            true,
-                                            &name,
-                                        )
+                                        egui::WidgetInfo::labeled(egui::Role::Button, true, &name)
                                     });
                                     if r.clicked() {
                                         remove = Some(i);
@@ -380,7 +376,7 @@ fn script_job(ui: &egui::Ui, text: &str, width: f32, t: &Tokens) -> egui::text::
         width.to_bits(),
         egui::util::hash((t.text, t.text_muted, t.field, t.ok, t.warn, t.accent_ink)),
     );
-    let cache_id = ui.id().with("script_palette");
+    let cache_id = ui.scope_id().with("script_palette");
     let cached = ui
         .ctx()
         .data_mut(|data| data.get_temp::<((u64, u32, u64), egui::text::LayoutJob)>(cache_id));

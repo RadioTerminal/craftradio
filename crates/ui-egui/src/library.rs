@@ -371,7 +371,7 @@ fn table(
         .id_salt("library_columns")
         .auto_shrink(false)
         .show(ui, |ui| {
-            let table_id = ui.id().with(egui::IdSalt::new("library_table"));
+            let table_id = ui.scope_id().with(egui::IdSalt::new("library_table"));
             let mut widths = Vec::new();
             let mut builder = TableBuilder::new(ui);
             if let Some(i) = scroll {
@@ -490,7 +490,7 @@ fn table(
                         if resp.dragged()
                             && let Some(pos) = resp.ctx.pointer_interact_pos()
                         {
-                            egui::Area::new(egui::Id::new(("library_drag", item.id)))
+                            egui::Area::new(egui::Id::unique(("library_drag", item.id)))
                                 .order(egui::Order::Tooltip)
                                 .fixed_pos(pos + egui::vec2(space::M, space::M))
                                 .show(&resp.ctx, |ui| {
