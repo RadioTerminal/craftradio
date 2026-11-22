@@ -391,3 +391,43 @@ fn a_soft_one_off_in_dead_air_never_starts_before_its_tolerance() {
     );
     assert!(start <= 31 * SR, "and no later than its tolerance: {start}");
 }
+
+#[test]
+fn music_added_while_a_soft_one_off_waits_on_a_deck_plays_before_it() {
+    // The one-off loads at once on a quiet station. Then a person adds songs, so they
+    // are locked. A song covers 20 s, so the one-off airs late, after that song.
+    let mut engine = Engine::open_in_memory().unwrap();
+    let cmd = soft(promo("oo11-promo", "Soft promo"), at(13, 0, 20));
+    let id = engine
+        .dispatch(cmd)
+        .unwrap()
+        .data
+        .and_then(|d| d.as_u64())
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let alarms = p.alarms().unwrap();
+    let before = run(&p, &clock, 2.0);
+    let main: Vec<_> = (1..=6)
+        .map(|i| {
+            let path = wav(&format!("oo11-song{i}"), 4.0, Side::Left);
+            file_item(100 + i, &format!("Song {i}"), &path, 4.0, 3.5, 0.5)
+        })
+        .collect();
+    p.dispatch(Command::PlaylistAddItems {
+        playlist: radio_model::PlaylistId(1),
+        items: main,
+        at: None,
+        lock: true,
+    })
+    .unwrap();
+    let after = run(&p, &clock, 26.0);
+    let program = [before, after].concat();
+
+    let song = first_audible(&program, 0, 0).expect("the songs play");
+    assert!(
+        song < 4 * SR,
+        "the songs start soon after they are added: {song}"
+    );
+    let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
+    assert_aired_late(&p, &program, &raised, id, 20 * SR);
+}

@@ -983,10 +983,15 @@ impl Core {
             };
             if s.not_started() {
                 if let Some((start, item, trim)) = &prev
-                    && s.entry.fixed.is_none()
+                    && !s.is_hard()
                 {
                     let gap = radio_timing::advance(item, Some(&s.item)).saturating_sub(*trim);
-                    s.entry.start = add(*start, gap);
+                    let handover = add(*start, gap);
+                    // A soft event never starts early. It waits for the item before it.
+                    s.entry.start = match s.entry.fixed {
+                        Some(_) => s.entry.start.max(handover),
+                        None => handover,
+                    };
                 }
                 // A hard event keeps its target, even when it starts late.
                 if s.offset.is_zero() && !s.is_hard() {
@@ -1256,10 +1261,11 @@ impl Core {
 
     /// Loads the next planned entries that start within the preload time.
     fn load_ahead(&mut self, now: Timestamp) {
-        // Hard events load on their own (see `ensure_hard`) and do not count here.
+        // Hard events load on their own (see `ensure_hard`) and do not count here. A soft
+        // event keeps its own time, so the items before it still load.
         let plan_slots = || self.slots.iter().flatten().filter(|s| s.pinned());
         let last = plan_slots()
-            .filter(|s| !s.is_hard())
+            .filter(|s| s.entry.fixed.is_none())
             .map(|s| s.entry.start)
             .max();
         let queued = plan_slots()
