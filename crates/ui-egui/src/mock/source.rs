@@ -113,6 +113,7 @@ impl ViewSource for MockSource {
                 webrtc_listeners: None,
                 listen_link: None,
                 local_link: None,
+                forwarded: None,
                 streaming: Some(self.streaming),
             },
             folders: self.folder_views(),

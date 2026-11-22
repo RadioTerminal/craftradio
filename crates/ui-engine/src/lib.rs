@@ -752,6 +752,12 @@ impl EngineSource {
             webrtc,
             webrtc_listeners,
             listen_link,
+            forwarded: match &pv.outputs.webrtc {
+                Some(WebRtcStatus::Listening {
+                    mapped: Some(m), ..
+                }) => Some(m.to_string()),
+                _ => None,
+            },
             local_link: match &pv.outputs.webrtc {
                 Some(WebRtcStatus::Listening { url, .. }) => Some(url.clone()),
                 _ => None,

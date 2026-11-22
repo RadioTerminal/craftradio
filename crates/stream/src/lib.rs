@@ -5,6 +5,7 @@ mod mp3;
 mod now;
 mod output;
 mod relay;
+mod upnp;
 mod webrtc;
 pub use input::*;
 pub use now::{Played, cover_messages, history_message};
