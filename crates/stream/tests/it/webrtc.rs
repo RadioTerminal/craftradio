@@ -258,25 +258,50 @@ fn one_address_cannot_fill_the_station_with_offers_that_never_connect() {
 }
 
 #[test]
-fn an_internet_client_cannot_point_the_station_at_its_own_network() {
+fn an_offer_cannot_point_the_station_at_other_hosts() {
     let sdp = "v=0\r\n\
         a=candidate:1 1 udp 1 192.168.1.20 5000 typ host\r\n\
         a=candidate:2 1 udp 1 127.0.0.1 5000 typ host\r\n\
         a=candidate:3 1 udp 1 10.0.0.1 5000 typ host\r\n\
-        a=candidate:4 1 udp 1 203.0.113.7 5000 typ srflx raddr 0.0.0.0 rport 0\r\n\
+        a=candidate:4 1 udp 1 81.2.69.160 5000 typ srflx raddr 0.0.0.0 rport 0\r\n\
         a=candidate:5 1 udp 1 abcd.local 5000 typ host\r\n\
+        a=candidate:6 1 udp 1 ::ffff:10.0.0.1 5000 typ host\r\n\
+        a=candidate:7 1 udp 1 ::10.0.0.1 5000 typ host\r\n\
+        a=candidate:8 1 udp 1 2002:a00:1:: 5000 typ host\r\n\
+        a=candidate:9 1 udp 1 fec0::1 5000 typ host\r\n\
+        a=candidate:10 1 udp 1 0.1.2.3 5000 typ host\r\n\
         a=mid:0\r\n";
-    let public = filter_candidates(sdp, "198.51.100.4".parse().unwrap());
-    assert!(public.contains("203.0.113.7"));
-    for internal in ["192.168.1.20", "127.0.0.1", "10.0.0.1", "abcd.local"] {
-        assert!(!public.contains(internal), "{internal} stayed");
+    // A page on the internet, or a page that a person on the local network opened.
+    for peer in ["81.2.69.1", "192.168.1.9"] {
+        let kept = filter_candidates(sdp, peer.parse().unwrap());
+        assert!(kept.contains("81.2.69.160"), "{peer}");
+        assert!(kept.contains("a=mid:0"));
+        assert_eq!(kept.matches("a=candidate:").count(), 1, "{peer}: {kept}");
     }
-    assert!(public.contains("a=mid:0"));
-    let local = filter_candidates(sdp, "192.168.1.9".parse().unwrap());
-    assert_eq!(local.matches("a=candidate:").count(), 5);
+    // The client's own address stays, so a listener on this computer still connects.
+    let own = filter_candidates(sdp, "127.0.0.1".parse().unwrap());
+    assert!(own.contains(" 127.0.0.1 "));
+    assert!(!own.contains("192.168.1.20"));
     let many: String = (0..20)
-        .map(|i| format!("a=candidate:{i} 1 udp 1 203.0.113.{i} 5000 typ host\r\n"))
+        .map(|i| format!("a=candidate:{i} 1 udp 1 81.2.69.{i} 5000 typ host\r\n"))
         .collect();
-    let kept = filter_candidates(&many, "198.51.100.4".parse().unwrap());
+    let kept = filter_candidates(&many, "81.2.69.200".parse().unwrap());
     assert!(kept.matches("a=candidate:").count() < 20);
+}
+
+#[test]
+fn parallel_offers_from_one_address_cannot_pass_its_limit() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let addr = server.local_addr().unwrap();
+    let offers: Vec<String> = (0..8).map(|_| offer()).collect();
+    let threads: Vec<_> = offers
+        .into_iter()
+        .map(|o| std::thread::spawn(move || http(addr, "POST", "/whep", &o).0))
+        .collect();
+    let codes: Vec<u16> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(codes.iter().filter(|c| **c == 201).count(), 2, "{codes:?}");
 }

@@ -722,20 +722,57 @@ impl Http {
         ) {
             return Response::text(503, "the station is not ready");
         }
-        // The count includes listeners that still connect, so parallel offers cannot pass the limit.
-        if self.taken.load(Ordering::Acquire) >= self.max {
-            return Response::text(503, "the station has its maximum of listeners");
-        }
         let Ok(sdp) = std::str::from_utf8(body) else {
             return Response::text(415, "expected an SDP offer");
         };
-        let busy = self
-            .pending
-            .lock()
-            .map_or(PENDING_PER_ADDRESS, |m| m.get(&peer).copied().unwrap_or(0));
-        if busy >= PENDING_PER_ADDRESS {
-            return Response::text(503, "this address already has listeners that connect");
+        if let Err(refused) = self.reserve(peer) {
+            return refused;
         }
+        let response = self.add_listener(sdp, peer);
+        if response.code != 201 {
+            self.unreserve(peer);
+        }
+        response
+    }
+
+    /// Takes both places for `peer` in one step.
+    /// The media thread frees them when the listener leaves.
+    fn reserve(&self, peer: IpAddr) -> Result<(), Response> {
+        let Ok(mut map) = self.pending.lock() else {
+            return Err(Response::text(503, "the station is not ready"));
+        };
+        let waiting = map.entry(peer).or_insert(0);
+        if *waiting >= PENDING_PER_ADDRESS {
+            return Err(Response::text(
+                503,
+                "this address already has listeners that connect",
+            ));
+        }
+        // The count includes listeners that still connect, so parallel offers cannot pass the limit.
+        if self.taken.fetch_add(1, Ordering::AcqRel) >= self.max {
+            self.taken.fetch_sub(1, Ordering::AcqRel);
+            return Err(Response::text(
+                503,
+                "the station has its maximum of listeners",
+            ));
+        }
+        *waiting += 1;
+        Ok(())
+    }
+
+    fn unreserve(&self, peer: IpAddr) {
+        self.taken.fetch_sub(1, Ordering::AcqRel);
+        if let Ok(mut map) = self.pending.lock()
+            && let Some(n) = map.get_mut(&peer)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                map.remove(&peer);
+            }
+        }
+    }
+
+    fn add_listener(&self, sdp: &str, peer: IpAddr) -> Response {
         let sdp = filter_candidates(sdp, peer);
         let local = self
             .candidates
@@ -759,10 +796,6 @@ impl Http {
                 };
                 if self.control.send(Control::Add(Box::new(listener))).is_err() {
                     return Response::text(503, "the station stopped");
-                }
-                self.taken.fetch_add(1, Ordering::AcqRel);
-                if let Ok(mut map) = self.pending.lock() {
-                    *map.entry(peer).or_insert(0) += 1;
                 }
                 Response {
                     code: 201,
@@ -867,46 +900,47 @@ impl Response {
     }
 }
 
-/// True for addresses inside a home or company network, and for this computer.
-fn is_internal(ip: IpAddr) -> bool {
+/// True only for public addresses. IPv6 must be in 2000::/3, without 6to4, Teredo or documentation.
+fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
-            v.is_private()
-                || v.is_loopback()
-                || v.is_link_local()
-                || v.is_unspecified()
-                || v.is_broadcast()
-                || v.octets()[0] == 100 && (v.octets()[1] & 0xc0) == 64
+            let [a, b, c, _] = v.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || a >= 224
+                || (a == 100 && (b & 0xc0) == 64)
+                || (a == 169 && b == 254)
+                || (a == 172 && (b & 0xf0) == 16)
+                || (a == 192 && b == 168)
+                || (a == 192 && b == 0 && (c == 0 || c == 2))
+                || (a == 198 && (b & 0xfe) == 18)
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113))
         }
-        IpAddr::V6(v) => match v.to_ipv4_mapped() {
-            Some(v4) => is_internal(IpAddr::V4(v4)),
-            None => {
-                v.is_loopback()
-                    || v.is_unspecified()
-                    || (v.segments()[0] & 0xfe00) == 0xfc00
-                    || (v.segments()[0] & 0xffc0) == 0xfe80
-            }
-        },
+        IpAddr::V6(v) => {
+            let s = v.segments();
+            (s[0] & 0xe000) == 0x2000
+                && s[0] != 0x2002
+                && !(s[0] == 0x2001 && s[1] == 0x0000)
+                && !(s[0] == 0x2001 && s[1] == 0x0db8)
+        }
     }
 }
 
-/// Drops unsafe ICE candidates from an offer.
-/// A client on the internet gets only public candidates. Then an offer cannot make the
-/// station send checks into its own network. The station keeps at most
-/// [`MAX_CANDIDATES`] candidates.
+/// Keeps up to [`MAX_CANDIDATES`] offer candidates: public addresses and the address of the client.
 #[doc(hidden)]
 pub fn filter_candidates(sdp: &str, peer: IpAddr) -> String {
-    let local_peer = is_internal(peer);
     let mut kept = 0;
     let mut out = String::with_capacity(sdp.len());
     for line in sdp.split_inclusive('\n') {
         if let Some(rest) = line.trim_end().strip_prefix("a=candidate:") {
             let address = rest.split_whitespace().nth(4).unwrap_or("");
-            let allowed = match address.parse::<IpAddr>() {
-                Ok(ip) => !ip.is_multicast() && (local_peer || !is_internal(ip)),
-                // A browser hides its local address behind an mDNS name. It is not routable.
-                Err(_) => local_peer,
-            };
+            // An mDNS name does not parse, and the station cannot resolve it. A browser on
+            // the local network still connects: its checks arrive from its real address.
+            let allowed = address
+                .parse::<IpAddr>()
+                .is_ok_and(|ip| ip == peer || is_public(ip));
             if !allowed || kept >= MAX_CANDIDATES {
                 continue;
             }
