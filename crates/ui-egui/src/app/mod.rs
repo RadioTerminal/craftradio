@@ -152,6 +152,8 @@ pub struct RadioApp {
     carts: cartwall::State,
     mixer: mixer::State,
     preferences: crate::preferences::State,
+    /// This computer's preferences: in memory until the app gives a store.
+    prefs: crate::app_prefs::AppPrefs,
     clock_state: clock_window::State,
     history: history::State,
     alarms: alarms::State,
@@ -213,6 +215,7 @@ impl RadioApp {
             carts,
             mixer: mixer::State::default(),
             preferences: crate::preferences::State::default(),
+            prefs: crate::app_prefs::AppPrefs::memory(),
             clock_state: clock_window::State::default(),
             history: history::State::default(),
             alarms: alarms::State::default(),
@@ -297,6 +300,15 @@ impl RadioApp {
         self
     }
 
+    /// Keeps this computer's preferences in `prefs`. The display settings that the station
+    /// kept are copied there the first time.
+    pub fn with_preferences(mut self, prefs: crate::app_prefs::AppPrefs) -> Self {
+        self.prefs = prefs;
+        self.prefs.import(&self.view);
+        self.refresh(true);
+        self
+    }
+
     /// Open or close a tool window.
     pub fn set_window(&mut self, w: ToolWindow, open: bool) {
         self.open.set(w, open);
@@ -307,6 +319,7 @@ impl RadioApp {
         let now = (self.clock)();
         if force || now.as_second() != self.view.now.timestamp().as_second() {
             self.view = self.source.snapshot(now);
+            self.prefs.overlay(&mut self.view);
             self.prepared = Prepared::new(&self.view, self.prepared.generation + 1);
         }
     }
@@ -478,6 +491,10 @@ impl RadioApp {
 }
 
 impl eframe::App for RadioApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.prefs.flush();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
@@ -487,6 +504,9 @@ impl eframe::App for RadioApp {
             self.styled = true;
         }
         self.refresh(false);
+        if let Some(failed) = self.prefs.tick(&ctx) {
+            self.toast(&ctx, failed);
+        }
         self.read_meters();
         // Work that finished after its edit reports here, as a toast.
         let notices = self.source.take_notices();

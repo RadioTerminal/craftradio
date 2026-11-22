@@ -15,7 +15,7 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use radio_playout::{OutputChoice, Playout, PlayoutConfig, SystemClock};
 use radio_ui_egui::theme::size;
-use radio_ui_egui::{MockSource, RadioApp, ToolWindow, ViewSource};
+use radio_ui_egui::{AppPrefs, MockSource, RadioApp, ToolWindow, ViewSource};
 use radio_ui_engine::{EngineSource, KEYCHAIN_SERVICE, KeyringStore, SourceOptions};
 
 /// The stream title of items that hide their own title.
@@ -403,6 +403,16 @@ fn window(
 ) -> Result<(), String> {
     let single_window = args.single_window;
     let perf = args.perf;
+    // The preview saves nothing; the station keeps this computer's preferences in config.toml.
+    let prefs = if args.demo {
+        AppPrefs::memory()
+    } else {
+        let (prefs, problem) = AppPrefs::open();
+        if let Some(problem) = problem {
+            eprintln!("radio: {problem}");
+        }
+        prefs
+    };
     let open: Vec<ToolWindow> = ToolWindow::ALL
         .into_iter()
         .filter(|w| args.open.iter().any(|o| o.eq_ignore_ascii_case(w.title())))
@@ -423,7 +433,9 @@ fn window(
             cc.egui_ctx.set_embed_viewports(single_window);
             // Number fields write and read numbers the way the system's region does.
             radio_ui_egui::numbers::install_system(&cc.egui_ctx);
-            let mut app = RadioApp::new(source, clock).with_perf(perf);
+            let mut app = RadioApp::new(source, clock)
+                .with_perf(perf)
+                .with_preferences(prefs);
             for w in open {
                 app.set_window(w, true);
             }

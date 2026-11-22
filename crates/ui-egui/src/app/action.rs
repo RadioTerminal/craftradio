@@ -293,6 +293,14 @@ impl RadioApp {
 
     /// Run an edit. A loud edit shows its message; a quiet edit shows only an error.
     pub(super) fn run_edit(&mut self, ctx: &egui::Context, edit: Edit, loud: bool) {
+        // A display preference of this computer goes to its preferences, not to the station.
+        if let Edit::SetPartSetting { part, key, value } = &edit
+            && crate::app_prefs::is_display(part, key)
+        {
+            self.prefs.set(part, key, value.clone());
+            self.refresh(true);
+            return;
+        }
         match self.source.edit(edit.clone()) {
             Ok(n) if loud => {
                 self.toast(ctx, describe(&edit, n, self.view.preview));

@@ -21,6 +21,7 @@
 mod add_menu;
 mod alarms;
 mod app;
+mod app_prefs;
 mod cartwall;
 mod clock_window;
 mod context_menu;
@@ -50,6 +51,7 @@ mod widgets;
 pub mod windows;
 
 pub use app::RadioApp;
+pub use app_prefs::AppPrefs;
 pub use mock::MockSource;
 pub use view::{
     AlarmSource, AlarmView, DeckState, DeckView, FitView, PlaylistTab, Row, Severity, StationView,

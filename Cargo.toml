@@ -77,6 +77,8 @@ craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621
 craft-control = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
 # The MCP server machinery: JSON-RPC over stdio, tool schemas, argument checks (MIT OR Apache-2.0).
 craft-mcp-server = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
+# Preferences of this computer in config.toml, as every Craft app keeps them (MIT OR Apache-2.0).
+craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d" }
 rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }
