@@ -12,8 +12,10 @@ server on a loopback TCP port. It is craft-control's channel from storytold/craf
   moves them): `current.port` names the port of the station started last, and `<port>.token`
   holds that launch's token. Both are readable only by the user who runs the station (`0600`
   in a `0700` folder; one ACL entry on Windows), and both are removed when the station stops.
-- The folder belongs to the user, not to a `--data-dir`: two stations of one user find each
-  other's discovery file, so pass `--port` to reach one that was not started last.
+- The folder belongs to the user, not to a `--data-dir`: two stations of one user share it, so
+  pass `--port` to reach one that was not started last. When the station started last stops
+  first, its discovery file goes with it, and a client finds the other by its token file
+  (with several left, it asks for `--port`).
 
 ## Talking to it
 
@@ -38,8 +40,8 @@ the window shows its change. `craftradio-cli commands` lists the ids.
 
 `craftradio-cli mcp` serves MCP on stdio for an AI client: every engine command is a tool named
 by its id with `_` for `.` (`schedule.add` is `schedule_add`), with the command's argument
-schema. Read-only commands are marked read-only; the others say they change the running
-station. A call runs on the station started last, or on `--port PORT`; the token comes from
+schema. Read-only commands are marked read-only; the others are marked destructive and say they
+change the running station. A call runs on the station started last, or on `--port PORT`; the token comes from
 `CRAFTRADIO_CONTROL_TOKEN` or the token file, never from the command line. With no station
 running, a call is an error result. For Claude Code:
 

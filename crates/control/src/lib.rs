@@ -275,11 +275,46 @@ pub fn start(sender: CommandSender, port: Option<u16>) -> Result<Control, String
     Ok(control)
 }
 
-/// A connection to the running station: on `port`, else the one in the discovery file. The
-/// token is `token`, else `CRAFTRADIO_CONTROL_TOKEN`, else the token file.
+/// A connection to the running station: on `port`, else the one in the discovery file, else
+/// the only station with a token file. The token is `token`, else `CRAFTRADIO_CONTROL_TOKEN`,
+/// else the token file.
 pub fn connect(port: Option<u16>, token: Option<&str>) -> Result<Connection, String> {
-    let port = port
-        .or_else(|| APP.read_current_port())
-        .ok_or("no running station: start craftradio, or pass --port")?;
+    let port = match port.or_else(|| APP.read_current_port()) {
+        Some(p) => p,
+        None => lone_station()?,
+    };
     Ok(Connection::new(APP, &format!("127.0.0.1:{port}"), token).with_document("station"))
+}
+
+/// The port of the only station with a token file. The discovery file names the station
+/// started last; when that one stops first, an earlier one may still run.
+fn lone_station() -> Result<u16, String> {
+    let dir = APP
+        .current_port_path()
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .ok_or("the platform has no data folder: pass --port")?;
+    let mut ports: Vec<u16> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.strip_suffix(".token")?.parse().ok()
+        })
+        .collect();
+    ports.sort_unstable();
+    match ports.as_slice() {
+        [port] => Ok(*port),
+        [] => Err(format!(
+            "no running station: start craftradio, or pass --port (no token file in {})",
+            dir.display()
+        )),
+        many => Err(format!(
+            "several stations run, on ports {}: pass --port",
+            many.iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }

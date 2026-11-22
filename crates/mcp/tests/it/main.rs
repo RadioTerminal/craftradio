@@ -94,10 +94,17 @@ fn every_engine_command_is_a_tool_a_client_accepts() {
             .find(|t| t["name"] == tool_name(spec.id))
             .expect("listed");
         assert_eq!(t["inputSchema"]["type"], "object", "{}", spec.id);
+        let read_only = spec.tier == Tier::ReadOnly;
         assert_eq!(
             t["annotations"]["readOnlyHint"] == true,
-            spec.tier == Tier::ReadOnly,
+            read_only,
             "{} says whether it changes the station",
+            spec.id
+        );
+        assert_eq!(
+            t["annotations"]["destructiveHint"] == true,
+            !read_only,
+            "{}: an on-air command can stop or delete what is on air",
             spec.id
         );
     }
@@ -138,4 +145,46 @@ fn without_a_running_station_a_call_is_an_error_result() {
     );
     assert_eq!(replies[0]["result"]["isError"], true);
     assert!(text(&replies[0]).contains("craftradio running"));
+}
+
+/// Each command's arguments are an object whose fields a client sees at the top: a schema
+/// hidden behind a top-level `$ref` or `oneOf` would list no arguments, and every call would be
+/// refused.
+#[test]
+fn every_command_lists_its_arguments_at_the_top_of_its_schema() {
+    for spec in registry() {
+        let schema = spec.args_schema.as_value();
+        assert_eq!(schema["type"], "object", "{}", spec.id);
+        assert!(
+            schema["properties"].is_object(),
+            "{} lists its fields",
+            spec.id
+        );
+        for key in ["$ref", "oneOf", "anyOf", "allOf"] {
+            assert!(
+                schema.get(key).is_none(),
+                "{} has a top-level {key}",
+                spec.id
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_arguments_reach_the_engine_intact() {
+    let (_playout, control) = station();
+    let running = Running::new(Some(control.port()), Some(TOKEN.into()));
+    let replies = session(
+        running,
+        &[call(
+            1,
+            "deck_play",
+            json!({"deck": 0, "fade_in": {"secs": 2, "nanos": 0}}),
+        )],
+    );
+    assert!(
+        !text(&replies[0]).contains("cannot read the command"),
+        "the engine reads the nested fade-in: {}",
+        text(&replies[0])
+    );
 }

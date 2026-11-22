@@ -48,7 +48,10 @@ impl Station for Running {
             self.conn = Some(radio_control::connect(self.port, self.token.as_deref())?);
         }
         let conn = self.conn.as_mut().ok_or("no connection")?;
-        conn.call(Request::new(method, params)).map_err(|e| {
+        let result = conn.call(Request::new(method, params));
+        result.map_err(|e| {
+            // Found again at the next call, when the station has restarted on another port.
+            self.conn = None;
             format!(
                 "{} (is craftradio running with its control channel?)",
                 e.message()
@@ -73,8 +76,9 @@ fn definition(spec: &CommandSpec) -> Value {
     }
     let (effect, desc) = match spec.tier {
         Tier::ReadOnly => (Effect::ReadOnly, format!("{}. Read-only.", spec.summary)),
+        // On air: it can stop, replace or delete what plays, so clients ask before it runs.
         Tier::OnAir => (
-            Effect::Edits,
+            Effect::Replaces,
             format!(
                 "{}. On air: changes the running station (`{}`).",
                 spec.summary, spec.id
