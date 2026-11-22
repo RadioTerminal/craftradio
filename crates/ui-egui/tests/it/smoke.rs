@@ -583,3 +583,22 @@ fn a_setting_changed_in_preferences_stays_changed() {
     harness.run_steps(FRAMES);
     assert!(!h24(&harness), "the source kept it off");
 }
+
+/// The audio runs at one fixed rate, so the Devices page states it and offers no choice
+/// that would change nothing.
+#[test]
+fn the_sample_rate_is_stated_not_offered() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Mixer preferences");
+    assert!(
+        harness.query_by_label_contains("48 kHz, fixed").is_some(),
+        "the fixed rate shows"
+    );
+    assert!(
+        harness
+            .query_all_by_role(egui::accesskit::Role::ComboBox)
+            .all(|n| n.accesskit_node().label().as_deref() != Some("Sample rate")),
+        "no sample rate picker"
+    );
+}

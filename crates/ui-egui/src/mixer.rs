@@ -23,8 +23,9 @@ use crate::view::{
 /// The dB marks beside a meter.
 const SCALE_DB: [f32; 5] = [0.0, -6.0, -12.0, -20.0, -40.0];
 const NOTE: &str = "preview — simulated levels, no audio";
-const RATES: [u32; 3] = [44_100, 48_000, 96_000];
-const DEFAULT_RATE: u32 = 48_000;
+/// The one rate of the audio path (the playout's `SAMPLE_RATE`): decks, carts, live input and
+/// outputs all run at it, and files are resampled to it.
+const AUDIO_RATE: u32 = 48_000;
 const BITRATES: [u32; 6] = [64, 96, 128, 192, 256, 320];
 /// The peak line stays this long by default, in seconds.
 const DEFAULT_PEAK_HOLD_S: f32 = 1.5;
@@ -492,19 +493,10 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
     if right != old_right {
         actions.push(parts::set(parts::MIXER, "input_right", right));
     }
-    let rate = parts::u32(view, parts::MIXER, "sample_rate", DEFAULT_RATE);
+    // A fixed fact, not a choice: a picker here would change nothing.
     settings::form_row(ui, "Sample rate", t, |ui| {
-        craft_ui::ComboBox::from_id_salt("sample_rate")
-            .width(ui.available_width())
-            .selected_text(khz(rate))
-            .show_ui(ui, |ui| {
-                for r in RATES {
-                    if widgets::selectable(ui, r == rate, khz(r)).clicked() && r != rate {
-                        actions.push(parts::set(parts::MIXER, "sample_rate", r));
-                    }
-                }
-            })
-            .response
+        ui.label(format!("{}, fixed", khz(AUDIO_RATE)))
+            .on_hover_text("The audio always runs at this rate; files are resampled to it")
     });
 }
 
