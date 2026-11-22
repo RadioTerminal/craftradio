@@ -401,7 +401,7 @@ fn deck_body(
     let now = ui.input(|i| i.time);
     let head = ui.horizontal(|ui| {
         let focused = state.focused == i;
-        let keys = shortcuts::label(ui.ctx(), &shortcuts::FOCUS_DECK[i.min(3)]);
+        let keys = shortcuts::label_of(ui.ctx(), &shortcuts::focus_deck(i.min(3)));
         let hint = if focused {
             "Space acts on this deck. Right-click for the deck menu.".to_owned()
         } else {
@@ -448,7 +448,7 @@ fn deck_body(
             ui.add_space(if narrow { space::XS } else { space::M });
             ui.add_enabled_ui(deck.state != DeckState::Empty, |ui| {
                 // One main action: Play this deck, or Pause and Resume on the deck on air.
-                let keys = shortcuts::label(ui.ctx(), &shortcuts::PLAY_PAUSE);
+                let keys = shortcuts::label(ui.ctx(), shortcuts::PLAY_PAUSE);
                 let (verb, icon, _) = primary(deck);
                 let accessible = format!("{verb} deck {name}");
                 if is_live(deck) {
@@ -927,7 +927,7 @@ fn transport(
     ui.spacing_mut().item_spacing.x = space::S;
     ui.add_enabled_ui(next.is_some(), |ui| {
         let deck = next.unwrap_or(0);
-        let keys = shortcuts::label(ui.ctx(), &shortcuts::PLAY_NEXT);
+        let keys = shortcuts::label(ui.ctx(), shortcuts::PLAY_NEXT);
         let hint = format!(
             "Play next: start the NEXT 1 deck now. It fades in and the item on air fades out ({keys})"
         );
@@ -961,7 +961,7 @@ fn transport(
     });
     ui.add_enabled_ui(air.is_some(), |ui| {
         let deck = air.unwrap_or(0);
-        let keys = shortcuts::label(ui.ctx(), &shortcuts::FADE);
+        let keys = shortcuts::label(ui.ctx(), shortcuts::FADE);
         let hint = format!("Fade out the item on air ({keys})");
         let letter = view.decks.get(deck).map_or('?', |d| d.label);
         let confirm = format!("Confirm: fade out deck {letter} now (cuts the item on air)");

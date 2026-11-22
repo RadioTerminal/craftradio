@@ -24,10 +24,11 @@ pub(crate) enum Page {
     History,
     Library,
     Alarms,
+    Shortcuts,
 }
 
 impl Page {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Decks,
         Self::Devices,
         Self::Routing,
@@ -39,6 +40,7 @@ impl Page {
         Self::History,
         Self::Library,
         Self::Alarms,
+        Self::Shortcuts,
     ];
 
     fn label(self) -> &'static str {
@@ -49,6 +51,7 @@ impl Page {
             Self::History => "History",
             Self::Library => "Library",
             Self::Alarms => "Alarms",
+            Self::Shortcuts => "Shortcuts",
             other => other.mixer().map_or("", SettingsTab::label),
         }
     }
@@ -138,6 +141,7 @@ pub(crate) fn show(
                 Page::History => history::preferences(ui, view, actions, t),
                 Page::Library => library::preferences(ui, view, library_state, actions, t),
                 Page::Alarms => alarms::preferences(ui, view, actions, t),
+                Page::Shortcuts => shortcuts_page(ui, actions, t),
                 _ => {}
             }
         },
@@ -146,4 +150,20 @@ pub(crate) fn show(
         state.page = p;
     }
     out.done
+}
+
+/// The Shortcuts page: the keyboard shortcuts are edited in their own dialog, which needs
+/// the room of a table.
+fn shortcuts_page(ui: &mut egui::Ui, actions: &mut Vec<Action>, t: &Tokens) {
+    settings::form_note(
+        ui,
+        egui::RichText::new(
+            "Every command's keyboard shortcut can be changed, cleared or set back to its \
+             default. The menus show the new keys at once.",
+        )
+        .color(t.text_muted),
+    );
+    if ui.button("Keyboard Shortcuts…").clicked() {
+        actions.push(Action::OpenShortcuts);
+    }
 }

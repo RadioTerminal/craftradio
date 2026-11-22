@@ -180,7 +180,7 @@ pub(crate) fn show(
             grid_w.min(ui.available_width()),
             size::CONTROL_MD,
         ));
-    let keys = shortcuts::label(ui.ctx(), &shortcuts::STOP_CARTS);
+    let keys = shortcuts::label(ui.ctx(), shortcuts::STOP_CARTS);
     let audio = if view.preview {
         format!(" · {NO_AUDIO}")
     } else {
@@ -241,7 +241,7 @@ fn cart(
         ui.painter()
             .rect_filled(bar, t.radius_sm, Tokens::playlist(c.1));
     }
-    if let Some(key) = shortcuts::cart_label(n) {
+    if let Some(key) = shortcuts::cart_label(ui.ctx(), n) {
         // The key that fires the cart, in the top-right corner.
         let at = resp.rect.right_top() + egui::vec2(-size::KEY_INSET, size::KEY_INSET);
         let ink = if lit { t.flash_ink } else { t.text_muted };
@@ -269,7 +269,7 @@ fn cart(
     let colour_name = colour.map_or("no colour", |c| c.0);
     // The tooltip text is made only while the tooltip shows.
     let hint = |ui: &mut egui::Ui| {
-        let key = shortcuts::cart_label(n).map_or(String::new(), |k| format!(" ({k})"));
+        let key = shortcuts::cart_label(ui.ctx(), n).map_or(String::new(), |k| format!(" ({k})"));
         let audio = if state.preview {
             format!(" · {NO_AUDIO}")
         } else {

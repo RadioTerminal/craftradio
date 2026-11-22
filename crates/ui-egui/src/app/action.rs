@@ -52,6 +52,8 @@ pub(crate) enum Action {
     OpenWindow(ToolWindow),
     /// Open Preferences on a page.
     OpenPreferences(crate::preferences::Page),
+    /// Open the Keyboard Shortcuts dialog.
+    OpenShortcuts,
     ShowInLibrary(String),
     /// Open the metadata editor for these items.
     Metadata(Vec<MetaTarget>),
@@ -397,6 +399,9 @@ impl RadioApp {
                     editor.preview = self.view.preview;
                     self.editor = Some(editor);
                 }
+            }
+            Action::OpenShortcuts => {
+                self.shortcuts_dialog = Some(craft_keymap::ui::DialogState::new());
             }
             Action::OpenPreferences(page) => {
                 self.preferences.page = page;
