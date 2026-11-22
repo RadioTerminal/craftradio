@@ -222,3 +222,61 @@ fn listeners_that_still_connect_count_toward_the_maximum() {
         "a second offer passed while the first still connects"
     );
 }
+
+#[test]
+fn a_client_that_sends_nothing_does_not_hold_up_others() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let addr = server.local_addr().unwrap();
+    let _silent: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect(addr).unwrap()).collect();
+    let start = Instant::now();
+    let (code, _, _) = http(addr, "GET", "/now", "");
+    assert_eq!(code, 200);
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn one_address_cannot_fill_the_station_with_offers_that_never_connect() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let addr = server.local_addr().unwrap();
+    let codes: Vec<u16> = (0..4)
+        .map(|_| http(addr, "POST", "/whep", &offer()).0)
+        .collect();
+    assert_eq!(codes.iter().filter(|c| **c == 201).count(), 2, "{codes:?}");
+    assert!(codes[2..].iter().all(|c| *c == 503), "{codes:?}");
+}
+
+#[test]
+fn an_internet_client_cannot_point_the_station_at_its_own_network() {
+    let sdp = "v=0\r\n\
+        a=candidate:1 1 udp 1 192.168.1.20 5000 typ host\r\n\
+        a=candidate:2 1 udp 1 127.0.0.1 5000 typ host\r\n\
+        a=candidate:3 1 udp 1 10.0.0.1 5000 typ host\r\n\
+        a=candidate:4 1 udp 1 203.0.113.7 5000 typ srflx raddr 0.0.0.0 rport 0\r\n\
+        a=candidate:5 1 udp 1 abcd.local 5000 typ host\r\n\
+        a=mid:0\r\n";
+    let public = filter_candidates(sdp, "198.51.100.4".parse().unwrap());
+    assert!(public.contains("203.0.113.7"));
+    for internal in ["192.168.1.20", "127.0.0.1", "10.0.0.1", "abcd.local"] {
+        assert!(!public.contains(internal), "{internal} stayed");
+    }
+    assert!(public.contains("a=mid:0"));
+    let local = filter_candidates(sdp, "192.168.1.9".parse().unwrap());
+    assert_eq!(local.matches("a=candidate:").count(), 5);
+    let many: String = (0..20)
+        .map(|i| format!("a=candidate:{i} 1 udp 1 203.0.113.{i} 5000 typ host\r\n"))
+        .collect();
+    let kept = filter_candidates(&many, "198.51.100.4".parse().unwrap());
+    assert!(kept.matches("a=candidate:").count() < 20);
+}

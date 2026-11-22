@@ -5,6 +5,7 @@
 //! There is no TURN, so a listener behind a strict NAT does not connect.
 
 use crate::{OpusEncoder, StreamError};
+use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
@@ -27,7 +28,15 @@ pub const LISTEN_PAGE: &str = include_str!("../../../site/index.html");
 const PACKET: usize = 1920;
 const MAX_REQUEST: usize = 64 * 1024;
 /// The station drops a listener that does not connect in this time.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A client must send its whole request in this time.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
+/// The station serves at most this many HTTP requests at the same time.
+const MAX_CONNECTIONS: usize = 16;
+/// One address can have at most this many listeners that still connect.
+const PENDING_PER_ADDRESS: usize = 2;
+/// The station uses at most this many candidates from one offer.
+const MAX_CANDIDATES: usize = 8;
 /// How often the station asks STUN again. This also keeps the NAT mapping open.
 const STUN_REFRESH: Duration = Duration::from_secs(25);
 
@@ -173,6 +182,7 @@ impl WebRtcServer {
         handle.http = Some(http);
         let candidates = Arc::new(Mutex::new(Vec::new()));
         let taken = Arc::new(AtomicUsize::new(0));
+        let pending = Arc::new(Mutex::new(HashMap::new()));
         let url_ip = udp.local_addr().map_or(http.ip(), |a| a.ip());
         let media = Media {
             socket: udp,
@@ -182,6 +192,7 @@ impl WebRtcServer {
             candidates: candidates.clone(),
             status: status.clone(),
             taken: taken.clone(),
+            pending: pending.clone(),
             url: format!("http://{}/", SocketAddr::new(url_ip, http.port())),
         };
         if let Err(e) = thread::Builder::new()
@@ -198,6 +209,8 @@ impl WebRtcServer {
             status: status.clone(),
             max: cfg.max_listeners,
             taken,
+            pending,
+            busy: Arc::new(AtomicUsize::new(0)),
         };
         if let Err(e) = thread::Builder::new()
             .name("webrtc-http".into())
@@ -226,6 +239,10 @@ fn media_ip(bind: IpAddr) -> std::io::Result<IpAddr> {
 struct Listener {
     /// The secret in the WHEP resource URL. Only the listener knows it, so only it can leave.
     token: String,
+    /// The address of the HTTP client that sent the offer.
+    peer: IpAddr,
+    /// The listener still counts toward [`PENDING_PER_ADDRESS`].
+    holds_pending: bool,
     rtc: Rtc,
     mid: Option<Mid>,
     pt: Option<Pt>,
@@ -241,7 +258,26 @@ struct Media {
     candidates: Arc<Mutex<Vec<Candidate>>>,
     status: Arc<Mutex<WebRtcStatus>>,
     taken: Arc<AtomicUsize>,
+    pending: Pending,
     url: String,
+}
+
+/// Listeners that still connect, by the address that sent the offer.
+type Pending = Arc<Mutex<HashMap<IpAddr, usize>>>;
+
+fn release_pending(pending: &Pending, l: &mut Listener) {
+    if !l.holds_pending {
+        return;
+    }
+    l.holds_pending = false;
+    if let Ok(mut map) = pending.lock()
+        && let Some(n) = map.get_mut(&l.peer)
+    {
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            map.remove(&l.peer);
+        }
+    }
 }
 
 impl Media {
@@ -264,10 +300,7 @@ impl Media {
                 match control.try_recv() {
                     Ok(Control::Add(l)) => listeners.push(*l),
                     Ok(Control::Remove(token)) => {
-                        let before = listeners.len();
-                        listeners.retain(|l| l.token != token);
-                        self.taken
-                            .fetch_sub(before - listeners.len(), Ordering::AcqRel);
+                        self.drop_where(&mut listeners, |l| l.token == token)
                     }
                     Ok(Control::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                         set_status(&self.status, WebRtcStatus::Stopped);
@@ -315,12 +348,12 @@ impl Media {
                     wake = wake.min(t);
                 }
             }
-            let before = listeners.len();
-            listeners.retain(|l| {
-                l.rtc.is_alive() && (l.connected || l.created.elapsed() < CONNECT_TIMEOUT)
+            for l in listeners.iter_mut().filter(|l| l.connected) {
+                release_pending(&self.pending, l);
+            }
+            self.drop_where(&mut listeners, |l| {
+                !l.rtc.is_alive() || (!l.connected && l.created.elapsed() >= CONNECT_TIMEOUT)
             });
-            self.taken
-                .fetch_sub(before - listeners.len(), Ordering::AcqRel);
             let count = listeners.iter().filter(|l| l.connected).count();
             if shown != Some((count, public)) {
                 shown = Some((count, public));
@@ -369,6 +402,20 @@ impl Media {
                 if l.rtc.handle_input(Input::Timeout(now)).is_err() {
                     l.rtc.disconnect();
                 }
+            }
+        }
+    }
+
+    /// Removes the listeners that `gone` selects, and frees their places.
+    fn drop_where(&self, listeners: &mut Vec<Listener>, gone: impl Fn(&Listener) -> bool) {
+        let mut i = 0;
+        while i < listeners.len() {
+            if gone(&listeners[i]) {
+                let mut l = listeners.swap_remove(i);
+                release_pending(&self.pending, &mut l);
+                self.taken.fetch_sub(1, Ordering::AcqRel);
+            } else {
+                i += 1;
             }
         }
     }
@@ -570,6 +617,7 @@ fn address(value: &[u8], xor: bool, id: &[u8; 12]) -> Option<SocketAddr> {
     }
 }
 
+#[derive(Clone)]
 struct Http {
     control: mpsc::Sender<Control>,
     candidates: Arc<Mutex<Vec<Candidate>>>,
@@ -578,6 +626,17 @@ struct Http {
     max: usize,
     /// Listeners that connect or play now. The media thread counts down when one leaves.
     taken: Arc<AtomicUsize>,
+    pending: Pending,
+    /// HTTP requests in progress.
+    busy: Arc<AtomicUsize>,
+}
+
+/// Counts one request in progress until it drops.
+struct Busy(Arc<AtomicUsize>);
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 struct Request {
@@ -594,23 +653,41 @@ struct Response {
 }
 
 impl Http {
-    fn serve(mut self, tcp: TcpListener) {
+    /// Each request gets its own thread, so a slow client cannot hold up the others.
+    fn serve(self, tcp: TcpListener) {
         for stream in tcp.incoming() {
             if !is_running(&self.status) {
                 return;
             }
-            let Ok(mut stream) = stream else { continue };
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-            let response = match read_request(&mut stream) {
-                Ok(req) => self.route(&req),
-                Err(_) => Response::text(400, "bad request"),
-            };
-            let _ = response.write(&mut stream);
+            let Ok(stream) = stream else { continue };
+            if self.busy.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+                self.busy.fetch_sub(1, Ordering::AcqRel);
+                continue;
+            }
+            let busy = Busy(self.busy.clone());
+            let http = self.clone();
+            let _ = thread::Builder::new()
+                .name("webrtc-request".into())
+                .spawn(move || {
+                    let _busy = busy;
+                    http.handle(stream);
+                });
         }
     }
 
-    fn route(&mut self, req: &Request) -> Response {
+    fn handle(&self, mut stream: TcpStream) {
+        let _ = stream.set_write_timeout(Some(REQUEST_DEADLINE));
+        let peer = stream
+            .peer_addr()
+            .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |a| a.ip());
+        let response = match read_request(&mut stream) {
+            Ok(req) => self.route(&req, peer),
+            Err(_) => Response::text(400, "bad request"),
+        };
+        let _ = response.write(&mut stream);
+    }
+
+    fn route(&self, req: &Request, peer: IpAddr) -> Response {
         let path = req.path.split('?').next().unwrap_or("");
         match (req.method.as_str(), path) {
             ("OPTIONS", _) => Response::text(204, ""),
@@ -624,7 +701,7 @@ impl Http {
                 let title = self.title.lock().map(|t| t.clone()).unwrap_or_default();
                 Response::text(200, &title)
             }
-            ("POST", "/whep") => self.whep(&req.body),
+            ("POST", "/whep") => self.whep(&req.body, peer),
             ("DELETE", p) if p.starts_with("/whep/") => {
                 let token = &p["/whep/".len()..];
                 if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -638,7 +715,7 @@ impl Http {
         }
     }
 
-    fn whep(&mut self, body: &[u8]) -> Response {
+    fn whep(&self, body: &[u8], peer: IpAddr) -> Response {
         if !matches!(
             self.status.lock().map(|s| s.clone()),
             Ok(WebRtcStatus::Listening { .. })
@@ -652,18 +729,28 @@ impl Http {
         let Ok(sdp) = std::str::from_utf8(body) else {
             return Response::text(415, "expected an SDP offer");
         };
+        let busy = self
+            .pending
+            .lock()
+            .map_or(PENDING_PER_ADDRESS, |m| m.get(&peer).copied().unwrap_or(0));
+        if busy >= PENDING_PER_ADDRESS {
+            return Response::text(503, "this address already has listeners that connect");
+        }
+        let sdp = filter_candidates(sdp, peer);
         let local = self
             .candidates
             .lock()
             .map(|c| c.clone())
             .unwrap_or_default();
-        match answer(sdp, &local) {
+        match answer(&sdp, &local) {
             Ok((rtc, answer)) => {
                 let Some(token) = listener_token() else {
                     return Response::text(503, "the station has no random source");
                 };
                 let listener = Listener {
                     token: token.clone(),
+                    peer,
+                    holds_pending: true,
                     rtc,
                     mid: None,
                     pt: None,
@@ -674,6 +761,9 @@ impl Http {
                     return Response::text(503, "the station stopped");
                 }
                 self.taken.fetch_add(1, Ordering::AcqRel);
+                if let Ok(mut map) = self.pending.lock() {
+                    *map.entry(peer).or_insert(0) += 1;
+                }
                 Response {
                     code: 201,
                     content_type: "application/sdp",
@@ -686,7 +776,17 @@ impl Http {
     }
 }
 
+/// Reads one request. The whole request must arrive before [`REQUEST_DEADLINE`].
 fn read_request(stream: &mut TcpStream) -> Result<Request, StreamError> {
+    let deadline = Instant::now() + REQUEST_DEADLINE;
+    let read = |stream: &mut TcpStream, chunk: &mut [u8]| -> Result<usize, StreamError> {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| StreamError::Invalid("request too slow".into()))?;
+        stream.set_read_timeout(Some(left))?;
+        Ok(stream.read(chunk)?)
+    };
     let mut data = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {
@@ -696,7 +796,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, StreamError> {
         if data.len() > MAX_REQUEST {
             return Err(StreamError::Invalid("request too large".into()));
         }
-        let n = stream.read(&mut chunk)?;
+        let n = read(stream, &mut chunk)?;
         if n == 0 {
             return Err(StreamError::Invalid("connection closed".into()));
         }
@@ -717,7 +817,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, StreamError> {
     }
     let mut body = data[head_end..].to_vec();
     while body.len() < length {
-        let n = stream.read(&mut chunk)?;
+        let n = read(stream, &mut chunk)?;
         if n == 0 {
             break;
         }
@@ -765,6 +865,56 @@ impl Response {
         stream.write_all(&self.body)?;
         stream.flush()
     }
+}
+
+/// True for addresses inside a home or company network, and for this computer.
+fn is_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => {
+            v.is_private()
+                || v.is_loopback()
+                || v.is_link_local()
+                || v.is_unspecified()
+                || v.is_broadcast()
+                || v.octets()[0] == 100 && (v.octets()[1] & 0xc0) == 64
+        }
+        IpAddr::V6(v) => match v.to_ipv4_mapped() {
+            Some(v4) => is_internal(IpAddr::V4(v4)),
+            None => {
+                v.is_loopback()
+                    || v.is_unspecified()
+                    || (v.segments()[0] & 0xfe00) == 0xfc00
+                    || (v.segments()[0] & 0xffc0) == 0xfe80
+            }
+        },
+    }
+}
+
+/// Drops unsafe ICE candidates from an offer.
+/// A client on the internet gets only public candidates. Then an offer cannot make the
+/// station send checks into its own network. The station keeps at most
+/// [`MAX_CANDIDATES`] candidates.
+#[doc(hidden)]
+pub fn filter_candidates(sdp: &str, peer: IpAddr) -> String {
+    let local_peer = is_internal(peer);
+    let mut kept = 0;
+    let mut out = String::with_capacity(sdp.len());
+    for line in sdp.split_inclusive('\n') {
+        if let Some(rest) = line.trim_end().strip_prefix("a=candidate:") {
+            let address = rest.split_whitespace().nth(4).unwrap_or("");
+            let allowed = match address.parse::<IpAddr>() {
+                Ok(ip) => !ip.is_multicast() && (local_peer || !is_internal(ip)),
+                // A browser hides its local address behind an mDNS name. It is not routable.
+                Err(_) => local_peer,
+            };
+            if !allowed || kept >= MAX_CANDIDATES {
+                continue;
+            }
+            kept += 1;
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// 128 random bits from the system source, as hex.
