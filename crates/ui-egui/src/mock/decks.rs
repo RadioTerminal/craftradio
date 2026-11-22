@@ -207,7 +207,7 @@ fn strip_label(strip: &str) -> String {
 pub(super) fn output_meters() -> Vec<crate::view::OutputMeterView> {
     use crate::view::{OutputKind, OutputMeterView};
     [
-        (OutputKind::Device, "Program device", "Preview — no audio"),
+        (OutputKind::Device, "Sound card", "Preview — no audio"),
         (OutputKind::Icecast, "Icecast", "Not connected"),
         (OutputKind::WebRtc, "WebRTC", "Off"),
     ]

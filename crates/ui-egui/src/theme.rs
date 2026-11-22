@@ -341,7 +341,7 @@ pub struct Tokens {
     pub warn: Color32,
     pub danger: Color32,
     pub danger_fill: Color32,
-    /// The fill of a warning callout and of a PFL that is on.
+    /// The fill of a warning callout and of an SND that is on.
     pub warn_fill: Color32,
     /// A cart while it flashes.
     pub flash: Color32,

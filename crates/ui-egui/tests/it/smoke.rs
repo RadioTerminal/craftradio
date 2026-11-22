@@ -226,9 +226,9 @@ fn the_mixer_cog_opens_preferences_beside_the_strips_and_done_closes_it() {
     );
 }
 
-/// The ⚙ of the Out strip opens Preferences on the Icecast page.
+/// The ⚙ of the Icecast output strip opens Preferences on the Icecast page.
 #[test]
-fn the_out_cog_opens_preferences_on_icecast() {
+fn the_icecast_strip_cog_opens_preferences_on_icecast() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
     click(&mut harness, "Icecast preferences");

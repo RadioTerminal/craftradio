@@ -31,7 +31,7 @@ pub(crate) fn output_meter_views(out: &OutputStatus) -> Vec<OutputMeterView> {
         Some(WebRtcStatus::Listening { listeners, .. }) => (true, format!("{listeners} listeners")),
     };
     [
-        (OutputKind::Device, "Program device", device),
+        (OutputKind::Device, "Sound card", device),
         (
             OutputKind::Icecast,
             "Icecast",
