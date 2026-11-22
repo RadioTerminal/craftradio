@@ -13,6 +13,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 rustls-native-certs = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 symphonia-adapter-libopus = "0.3"
+# WebRTC listening (WHEP). aws-lc is ISC/Apache-2.0/MIT/BSD-3-Clause.
+str0m = { version = "0.25", default-features = false, features = ["aws-lc-rs"] }
 lofty = "0.22"
 ebur128 = "0.1"
 blake3 = "1"
