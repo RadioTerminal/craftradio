@@ -42,6 +42,7 @@ jiff = { version = "0.2", features = ["serde"] }
 thiserror = "2"
 cpal = "0.18"
 rand_chacha = "0.9"
+proptest = "1"
 clap = { version = "4", features = ["derive"] }
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm", "all-meta"] }
 rubato = "5"

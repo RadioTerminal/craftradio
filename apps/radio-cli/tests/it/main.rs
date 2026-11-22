@@ -66,6 +66,19 @@ fn plan_example_prints_news_at_1500() {
 }
 
 #[test]
+fn json_roundtrips() {
+    let out = plan(&example(), &["--hours", "4", "--json"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    let timeline: radio_scheduler::Timeline = serde_json::from_str(&text).unwrap();
+    assert!(timeline.entries.iter().any(|e| e.fixed.is_some()));
+    let again = serde_json::to_string_pretty(&timeline).unwrap();
+    assert_eq!(
+        serde_json::from_str::<radio_scheduler::Timeline>(&again).unwrap(),
+        timeline
+    );
+}
+
+#[test]
 fn invalid_station_exits_1_with_item_name() {
     let (_dir, path) = station_file(&one_item_station(
         "title = \"Mystery Reel\"\nsource = { File = { path = \"reel.wav\" } }",

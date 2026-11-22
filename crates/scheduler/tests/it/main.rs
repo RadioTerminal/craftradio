@@ -6,5 +6,6 @@ mod merge;
 mod one_off;
 mod pick;
 mod plan;
+mod prop;
 
 mod performance;
