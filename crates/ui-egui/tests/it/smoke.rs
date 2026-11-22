@@ -623,3 +623,16 @@ fn routing_offers_no_cue_route_without_a_cue() {
         "Cue only is not offered without a cue"
     );
 }
+
+/// Cart ducking is kept but not played yet, and its controls say so instead of looking like
+/// they work.
+#[test]
+fn cart_ducking_says_it_is_not_played_yet() {
+    let mut harness = harness();
+    click(&mut harness, "Cartwall");
+    click(&mut harness, "Cartwall preferences");
+    assert!(
+        shows(&harness, "Saved, but the playout does not apply this yet"),
+        "the ducking rows say they are not played yet"
+    );
+}
