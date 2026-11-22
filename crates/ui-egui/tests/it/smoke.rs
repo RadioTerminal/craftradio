@@ -240,15 +240,23 @@ fn the_out_cog_opens_preferences_on_icecast() {
     );
 }
 
-/// The output chip of the header opens the mixer on the Icecast tab of its settings.
+/// The Icecast state in the status line opens Preferences on the Icecast page. (The on-air
+/// chip of the header is the streaming switch; `listen_link` tests it.)
 #[test]
-fn the_output_chip_opens_the_mixer_on_the_icecast_tab() {
+fn the_icecast_state_in_the_status_line_opens_its_preferences() {
     let mut harness = harness();
     assert!(!shows(&harness, "Done"));
-    // In the preview the chip says PREVIEW; it opens the Icecast settings all the same.
-    click(&mut harness, "PREVIEW");
-    assert!(shows(&harness, "Done"), "the mixer opens on its page");
-    assert!(shows(&harness, "Password"), "on the Icecast tab");
+    let state = harness
+        .query_all(egui_kittest::kittest::By::new().predicate(|n| {
+            n.value().is_some_and(|v| v.starts_with("Icecast "))
+                || n.label().is_some_and(|v| v.starts_with("Icecast "))
+        }))
+        .next()
+        .expect("the Icecast state of the status line");
+    state.click();
+    harness.run_steps(FRAMES);
+    assert!(shows(&harness, "Done"), "Preferences opens");
+    assert!(shows(&harness, "Password"), "on the Icecast page");
 }
 
 /// Escape over Preferences closes it, as Done does.
