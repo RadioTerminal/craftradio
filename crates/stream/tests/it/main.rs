@@ -381,6 +381,101 @@ fn source_discards_stale_ring_before_connecting() {
     server.join().unwrap();
 }
 
+/// An HTTP proxy forwards a source's audio only when the request declares a body, and the
+/// server behind it may send no reply while that body is still arriving.
+#[test]
+fn source_streams_to_a_server_that_accepts_without_replying() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let request = request_header(&mut socket);
+        let length = request
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .and_then(|value| value.parse::<u64>().ok());
+        // No reply at all: the audio must come anyway, and go on past the stream headers.
+        let mut audio = [0; 1024];
+        let audio = socket.read_exact(&mut audio).map(|()| audio[..4].to_vec());
+        tx.send((length, audio.ok())).unwrap();
+        let _ = wait.recv_timeout(Duration::from_secs(3));
+    });
+    // Half a second of ring: less than the wait for a reply, so it fills meanwhile.
+    let (mut producer, consumer) = rtrb::RingBuffer::new(48_000);
+    let (stop, stopped) = mpsc::channel::<()>();
+    let feed = std::thread::spawn(move || {
+        while stopped.try_recv() == Err(mpsc::TryRecvError::Empty) {
+            for _ in 0..960 {
+                let _ = producer.push(0.1);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    let handle = IcecastClient::start(config(port), consumer);
+    let (length, audio) = rx.recv_timeout(Duration::from_secs(8)).unwrap();
+    assert!(
+        length.is_some_and(|length| length > 0),
+        "the request declares a body"
+    );
+    assert_eq!(
+        audio.as_deref(),
+        Some(&b"OggS"[..]),
+        "{:?}",
+        handle.status()
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !matches!(handle.status(), StreamStatus::Connected { .. }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            handle.status()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    handle.stop();
+    release.send(()).unwrap();
+    drop(stop);
+    server.join().unwrap();
+    feed.join().unwrap();
+}
+
+/// Behind an HTTP proxy a refusal reaches the source only after its first audio.
+#[test]
+fn a_refusal_after_the_first_audio_is_reported_as_a_refusal() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        request_header(&mut socket);
+        let mut magic = [0; 4];
+        socket.read_exact(&mut magic).unwrap();
+        socket.write_all(b"HTTP/1.0 403 Forbidden\r\n\r\n").unwrap();
+        // The connection stays open, so only the reply itself can tell the source.
+        let _ = wait.recv_timeout(Duration::from_secs(8));
+    });
+    let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+    let handle = IcecastClient::start(config(port), consumer);
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    loop {
+        if let StreamStatus::Retrying { last_error, .. } = handle.status() {
+            assert!(last_error.contains("403"), "{last_error}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            handle.status()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    handle.stop();
+    release.send(()).unwrap();
+    server.join().unwrap();
+}
+
 #[test]
 fn invalid_source_settings_report_clear_errors() {
     for (field, value, expected) in [

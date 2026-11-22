@@ -157,8 +157,20 @@ impl std::ops::Deref for SourceConfig {
     }
 }
 
-trait Transport: Read + Write {}
-impl<T: Read + Write> Transport for T {}
+trait Transport: Read + Write {
+    /// How long a read waits for the server.
+    fn read_within(&mut self, timeout: Duration) -> std::io::Result<()>;
+}
+impl Transport for TcpStream {
+    fn read_within(&mut self, timeout: Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+}
+impl Transport for rustls::StreamOwned<rustls::ClientConnection, TcpStream> {
+    fn read_within(&mut self, timeout: Duration) -> std::io::Result<()> {
+        self.sock.set_read_timeout(Some(timeout))
+    }
+}
 type SourceStream = Box<dyn Transport>;
 
 struct SystemRoots {
@@ -456,7 +468,86 @@ impl IcecastClient {
         }
     }
 }
-fn connect(cfg: &SourceConfig, method: &str) -> Result<SourceStream, StreamError> {
+/// The body length a source request declares. The stream has no end, so this is the
+/// largest length a server can hold in a signed 64-bit number. Without a declared body an
+/// HTTP proxy in front of the server forwards the request and drops the audio.
+const ENDLESS_BODY: u64 = i64::MAX as u64;
+
+/// An open source connection, and whether the server said 200 before the audio.
+struct Source {
+    socket: SourceStream,
+    /// False when the server sent nothing within the read timeout. A server that reads the
+    /// declared body through a proxy replies only when the body ends.
+    replied: bool,
+}
+
+/// The status code of a reply, or nothing when the reply has no three-digit code.
+fn status_code(reply: &[u8]) -> String {
+    String::from_utf8_lossy(reply)
+        .split_whitespace()
+        .nth(1)
+        .filter(|code| code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// The reply of a server that accepted a source in silence. Behind an HTTP proxy a refusal
+/// arrives only after the first audio, so the source keeps listening while it sends.
+struct LateReply {
+    bytes: Vec<u8>,
+    next: Instant,
+}
+impl LateReply {
+    /// Reads that return at once, so listening never holds up the audio.
+    fn start(socket: &mut dyn Transport) -> Result<Self, StreamError> {
+        socket.read_within(Duration::from_millis(1))?;
+        Ok(Self {
+            bytes: Vec::new(),
+            next: Instant::now(),
+        })
+    }
+    fn due(&self) -> bool {
+        Instant::now() >= self.next
+    }
+    /// True when the server said 200. A refusal or a closed connection is an error.
+    fn check(&mut self, socket: &mut dyn Transport) -> Result<bool, StreamError> {
+        self.next = Instant::now() + Duration::from_millis(100);
+        let mut part = [0; 256];
+        loop {
+            match socket.read(&mut part) {
+                Ok(0) => {
+                    return Err(StreamError::Invalid(
+                        "the server closed the source connection".into(),
+                    ));
+                }
+                Ok(n) => {
+                    self.bytes.extend_from_slice(&part[..n]);
+                    if self.bytes.contains(&b'\n') || self.bytes.len() >= 8192 {
+                        let code = status_code(&self.bytes);
+                        if code == "200" {
+                            return Ok(true);
+                        }
+                        return Err(StreamError::Invalid(format!(
+                            "source rejected: HTTP {code}"
+                        )));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Ok(false);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+fn connect(cfg: &SourceConfig, method: &str) -> Result<Source, StreamError> {
     if cfg.host.chars().any(char::is_whitespace) || cfg.mount.chars().any(char::is_whitespace) {
         return Err(StreamError::Invalid(
             "host and mount must not contain whitespace".into(),
@@ -484,7 +575,7 @@ fn connect(cfg: &SourceConfig, method: &str) -> Result<SourceStream, StreamError
         base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", cfg.user, cfg.password));
     write!(
         socket,
-        "{method} {} HTTP/1.0\r\nHost: {}\r\nAuthorization: Basic {auth}\r\nContent-Type: {}\r\nIce-Name: {}\r\nIce-Description: {}\r\nIce-Genre: {}\r\nIce-Bitrate: {}\r\n\r\n",
+        "{method} {} HTTP/1.0\r\nHost: {}\r\nAuthorization: Basic {auth}\r\nContent-Type: {}\r\nContent-Length: {ENDLESS_BODY}\r\nIce-Name: {}\r\nIce-Description: {}\r\nIce-Genre: {}\r\nIce-Bitrate: {}\r\n\r\n",
         cfg.mount,
         cfg.host,
         cfg.format.content_type(),
@@ -496,15 +587,26 @@ fn connect(cfg: &SourceConfig, method: &str) -> Result<SourceStream, StreamError
     let mut response = Vec::new();
     while response.len() < 8192 && !response.ends_with(b"\r\n\r\n") {
         let mut byte = [0];
-        socket.read_exact(&mut byte)?;
-        response.push(byte[0]);
+        match socket.read_exact(&mut byte) {
+            Ok(()) => response.push(byte[0]),
+            // Silence is not a refusal: a refusal arrives as a status line. A reply that
+            // starts and then stalls stays an error.
+            Err(error)
+                if response.is_empty()
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                return Ok(Source {
+                    socket,
+                    replied: false,
+                });
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
-    let text = String::from_utf8_lossy(&response);
-    let code = text
-        .split_whitespace()
-        .nth(1)
-        .filter(|code| code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit()))
-        .unwrap_or("");
+    let code = status_code(&response);
     if code == "405" && method == "PUT" {
         return connect(cfg, "SOURCE");
     }
@@ -513,7 +615,10 @@ fn connect(cfg: &SourceConfig, method: &str) -> Result<SourceStream, StreamError
             "source rejected: HTTP {code}"
         )));
     }
-    Ok(socket)
+    Ok(Source {
+        socket,
+        replied: true,
+    })
 }
 fn send(
     cfg: &SourceConfig,
@@ -529,7 +634,16 @@ fn send(
     for _ in 0..stale {
         let _ = frames.pop();
     }
-    let mut output = SourceOutput::new(cfg, title)?;
+    let (mut output, replied) = SourceOutput::new(cfg, title)?;
+    let mut late = None;
+    if !replied {
+        // The wait for a reply is longer than a small ring holds, and listeners should not
+        // hear that wait as delay.
+        for _ in 0..frames.slots() {
+            let _ = frames.pop();
+        }
+        late = Some(LateReply::start(output.socket())?);
+    }
     let connected = std::time::Instant::now();
     status(
         state,
@@ -556,6 +670,12 @@ fn send(
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
+        if let Some(reply) = &mut late
+            && reply.due()
+            && reply.check(output.socket())?
+        {
+            late = None;
+        }
         if frames.slots() == frames.buffer().capacity() {
             while frames.pop().is_ok() {}
             return Err(StreamError::Invalid(
@@ -570,7 +690,14 @@ fn send(
         }
         if samples.len() == 1920 {
             meter.add(&samples);
-            output.packet(&samples)?;
+            if let Err(error) = output.packet(&samples) {
+                // A refusal that came just before the server hung up says more than the
+                // failed write does.
+                if let Some(reply) = &mut late {
+                    reply.check(output.socket())?;
+                }
+                return Err(error);
+            }
             samples.clear();
         } else {
             thread::sleep(Duration::from_millis(2));
@@ -590,26 +717,35 @@ enum SourceOutput {
     },
 }
 impl SourceOutput {
-    fn new(cfg: &SourceConfig, title: &str) -> Result<Self, StreamError> {
+    /// Opens the source. The flag is false when the server accepted without a reply.
+    fn new(cfg: &SourceConfig, title: &str) -> Result<(Self, bool), StreamError> {
         match cfg.format {
             StreamFormat::Opus { kbps } => {
                 let mut encoder = OpusEncoder::new(kbps)?;
-                let mut muxer = OggMuxer::new(connect(cfg, "PUT")?);
+                let Source { socket, replied } = connect(cfg, "PUT")?;
+                let mut muxer = OggMuxer::new(socket);
                 muxer.start(title, None, encoder.pre_skip()?)?;
-                Ok(Self::Opus { encoder, muxer })
+                Ok((Self::Opus { encoder, muxer }, replied))
             }
             StreamFormat::Mp3 { kbps: _ } => {
                 #[cfg(feature = "mp3")]
                 {
                     let encoder = crate::mp3::Mp3Encoder::new(cfg.format.kbps())?;
-                    let socket = connect(cfg, "PUT")?;
-                    Ok(Self::Mp3 { encoder, socket })
+                    let Source { socket, replied } = connect(cfg, "PUT")?;
+                    Ok((Self::Mp3 { encoder, socket }, replied))
                 }
                 #[cfg(not(feature = "mp3"))]
                 Err(StreamError::Invalid(
                     "MP3 output requires the mp3 feature".into(),
                 ))
             }
+        }
+    }
+    fn socket(&mut self) -> &mut dyn Transport {
+        match self {
+            Self::Opus { muxer, .. } => muxer.writer.inner_mut().as_mut(),
+            #[cfg(feature = "mp3")]
+            Self::Mp3 { socket, .. } => socket.as_mut(),
         }
     }
     fn packet(&mut self, samples: &[f32]) -> Result<(), StreamError> {
