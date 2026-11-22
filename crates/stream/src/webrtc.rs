@@ -4,8 +4,9 @@
 //! A public STUN server tells the station its address outside the NAT, for remote listeners.
 //! There is no TURN, so a listener behind a strict NAT does not connect.
 
+use crate::now::SharedNow;
 use crate::{OpusEncoder, StreamError};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
@@ -13,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+use str0m::channel::ChannelId;
 use str0m::format::Codec;
 use str0m::media::{Frequency, MediaKind, MediaTime, Mid, Pt};
 use str0m::net::{Protocol, Receive};
@@ -50,6 +52,11 @@ pub struct WebRtcConfig {
     pub stun: Vec<String>,
     pub kbps: u32,
     pub max_listeners: usize,
+    /// The station key (Ed25519, PKCS#8). With it, listeners anywhere connect through
+    /// the [`trackers`](Self::trackers) with the link of [`listen_link`].
+    pub identity: Option<Vec<u8>>,
+    /// WebTorrent trackers as `wss://` addresses. They carry offers and answers only.
+    pub trackers: Vec<String>,
 }
 
 impl WebRtcConfig {
@@ -59,8 +66,24 @@ impl WebRtcConfig {
             stun: DEFAULT_STUN.iter().map(|s| (*s).to_owned()).collect(),
             kbps: 96,
             max_listeners: 50,
+            identity: None,
+            trackers: crate::relay::DEFAULT_TRACKERS
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
         }
     }
+}
+
+/// The address of the listener site. A station link adds `#` and the station ID.
+pub const LISTEN_SITE: &str = "https://radioterminal.github.io/craftradio/";
+
+/// The link that plays the station with this identity from anywhere.
+pub fn listen_link(identity: &[u8]) -> Option<String> {
+    Some(format!(
+        "{LISTEN_SITE}#{}",
+        crate::relay::Identity::new(identity)?.id()
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +97,10 @@ pub enum WebRtcStatus {
         public: Option<SocketAddr>,
         listeners: usize,
         since: jiff::Timestamp,
+        /// The link that plays the station from anywhere, when it has an identity.
+        link: Option<String>,
+        /// Trackers with a connection now. Without one, the link does not work.
+        relays: usize,
     },
     Failed(String),
     Stopped,
@@ -89,7 +116,7 @@ enum Control {
 pub struct WebRtcHandle {
     control: mpsc::Sender<Control>,
     status: Arc<Mutex<WebRtcStatus>>,
-    title: Arc<Mutex<String>>,
+    now: SharedNow,
     http: Option<SocketAddr>,
 }
 
@@ -102,9 +129,12 @@ impl WebRtcHandle {
     }
     /// Sets the title that `GET /now` gives to the listener page.
     pub fn set_title(&self, title: String) {
-        if let Ok(mut t) = self.title.lock() {
-            *t = title;
-        }
+        crate::now::set(&self.now, title, String::new(), None);
+    }
+
+    /// Sets what plays now. Listeners get the cover of `file` when it has one.
+    pub fn set_now(&self, title: String, artist: String, file: Option<std::path::PathBuf>) {
+        crate::now::set(&self.now, title, artist, file);
     }
     /// The bound TCP address, when the server could bind it.
     pub fn local_addr(&self) -> Option<SocketAddr> {
@@ -158,11 +188,11 @@ impl WebRtcServer {
     pub fn start(cfg: WebRtcConfig, frames: rtrb::Consumer<f32>) -> WebRtcHandle {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(WebRtcStatus::Starting));
-        let title = Arc::new(Mutex::new(String::new()));
+        let title: SharedNow = Arc::default();
         let mut handle = WebRtcHandle {
             control: tx.clone(),
             status: status.clone(),
-            title: title.clone(),
+            now: title.clone(),
             http: None,
         };
         let opened = OpusEncoder::new(cfg.kbps).and_then(|encoder| {
@@ -183,6 +213,11 @@ impl WebRtcServer {
         let candidates = Arc::new(Mutex::new(Vec::new()));
         let taken = Arc::new(AtomicUsize::new(0));
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let relays = Arc::new(AtomicUsize::new(0));
+        let identity = cfg
+            .identity
+            .as_deref()
+            .and_then(crate::relay::Identity::new);
         let url_ip = udp.local_addr().map_or(http.ip(), |a| a.ip());
         let media = Media {
             socket: udp,
@@ -193,6 +228,11 @@ impl WebRtcServer {
             status: status.clone(),
             taken: taken.clone(),
             pending: pending.clone(),
+            title: title.clone(),
+            relays: relays.clone(),
+            link: identity
+                .as_ref()
+                .map(|i| format!("{LISTEN_SITE}#{}", i.id())),
             url: format!("http://{}/", SocketAddr::new(url_ip, http.port())),
         };
         if let Err(e) = thread::Builder::new()
@@ -202,14 +242,20 @@ impl WebRtcServer {
             set_status(&status, WebRtcStatus::Failed(e.to_string()));
             return handle;
         }
-        let http_state = Http {
+        let gate = Gate {
             control: tx,
             candidates,
-            title,
             status: status.clone(),
             max: cfg.max_listeners,
             taken,
             pending,
+        };
+        if let Some(identity) = identity {
+            crate::relay::start(&cfg.trackers, identity, gate.clone(), relays);
+        }
+        let http_state = Http {
+            gate,
+            title,
             busy: Arc::new(AtomicUsize::new(0)),
         };
         if let Err(e) = thread::Builder::new()
@@ -248,6 +294,12 @@ struct Listener {
     pt: Option<Pt>,
     connected: bool,
     created: Instant,
+    /// The data channel that carries what plays now, once the listener opens one.
+    channel: Option<ChannelId>,
+    /// The revision of [`Now`](crate::now::Now) in the outbox.
+    sent_rev: u64,
+    /// Messages that wait for room in the data channel.
+    outbox: VecDeque<String>,
 }
 
 struct Media {
@@ -259,6 +311,9 @@ struct Media {
     status: Arc<Mutex<WebRtcStatus>>,
     taken: Arc<AtomicUsize>,
     pending: Pending,
+    title: SharedNow,
+    relays: Arc<AtomicUsize>,
+    link: Option<String>,
     url: String,
 }
 
@@ -354,9 +409,18 @@ impl Media {
             self.drop_where(&mut listeners, |l| {
                 !l.rtc.is_alive() || (!l.connected && l.created.elapsed() >= CONNECT_TIMEOUT)
             });
+            let (rev, messages) = self
+                .title
+                .lock()
+                .map(|n| (n.rev, n.messages.clone()))
+                .unwrap_or_default();
+            for l in &mut listeners {
+                l.send_now(rev, &messages);
+            }
             let count = listeners.iter().filter(|l| l.connected).count();
-            if shown != Some((count, public)) {
-                shown = Some((count, public));
+            let relays = self.relays.load(Ordering::Acquire);
+            if shown != Some((count, public, relays)) {
+                shown = Some((count, public, relays));
                 set_status(
                     &self.status,
                     WebRtcStatus::Listening {
@@ -364,6 +428,8 @@ impl Media {
                         public,
                         listeners: count,
                         since,
+                        link: self.link.clone(),
+                        relays,
                     },
                 );
             }
@@ -434,6 +500,24 @@ impl Media {
 }
 
 impl Listener {
+    /// Queues what plays now when it changed, and sends as much as the channel takes.
+    fn send_now(&mut self, rev: u64, messages: &[String]) {
+        let Some(id) = self.channel else { return };
+        if self.sent_rev != rev {
+            self.sent_rev = rev;
+            self.outbox = messages.iter().cloned().collect();
+        }
+        let Some(mut ch) = self.rtc.channel(id) else {
+            return;
+        };
+        while let Some(m) = self.outbox.front() {
+            if !ch.write(false, m.as_bytes()).unwrap_or(false) {
+                break;
+            }
+            self.outbox.pop_front();
+        }
+    }
+
     /// Sends what the connection has to send. Returns the time it next needs.
     fn poll(&mut self, socket: &UdpSocket) -> Option<Instant> {
         loop {
@@ -452,6 +536,11 @@ impl Listener {
                         });
                     }
                     Event::Connected => self.connected = true,
+                    Event::ChannelOpen(id, _) => {
+                        self.channel = Some(id);
+                        self.sent_rev = 0;
+                    }
+                    Event::ChannelClose(id) if self.channel == Some(id) => self.channel = None,
                     Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                         self.rtc.disconnect();
                     }
@@ -617,16 +706,22 @@ fn address(value: &[u8], xor: bool, id: &[u8; 12]) -> Option<SocketAddr> {
     }
 }
 
+/// Lets listeners in, from HTTP and from the trackers alike.
 #[derive(Clone)]
-struct Http {
+pub(crate) struct Gate {
     control: mpsc::Sender<Control>,
     candidates: Arc<Mutex<Vec<Candidate>>>,
-    title: Arc<Mutex<String>>,
     status: Arc<Mutex<WebRtcStatus>>,
     max: usize,
     /// Listeners that connect or play now. The media thread counts down when one leaves.
     taken: Arc<AtomicUsize>,
     pending: Pending,
+}
+
+#[derive(Clone)]
+struct Http {
+    gate: Gate,
+    title: SharedNow,
     /// HTTP requests in progress.
     busy: Arc<AtomicUsize>,
 }
@@ -645,7 +740,7 @@ struct Request {
     body: Vec<u8>,
 }
 
-struct Response {
+pub(crate) struct Response {
     code: u16,
     content_type: &'static str,
     location: Option<String>,
@@ -656,7 +751,7 @@ impl Http {
     /// Each request gets its own thread, so a slow client cannot hold up the others.
     fn serve(self, tcp: TcpListener) {
         for stream in tcp.incoming() {
-            if !is_running(&self.status) {
+            if !is_running(&self.gate.status) {
                 return;
             }
             let Ok(stream) = stream else { continue };
@@ -698,7 +793,11 @@ impl Http {
                 body: LISTEN_PAGE.as_bytes().to_vec(),
             },
             ("GET", "/now") => {
-                let title = self.title.lock().map(|t| t.clone()).unwrap_or_default();
+                let title = self
+                    .title
+                    .lock()
+                    .map(|n| n.title.clone())
+                    .unwrap_or_default();
                 Response::text(200, &title)
             }
             ("POST", "/whep") => self.whep(&req.body, peer),
@@ -707,7 +806,7 @@ impl Http {
                 if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Response::text(404, "no such listener");
                 }
-                let _ = self.control.send(Control::Remove(token.to_owned()));
+                let _ = self.gate.control.send(Control::Remove(token.to_owned()));
                 Response::text(200, "")
             }
             (_, "/" | "/now" | "/whep") => Response::text(405, "method not allowed"),
@@ -716,32 +815,54 @@ impl Http {
     }
 
     fn whep(&self, body: &[u8], peer: IpAddr) -> Response {
+        let Ok(sdp) = std::str::from_utf8(body) else {
+            return Response::text(415, "expected an SDP offer");
+        };
+        match self.gate.admit(sdp, peer, PENDING_PER_ADDRESS) {
+            Ok((token, answer)) => Response {
+                code: 201,
+                content_type: "application/sdp",
+                location: Some(format!("/whep/{token}")),
+                body: answer.into_bytes(),
+            },
+            Err(refused) => refused,
+        }
+    }
+}
+
+impl Gate {
+    pub(crate) fn running(&self) -> bool {
+        is_running(&self.status)
+    }
+
+    /// Answers an offer from `peer`. Returns the listener token and the SDP answer.
+    pub(crate) fn admit(
+        &self,
+        sdp: &str,
+        peer: IpAddr,
+        pending_limit: usize,
+    ) -> Result<(String, String), Response> {
         if !matches!(
             self.status.lock().map(|s| s.clone()),
             Ok(WebRtcStatus::Listening { .. })
         ) {
-            return Response::text(503, "the station is not ready");
+            return Err(Response::text(503, "the station is not ready"));
         }
-        let Ok(sdp) = std::str::from_utf8(body) else {
-            return Response::text(415, "expected an SDP offer");
-        };
-        if let Err(refused) = self.reserve(peer) {
-            return refused;
-        }
-        let response = self.add_listener(sdp, peer);
-        if response.code != 201 {
+        self.reserve(peer, pending_limit)?;
+        let added = self.add_listener(sdp, peer);
+        if added.is_err() {
             self.unreserve(peer);
         }
-        response
+        added
     }
 
     /// Takes both places for `peer` in one step.
     /// The media thread frees them when the listener leaves.
-    fn reserve(&self, peer: IpAddr) -> Result<(), Response> {
+    fn reserve(&self, peer: IpAddr, pending_limit: usize) -> Result<(), Response> {
         let Ok(mut map) = self.pending.lock() else {
             return Err(Response::text(503, "the station is not ready"));
         };
-        if map.get(&peer).copied().unwrap_or(0) >= PENDING_PER_ADDRESS {
+        if map.get(&peer).copied().unwrap_or(0) >= pending_limit {
             return Err(Response::text(
                 503,
                 "this address already has listeners that connect",
@@ -772,7 +893,7 @@ impl Http {
         }
     }
 
-    fn add_listener(&self, sdp: &str, peer: IpAddr) -> Response {
+    fn add_listener(&self, sdp: &str, peer: IpAddr) -> Result<(String, String), Response> {
         let sdp = filter_candidates(sdp, peer);
         let local = self
             .candidates
@@ -782,7 +903,7 @@ impl Http {
         match answer(&sdp, &local) {
             Ok((rtc, answer)) => {
                 let Some(token) = listener_token() else {
-                    return Response::text(503, "the station has no random source");
+                    return Err(Response::text(503, "the station has no random source"));
                 };
                 let listener = Listener {
                     token: token.clone(),
@@ -793,18 +914,16 @@ impl Http {
                     pt: None,
                     connected: false,
                     created: Instant::now(),
+                    channel: None,
+                    sent_rev: 0,
+                    outbox: VecDeque::new(),
                 };
                 if self.control.send(Control::Add(Box::new(listener))).is_err() {
-                    return Response::text(503, "the station stopped");
+                    return Err(Response::text(503, "the station stopped"));
                 }
-                Response {
-                    code: 201,
-                    content_type: "application/sdp",
-                    location: Some(format!("/whep/{token}")),
-                    body: answer.into_bytes(),
-                }
+                Ok((token, answer))
             }
-            Err(e) => Response::text(400, &e),
+            Err(e) => Err(Response::text(400, &e)),
         }
     }
 }
@@ -953,7 +1072,12 @@ pub fn filter_candidates(sdp: &str, peer: IpAddr) -> String {
 
 /// 128 random bits from the system source, as hex.
 fn listener_token() -> Option<String> {
-    let mut bytes = [0u8; 16];
+    random_hex(16)
+}
+
+/// `n` random bytes from the system source, as hex.
+pub(crate) fn random_hex(n: usize) -> Option<String> {
+    let mut bytes = vec![0u8; n];
     rustls::crypto::ring::default_provider()
         .secure_random
         .fill(&mut bytes)

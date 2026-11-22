@@ -2,10 +2,14 @@
 mod input;
 #[cfg(feature = "mp3")]
 mod mp3;
+mod now;
 mod output;
+mod relay;
 mod webrtc;
 pub use input::*;
+pub use now::cover_messages;
 pub use output::*;
+pub use relay::{DEFAULT_TRACKERS, Identity, SIGNATURE_LINE};
 pub use webrtc::*;
 
 /// True when this build can encode MP3 (the `mp3` feature, LAME).

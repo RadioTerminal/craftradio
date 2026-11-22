@@ -15,6 +15,9 @@ rustls-native-certs = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 symphonia-adapter-libopus = "0.3"
 # WebRTC listening (WHEP). aws-lc is ISC/Apache-2.0/MIT/BSD-3-Clause.
+# Ed25519 station identity (already used by rustls).
+ring = "0.17"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "__rustls-tls"] }
 str0m = { version = "0.25", default-features = false, features = ["aws-lc-rs"] }
 lofty = "0.22"
 ebur128 = "0.1"
