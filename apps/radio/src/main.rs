@@ -2,6 +2,14 @@
 //!
 //! By default it runs the real station: the engine on `<data dir>/station.db` and the
 //! playout on the default sound card. `--demo` shows the UI preview with mock data.
+//!
+//! A Windows release build is a windowed program, so no console window opens with the app.
+//! `craftradio --headless` then prints only where its output is redirected or piped
+//! (`craftradio --headless | Out-Host` in PowerShell); a debug build keeps its console.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 mod station;
 

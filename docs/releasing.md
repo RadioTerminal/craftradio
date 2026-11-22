@@ -80,8 +80,9 @@ Plus `SHA256SUMS.txt` (and `SHA256SUMS.txt.asc` when `LINUX_SIGNING_KEY` is set)
 
 ## Known gaps
 
-- **Windows opens a console window with the app.** `craftradio.exe` is a console program so that
-  `craftradio --headless` can print; `package.ps1` checks for that.
+- **On Windows, `craftradio --headless` prints only when its output is redirected.** The app is a
+  windowed program so that no console window opens with it; in PowerShell,
+  `craftradio --headless | Out-Host` shows its output. `package.ps1` checks the subsystems.
 - **No Flatpak yet.** The shared Craft workflow built one; this workflow does not, though
   `packaging/linux/flatpak-bundle.sh` is still here.
 - **macOS runners are billed.** GitHub-hosted macOS minutes need the account's billing in order,
