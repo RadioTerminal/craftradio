@@ -215,7 +215,7 @@ function updateSession() {
   });
 }
 if ("mediaSession" in navigator) {
-  navigator.mediaSession.setActionHandler("play", () => { if (!pc) listen(); });
+  navigator.mediaSession.setActionHandler("play", () => { if (!wanted) start(); });
   navigator.mediaSession.setActionHandler("stop", () => stop());
   navigator.mediaSession.setActionHandler("pause", () => stop());
 }
@@ -267,7 +267,14 @@ function stopMeter() {
 
 function closeTrackers() { for (const s of sockets) { try { s.close(); } catch (_) {} } sockets = []; }
 
-async function stop(message) {
+// The listener wants to hear the station from Play until Stop. In between, a lost or
+// failed connection retries on its own, so a station that restarts comes back.
+let wanted = false, attempt = 0, retryTimer = null, lostTimer = null, gen = 0;
+
+// Ends the connection, but not the wish to listen.
+function teardown() {
+  gen++;
+  clearTimeout(lostTimer); lostTimer = null;
   clearInterval(poll); poll = null;
   closeTrackers();
   if (resource) fetch(resource, { method: "DELETE" }).catch(() => {});
@@ -275,9 +282,37 @@ async function stop(message) {
   pc = null; resource = null;
   stopMeter();
   audio.srcObject = null;
-  setIcon(false); onAir(false);
+  onAir(false);
+}
+
+async function stop(message) {
+  wanted = false;
+  clearTimeout(retryTimer); retryTimer = null;
+  teardown();
+  setIcon(false);
   say(message || "Stopped");
 }
+
+function start() {
+  wanted = true; attempt = 0;
+  clearTimeout(retryTimer); retryTimer = null;
+  listen();
+}
+
+// Tries again after 2, 4, 8, 16, then every 30 seconds, while the listener wants to listen.
+function retry(reason) {
+  if (!wanted) return;
+  teardown();
+  attempt = Math.min(attempt + 1, 5);
+  const delay = Math.min(30, 2 ** attempt);
+  setIcon(true);
+  say(reason + " Trying again in " + delay + " s…");
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => { retryTimer = null; if (wanted) listen(); }, delay * 1000);
+}
+
+// An error that a retry cannot fix.
+function lasting(message) { const e = new Error(message); e.lasting = true; return e; }
 
 function randomId(n) {
   const a = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -294,11 +329,11 @@ async function viaTrackers(id, offerSdp) {
   const publicKey = b64url(id);
   // Browsers check signatures only on https:// pages and on this computer.
   if (!window.isSecureContext || !crypto.subtle) {
-    throw new Error("a station link needs a secure page. Open https://radioterminal.github.io/craftradio/#" + id);
+    throw lasting("a station link needs a secure page. Open https://radioterminal.github.io/craftradio/#" + id);
   }
   let key;
   try { key = await crypto.subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, ["verify"]); }
-  catch (_) { throw new Error("this browser cannot check the station signature. Update it, or open the station address directly"); }
+  catch (_) { throw lasting("this browser cannot check the station signature. Update it, or open the station address directly"); }
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey));
   const infoHash = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 20);
   const peerId = randomId(20);
@@ -363,28 +398,43 @@ async function titleFromServer(url) {
 }
 
 async function listen() {
-  if (!station) { $("tuner").open = true; input.focus(); say("Paste a station link first"); return; }
+  if (!station) { await stop("Paste a station link first"); $("tuner").open = true; input.focus(); return; }
   if (station.kind === "url" && blockedMixed(station.url)) {
-    say("This page cannot reach an http:// station on another computer. Open " + station.url + " directly.");
+    await stop("This page cannot reach an http:// station on another computer. Open " + station.url + " directly.");
     return;
   }
+  teardown();
+  const mine = gen;
   setIcon(true); gotMeta = false;
   say(station.kind === "id" ? "Finding the station…" : "Connecting…");
-  pc = new RTCPeerConnection({ iceServers: ICE });
-  pc.addTransceiver("audio", { direction: "recvonly" });
-  const channel = pc.createDataChannel("now");
+  const me = new RTCPeerConnection({ iceServers: ICE });
+  pc = me;
+  me.addTransceiver("audio", { direction: "recvonly" });
+  const channel = me.createDataChannel("now");
   channel.onmessage = (e) => onMessage(e.data);
-  pc.ontrack = (e) => {
+  me.ontrack = (e) => {
     const stream = e.streams[0] || new MediaStream([e.track]);
     audio.srcObject = stream;
     audio.play().catch(() => {});
     startMeter(stream);
   };
-  pc.onconnectionstatechange = () => {
-    const s = pc && pc.connectionState;
-    if (s === "connected") { onAir(true); say("Live"); }
-    if (s === "failed") { onAir(false); say("Could not connect: a firewall may block it"); }
-    if (s === "disconnected") { onAir(false); say("Connection lost, trying again…"); }
+  me.onconnectionstatechange = () => {
+    if (pc !== me) return;
+    const s = me.connectionState;
+    if (s === "connected") {
+      attempt = 0;
+      clearTimeout(lostTimer); lostTimer = null;
+      onAir(true); say("Live");
+    }
+    if (s === "failed") retry("The connection failed.");
+    if (s === "disconnected") {
+      // A short drop can heal on its own. Wait a moment before a new connection.
+      onAir(false); say("Connection lost, waiting…");
+      clearTimeout(lostTimer);
+      lostTimer = setTimeout(() => {
+        if (pc === me && me.connectionState !== "connected") retry("The connection was lost.");
+      }, 5000);
+    }
   };
   try {
     const offer = await pc.createOffer();
@@ -411,10 +461,12 @@ async function listen() {
       titleFromServer(station.url);
       poll = setInterval(() => titleFromServer(station.url), 5000);
     }
-    if (!pc) return;
-    await pc.setRemoteDescription({ type: "answer", sdp: answer });
+    if (gen !== mine) return;
+    await me.setRemoteDescription({ type: "answer", sdp: answer });
   } catch (e) {
-    await stop("Could not tune in: " + e.message);
+    if (gen !== mine) return;
+    if (e.lasting) await stop("Could not tune in: " + e.message);
+    else retry("Could not tune in: " + e.message + ".");
   }
 }
 
@@ -425,7 +477,7 @@ function tuneTo(text) {
   history.replaceState(null, "", next.kind === "id" ? "#" + next.id : "?station=" + encodeURIComponent(next.url));
   paint(next.label); setNow("", ""); setCover(null); shareBtn.hidden = next.kind !== "id";
   $("tuner").open = false;
-  if (pc) stop().then(listen); else listen();
+  stop().then(start);
 }
 
 shareBtn.hidden = !(station && station.kind === "id");
@@ -434,7 +486,7 @@ shareBtn.addEventListener("click", async () => {
   catch (_) { shareText.textContent = "Copy failed"; }
   setTimeout(() => (shareText.textContent = "Copy link"), 1800);
 });
-button.addEventListener("click", () => (pc ? stop() : listen()));
+button.addEventListener("click", () => (wanted ? stop() : start()));
 $("tune").addEventListener("click", () => tuneTo(input.value));
 input.addEventListener("keydown", (e) => { if (e.key === "Enter") tuneTo(input.value); });
 $("volume").addEventListener("input", (e) => { audio.volume = Number(e.target.value); });
