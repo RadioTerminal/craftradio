@@ -18,7 +18,8 @@ pub(crate) fn icon_button(
     icon_button_sized(ui, icon, selected, name, hint, size::ICON_BUTTON)
 }
 
-/// An icon button of a given square `side`, a control size from the theme.
+/// An icon button of a given square `side`, a control size from the theme. It is craft-ui's
+/// `IconButton` in the theme's colours, so a disabled button says so to a screen reader too.
 pub(crate) fn icon_button_sized(
     ui: &mut egui::Ui,
     icon: Icon,
@@ -28,34 +29,51 @@ pub(crate) fn icon_button_sized(
     side: f32,
 ) -> egui::Response {
     let t = Tokens::get(ui.ctx());
-    let side = egui::Vec2::splat(side);
-    let (rect, resp) = ui.allocate_exact_size(side, Sense::click());
-    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, name));
-    if ui.is_rect_visible(rect) {
-        let (fill, edge) = if resp.is_pointer_button_down_on() {
-            (t.pressed, t.accent)
-        } else if selected {
-            (t.selection, t.accent)
-        } else if resp.hovered() {
-            (t.hover, t.field_border)
-        } else {
-            (egui::Color32::TRANSPARENT, egui::Color32::TRANSPARENT)
-        };
-        let edge = if resp.has_focus() { t.accent_ink } else { edge };
-        let p = ui.painter();
-        let stroke = Stroke::new(size::HAIRLINE, edge);
-        p.rect(rect, t.radius, fill, stroke, StrokeKind::Inside);
-        let ink = if selected { t.accent_ink } else { t.text };
-        let font = icons::font(theme::ICON_MD);
-        p.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            icons::glyph(icon),
-            font,
-            ink,
-        );
-    }
+    let style = icon_button_style(&t);
+    let resp = craft_ui::buttons::IconButton::new(name, egui::Vec2::splat(side), &style)
+        .selected(selected)
+        .single_shape_frame()
+        .show(ui, |ui, rect, ink| {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                icons::glyph(icon),
+                icons::font(theme::ICON_MD),
+                ink,
+            );
+        });
     resp.on_hover_text(hint)
+}
+
+/// The theme's icon button: no frame at rest, the hover fill on hover, the accent edge while
+/// pressed or selected, and an inset accent outline while it has keyboard focus.
+fn icon_button_style(t: &Tokens) -> craft_ui::buttons::IconButtonStyle {
+    use craft_ui::buttons::ButtonVisuals;
+    let edge = |c| Stroke::new(size::HAIRLINE, c);
+    craft_ui::buttons::IconButtonStyle {
+        normal: ButtonVisuals {
+            fill: egui::Color32::TRANSPARENT,
+            stroke: Stroke::NONE,
+            icon: t.text,
+        },
+        hovered: ButtonVisuals {
+            fill: t.hover,
+            stroke: edge(t.field_border),
+            icon: t.text,
+        },
+        pressed: Some(ButtonVisuals {
+            fill: t.pressed,
+            stroke: edge(t.accent),
+            icon: t.text,
+        }),
+        selected: ButtonVisuals {
+            fill: t.selection,
+            stroke: edge(t.accent),
+            icon: t.accent_ink,
+        },
+        corner_radius: t.radius,
+        focus_stroke: edge(t.accent_ink),
+    }
 }
 
 /// The armed state of a guarded button: how much of the time to confirm is left, the

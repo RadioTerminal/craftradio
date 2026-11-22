@@ -134,7 +134,7 @@ fn files_dropped_on_the_main_pane_become_rows_and_others_are_skipped() {
 #[test]
 fn add_url_puts_a_stream_into_the_playlist() {
     let mut h = harness();
-    h.get_by_label("    Jingles").click();
+    h.get(By::new().label("Jingles").role(Role::Tab)).click();
     h.run_steps(FRAMES);
     let stream = "https://radio.example.org/live";
     assert_eq!(count(&h, "radio.example.org"), 0);

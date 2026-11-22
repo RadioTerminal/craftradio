@@ -12,3 +12,4 @@ mod meters;
 mod overflow;
 mod smoke;
 mod steady;
+mod tabs;
