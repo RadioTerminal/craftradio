@@ -178,3 +178,73 @@ fn a_large_cover_arrives_in_parts_that_browsers_accept() {
     }
     assert_eq!(back, cover);
 }
+
+fn offer_sdp() -> String {
+    let mut rtc = RtcConfig::new()
+        .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+        .build(Instant::now());
+    let mut api = rtc.sdp_api();
+    api.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+    api.apply().unwrap().0.to_sdp_string()
+}
+
+/// A flood of offers through a tracker gets few answers, and it cannot lock out a real
+/// listener who comes after it.
+#[test]
+fn a_flood_of_tracker_offers_cannot_lock_out_a_later_listener() {
+    let pkcs8 = Identity::generate().unwrap();
+    let info_hash = Identity::new(&pkcs8).unwrap().info_hash();
+    let tracker = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("ws://{}", tracker.local_addr().unwrap());
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.identity = Some(pkcs8);
+    cfg.trackers = vec![url];
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+
+    let (stream, _) = tracker.accept().unwrap();
+    let mut ws = tungstenite::accept(stream).unwrap();
+    ws.read().unwrap();
+    while relays(&server) != Some(1) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    ws.get_ref()
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let sdp = offer_sdp();
+    let send = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, id: &str| {
+        let msg = serde_json::json!({
+            "action": "announce", "info_hash": info_hash, "peer_id": "flooding-peer-000001",
+            "offer_id": id, "offer": { "type": "offer", "sdp": sdp },
+        });
+        ws.send(tungstenite::Message::text(msg.to_string()))
+            .unwrap();
+    };
+    let answers = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>| {
+        let mut ids = Vec::new();
+        while let Ok(m) = ws.read() {
+            if let tungstenite::Message::Text(t) = m {
+                let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                if v.get("answer").is_some() {
+                    ids.push(v["offer_id"].as_str().unwrap().to_owned());
+                }
+            }
+        }
+        ids
+    };
+
+    for i in 0..60 {
+        send(&mut ws, &format!("flood-{i}"));
+    }
+    let flooded = answers(&mut ws);
+    assert!(
+        !flooded.is_empty() && flooded.len() < 30,
+        "the flood got {} answers",
+        flooded.len()
+    );
+
+    std::thread::sleep(Duration::from_millis(1100));
+    send(&mut ws, "real-listener");
+    assert_eq!(answers(&mut ws), vec!["real-listener".to_owned()]);
+}

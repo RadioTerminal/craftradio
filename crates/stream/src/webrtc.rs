@@ -31,6 +31,13 @@ const PACKET: usize = 1920;
 const MAX_REQUEST: usize = 64 * 1024;
 /// The station drops a listener that does not connect in this time.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A listener from a tracker has less time: a real browser connects in about a second.
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Listeners from trackers that still connect, at most. A new offer pushes out the oldest.
+/// Thus a flood of offers cannot lock out a real listener.
+const RELAY_PENDING: usize = 24;
+/// Offers from trackers have no address. They share this key in the count of places.
+const RELAY_PEER: IpAddr = IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED);
 /// A client must send its whole request in this time.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 /// The station serves at most this many HTTP requests at the same time.
@@ -303,8 +310,10 @@ fn media_ip(bind: IpAddr) -> std::io::Result<IpAddr> {
 struct Listener {
     /// The secret in the WHEP resource URL. Only the listener knows it, so only it can leave.
     token: String,
-    /// The address of the HTTP client that sent the offer.
+    /// The address of the HTTP client that sent the offer, or [`RELAY_PEER`].
     peer: IpAddr,
+    /// The station drops the listener when it does not connect in this time.
+    connect_timeout: Duration,
     /// The listener still counts toward [`PENDING_PER_ADDRESS`].
     holds_pending: bool,
     rtc: Rtc,
@@ -415,7 +424,10 @@ impl Media {
         loop {
             loop {
                 match control.try_recv() {
-                    Ok(Control::Add(l)) => listeners.push(*l),
+                    Ok(Control::Add(l)) => {
+                        listeners.push(*l);
+                        self.push_out_relay_listeners(&mut listeners);
+                    }
                     Ok(Control::Remove(token)) => {
                         self.drop_where(&mut listeners, |l| l.token == token)
                     }
@@ -469,7 +481,7 @@ impl Media {
                 release_pending(&self.pending, l);
             }
             self.drop_where(&mut listeners, |l| {
-                !l.rtc.is_alive() || (!l.connected && l.created.elapsed() >= CONNECT_TIMEOUT)
+                !l.rtc.is_alive() || (!l.connected && l.created.elapsed() >= l.connect_timeout)
             });
             let (rev, messages) = self
                 .title
@@ -532,6 +544,23 @@ impl Media {
                 }
             }
         }
+    }
+
+    /// Keeps at most [`RELAY_PENDING`] listeners from trackers that still connect.
+    /// The oldest ones leave first.
+    fn push_out_relay_listeners(&self, listeners: &mut Vec<Listener>) {
+        let mut waiting: Vec<(Instant, String)> = listeners
+            .iter()
+            .filter(|l| l.peer == RELAY_PEER && !l.connected)
+            .map(|l| (l.created, l.token.clone()))
+            .collect();
+        if waiting.len() <= RELAY_PENDING {
+            return;
+        }
+        waiting.sort();
+        let excess = waiting.len() - RELAY_PENDING;
+        let oldest: Vec<String> = waiting.into_iter().take(excess).map(|(_, t)| t).collect();
+        self.drop_where(listeners, |l| oldest.contains(&l.token));
     }
 
     /// Removes the listeners that `gone` selects, and frees their places.
@@ -768,6 +797,14 @@ fn address(value: &[u8], xor: bool, id: &[u8; 12]) -> Option<SocketAddr> {
     }
 }
 
+/// Where an offer comes from.
+pub(crate) enum Origin {
+    /// A WHEP request from this HTTP client.
+    Http(IpAddr),
+    /// A tracker, which does not tell the address of the listener.
+    Tracker,
+}
+
 /// Lets listeners in, from HTTP and from the trackers alike.
 #[derive(Clone)]
 pub(crate) struct Gate {
@@ -880,7 +917,7 @@ impl Http {
         let Ok(sdp) = std::str::from_utf8(body) else {
             return Response::text(415, "expected an SDP offer");
         };
-        match self.gate.admit(sdp, peer, PENDING_PER_ADDRESS) {
+        match self.gate.admit(sdp, Origin::Http(peer)) {
             Ok((token, answer)) => Response {
                 code: 201,
                 content_type: "application/sdp",
@@ -897,13 +934,13 @@ impl Gate {
         is_running(&self.status)
     }
 
-    /// Answers an offer from `peer`. Returns the listener token and the SDP answer.
-    pub(crate) fn admit(
-        &self,
-        sdp: &str,
-        peer: IpAddr,
-        pending_limit: usize,
-    ) -> Result<(String, String), Response> {
+    /// Answers an offer. Returns the listener token and the SDP answer.
+    pub(crate) fn admit(&self, sdp: &str, origin: Origin) -> Result<(String, String), Response> {
+        // Offers from trackers have no limit here: the media thread pushes out the oldest.
+        let (peer, pending_limit, timeout) = match origin {
+            Origin::Http(peer) => (peer, Some(PENDING_PER_ADDRESS), CONNECT_TIMEOUT),
+            Origin::Tracker => (RELAY_PEER, None, RELAY_CONNECT_TIMEOUT),
+        };
         if !matches!(
             self.status.lock().map(|s| s.clone()),
             Ok(WebRtcStatus::Listening { .. })
@@ -911,7 +948,7 @@ impl Gate {
             return Err(Response::text(503, "the station is not ready"));
         }
         self.reserve(peer, pending_limit)?;
-        let added = self.add_listener(sdp, peer);
+        let added = self.add_listener(sdp, peer, timeout);
         if added.is_err() {
             self.unreserve(peer);
         }
@@ -920,11 +957,11 @@ impl Gate {
 
     /// Takes both places for `peer` in one step.
     /// The media thread frees them when the listener leaves.
-    fn reserve(&self, peer: IpAddr, pending_limit: usize) -> Result<(), Response> {
+    fn reserve(&self, peer: IpAddr, pending_limit: Option<usize>) -> Result<(), Response> {
         let Ok(mut map) = self.pending.lock() else {
             return Err(Response::text(503, "the station is not ready"));
         };
-        if map.get(&peer).copied().unwrap_or(0) >= pending_limit {
+        if pending_limit.is_some_and(|limit| map.get(&peer).copied().unwrap_or(0) >= limit) {
             return Err(Response::text(
                 503,
                 "this address already has listeners that connect",
@@ -955,7 +992,12 @@ impl Gate {
         }
     }
 
-    fn add_listener(&self, sdp: &str, peer: IpAddr) -> Result<(String, String), Response> {
+    fn add_listener(
+        &self,
+        sdp: &str,
+        peer: IpAddr,
+        connect_timeout: Duration,
+    ) -> Result<(String, String), Response> {
         let sdp = filter_candidates(sdp, peer);
         let local = self
             .candidates
@@ -970,6 +1012,7 @@ impl Gate {
                 let listener = Listener {
                     token: token.clone(),
                     peer,
+                    connect_timeout,
                     holds_pending: true,
                     rtc,
                     mid: None,

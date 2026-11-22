@@ -7,13 +7,13 @@
 // The station signs each answer with its Ed25519 key. The link holds the public key.
 // So the page knows that the answer is from the station, not from the tracker.
 
-use crate::webrtc::Gate;
+use crate::webrtc::{Gate, Origin};
 use base64::Engine;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
-use std::net::{IpAddr, Ipv6Addr, TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::protocol::WebSocketConfig;
@@ -25,9 +25,9 @@ pub const DEFAULT_TRACKERS: &[&str] = &[
     "wss://tracker.webtorrent.dev",
 ];
 
-/// Offers from trackers count as one address. This limits the ones that still connect.
-const RELAY_PENDING: usize = 4;
-const RELAY_PEER: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
+/// Tracker offers per second that the station answers, for all trackers together.
+/// This limit keeps a flood of offers cheap.
+const OFFERS_PER_SECOND: f64 = 10.0;
 /// The station announces again after this time, unless the tracker asks for less.
 const ANNOUNCE: Duration = Duration::from_secs(60);
 const MAX_MESSAGE: usize = 256 * 1024;
@@ -90,17 +90,52 @@ pub(crate) fn start(
     gate: Gate,
     connected: Arc<AtomicUsize>,
 ) {
-    let identity = Arc::new(identity);
+    let shared = Arc::new(Shared {
+        identity,
+        gate,
+        budget: Mutex::new(Budget::new()),
+    });
     for url in trackers {
-        let (url, identity, gate, connected) = (
-            url.clone(),
-            identity.clone(),
-            gate.clone(),
-            connected.clone(),
-        );
+        let (url, shared, connected) = (url.clone(), shared.clone(), connected.clone());
         let _ = thread::Builder::new()
             .name("webrtc-relay".into())
-            .spawn(move || run(&url, &identity, &gate, &connected));
+            .spawn(move || run(&url, &shared, &connected));
+    }
+}
+
+/// What all tracker threads of one station share.
+struct Shared {
+    identity: Identity,
+    gate: Gate,
+    budget: Mutex<Budget>,
+}
+
+/// A token bucket for [`OFFERS_PER_SECOND`], with a burst of one second.
+struct Budget {
+    tokens: f64,
+    last: Instant,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self {
+            tokens: OFFERS_PER_SECOND,
+            last: Instant::now(),
+        }
+    }
+
+    /// True when the station can answer one more offer now.
+    fn take(&mut self) -> bool {
+        let now = Instant::now();
+        let refill = now.duration_since(self.last).as_secs_f64() * OFFERS_PER_SECOND;
+        self.tokens = (self.tokens + refill).min(OFFERS_PER_SECOND);
+        self.last = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -112,7 +147,8 @@ impl Drop for Connected {
     }
 }
 
-fn run(url: &str, identity: &Identity, gate: &Gate, connected: &Arc<AtomicUsize>) {
+fn run(url: &str, shared: &Shared, connected: &Arc<AtomicUsize>) {
+    let gate = &shared.gate;
     let peer_id = crate::webrtc::random_hex(10).unwrap_or_else(|| "radio-station-000000".into());
     let mut delay = 2;
     while gate.running() {
@@ -120,7 +156,7 @@ fn run(url: &str, identity: &Identity, gate: &Gate, connected: &Arc<AtomicUsize>
         if let Ok(socket) = connect(url) {
             connected.fetch_add(1, Ordering::AcqRel);
             let _count = Connected(connected.clone());
-            serve(socket, identity, gate, &peer_id);
+            serve(socket, shared, &peer_id);
         }
         if started.elapsed() > Duration::from_secs(60) {
             delay = 2;
@@ -190,8 +226,9 @@ fn tcp_of(socket: &Socket) -> Option<&TcpStream> {
     }
 }
 
-fn serve(mut socket: Socket, identity: &Identity, gate: &Gate, peer_id: &str) {
-    let info_hash = identity.info_hash();
+fn serve(mut socket: Socket, shared: &Shared, peer_id: &str) {
+    let gate = &shared.gate;
+    let info_hash = shared.identity.info_hash();
     let announce = |event: Option<&str>| {
         let mut m = json!({
             "action": "announce",
@@ -231,7 +268,7 @@ fn serve(mut socket: Socket, identity: &Identity, gate: &Gate, peer_id: &str) {
                 if let Some(secs) = msg["interval"].as_u64() {
                     interval = Duration::from_secs(secs.clamp(10, 300)).min(ANNOUNCE);
                 }
-                if let Some(reply) = answer_offer(&msg, identity, gate, &info_hash, peer_id)
+                if let Some(reply) = answer_offer(&msg, shared, &info_hash, peer_id)
                     && socket.send(Message::text(reply.to_string())).is_err()
                 {
                     return;
@@ -252,20 +289,19 @@ fn serve(mut socket: Socket, identity: &Identity, gate: &Gate, peer_id: &str) {
 }
 
 /// The tracker message that answers `msg`, when it carries an offer.
-fn answer_offer(
-    msg: &Value,
-    identity: &Identity,
-    gate: &Gate,
-    info_hash: &str,
-    peer_id: &str,
-) -> Option<Value> {
+fn answer_offer(msg: &Value, shared: &Shared, info_hash: &str, peer_id: &str) -> Option<Value> {
     let sdp = msg["offer"]["sdp"].as_str()?;
     let offer_id = msg["offer_id"].as_str()?;
     let from = msg["peer_id"].as_str()?;
     if offer_id.len() > 64 || from.chars().count() != 20 {
         return None;
     }
-    let (_token, answer) = gate.admit(sdp, RELAY_PEER, RELAY_PENDING).ok()?;
+    // Over the budget, the offer gets no answer. The page posts it again after 5 s.
+    if !shared.budget.lock().is_ok_and(|mut b| b.take()) {
+        return None;
+    }
+    let identity = &shared.identity;
+    let (_token, answer) = shared.gate.admit(sdp, Origin::Tracker).ok()?;
     Some(json!({
         "action": "announce",
         "info_hash": info_hash,
