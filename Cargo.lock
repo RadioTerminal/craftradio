@@ -2694,10 +2694,8 @@ dependencies = [
 [[package]]
 name = "mp3lame-sys"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a01c8bcc75d256a40b8e3c8dfefbbebe704eef1615cab5025bf362ba2a55f0c0"
 dependencies = [
- "cc",
+ "pkg-config",
 ]
 
 [[package]]
