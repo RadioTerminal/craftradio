@@ -36,6 +36,9 @@ pub(crate) fn is_display(part: &str, key: &str) -> bool {
 pub struct Prefs {
     /// Once the display settings that the station kept are copied here, this is true.
     pub imported_from_station: bool,
+    /// The keyboard shortcuts a person changed, over the keymap's defaults.
+    #[serde(with = "craft_keymap::keymap::overrides_list")]
+    pub shortcuts: craft_keymap::Overrides,
     /// The display settings, by part and key.
     #[serde(flatten)]
     pub parts: BTreeMap<String, BTreeMap<String, Value>>,
@@ -119,6 +122,16 @@ impl AppPrefs {
             }
             p.imported_from_station = true;
         });
+    }
+
+    /// The keyboard shortcuts a person changed.
+    pub(crate) fn shortcuts(&self) -> craft_keymap::Overrides {
+        self.store.get().shortcuts.clone()
+    }
+
+    /// Keeps the keyboard shortcuts a person changed.
+    pub(crate) fn set_shortcuts(&mut self, shortcuts: craft_keymap::Overrides) {
+        self.store.update(|p| p.shortcuts = shortcuts);
     }
 
     /// Keeps `value` for `part`/`key`.
@@ -234,5 +247,24 @@ mod tests {
             .insert("h24".to_owned(), json!(true));
         prefs.import(&station);
         assert_eq!(prefs.store.get().parts[parts::CLOCK]["h24"], json!(false));
+    }
+
+    #[test]
+    fn a_changed_shortcut_comes_back_after_a_restart() {
+        use craft_keymap::{Binding, Policy};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let undo: craft_keymap::CommandRef = crate::shortcuts::UNDO.into();
+        let chord = Binding::parse("Cmd+U").expect("chord");
+        let mut keymap = crate::shortcuts::default_keymap();
+        keymap
+            .set_bindings(&undo, vec![chord.clone()], Policy::Steal)
+            .expect("assign");
+        let mut prefs = AppPrefs::open_in(dir.path().to_path_buf());
+        prefs.set_shortcuts(keymap.overrides().clone());
+        prefs.flush();
+        drop(prefs);
+        let again = AppPrefs::open_in(dir.path().to_path_buf());
+        let restored = crate::shortcuts::default_keymap().with_overrides(again.shortcuts());
+        assert_eq!(restored.bindings(&undo), vec![chord]);
     }
 }

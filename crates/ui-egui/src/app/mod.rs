@@ -162,6 +162,12 @@ pub struct RadioApp {
     menu_keys: shortcuts::Pressed,
     /// The native menu bar (macOS), once the desktop app installs it.
     native_menu: Option<craft_menu::NativeMenu>,
+    /// The keymap: the catalog's defaults and the shortcuts a person changed.
+    keymap: craft_keymap::Keymap,
+    /// True when the context has this keymap.
+    keymap_installed: bool,
+    /// The Keyboard Shortcuts dialog while it is open.
+    shortcuts_dialog: Option<craft_keymap::ui::DialogState>,
     clock_state: clock_window::State,
     history: history::State,
     alarms: alarms::State,
@@ -235,6 +241,9 @@ impl RadioApp {
             layout: None,
             menu_keys: shortcuts::Pressed::default(),
             native_menu: None,
+            keymap: shortcuts::default_keymap(),
+            keymap_installed: false,
+            shortcuts_dialog: None,
             clock_state: clock_window::State::default(),
             history: history::State::default(),
             alarms: alarms::State::default(),
@@ -334,6 +343,8 @@ impl RadioApp {
     pub fn with_preferences(mut self, prefs: crate::app_prefs::AppPrefs) -> Self {
         self.prefs = prefs;
         self.prefs.import(&self.view);
+        self.keymap = shortcuts::default_keymap().with_overrides(self.prefs.shortcuts());
+        self.keymap_installed = false;
         self.refresh(true);
         // The windows open as they were left.
         let open = crate::parts::strings(&self.view, crate::parts::WINDOWS, OPEN_KEY, &[]);
@@ -352,8 +363,11 @@ impl RadioApp {
     /// AppKit refused it: the menus stay in the window.
     #[cfg(target_os = "macos")]
     pub fn install_native_menu(&mut self, ctx: &egui::Context) -> bool {
-        let bar =
-            craft_menu::mac_layout(&crate::menus::bar(&self.open), &crate::menus::options()).bar;
+        let bar = craft_menu::mac_layout(
+            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx)),
+            &crate::menus::options(),
+        )
+        .bar;
         self.native_menu = craft_menu::mac::install(ctx, &bar);
         self.native_menu.is_some()
     }
@@ -361,13 +375,17 @@ impl RadioApp {
     /// What may run from the menus now: nothing of the app's while a dialog is open.
     fn menu_gate(&self, ctx: &egui::Context) -> craft_menu::Gate {
         craft_menu::Gate {
-            modal: self.confirm.is_some()
+            modal: self.shortcuts_dialog.is_some()
+                || self.confirm.is_some()
                 || self.clear.is_some()
                 || self.rename.is_some()
                 || self.meta.is_some()
                 || self.add_dialog.is_some()
                 || self.one_off.is_some(),
-            recording_shortcut: false,
+            recording_shortcut: self
+                .shortcuts_dialog
+                .as_ref()
+                .is_some_and(craft_keymap::ui::DialogState::is_recording),
             text_editing: ctx.egui_wants_keyboard_input(),
         }
     }
@@ -382,7 +400,31 @@ impl RadioApp {
                     self.open.set(w, !on);
                 }
             }
+            crate::menus::Run::Shortcuts => {
+                self.shortcuts_dialog = Some(craft_keymap::ui::DialogState::new());
+            }
             crate::menus::Run::Nothing => {}
+        }
+    }
+
+    /// The Keyboard Shortcuts dialog: each change applies at once and is saved.
+    fn shortcuts_dialog(&mut self, ctx: &egui::Context) {
+        let Some(state) = self.shortcuts_dialog.as_mut() else {
+            return;
+        };
+        let out =
+            craft_keymap::ui::ShortcutsDialog::new(&mut self.keymap, &craft_keymap::ui::English)
+                .show(ctx, state);
+        if matches!(
+            out,
+            Some(craft_keymap::ui::Outcome::Changed | craft_keymap::ui::Outcome::Ok)
+        ) {
+            self.prefs.set_shortcuts(self.keymap.overrides().clone());
+            self.keymap_installed = false;
+            ctx.request_repaint();
+        }
+        if !state.is_open() {
+            self.shortcuts_dialog = None;
         }
     }
 
@@ -399,12 +441,14 @@ impl RadioApp {
     }
 
     /// Brings the native menu in step with the app after this frame.
-    fn sync_native_menu(&mut self) {
+    fn sync_native_menu(&mut self, ctx: &egui::Context) {
         if self.native_menu.is_none() {
             return;
         }
-        let layout =
-            craft_menu::mac_layout(&crate::menus::bar(&self.open), &crate::menus::options());
+        let layout = craft_menu::mac_layout(
+            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx)),
+            &crate::menus::options(),
+        );
         if let Some(menu) = self.native_menu.as_mut() {
             let _ = menu.sync(layout);
         }
@@ -415,7 +459,7 @@ impl RadioApp {
         let ctx = ui.ctx().clone();
         let options = crate::menus::options();
         let bar = craft_menu::layout(
-            &crate::menus::bar(&self.open),
+            &crate::menus::bar(&self.open, &shortcuts::keymap(&ctx)),
             craft_menu::Target::current(),
             &options,
         )
@@ -696,8 +740,19 @@ impl eframe::App for RadioApp {
         let mut actions = Vec::new();
         self.link.has_clip = !self.clip.items.is_empty();
         self.link.file_target = None;
+        if !self.keymap_installed {
+            shortcuts::install(&ctx, std::sync::Arc::new(self.keymap.clone()));
+            self.keymap_installed = true;
+        }
         self.native_menu_clicks(&ctx);
-        self.link.keys = shortcuts::read(&ctx).or(std::mem::take(&mut self.menu_keys));
+        // While the Keyboard Shortcuts dialog is open its keys are its own: a chord being
+        // recorded runs nothing.
+        let pressed = if self.shortcuts_dialog.is_some() {
+            shortcuts::Pressed::default()
+        } else {
+            shortcuts::read(&ctx)
+        };
+        self.link.keys = pressed.or(std::mem::take(&mut self.menu_keys));
 
         egui::Panel::top("decks")
             .resizable(false)
@@ -779,7 +834,8 @@ impl eframe::App for RadioApp {
         self.keep_layout();
         self.global_keys(&ctx, &mut actions);
         self.dialogs(&ctx, &mut actions, &t);
-        self.sync_native_menu();
+        self.shortcuts_dialog(&ctx);
+        self.sync_native_menu(&ctx);
 
         if let Some(tab) = rules_editor::show(&ctx, &mut self.editor, &mut self.link, &t) {
             let text = match self.source.apply_rules(tab) {

@@ -84,7 +84,7 @@ craft-mcp-server = { git = "https://github.com/storytold/craft-libs", rev = "a7f
 # Preferences of this computer in config.toml, as every Craft app keeps them (MIT OR Apache-2.0).
 craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d" }
 # Keyboard bindings as the Craft apps keep them: one catalog of commands and their chords (MIT OR Apache-2.0).
-craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false, features = ["egui"] }
+craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false, features = ["egui", "ui"] }
 # The menu bar, native on macOS and drawn in the window elsewhere, as in the Craft apps (MIT OR Apache-2.0).
 craft-menu = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d" }
 rfd = "0.18"

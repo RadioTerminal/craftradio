@@ -676,3 +676,20 @@ fn the_window_menu_opens_a_tool_window() {
     harness.run_steps(FRAMES);
     assert!(shows(&harness, "Mixer preferences"), "the mixer opens");
 }
+
+/// Preferences › Shortcuts opens the Keyboard Shortcuts dialog, where every command's keys can
+/// be changed.
+#[test]
+fn the_shortcuts_page_opens_the_keyboard_shortcuts_dialog() {
+    let mut harness = harness();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    harness.run_steps(FRAMES);
+    click(&mut harness, "Shortcuts");
+    let count = |h: &Harness<'_, RadioApp>| h.query_all_by_label_contains("Play Next").count();
+    let before = count(&harness);
+    click(&mut harness, "Keyboard Shortcuts…");
+    assert!(
+        count(&harness) > before,
+        "the dialog lists the commands, Play Next among them"
+    );
+}

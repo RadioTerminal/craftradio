@@ -12,6 +12,9 @@ use crate::windows::{Open, ToolWindow};
 /// The app's name in the menus the layouts write (About, Hide, Quit).
 pub(crate) const APP_NAME: &str = "CraftRadio";
 
+/// Open the Keyboard Shortcuts dialog.
+pub(crate) const SHORTCUTS: &str = "app.keyboard_shortcuts";
+
 /// Open or close a tool window: `{"window": title}`.
 const WINDOW: &str = "window.toggle";
 
@@ -42,7 +45,7 @@ pub(crate) fn options() -> LayoutOptions<'static> {
 }
 
 /// The menus as the app is now: which tool windows are open.
-pub(crate) fn bar(open: &Open) -> MenuBar {
+pub(crate) fn bar(open: &Open, keymap: &craft_keymap::Keymap) -> MenuBar {
     let edit = Menu::new(
         "Edit",
         vec![
@@ -57,6 +60,7 @@ pub(crate) fn bar(open: &Open) -> MenuBar {
             item(shortcuts::SELECT_ALL, "Select All"),
             Node::Separator,
             Node::Item(Item::new(shortcuts::PREFERENCES, "Preferences…").role(ItemRole::Settings)),
+            item(SHORTCUTS, "Keyboard Shortcuts…"),
         ],
     )
     .role(MenuRole::Edit);
@@ -86,7 +90,7 @@ pub(crate) fn bar(open: &Open) -> MenuBar {
         ],
         documents: Vec::new(),
     };
-    craft_menu::apply_keymap(&mut bar, &shortcuts::keymap());
+    craft_menu::apply_keymap(&mut bar, keymap);
     bar
 }
 
@@ -94,6 +98,7 @@ pub(crate) fn bar(open: &Open) -> MenuBar {
 pub(crate) enum Run {
     Keys(Pressed),
     Window(ToolWindow),
+    Shortcuts,
     Nothing,
 }
 
@@ -123,6 +128,7 @@ pub(crate) fn run(command: &CommandRef) -> Run {
         shortcuts::STOP_CARTS => p.stop_carts = true,
         shortcuts::FOCUS_DECK => p.focus_deck = param("deck"),
         shortcuts::FIRE_CART => p.cart = param("cart"),
+        SHORTCUTS => return Run::Shortcuts,
         WINDOW => {
             let title = command
                 .params
@@ -145,7 +151,7 @@ mod tests {
     #[test]
     fn every_menu_item_does_what_its_shortcut_does_and_shows_it() {
         let open = Open::default();
-        let bar = bar(&open);
+        let bar = bar(&open, &shortcuts::default_keymap());
         for item in bar.items() {
             assert!(
                 !matches!(run(&item.command), Run::Nothing),

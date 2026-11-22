@@ -1297,6 +1297,8 @@ name = "craft-keymap"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
 dependencies = [
+ "craft-i18n",
+ "craft-ui",
  "egui",
  "serde",
  "serde_json",

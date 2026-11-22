@@ -102,16 +102,30 @@ pub(crate) fn catalog() -> Vec<Bindable> {
     list
 }
 
-/// The keymap of this platform: the catalog's defaults.
-pub(crate) fn keymap() -> Arc<Keymap> {
-    static MAP: OnceLock<Arc<Keymap>> = OnceLock::new();
-    MAP.get_or_init(|| Arc::new(Keymap::new(catalog(), Scopes::new(), Platform::current())))
-        .clone()
+/// The keymap with the catalog's defaults, for a context that has none installed.
+pub(crate) fn default_keymap() -> Keymap {
+    Keymap::new(catalog(), Scopes::new(), Platform::current())
+}
+
+fn installed_id() -> egui::Id {
+    egui::Id::unique("radio::keymap")
+}
+
+/// Uses `keymap` for the keys, menus and tooltips of `ctx`.
+pub(crate) fn install(ctx: &egui::Context, keymap: Arc<Keymap>) {
+    ctx.data_mut(|d| d.insert_temp(installed_id(), keymap));
+}
+
+/// The keymap of `ctx`: the one the app installed (the user's shortcuts), else the defaults.
+pub(crate) fn keymap(ctx: &egui::Context) -> Arc<Keymap> {
+    static DEFAULTS: OnceLock<Arc<Keymap>> = OnceLock::new();
+    ctx.data(|d| d.get_temp::<Arc<Keymap>>(installed_id()))
+        .unwrap_or_else(|| DEFAULTS.get_or_init(|| Arc::new(default_keymap())).clone())
 }
 
 /// The egui shortcuts of `command`, its single-press bindings in order.
-fn shortcuts_of(command: &CommandRef) -> Vec<KeyboardShortcut> {
-    keymap()
+fn shortcuts_of(ctx: &egui::Context, command: &CommandRef) -> Vec<KeyboardShortcut> {
+    keymap(ctx)
         .bindings(command)
         .into_iter()
         .filter(|b| !b.trigger.double)
@@ -127,14 +141,14 @@ pub(crate) fn label(ctx: &egui::Context, id: &str) -> String {
 
 /// As [`label`], for a command with parameters.
 pub(crate) fn label_of(ctx: &egui::Context, command: &CommandRef) -> String {
-    shortcuts_of(command)
+    shortcuts_of(ctx, command)
         .first()
         .map_or_else(String::new, |s| ctx.format_shortcut(s))
 }
 
 /// The text of the key for cart `n` (from 0) on the page on show.
-pub(crate) fn cart_label(n: usize) -> Option<String> {
-    shortcuts_of(&fire_cart(n))
+pub(crate) fn cart_label(ctx: &egui::Context, n: usize) -> Option<String> {
+    shortcuts_of(ctx, &fire_cart(n))
         .first()
         .map(|s| s.logical_key.name().to_owned())
 }
@@ -208,8 +222,13 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
     let menu = egui::Popup::is_any_open(ctx)
         | crate::settings::escape_claimed(ctx)
         | crate::one_off::escape_claimed(ctx);
+    let map = keymap(ctx);
     let take = |i: &mut egui::InputState, command: &CommandRef| {
-        shortcuts_of(command)
+        map.bindings(command)
+            .into_iter()
+            .filter(|b| !b.trigger.double)
+            .map(|b| b.trigger.chord.to_egui_shortcut())
+            .collect::<Vec<_>>()
             .iter()
             .fold(false, |hit, s| i.consume_shortcut(s) | hit)
     };
@@ -251,7 +270,9 @@ mod tests {
 
     /// The first shortcut of the command `id`.
     fn shortcut(id: &str) -> Option<KeyboardShortcut> {
-        shortcuts_of(&id.into()).into_iter().next()
+        shortcuts_of(&egui::Context::default(), &id.into())
+            .into_iter()
+            .next()
     }
 
     #[test]
@@ -272,19 +293,20 @@ mod tests {
                 .ok();
             assert_eq!(shortcut(id), want, "{id}");
         }
+        let ctx = egui::Context::default();
         assert_eq!(
-            shortcuts_of(&DELETE.into()).len(),
+            shortcuts_of(&ctx, &DELETE.into()).len(),
             2,
             "Delete and Backspace"
         );
-        assert_eq!(cart_label(0).as_deref(), Some("F1"));
-        assert_eq!(cart_label(11).as_deref(), Some("F12"));
-        assert!(cart_label(12).is_none());
+        assert_eq!(cart_label(&ctx, 0).as_deref(), Some("F1"));
+        assert_eq!(cart_label(&ctx, 11).as_deref(), Some("F12"));
+        assert!(cart_label(&ctx, 12).is_none());
     }
 
     #[test]
     fn the_catalog_parses_and_has_no_clashes() {
-        let map = Keymap::new(catalog(), Scopes::new(), Platform::current());
+        let map = default_keymap();
         assert!(map.problems().is_empty(), "{:?}", map.problems());
         assert!(map.conflicts().is_empty(), "{:?}", map.conflicts());
     }
