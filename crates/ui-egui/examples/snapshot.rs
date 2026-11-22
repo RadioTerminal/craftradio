@@ -67,6 +67,8 @@ fn one_off_seed() -> Edit {
 /// The label of the Upcoming row of the seeded one-off.
 const ONE_OFF_ROW: &str = "One-off station-promo";
 
+/// The rows after the one on air that the four decks hold, so the main list hides them.
+const DECK_ROWS: usize = 6;
 const ROW: &str = "Juniper Vale – Satellites of Ulvenik";
 
 /// A source that adds settings for the check set: a tool window at its minimum size.
@@ -201,7 +203,10 @@ fn qa_set(dir: &str, tz: &TimeZone, now: Timestamp) -> ExitCode {
         let row = view
             .rows
             .iter()
-            .find(|r| r.title.chars().count() > 20)
+            .filter(|r| r.start.timestamp() >= now)
+            // The decks hold the first rows to come, and the main list does not show them.
+            .skip(DECK_ROWS)
+            .find(|r| r.title.chars().count() > 20 && r.title.contains(" – "))
             .map_or_else(|| ROW.to_owned(), |r| r.title.clone());
         let deck: String = view.decks[0].title.chars().take(10).collect();
         let cart = view
