@@ -382,6 +382,8 @@ fn window(
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_embed_viewports(single_window);
+            // Number fields write and read numbers the way the system's region does.
+            radio_ui_egui::numbers::install_system(&cc.egui_ctx);
             let mut app = RadioApp::new(source, clock).with_perf(perf);
             for w in open {
                 app.set_window(w, true);

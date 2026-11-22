@@ -2,6 +2,7 @@
 //! The preview plays no audio. A pressed cart only flashes, and the caption says so.
 //! Pages, carts, ducking, mode and colour live in the view source.
 
+use crate::numbers;
 use crate::widgets;
 use egui::{DragValue, RichText, Stroke};
 
@@ -376,16 +377,18 @@ fn cart_settings(
         .show(ui, |ui| {
             settings::label(ui, "Grid", t);
             ui.horizontal(|ui| {
-                ui.add(
+                ui.add(numbers::field(
+                    ui,
                     DragValue::new(&mut cols)
                         .range(1..=MAX_GRID)
                         .suffix(" columns"),
-                );
-                ui.add(
+                ));
+                ui.add(numbers::field(
+                    ui,
                     DragValue::new(&mut rows)
                         .range(1..=MAX_GRID)
                         .suffix(" rows"),
-                );
+                ));
             });
             ui.end_row();
             settings::label(ui, "Pages", t);
@@ -442,10 +445,13 @@ fn cart_settings(
                 let shown = if name.is_empty() { "empty" } else { name };
                 ui.label(RichText::new(shown).font(theme::text(theme::LABEL)));
                 let mut duck = wall.slots.get(i).map_or(0.0, |s| s.duck_db);
-                let field = DragValue::new(&mut duck)
-                    .range(MAX_DUCK_DB..=0.0)
-                    .speed(0.5)
-                    .suffix(" dB");
+                let field = numbers::field(
+                    ui,
+                    DragValue::new(&mut duck)
+                        .range(MAX_DUCK_DB..=0.0)
+                        .speed(0.5)
+                        .suffix(" dB"),
+                );
                 if ui.add(field).changed() {
                     actions.push(set_cart(i, CartChange::Duck(duck)));
                 }

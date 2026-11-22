@@ -66,6 +66,8 @@ egui_kittest = "0.37"
 lucide-icons = "1.77"
 # Shared egui controls of the Craft apps (MIT OR Apache-2.0). Same rev as craft-audio.
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
+# How the user's region writes numbers, for the number fields (MIT OR Apache-2.0). Same rev.
+craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
 rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }

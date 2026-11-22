@@ -3,6 +3,7 @@
 //! With several items, a field shows a value only when all items share it.
 //! Apply changes only the fields that the person edited.
 
+use crate::numbers;
 use crate::widgets;
 use egui::{RichText, TextEdit};
 
@@ -213,11 +214,14 @@ pub(crate) fn show(
                 ui.horizontal(|ui| {
                     let label = ui.label(RichText::new("Gain trim").color(t.text_muted));
                     let (lo, hi) = radio_model::loudness_range::TRIM_DB;
-                    let field = egui::DragValue::new(trim)
-                        .range(lo..=hi)
-                        .speed(0.1)
-                        .max_decimals(1)
-                        .suffix(" dB");
+                    let field = numbers::field(
+                        ui,
+                        egui::DragValue::new(trim)
+                            .range(lo..=hi)
+                            .speed(0.1)
+                            .max_decimals(1)
+                            .suffix(" dB"),
+                    );
                     if ui
                         .add_sized([size::FIELD_W, size::CONTROL_SM], field)
                         .labelled_by(label.id)
