@@ -320,15 +320,22 @@ fn concerns(
 }
 
 /// The Alarms page of Preferences.
+/// Restore page defaults on the Alarms page: acknowledged alarms are shown.
+pub(crate) fn restore_defaults(actions: &mut Vec<Action>) {
+    actions.push(parts::set(parts::ALARMS, "show_acked", true));
+}
+
 pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
     actions: &mut Vec<Action>,
-    _t: &Tokens,
+    t: &Tokens,
 ) {
     let old = parts::bool(view, parts::ALARMS, "show_acked", true);
     let mut show_acked = old;
-    ui.checkbox(&mut show_acked, "Show acknowledged alarms");
+    settings::section(ui, "List", t, |ui| {
+        ui.checkbox(&mut show_acked, "Show acknowledged alarms");
+    });
     if show_acked != old {
         actions.push(parts::set(parts::ALARMS, "show_acked", show_acked));
     }

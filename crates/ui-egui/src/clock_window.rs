@@ -109,22 +109,39 @@ pub(crate) fn show(
 }
 
 /// The Clock page of Preferences.
+/// Restore page defaults on the Clock page: everything shown, in 24-hour time.
+pub(crate) fn restore_defaults(actions: &mut Vec<Action>) {
+    for key in [
+        "h24",
+        "show_date",
+        "show_ring",
+        "show_next_fixed",
+        "show_item_end",
+    ] {
+        actions.push(parts::set(parts::CLOCK, key, true));
+    }
+}
+
 pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
     actions: &mut Vec<Action>,
-    _t: &Tokens,
+    t: &Tokens,
 ) {
     let old = Prefs::read(view);
     let mut p = old;
-    ui.checkbox(&mut p.h24, "24-hour time");
-    ui.checkbox(&mut p.show_date, "Show the date");
-    ui.checkbox(&mut p.show_ring, "Show the seconds ring");
-    ui.checkbox(&mut p.show_next_fixed, "Countdown to the next fixed event");
-    ui.checkbox(
-        &mut p.show_item_end,
-        "Countdown to the end of the current item",
-    );
+    settings::section(ui, "Face", t, |ui| {
+        ui.checkbox(&mut p.h24, "24-hour time");
+        ui.checkbox(&mut p.show_date, "Show the date");
+        ui.checkbox(&mut p.show_ring, "Show the seconds ring");
+    });
+    settings::section(ui, "Countdowns", t, |ui| {
+        ui.checkbox(&mut p.show_next_fixed, "Countdown to the next fixed event");
+        ui.checkbox(
+            &mut p.show_item_end,
+            "Countdown to the end of the current item",
+        );
+    });
     p.write(old, actions);
 }
 

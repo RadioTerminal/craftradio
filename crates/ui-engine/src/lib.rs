@@ -26,6 +26,27 @@ pub fn peak_hold(state: &State) -> Option<Duration> {
     (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
 }
 
+/// The WebRTC stream settings that Preferences keeps, put onto `cfg`: the port (on the address
+/// it has), the bitrate and the most listeners. Values out of range are left as they were.
+pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
+    let Some(s) = state.settings(radio_playout::WEBRTC_PART) else {
+        return;
+    };
+    let get = |key: &str| s.get(key).and_then(serde_json::Value::as_u64);
+    if let Some(port) = get("port")
+        .and_then(|p| u16::try_from(p).ok())
+        .filter(|p| *p > 0)
+    {
+        cfg.bind.set_port(port);
+    }
+    if let Some(kbps) = get("kbps").filter(|k| (32..=320).contains(k)) {
+        cfg.kbps = kbps as u32;
+    }
+    if let Some(max) = get("max_listeners").filter(|m| (1..=1000).contains(m)) {
+        cfg.max_listeners = max as usize;
+    }
+}
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;

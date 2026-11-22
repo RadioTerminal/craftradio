@@ -29,15 +29,17 @@ fn typing_into_the_icecast_host_field_keeps_the_text() {
     let mut h = harness();
     click(&mut h, "Mixer");
     click(&mut h, "Icecast preferences");
+    let is_host =
+        |n: &egui_kittest::Node<'_>| n.accesskit_node().label().as_deref() == Some("Host");
     let host = h
         .query_all_by_role(egui::accesskit::Role::TextInput)
-        .next()
+        .find(is_host)
         .expect("the Host field");
     host.click();
     h.run_steps(FRAMES);
     for c in "radio.example".chars() {
         h.get_all_by_role(egui::accesskit::Role::TextInput)
-            .next()
+            .find(is_host)
             .expect("field")
             .type_text(&c.to_string());
         h.run_steps(2);

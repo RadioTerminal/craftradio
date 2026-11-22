@@ -360,6 +360,14 @@ fn row_menu(
 }
 
 /// The History page of Preferences.
+/// Restore page defaults on the History page: every column, and the longest look back.
+pub(crate) fn restore_defaults(actions: &mut Vec<Action>) {
+    for (_, _, key) in COLS {
+        actions.push(parts::set(parts::HISTORY, key, true));
+    }
+    actions.push(parts::set(parts::HISTORY, "hours_back", MAX_HOURS_BACK));
+}
+
 pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -370,20 +378,20 @@ pub(crate) fn preferences(
     let old_hours = parts::u32(view, parts::HISTORY, "hours_back", MAX_HOURS_BACK);
     let mut shown = old_shown;
     let mut hours_back = old_hours;
-    ui.horizontal_wrapped(|ui| {
-        settings::label(ui, "Columns", t);
+    settings::section(ui, "Columns", t, |ui| {
         for (i, (_, name, _)) in COLS.iter().enumerate() {
             ui.checkbox(&mut shown[i], *name);
         }
     });
-    ui.horizontal(|ui| {
-        settings::label(ui, "Show the last", t);
-        ui.add(numbers::field(
-            ui,
-            DragValue::new(&mut hours_back)
-                .range(1..=MAX_HOURS_BACK)
-                .suffix(" h"),
-        ));
+    settings::section(ui, "Range", t, |ui| {
+        settings::form_row(ui, "Show the last", t, |ui| {
+            ui.add(numbers::field(
+                ui,
+                DragValue::new(&mut hours_back)
+                    .range(1..=MAX_HOURS_BACK)
+                    .suffix(" h"),
+            ))
+        });
     });
     for (i, (_, _, key)) in COLS.iter().enumerate() {
         if shown[i] != old_shown[i] {

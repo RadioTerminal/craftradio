@@ -201,6 +201,10 @@ fn real(args: &Args) -> Result<(), String> {
     // With `--webrtc`, streaming runs for this run in any case.
     let mut webrtc =
         radio_stream::WebRtcConfig::new(args.webrtc.unwrap_or(([0, 0, 0, 0], 8000).into()));
+    if args.webrtc.is_none() {
+        // Preferences keeps the port, bitrate and listener cap; --webrtc names its own address.
+        radio_ui_engine::webrtc_settings(engine.state(), &mut webrtc);
+    }
     webrtc.identity = station_identity(&dir);
     cfg.webrtc = Some(webrtc);
     cfg.webrtc_always = args.webrtc.is_some();

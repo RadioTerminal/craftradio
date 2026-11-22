@@ -1325,61 +1325,86 @@ fn start_lines(deck: &DeckView, now: Option<jiff::Timestamp>) -> Vec<String> {
 }
 
 /// The Decks page of Preferences: the confirm guard of all decks, and the fades of each deck.
+/// Restore page defaults on the Decks page: confirm a cut, and the default fades of every deck.
+pub(crate) fn restore_defaults(actions: &mut Vec<Action>) {
+    actions.push(parts::set(parts::DECKS, CONFIRM_KEY, true));
+    for label in ['A', 'B', 'C', 'D'] {
+        actions.push(parts::set(
+            parts::DECKS,
+            &fade_key(label),
+            f64::from(DEFAULT_FADE_S),
+        ));
+        actions.push(parts::set(
+            parts::DECKS,
+            &fade_in_key(label),
+            f64::from(DEFAULT_FADE_IN_S),
+        ));
+    }
+}
+
 pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let old_confirm = parts::bool(view, parts::DECKS, CONFIRM_KEY, true);
-    let mut confirm = old_confirm;
-    ui.checkbox(
-        &mut confirm,
-        "Confirm a cut of the item on air (press Play or Fade out twice)",
-    );
-    if confirm != old_confirm {
-        actions.push(parts::set(parts::DECKS, CONFIRM_KEY, confirm));
-    }
+    settings::section(ui, "On air", t, |ui| {
+        let old_confirm = parts::bool(view, parts::DECKS, CONFIRM_KEY, true);
+        let mut confirm = old_confirm;
+        ui.checkbox(
+            &mut confirm,
+            "Confirm a cut of the item on air (press Play or Fade out twice)",
+        );
+        if confirm != old_confirm {
+            actions.push(parts::set(parts::DECKS, CONFIRM_KEY, confirm));
+        }
+    });
     for label in ['A', 'B', 'C', 'D'] {
-        let (out_key, in_key) = (fade_key(label), fade_in_key(label));
-        let old_out = parts::f32(view, parts::DECKS, &out_key, DEFAULT_FADE_S);
-        let old_in = parts::f32(view, parts::DECKS, &in_key, DEFAULT_FADE_IN_S);
-        let (mut fade_out, mut fade_in) = (old_out, old_in);
-        ui.add_space(space::S);
-        settings::label(ui, &format!("Deck {label}"), t);
-        ui.horizontal(|ui| {
-            let name = ui.label(RichText::new(format!("Deck {label} fade-in")).color(t.text_muted));
-            let field = numbers::field(
-                ui,
-                DragValue::new(&mut fade_in)
-                    .range(size::FADE_IN_MIN_S..=size::FADE_MAX_S)
-                    .speed(0.1)
-                    .suffix(" s"),
-            );
-            ui.add(field)
-                .labelled_by(name.id)
-                .on_hover_text("Play this deck and Play next fade this deck in so long");
+        settings::section(ui, &format!("Deck {label}"), t, |ui| {
+            deck_fades(ui, view, label, actions, t);
         });
-        ui.horizontal(|ui| {
-            let name =
-                ui.label(RichText::new(format!("Deck {label} fade-out")).color(t.text_muted));
-            let field = numbers::field(
-                ui,
-                DragValue::new(&mut fade_out)
-                    .range(size::FADE_MIN_S..=size::FADE_MAX_S)
-                    .speed(0.1)
-                    .suffix(" s"),
-            );
-            ui.add(field)
-                .labelled_by(name.id)
-                .on_hover_text("Fade out (in the header, or its key) fades this deck out so long");
-        });
-        if fade_out != old_out {
-            actions.push(parts::set(parts::DECKS, &out_key, f64::from(fade_out)));
-        }
-        if fade_in != old_in {
-            actions.push(parts::set(parts::DECKS, &in_key, f64::from(fade_in)));
-        }
+    }
+}
+
+/// The fade-in and fade-out rows of deck `label`.
+fn deck_fades(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    label: char,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let (out_key, in_key) = (fade_key(label), fade_in_key(label));
+    let old_out = parts::f32(view, parts::DECKS, &out_key, DEFAULT_FADE_S);
+    let old_in = parts::f32(view, parts::DECKS, &in_key, DEFAULT_FADE_IN_S);
+    let (mut fade_out, mut fade_in) = (old_out, old_in);
+    settings::form_row(ui, &format!("Deck {label} fade-in"), t, |ui| {
+        let field = numbers::field(
+            ui,
+            DragValue::new(&mut fade_in)
+                .range(size::FADE_IN_MIN_S..=size::FADE_MAX_S)
+                .speed(0.1)
+                .suffix(" s"),
+        );
+        ui.add(field)
+            .on_hover_text("Play this deck and Play next fade this deck in so long")
+    });
+    settings::form_row(ui, &format!("Deck {label} fade-out"), t, |ui| {
+        let field = numbers::field(
+            ui,
+            DragValue::new(&mut fade_out)
+                .range(size::FADE_MIN_S..=size::FADE_MAX_S)
+                .speed(0.1)
+                .suffix(" s"),
+        );
+        ui.add(field)
+            .on_hover_text("Fade out (in the header, or its key) fades this deck out so long")
+    });
+    if fade_out != old_out {
+        actions.push(parts::set(parts::DECKS, &out_key, f64::from(fade_out)));
+    }
+    if fade_in != old_in {
+        actions.push(parts::set(parts::DECKS, &in_key, f64::from(fade_in)));
     }
 }
 

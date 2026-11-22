@@ -143,6 +143,37 @@ pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
     }
 }
 
+/// Restore page defaults on a mixer page: Processing goes back to the model's default loudness
+/// and dynamics, Meters to the default peak hold.
+pub(crate) fn restore_defaults(
+    state: &mut State,
+    tab: Option<SettingsTab>,
+    actions: &mut Vec<Action>,
+) {
+    match tab {
+        Some(SettingsTab::Processing) => {
+            // The drafts take the defaults too, so the page shows them at once, before the
+            // view source gives them back.
+            let (loudness, dynamics) = (
+                radio_model::LoudnessSettings::default(),
+                radio_model::DynamicsSettings::default(),
+            );
+            state.loudness = Some(loudness);
+            state.dynamics = Some(dynamics);
+            actions.push(Action::EditQuiet(Edit::SetLoudness(loudness)));
+            actions.push(Action::EditQuiet(Edit::SetDynamics(dynamics)));
+        }
+        Some(SettingsTab::Meters) => {
+            actions.push(parts::set(
+                parts::MIXER,
+                "peak_hold_s",
+                f64::from(DEFAULT_PEAK_HOLD_S),
+            ));
+        }
+        _ => {}
+    }
+}
+
 /// The mixer's Preferences page `tab`.
 pub(crate) fn preferences(
     ui: &mut egui::Ui,
@@ -446,83 +477,87 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
         .filter(|d| !d.is_empty())
         .map(str::to_owned);
     let out = saved_out.clone().unwrap_or_else(|| roles.out.clone());
-    for (label, id, role, current) in [
-        ("Output device (Out)", "out_device", DeviceRole::Out, &out),
-        (
-            "Cue device (PFL)",
-            "cue_device",
-            DeviceRole::Pfl,
-            &roles.pfl,
-        ),
-        (
-            "Live input device",
-            "live_device",
-            DeviceRole::Input,
-            &roles.input,
-        ),
-    ] {
-        let devices = if role == DeviceRole::Input {
-            &view.input_devices
-        } else {
-            &view.devices
-        };
-        let mut picked = None;
-        settings::form_row(ui, label, t, |ui| {
-            device_pick(ui, id, current, devices, &mut picked)
-        });
-        if let Some(device) = picked {
-            actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
-        }
-        if role == DeviceRole::Out
-            && !view.preview
-            && saved_out.as_ref().is_some_and(|s| *s != roles.out)
-        {
-            let now = if roles.out.is_empty() {
-                "no sound card"
-            } else {
-                roles.out.as_str()
-            };
-            settings::form_note(
-                ui,
-                RichText::new(format!(
-                    "Opens at the next start. Until then the sound goes to {now}."
-                ))
-                .font(theme::text(theme::CAPTION))
-                .color(t.warn),
-            );
-        }
-    }
-    let (mut left, mut right) = input_channels(view);
-    let (old_left, old_right) = (left, right);
-    settings::form_row(ui, "Live input channels", t, |ui| {
-        // Two halves of the one cell, with the gap of the theme between them.
-        ui.spacing_mut().item_spacing.x = space::S;
-        let half = (ui.available_width() - space::S) / 2.0;
-        let chans = 1..=MAX_INPUT_CHANNEL;
-        let h = size::CONTROL_SM;
-        let l = ui.add_sized(
-            [half, h],
-            numbers::field(
-                ui,
-                DragValue::new(&mut left).range(chans.clone()).prefix("L "),
+    settings::section(ui, "Audio devices", t, |ui| {
+        for (label, id, role, current) in [
+            ("Output device (Out)", "out_device", DeviceRole::Out, &out),
+            (
+                "Cue device (PFL)",
+                "cue_device",
+                DeviceRole::Pfl,
+                &roles.pfl,
             ),
-        );
-        let r = ui.add_sized(
-            [half, h],
-            numbers::field(ui, DragValue::new(&mut right).range(chans).prefix("R ")),
-        );
-        l.union(r)
+            (
+                "Live input device",
+                "live_device",
+                DeviceRole::Input,
+                &roles.input,
+            ),
+        ] {
+            let devices = if role == DeviceRole::Input {
+                &view.input_devices
+            } else {
+                &view.devices
+            };
+            let mut picked = None;
+            settings::form_row(ui, label, t, |ui| {
+                device_pick(ui, id, current, devices, &mut picked)
+            });
+            if let Some(device) = picked {
+                actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
+            }
+            if role == DeviceRole::Out
+                && !view.preview
+                && saved_out.as_ref().is_some_and(|s| *s != roles.out)
+            {
+                let now = if roles.out.is_empty() {
+                    "no sound card"
+                } else {
+                    roles.out.as_str()
+                };
+                settings::form_note(
+                    ui,
+                    RichText::new(format!(
+                        "Opens at the next start. Until then the sound goes to {now}."
+                    ))
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.warn),
+                );
+            }
+        }
     });
-    if left != old_left {
-        actions.push(parts::set(parts::MIXER, "input_left", left));
-    }
-    if right != old_right {
-        actions.push(parts::set(parts::MIXER, "input_right", right));
-    }
-    // A fixed fact, not a choice: a picker here would change nothing.
-    settings::form_row(ui, "Sample rate", t, |ui| {
-        ui.label(format!("{}, fixed", khz(AUDIO_RATE)))
-            .on_hover_text("The audio always runs at this rate; files are resampled to it")
+    settings::section(ui, "Signal", t, |ui| {
+        let (mut left, mut right) = input_channels(view);
+        let (old_left, old_right) = (left, right);
+        settings::form_row(ui, "Live input channels", t, |ui| {
+            // Two halves of the one cell, with the gap of the theme between them.
+            ui.spacing_mut().item_spacing.x = space::S;
+            let half = (ui.available_width() - space::S) / 2.0;
+            let chans = 1..=MAX_INPUT_CHANNEL;
+            let h = size::CONTROL_SM;
+            let l = ui.add_sized(
+                [half, h],
+                numbers::field(
+                    ui,
+                    DragValue::new(&mut left).range(chans.clone()).prefix("L "),
+                ),
+            );
+            let r = ui.add_sized(
+                [half, h],
+                numbers::field(ui, DragValue::new(&mut right).range(chans).prefix("R ")),
+            );
+            l.union(r)
+        });
+        if left != old_left {
+            actions.push(parts::set(parts::MIXER, "input_left", left));
+        }
+        if right != old_right {
+            actions.push(parts::set(parts::MIXER, "input_right", right));
+        }
+        // A fixed fact, not a choice: a picker here would change nothing.
+        settings::form_row(ui, "Sample rate", t, |ui| {
+            ui.label(format!("{}, fixed", khz(AUDIO_RATE)))
+                .on_hover_text("The audio always runs at this rate; files are resampled to it")
+        });
     });
 }
 
@@ -627,56 +662,53 @@ fn loudness_section(
     t: &Tokens,
 ) {
     let l = draft.get_or_insert(view.loudness);
-    ui.add_space(space::XS);
-    settings::form_note(
-        ui,
-        RichText::new("Loudness")
-            .font(theme::text(theme::LABEL))
-            .strong(),
-    );
-    let note = view.say(
-        "Preview: nothing plays, so no item gain applies.",
-        "Each deck item gets the gain that brings it to the target. A change on air ramps \
-         over 1.5 s.",
-    );
-    settings::form_note(
-        ui,
-        RichText::new(note)
-            .font(theme::text(theme::CAPTION))
-            .color(t.text_muted),
-    );
     let mut commit = false;
-    settings::form_row(ui, "Loudness normalisation", t, |ui| {
-        let r = ui.checkbox(&mut l.enabled, "On");
-        commit |= r.changed();
-        r
-    });
-    ui.add_enabled_ui(l.enabled, |ui| {
-        commit |= dyn_field(
-            ui,
-            "Target",
-            &mut l.target_lufs,
-            loudness_range::TARGET_LUFS,
-            0.1,
-            " LUFS",
-            t,
+    settings::section(ui, "Loudness", t, |ui| {
+        let note = view.say(
+            "Preview: nothing plays, so no item gain applies.",
+            "Each deck item gets the gain that brings it to the target. A change on air ramps \
+         over 1.5 s.",
         );
-        commit |= dyn_field(
+        settings::form_note(
             ui,
-            "Max boost",
-            &mut l.max_boost_db,
-            loudness_range::MAX_BOOST_DB,
-            0.1,
-            " dB",
-            t,
+            RichText::new(note)
+                .font(theme::text(theme::CAPTION))
+                .color(t.text_muted),
         );
-    });
-    settings::form_note(
-        ui,
-        RichText::new("A boost never lifts a true peak over −1 dBTP. The deepest cut is −24 dB.")
+        settings::form_row(ui, "Loudness normalisation", t, |ui| {
+            let r = ui.checkbox(&mut l.enabled, "On");
+            commit |= r.changed();
+            r
+        });
+        ui.add_enabled_ui(l.enabled, |ui| {
+            commit |= dyn_field(
+                ui,
+                "Target",
+                &mut l.target_lufs,
+                loudness_range::TARGET_LUFS,
+                0.1,
+                " LUFS",
+                t,
+            );
+            commit |= dyn_field(
+                ui,
+                "Max boost",
+                &mut l.max_boost_db,
+                loudness_range::MAX_BOOST_DB,
+                0.1,
+                " dB",
+                t,
+            );
+        });
+        settings::form_note(
+            ui,
+            RichText::new(
+                "A boost never lifts a true peak over −1 dBTP. The deepest cut is −24 dB.",
+            )
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted),
-    );
+        );
+    });
     if commit && *l != view.loudness {
         actions.push(Action::EditQuiet(Edit::SetLoudness(*l)));
     }
@@ -702,98 +734,93 @@ fn processing_tab(
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted),
     );
-    let heading = |ui: &mut egui::Ui, text: &str| {
-        ui.add_space(space::XS);
-        settings::form_note(
-            ui,
-            RichText::new(text).font(theme::text(theme::LABEL)).strong(),
-        );
-    };
     let mut commit = false;
-    heading(ui, "Compressor");
     let c = &mut d.compressor;
-    settings::form_row(ui, "Compressor", t, |ui| {
-        let r = ui.checkbox(&mut c.enabled, "On");
-        commit |= r.changed();
-        r
+    settings::section(ui, "Compressor", t, |ui| {
+        settings::form_row(ui, "Compressor", t, |ui| {
+            let r = ui.checkbox(&mut c.enabled, "On");
+            commit |= r.changed();
+            r
+        });
+        ui.add_enabled_ui(c.enabled, |ui| {
+            commit |= dyn_field(
+                ui,
+                "Threshold",
+                &mut c.threshold_db,
+                range::THRESHOLD_DB,
+                0.1,
+                " dBFS",
+                t,
+            );
+            commit |= dyn_field(ui, "Ratio", &mut c.ratio, range::RATIO, 0.05, " : 1", t);
+            commit |= dyn_field(
+                ui,
+                "Attack",
+                &mut c.attack_ms,
+                range::ATTACK_MS,
+                0.5,
+                " ms",
+                t,
+            );
+            commit |= dyn_field(
+                ui,
+                "Compressor release",
+                &mut c.release_ms,
+                range::COMP_RELEASE_MS,
+                5.0,
+                " ms",
+                t,
+            );
+            commit |= dyn_field(
+                ui,
+                "Makeup gain",
+                &mut c.makeup_db,
+                range::MAKEUP_DB,
+                0.1,
+                " dB",
+                t,
+            );
+        });
     });
-    ui.add_enabled_ui(c.enabled, |ui| {
-        commit |= dyn_field(
-            ui,
-            "Threshold",
-            &mut c.threshold_db,
-            range::THRESHOLD_DB,
-            0.1,
-            " dBFS",
-            t,
-        );
-        commit |= dyn_field(ui, "Ratio", &mut c.ratio, range::RATIO, 0.05, " : 1", t);
-        commit |= dyn_field(
-            ui,
-            "Attack",
-            &mut c.attack_ms,
-            range::ATTACK_MS,
-            0.5,
-            " ms",
-            t,
-        );
-        commit |= dyn_field(
-            ui,
-            "Compressor release",
-            &mut c.release_ms,
-            range::COMP_RELEASE_MS,
-            5.0,
-            " ms",
-            t,
-        );
-        commit |= dyn_field(
-            ui,
-            "Makeup gain",
-            &mut c.makeup_db,
-            range::MAKEUP_DB,
-            0.1,
-            " dB",
-            t,
-        );
-    });
-    heading(ui, "Limiter");
     let l = &mut d.limiter;
-    settings::form_row(ui, "Limiter", t, |ui| {
-        let r = ui.checkbox(&mut l.enabled, "On");
-        commit |= r.changed();
-        r
+    settings::section(ui, "Limiter", t, |ui| {
+        settings::form_row(ui, "Limiter", t, |ui| {
+            let r = ui.checkbox(&mut l.enabled, "On");
+            commit |= r.changed();
+            r
+        });
+        ui.add_enabled_ui(l.enabled, |ui| {
+            commit |= dyn_field(
+                ui,
+                "Ceiling",
+                &mut l.ceiling_db,
+                range::CEILING_DB,
+                0.1,
+                " dBFS",
+                t,
+            );
+            commit |= dyn_field(
+                ui,
+                "Limiter release",
+                &mut l.release_ms,
+                range::LIMIT_RELEASE_MS,
+                5.0,
+                " ms",
+                t,
+            );
+        });
+        if !l.enabled {
+            settings::form_note(
+                ui,
+                RichText::new(icons::lead(
+                    Icon::TriangleAlert,
+                    "Limiter off: a soft clip keeps Program under −1 dBFS",
+                ))
+                .font(theme::text(theme::CAPTION))
+                .color(t.warn),
+            );
+        }
     });
-    ui.add_enabled_ui(l.enabled, |ui| {
-        commit |= dyn_field(
-            ui,
-            "Ceiling",
-            &mut l.ceiling_db,
-            range::CEILING_DB,
-            0.1,
-            " dBFS",
-            t,
-        );
-        commit |= dyn_field(
-            ui,
-            "Limiter release",
-            &mut l.release_ms,
-            range::LIMIT_RELEASE_MS,
-            5.0,
-            " ms",
-            t,
-        );
-    });
-    if !l.enabled {
-        settings::form_note(
-            ui,
-            RichText::new(icons::lead(
-                Icon::TriangleAlert,
-                "Limiter off: a soft clip keeps Program under −1 dBFS",
-            ))
-            .font(theme::text(theme::CAPTION))
-            .color(t.warn),
-        );
-    }
     if commit && *d != view.dynamics {
         actions.push(Action::EditQuiet(Edit::SetDynamics(*d)));
     }
@@ -847,127 +874,130 @@ fn icecast_tab(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let word = icons::lead(status.icon, &status.word);
-    settings::form_note(
-        ui,
-        RichText::new(word)
-            .font(theme::text(theme::LABEL))
-            .color(status.ink),
-    );
-    // One line, in the font of the deck titles. A long title ends in "…", and the tooltip
-    // has all of it.
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Now streaming:").color(t.text_muted));
-        let full = format!("“{streaming}”");
-        let text = RichText::new(full.as_str()).font(theme::text(theme::BODY));
-        crate::widgets::truncated_label(ui, text.color(t.accent_ink)).on_hover_text(full);
-    });
-    let note = view.say(
-        "The stream would carry this text. The preview sends nothing.",
-        "Applied changes take effect at the next start of the app.",
-    );
-    settings::form_note(
-        ui,
-        RichText::new(note)
-            .font(theme::text(theme::CAPTION))
-            .color(t.text_muted),
-    );
-    ui.add_space(space::XS);
-    let field = |ui: &mut egui::Ui, text: &mut String| {
-        let edit = egui::TextEdit::singleline(text)
-            .desired_width(ui.available_width())
-            .min_size(egui::vec2(0.0, size::CONTROL_SM))
-            .align(egui::Align2::LEFT_CENTER);
-        ui.add(edit)
-    };
-    settings::form_row(ui, "Host", t, |ui| field(ui, &mut ice.host));
-    settings::form_row(ui, "Port", t, |ui| {
-        // A port is an address, not a quantity: 8000, never 8,000.
-        let port =
-            numbers::field(ui, DragValue::new(&mut ice.port).range(1..=u16::MAX)).ungrouped();
-        ui.add_sized([ui.available_width(), size::CONTROL_SM], port)
-    });
-    settings::form_row(ui, "TLS", t, |ui| {
-        ui.checkbox(&mut ice.tls, "Encrypt (TLS)")
-    });
-    settings::form_row(ui, "Mount", t, |ui| field(ui, &mut ice.mount));
-    settings::form_row(ui, "User", t, |ui| field(ui, &mut ice.user));
-    // The password is kept for one server: user, host, port and mount. A change of any of
-    // them needs the password typed again, or Icecast stays off.
-    let same_server = ice.user == view.icecast.user
-        && ice.host == view.icecast.host
-        && ice.port == view.icecast.port
-        && ice.mount == view.icecast.mount;
-    let hint = match (view.icecast.password_set, same_server) {
-        (true, true) => "set · leave empty to keep it",
-        (true, false) => "type it again for this server",
-        (false, _) => "not set",
-    };
-    settings::form_row(ui, "Password", t, |ui| {
-        let edit = egui::TextEdit::singleline(&mut ice.password)
-            .password(true)
-            .hint_text(hint)
-            .min_size(egui::vec2(0.0, size::CONTROL_SM))
-            .align(egui::Align2::LEFT_CENTER);
-        ui.add(edit.desired_width(ui.available_width()))
-    });
-    settings::form_row(ui, "Format", t, |ui| {
-        // One button per format, splitting the cell, as the input channels do.
-        ui.spacing_mut().item_spacing.x = space::S;
-        let n = StreamFormat::ALL.len() as f32;
-        let w = (ui.available_width() - space::S * (n - 1.0)) / n;
-        let mut all: Option<egui::Response> = None;
-        for f in StreamFormat::ALL {
-            let button = egui::Button::new(f.label()).min_size(egui::vec2(w, size::CONTROL_SM));
-            let r = widgets::steady(ui, ice.format == f, button);
-            if r.clicked() {
-                ice.format = f;
-            }
-            all = Some(match all {
-                Some(a) => a.union(r),
-                None => r,
-            });
-        }
-        all.unwrap_or_else(|| ui.label(""))
-    });
-    settings::form_row(ui, "Bitrate", t, |ui| {
-        craft_ui::ComboBox::from_id_salt("ice_kbps")
-            .width(ui.available_width())
-            .selected_text(format!("{} kbit/s", ice.kbps))
-            .show_ui(ui, |ui| {
-                for b in BITRATES {
-                    widgets::selectable_value(ui, &mut ice.kbps, b, format!("{b} kbit/s"));
-                }
-            })
-            .response
-    });
-    // The edited form decides: a typed password counts as a password.
-    let typed = IcecastView {
-        password_set: view.icecast.password_set || !ice.password.is_empty(),
-        ..ice.clone()
-    };
-    if typed.password_in_clear() {
+    settings::section(ui, "Status", t, |ui| {
+        let word = icons::lead(status.icon, &status.word);
         settings::form_note(
             ui,
-            RichText::new(icons::lead(Icon::TriangleAlert, PASSWORD_IN_CLEAR))
-                .font(theme::text(theme::CAPTION))
-                .color(t.warn),
+            RichText::new(word)
+                .font(theme::text(theme::LABEL))
+                .color(status.ink),
         );
-    }
-    ui.horizontal(|ui| {
-        let changed = *ice != view.icecast;
-        if ui
-            .add_enabled(changed, egui::Button::new("Apply"))
-            .clicked()
-        {
-            actions.push(Action::Edit(Edit::SetIcecast(ice.clone())));
+        // One line, in the font of the deck titles. A long title ends in "…", and the tooltip
+        // has all of it.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Now streaming:").color(t.text_muted));
+            let full = format!("“{streaming}”");
+            let text = RichText::new(full.as_str()).font(theme::text(theme::BODY));
+            crate::widgets::truncated_label(ui, text.color(t.accent_ink)).on_hover_text(full);
+        });
+        let note = view.say(
+            "The stream would carry this text. The preview sends nothing.",
+            "Applied changes take effect at the next start of the app.",
+        );
+        settings::form_note(
+            ui,
+            RichText::new(note)
+                .font(theme::text(theme::CAPTION))
+                .color(t.text_muted),
+        );
+    });
+    settings::section(ui, "Server", t, |ui| {
+        let field = |ui: &mut egui::Ui, text: &mut String| {
+            let edit = egui::TextEdit::singleline(text)
+                .desired_width(ui.available_width())
+                .min_size(egui::vec2(0.0, size::CONTROL_SM))
+                .align(egui::Align2::LEFT_CENTER);
+            ui.add(edit)
+        };
+        settings::form_row(ui, "Host", t, |ui| field(ui, &mut ice.host));
+        settings::form_row(ui, "Port", t, |ui| {
+            // A port is an address, not a quantity: 8000, never 8,000.
+            let port =
+                numbers::field(ui, DragValue::new(&mut ice.port).range(1..=u16::MAX)).ungrouped();
+            ui.add_sized([ui.available_width(), size::CONTROL_SM], port)
+        });
+        settings::form_row(ui, "TLS", t, |ui| {
+            ui.checkbox(&mut ice.tls, "Encrypt (TLS)")
+        });
+        settings::form_row(ui, "Mount", t, |ui| field(ui, &mut ice.mount));
+        settings::form_row(ui, "User", t, |ui| field(ui, &mut ice.user));
+        // The password is kept for one server: user, host, port and mount. A change of any of
+        // them needs the password typed again, or Icecast stays off.
+        let same_server = ice.user == view.icecast.user
+            && ice.host == view.icecast.host
+            && ice.port == view.icecast.port
+            && ice.mount == view.icecast.mount;
+        let hint = match (view.icecast.password_set, same_server) {
+            (true, true) => "set · leave empty to keep it",
+            (true, false) => "type it again for this server",
+            (false, _) => "not set",
+        };
+        settings::form_row(ui, "Password", t, |ui| {
+            let edit = egui::TextEdit::singleline(&mut ice.password)
+                .password(true)
+                .hint_text(hint)
+                .min_size(egui::vec2(0.0, size::CONTROL_SM))
+                .align(egui::Align2::LEFT_CENTER);
+            ui.add(edit.desired_width(ui.available_width()))
+        });
+        settings::form_row(ui, "Format", t, |ui| {
+            // One button per format, splitting the cell, as the input channels do.
+            ui.spacing_mut().item_spacing.x = space::S;
+            let n = StreamFormat::ALL.len() as f32;
+            let w = (ui.available_width() - space::S * (n - 1.0)) / n;
+            let mut all: Option<egui::Response> = None;
+            for f in StreamFormat::ALL {
+                let button = egui::Button::new(f.label()).min_size(egui::vec2(w, size::CONTROL_SM));
+                let r = widgets::steady(ui, ice.format == f, button);
+                if r.clicked() {
+                    ice.format = f;
+                }
+                all = Some(match all {
+                    Some(a) => a.union(r),
+                    None => r,
+                });
+            }
+            all.unwrap_or_else(|| ui.label(""))
+        });
+        settings::form_row(ui, "Bitrate", t, |ui| {
+            craft_ui::ComboBox::from_id_salt("ice_kbps")
+                .width(ui.available_width())
+                .selected_text(format!("{} kbit/s", ice.kbps))
+                .show_ui(ui, |ui| {
+                    for b in BITRATES {
+                        widgets::selectable_value(ui, &mut ice.kbps, b, format!("{b} kbit/s"));
+                    }
+                })
+                .response
+        });
+        // The edited form decides: a typed password counts as a password.
+        let typed = IcecastView {
+            password_set: view.icecast.password_set || !ice.password.is_empty(),
+            ..ice.clone()
+        };
+        if typed.password_in_clear() {
+            settings::form_note(
+                ui,
+                RichText::new(icons::lead(Icon::TriangleAlert, PASSWORD_IN_CLEAR))
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.warn),
+            );
         }
-        if ui
-            .add_enabled(changed, egui::Button::new("Revert"))
-            .clicked()
-        {
-            *ice = view.icecast.clone();
-        }
+        ui.horizontal(|ui| {
+            let changed = *ice != view.icecast;
+            if ui
+                .add_enabled(changed, egui::Button::new("Apply"))
+                .clicked()
+            {
+                actions.push(Action::Edit(Edit::SetIcecast(ice.clone())));
+            }
+            if ui
+                .add_enabled(changed, egui::Button::new("Revert"))
+                .clicked()
+            {
+                *ice = view.icecast.clone();
+            }
+        });
     });
 }
 

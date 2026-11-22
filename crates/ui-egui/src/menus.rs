@@ -122,6 +122,7 @@ pub(crate) fn run(command: &CommandRef) -> Run {
         shortcuts::DELETE => p.delete = true,
         shortcuts::SELECT_ALL => p.select_all = true,
         shortcuts::PREFERENCES => p.preferences = true,
+        shortcuts::FIND => p.find = true,
         shortcuts::PLAY_NEXT => p.play_next = true,
         shortcuts::FADE => p.fade = true,
         shortcuts::PLAY_PAUSE => p.play_pause = true,

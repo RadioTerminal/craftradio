@@ -76,15 +76,20 @@ pub(crate) fn show(
     let mut open = true;
     let mut close = false;
     let mut applied = None;
-    egui::Window::new(format!("{} — rules", editor.draft.name))
+    let title = format!("{} — rules", editor.draft.name);
+    egui::Window::new(&title)
         .id(egui::Id::unique("rules_editor"))
-        .open(&mut open)
+        .title_bar(false)
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .resizable(true)
         .default_size([size::EDITOR_W, size::EDITOR_H])
         .frame(theme::card_frame(t).inner_margin(pad::GUTTER))
         .show(ctx, |ui| {
+            if crate::chrome::header(ui, crate::icons::Icon::ListFilter, &title, true, t) {
+                open = false;
+            }
+            ui.add_space(space::S);
             mode_bar(ui, editor);
             ui.add_space(space::S);
             match editor.mode {

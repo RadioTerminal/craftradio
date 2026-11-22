@@ -468,7 +468,13 @@ fn table(
                                 .on_hover_text(&item.path);
                         });
                         let resp = row.response();
-                        if resp.hovered() {
+                        // The pointer over the row, from its place: the grip must not flip as the
+                        // label under it changes, and it goes when the pointer leaves the window.
+                        let over = resp
+                            .ctx
+                            .pointer_hover_pos()
+                            .is_some_and(|p| resp.rect.contains(p));
+                        if over {
                             hover_now = Some(item.id);
                         }
                         if resp.clicked() {
@@ -597,6 +603,16 @@ fn item_menu(ui: &mut egui::Ui, view: &StationView, item: &LibraryItem, actions:
 }
 
 /// The Library page of Preferences.
+/// Restore page defaults on the Library page: the default categories. The folders are the
+/// station's own and stay.
+pub(crate) fn restore_defaults(actions: &mut Vec<Action>) {
+    actions.push(parts::set(
+        parts::LIBRARY,
+        "categories",
+        DEFAULT_CATEGORIES.map(str::to_owned).to_vec(),
+    ));
+}
+
 pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -604,59 +620,68 @@ pub(crate) fn preferences(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    settings::label(ui, "Folders (the source reads only file names)", t);
-    for f in &view.folders {
+    settings::section(ui, "Folders", t, |ui| {
+        settings::form_note(
+            ui,
+            RichText::new("The source reads only the file names.")
+                .font(theme::text(theme::CAPTION))
+                .color(t.text_muted),
+        );
+        for f in &view.folders {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&f.path).font(theme::mono(theme::CODE)));
+                ui.label(
+                    RichText::new(count_text(f))
+                        .font(theme::text(theme::CAPTION))
+                        .color(t.text_muted),
+                );
+                if ui.small_button("Remove folder").clicked() {
+                    actions.push(Action::Edit(Edit::RemoveFolder {
+                        path: f.path.clone(),
+                    }));
+                }
+            });
+            for e in &f.errors {
+                ui.label(
+                    RichText::new(e)
+                        .font(theme::text(theme::CAPTION))
+                        .color(t.danger),
+                );
+            }
+        }
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&f.path).font(theme::mono(theme::CODE)));
-            ui.label(
-                RichText::new(count_text(f))
-                    .font(theme::text(theme::CAPTION))
-                    .color(t.text_muted),
-            );
-            if ui.small_button("Remove folder").clicked() {
-                actions.push(Action::Edit(Edit::RemoveFolder {
-                    path: f.path.clone(),
-                }));
+            ui.add(egui::TextEdit::singleline(&mut state.new_folder).desired_width(size::FIELD_W));
+            if ui
+                .button(icons::lead(Icon::Plus, "Add folder by path"))
+                .clicked()
+            {
+                let path = std::mem::take(&mut state.new_folder);
+                state.add_folder(&path, actions);
             }
         });
-        for e in &f.errors {
-            ui.label(
-                RichText::new(e)
-                    .font(theme::text(theme::CAPTION))
-                    .color(t.danger),
-            );
-        }
-    }
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut state.new_folder).desired_width(size::FIELD_W));
-        if ui
-            .button(icons::lead(Icon::Plus, "Add folder by path"))
-            .clicked()
-        {
-            let path = std::mem::take(&mut state.new_folder);
-            state.add_folder(&path, actions);
-        }
     });
-    ui.add_space(space::S);
-    settings::label(ui, "Categories", t);
     let cats = parts::strings(view, parts::LIBRARY, "categories", &DEFAULT_CATEGORIES);
     let mut next = cats.clone();
-    for (i, c) in cats.iter().enumerate() {
+    settings::section(ui, "Categories", t, |ui| {
+        for (i, c) in cats.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(c).font(theme::mono(theme::CODE)));
+                if ui.small_button("Remove category").clicked() {
+                    next.remove(i);
+                }
+            });
+        }
         ui.horizontal(|ui| {
-            ui.label(RichText::new(c).font(theme::mono(theme::CODE)));
-            if ui.small_button("Remove category").clicked() {
-                next.remove(i);
+            ui.add(
+                egui::TextEdit::singleline(&mut state.new_category).desired_width(size::FIELD_W),
+            );
+            if ui.button(icons::lead(Icon::Plus, "Add category")).clicked()
+                && !state.new_category.trim().is_empty()
+            {
+                next.push(state.new_category.trim().to_owned());
+                state.new_category.clear();
             }
         });
-    }
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut state.new_category).desired_width(size::FIELD_W));
-        if ui.button(icons::lead(Icon::Plus, "Add category")).clicked()
-            && !state.new_category.trim().is_empty()
-        {
-            next.push(state.new_category.trim().to_owned());
-            state.new_category.clear();
-        }
     });
     if next != cats {
         actions.push(parts::set(parts::LIBRARY, "categories", next));

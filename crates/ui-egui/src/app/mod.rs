@@ -584,7 +584,10 @@ impl RadioApp {
         let open = &mut self.open;
         let link = &mut self.link;
         let mut sized = Vec::new();
-        let saved = |w: ToolWindow| saved_size(view, w);
+        let saved = |w: ToolWindow| windows::Saved {
+            size: saved_pair(view, w, windows::SIZE_KEY),
+            pos: saved_pair(view, w, windows::POS_KEY),
+        };
         let mut note = |w: ToolWindow, c: Option<windows::SizeChange>| {
             if let Some(c) = c {
                 sized.push((w, c));
@@ -633,6 +636,8 @@ impl RadioApp {
         note(
             w,
             windows::show(ctx, w, open, saved(w), t, |ui| {
+                let root = own_keys(ui, link);
+                self.preferences.find = link.keys.find;
                 let parts = crate::preferences::Parts {
                     mixer: &mut self.mixer,
                     carts: &mut self.carts,
@@ -647,10 +652,15 @@ impl RadioApp {
                     actions,
                     t,
                 );
+                link.keys = root;
             }),
         );
         if done {
             open.set(w, false);
+        }
+        if was_open && !open.get(w) {
+            // The next visit starts without the last search, so a ⚙ opens on its own page.
+            self.preferences.search.clear();
         }
         if (was_open && !open.get(w)) || self.preferences.page != crate::preferences::Page::Cartwall
         {
@@ -674,12 +684,15 @@ impl RadioApp {
             );
         }
         for (w, c) in sized {
-            let value = match c {
-                windows::SizeChange::Manual([x, y]) => serde_json::json!([x, y]),
+            let (key, value) = match c {
+                windows::SizeChange::Manual([x, y]) => {
+                    (windows::SIZE_KEY, serde_json::json!([x, y]))
+                }
+                windows::SizeChange::Moved([x, y]) => (windows::POS_KEY, serde_json::json!([x, y])),
             };
             actions.push(Action::EditQuiet(Edit::SetPartSetting {
                 part: w.part().to_owned(),
-                key: windows::SIZE_KEY.to_owned(),
+                key: key.to_owned(),
                 value,
             }));
         }
@@ -1076,13 +1089,10 @@ pub(crate) fn is_on_air(row: &Row, now: Timestamp) -> bool {
     start <= now && now < end
 }
 
-/// The size that a person gave tool window `w` by hand, from the settings of its part.
-fn saved_size(view: &StationView, w: ToolWindow) -> Option<[f32; 2]> {
-    let v = view
-        .settings
-        .get(w.part())?
-        .get(windows::SIZE_KEY)?
-        .as_array()?;
+/// A pair that a person gave tool window `w` by hand (its size or its place), from the
+/// settings of its part.
+fn saved_pair(view: &StationView, w: ToolWindow, key: &str) -> Option<[f32; 2]> {
+    let v = view.settings.get(w.part())?.get(key)?.as_array()?;
     match v.as_slice() {
         [x, y] => Some([x.as_f64()? as f32, y.as_f64()? as f32]),
         _ => None,
