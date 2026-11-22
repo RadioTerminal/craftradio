@@ -813,12 +813,8 @@ impl EngineSource {
                     peak_db: m.peak_hold_db,
                     gain_db: self.strip_gain.get(label).copied().unwrap_or(st.gain_db),
                     mute: st.mute,
-                    pfl: st.pfl,
-                    route: match st.route {
-                        radio_engine::Route::Out => Route::Out,
-                        radio_engine::Route::OutAndCue => Route::OutAndCue,
-                        radio_engine::Route::CueOnly => Route::CueOnly,
-                    },
+                    pfl: st.snd,
+                    route: Route::Out,
                 }
             })
             .collect()
@@ -1068,7 +1064,7 @@ impl ViewSource for EngineSource {
                 pfl: self
                     .state
                     .settings(AUDIO_PART)
-                    .and_then(|s| s.get("pfl"))
+                    .and_then(|s| s.get(radio_engine::MONITOR_KEY))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_owned(),

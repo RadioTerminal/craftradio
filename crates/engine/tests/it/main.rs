@@ -591,23 +591,143 @@ fn live_input_with_a_planned_length_can_be_scheduled() {
     assert!(ids(&e).contains(&500));
 }
 
+fn set_strip(
+    e: &mut Engine,
+    args: serde_json::Value,
+) -> Result<radio_engine::Outcome, EngineError> {
+    e.dispatch(
+        serde_json::from_value(serde_json::json!({"id": "mixer.set_strip", "args": args})).unwrap(),
+    )
+}
+
+fn set_setting(e: &mut Engine, part: &str, key: &str, value: &str) {
+    e.dispatch(Command::SettingsSet {
+        part: part.into(),
+        key: key.into(),
+        value: value.into(),
+    })
+    .unwrap();
+}
+
+fn audio_setting(e: &Engine, key: &str) -> Option<String> {
+    e.state()
+        .settings("audio")
+        .and_then(|s| s.get(key))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
 #[test]
-fn unavailable_cue_output_is_rejected_without_showing_pfl_on() {
+fn snd_without_a_monitor_device_is_refused_and_not_shown_on() {
     let mut e = Engine::open_in_memory().unwrap();
-    let result = e.dispatch(Command::MixerSetStrip {
-        strip: "A".into(),
-        gain_db: None,
-        mute: None,
-        pfl: Some(true),
-        route: None,
-    });
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Cue output is not available")
+    let err = set_strip(&mut e, serde_json::json!({"strip": "A", "snd": true})).unwrap_err();
+    assert!(err.to_string().contains("Monitor output is not available"));
+    assert!(!e.state().strips.get("A").is_some_and(|s| s.snd));
+}
+
+#[test]
+fn old_pfl_field_still_turns_snd_on() {
+    let mut e = Engine::open_in_memory().unwrap();
+    set_setting(&mut e, "audio", "monitor", "Desk speakers");
+    set_strip(&mut e, serde_json::json!({"strip": "A", "pfl": true})).unwrap();
+    assert!(e.state().strips.get("A").is_some_and(|s| s.snd));
+}
+
+#[test]
+fn a_route_field_is_refused_with_a_message() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let err = set_strip(
+        &mut e,
+        serde_json::json!({"strip": "A", "route": "CueOnly"}),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("route is gone"), "{err}");
+}
+
+#[test]
+fn old_cue_device_setting_becomes_the_monitor_device() {
+    let path = temp_db("monitor-migration");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        set_setting(&mut e, "audio", "pfl", "Desk speakers");
+        e.flush().unwrap();
+    }
+    let e = Engine::open(&path).unwrap();
+    assert_eq!(
+        audio_setting(&e, "monitor").as_deref(),
+        Some("Desk speakers")
     );
-    assert!(!e.state().strips.get("A").is_some_and(|s| s.pfl));
+    assert_eq!(audio_setting(&e, "pfl"), None);
+}
+
+#[test]
+fn old_strip_rows_load_as_mute_and_snd() {
+    let path = temp_db("strip-migration");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        set_setting(&mut e, "ui", "x", "y");
+        e.flush().unwrap();
+    }
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for (strip, row) in [
+        (
+            "A",
+            r#"{"gain_db":0.0,"mute":false,"pfl":true,"route":"Out"}"#,
+        ),
+        (
+            "B",
+            r#"{"gain_db":0.0,"mute":false,"pfl":false,"route":"CueOnly"}"#,
+        ),
+        (
+            "C",
+            r#"{"gain_db":-3.0,"mute":false,"pfl":false,"route":"OutAndCue"}"#,
+        ),
+        (
+            "D",
+            r#"{"gain_db":0.0,"mute":false,"pfl":false,"route":"Out"}"#,
+        ),
+    ] {
+        conn.execute(
+            "INSERT OR REPLACE INTO settings_by_part (part, key, value) VALUES ('mixer', ?1, ?2)",
+            (strip, row),
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let e = Engine::open(&path).unwrap();
+    let s = |k: &str| e.state().strips.get(k).copied().unwrap();
+    assert!(s("A").snd && !s("A").mute);
+    assert!(s("B").snd && s("B").mute);
+    assert!(s("C").snd && !s("C").mute && s("C").gain_db < -2.0);
+    assert!(!s("D").snd && !s("D").mute);
+}
+
+#[test]
+fn a_new_station_has_no_program_device() {
+    let e = Engine::open_in_memory().unwrap();
+    assert_eq!(
+        audio_setting(&e, "out").as_deref(),
+        Some(radio_engine::NO_DEVICE)
+    );
+}
+
+#[test]
+fn an_existing_station_without_out_keeps_system_default() {
+    let path = temp_db("keep-default-out");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        set_setting(&mut e, "ui", "x", "y");
+        e.flush().unwrap();
+    }
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute(
+        "DELETE FROM settings_by_part WHERE part = 'ui:audio' AND key = 'out'",
+        (),
+    )
+    .unwrap();
+    drop(conn);
+    let e = Engine::open(&path).unwrap();
+    assert_eq!(audio_setting(&e, "out"), None);
 }
 
 #[test]

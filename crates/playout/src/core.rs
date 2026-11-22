@@ -768,8 +768,8 @@ impl Core {
         let cue_name = self
             .engine
             .state()
-            .settings("audio")
-            .and_then(|s| s.get("pfl"))
+            .settings(radio_engine::AUDIO_PART)
+            .and_then(|s| s.get(radio_engine::MONITOR_KEY))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_owned();
