@@ -185,7 +185,7 @@ fn metadata(path: &Path) -> Result<ItemMeta, LibraryError> {
         m.artist = t.artist().unwrap_or_default().into_owned();
         m.album = t.album().unwrap_or_default().into_owned();
         m.year = t
-            .get_string(&ItemKey::RecordingDate)
+            .get_string(ItemKey::RecordingDate)
             .unwrap_or_default()
             .to_owned();
         m.genre = t.genre().unwrap_or_default().into_owned();
@@ -336,6 +336,43 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
         size: fs::metadata(path)?.len(),
     })
 }
+/// The value of an ID3v2 `TXXX` frame. The match of `description` ignores case.
+/// The generic tag of lofty drops the `TXXX` frames with a key that it does not know.
+fn id3v2_user_text(path: &Path, description: &str) -> Option<String> {
+    use lofty::config::ParseOptions;
+    use lofty::file::{AudioFile, FileType};
+    use lofty::id3::v2::{Frame, Id3v2Tag};
+    let options = ParseOptions::new()
+        .read_properties(false)
+        .read_cover_art(false);
+    let mut file = fs::File::open(path).ok()?;
+    let tag: Option<Id3v2Tag> = match FileType::from_path(path)? {
+        FileType::Mpeg => lofty::mpeg::MpegFile::read_from(&mut file, options)
+            .ok()?
+            .id3v2()
+            .cloned(),
+        FileType::Wav => lofty::iff::wav::WavFile::read_from(&mut file, options)
+            .ok()?
+            .id3v2()
+            .cloned(),
+        FileType::Aiff => lofty::iff::aiff::AiffFile::read_from(&mut file, options)
+            .ok()?
+            .id3v2()
+            .cloned(),
+        FileType::Flac => lofty::flac::FlacFile::read_from(&mut file, options)
+            .ok()?
+            .id3v2()
+            .cloned(),
+        _ => None,
+    };
+    tag?.into_iter().find_map(|frame| match frame {
+        Frame::UserText(f) if f.description.eq_ignore_ascii_case(description) => {
+            Some(f.content.into_owned())
+        }
+        _ => None,
+    })
+}
+
 /// The ReplayGain reference level, in LUFS (ReplayGain 2.0).
 const REPLAYGAIN_REF_LUFS: f32 = -18.0;
 /// The reference level of the Opus `R128_TRACK_GAIN` tag, in LUFS (RFC 7845).
@@ -356,11 +393,11 @@ pub fn read_loudness_tags(path: impl AsRef<Path>) -> Option<Loudness> {
     };
     for tag in file.tags() {
         if let Some(gain) = tag
-            .get_string(&ItemKey::ReplayGainTrackGain)
+            .get_string(ItemKey::ReplayGainTrackGain)
             .and_then(number)
         {
             let peak_db = tag
-                .get_string(&ItemKey::ReplayGainTrackPeak)
+                .get_string(ItemKey::ReplayGainTrackPeak)
                 .and_then(number)
                 .filter(|p| *p > 0.0)
                 .map(|p| 20.0 * p.log10());
@@ -369,13 +406,10 @@ pub fn read_loudness_tags(path: impl AsRef<Path>) -> Option<Loudness> {
                 peak_db,
             });
         }
-        // Tag formats keep an unknown key as written, so the match ignores case.
         let r128 = tag
-            .items()
-            .find(|i| {
-                matches!(i.key(), ItemKey::Unknown(k) if k.eq_ignore_ascii_case("R128_TRACK_GAIN"))
-            })
-            .and_then(|i| i.value().text())
+            .get_string(ItemKey::R128TrackGain)
+            .map(str::to_owned)
+            .or_else(|| id3v2_user_text(path.as_ref(), "R128_TRACK_GAIN"))
             .and_then(|v| v.trim().parse::<i32>().ok());
         if let Some(q78) = r128 {
             return Some(Loudness {

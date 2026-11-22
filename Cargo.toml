@@ -21,7 +21,7 @@ igd-next = { version = "0.18", default-features = false, features = ["io_sync"] 
 # NAT-PMP port mapping, for routers without UPnP. No async runtime.
 natpmp = { version = "0.5", default-features = false }
 str0m = { version = "0.25", default-features = false, features = ["aws-lc-rs"] }
-lofty = "0.22"
+lofty = "0.25"
 ebur128 = "0.1"
 blake3 = "1"
 notify = "8"
@@ -29,19 +29,19 @@ tempfile = "3"
 # Native MP3 encoder for the Icecast output (MIT OR Apache-2.0).
 craft-audio = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false, features = ["mp3-encode"] }
 percent-encoding = "2"
-opus = "0.3"
+opus = "0.4"
 ogg = "0.9"
-base64 = "0.22"
+base64 = "0.23"
 ureq = { version = "3", default-features = false }
 rquickjs = "0.14"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-toml = "0.9"
-dirs = "6"
+toml = "1.2"
+dirs = "7"
 jiff = { version = "0.2", features = ["serde"] }
 thiserror = "2"
 cpal = "0.18"
-rand_chacha = "0.9"
+rand_chacha = "0.10"
 proptest = "1"
 clap = { version = "4", features = ["derive"] }
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm", "all-meta"] }
@@ -63,7 +63,7 @@ radio-control = { path = "crates/control" }
 radio-mcp = { path = "crates/mcp" }
 # The radio app explicitly enables MP3 output; other consumers opt in.
 radio-stream = { path = "crates/stream", default-features = false }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 schemars = "1"
 # "clipboard": without it, copy buttons copy nothing to the system clipboard.
 eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow", "wayland", "x11"] }
@@ -92,7 +92,7 @@ rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }
 # The OS keychain: macOS Keychain, Windows Credential Manager, Secret Service on Linux.
-keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+keyring = "4.2"
 radio-playout = { path = "crates/playout" }
 radio-testkit = { path = "crates/testkit" }
 
