@@ -1,0 +1,16 @@
+[package]
+name = "radio-codecs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+symphonia.workspace = true
+craft-audio = { workspace = true, features = ["opus-decode"] }
+
+[dev-dependencies]
+craft-audio = { workspace = true, features = ["opus-encode", "opus-decode"] }
+ogg.workspace = true

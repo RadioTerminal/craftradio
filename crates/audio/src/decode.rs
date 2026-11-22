@@ -460,8 +460,5 @@ impl Clip {
 
 /// Playback codecs, including Opus.
 pub fn codecs() -> symphonia::core::codecs::registry::CodecRegistry {
-    let mut registry = symphonia::core::codecs::registry::CodecRegistry::new();
-    symphonia::default::register_enabled_codecs(&mut registry);
-    registry.register_audio_decoder::<symphonia_adapter_libopus::OpusDecoder>();
-    registry
+    radio_codecs::registry()
 }

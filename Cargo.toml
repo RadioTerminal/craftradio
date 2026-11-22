@@ -12,7 +12,6 @@ license = "MIT OR Apache-2.0"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-native-certs = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
-symphonia-adapter-libopus = "0.3"
 # WebRTC listening (WHEP). aws-lc is ISC/Apache-2.0/MIT/BSD-3-Clause.
 # Ed25519 station identity (already used by rustls).
 ring = "0.17"
@@ -54,6 +53,7 @@ radio-engine = { path = "crates/engine" }
 radio-audio = { path = "crates/audio" }
 radio-audio-device = { path = "crates/audio-device" }
 radio-library = { path = "crates/library" }
+radio-codecs = { path = "crates/codecs" }
 radio-control = { path = "crates/control" }
 radio-mcp = { path = "crates/mcp" }
 # The radio app explicitly enables MP3 output; other consumers opt in.
