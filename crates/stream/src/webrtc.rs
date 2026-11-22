@@ -112,12 +112,17 @@ enum Control {
     Stop,
 }
 
-/// Owns the server threads. Dropping it stops them.
+/// Program for the WebRTC output.
+/// A running server holds the reader. It gives the reader back when it stops.
+pub type TapSlot = Arc<Mutex<Option<rtrb::Consumer<f32>>>>;
+
+/// Owns the server threads. Dropping it stops them and waits until they free the ports.
 pub struct WebRtcHandle {
     control: mpsc::Sender<Control>,
     status: Arc<Mutex<WebRtcStatus>>,
     now: SharedNow,
     http: Option<SocketAddr>,
+    threads: Vec<thread::JoinHandle<()>>,
 }
 
 impl WebRtcHandle {
@@ -157,6 +162,9 @@ impl WebRtcHandle {
 impl Drop for WebRtcHandle {
     fn drop(&mut self) {
         self.stop();
+        for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
     }
 }
 
@@ -186,6 +194,11 @@ impl WebRtcServer {
     /// Binds the ports and serves Program from `frames`. A bind error shows as
     /// [`WebRtcStatus::Failed`].
     pub fn start(cfg: WebRtcConfig, frames: rtrb::Consumer<f32>) -> WebRtcHandle {
+        Self::start_shared(cfg, Arc::new(Mutex::new(Some(frames))))
+    }
+
+    /// Like [`WebRtcServer::start`], with a tap that outlives the server.
+    pub fn start_shared(cfg: WebRtcConfig, frames: TapSlot) -> WebRtcHandle {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(WebRtcStatus::Starting));
         let title: SharedNow = Arc::default();
@@ -194,6 +207,7 @@ impl WebRtcServer {
             status: status.clone(),
             now: title.clone(),
             http: None,
+            threads: Vec::new(),
         };
         let opened = OpusEncoder::new(cfg.kbps).and_then(|encoder| {
             let tcp = TcpListener::bind(cfg.bind)?;
@@ -235,12 +249,15 @@ impl WebRtcServer {
                 .map(|i| format!("{LISTEN_SITE}#{}", i.id())),
             url: format!("http://{}/", SocketAddr::new(url_ip, http.port())),
         };
-        if let Err(e) = thread::Builder::new()
+        match thread::Builder::new()
             .name("webrtc-media".into())
             .spawn(move || media.run(rx))
         {
-            set_status(&status, WebRtcStatus::Failed(e.to_string()));
-            return handle;
+            Ok(t) => handle.threads.push(t),
+            Err(e) => {
+                set_status(&status, WebRtcStatus::Failed(e.to_string()));
+                return handle;
+            }
         }
         let gate = Gate {
             control: tx,
@@ -258,11 +275,12 @@ impl WebRtcServer {
             title,
             busy: Arc::new(AtomicUsize::new(0)),
         };
-        if let Err(e) = thread::Builder::new()
+        match thread::Builder::new()
             .name("webrtc-http".into())
             .spawn(move || http_state.serve(tcp))
         {
-            set_status(&status, WebRtcStatus::Failed(e.to_string()));
+            Ok(t) => handle.threads.push(t),
+            Err(e) => set_status(&status, WebRtcStatus::Failed(e.to_string())),
         }
         handle
     }
@@ -304,7 +322,7 @@ struct Listener {
 
 struct Media {
     socket: UdpSocket,
-    frames: rtrb::Consumer<f32>,
+    frames: TapSlot,
     encoder: OpusEncoder,
     stun: Vec<String>,
     candidates: Arc<Mutex<Vec<Candidate>>>,
@@ -335,12 +353,56 @@ fn release_pending(pending: &Pending, l: &mut Listener) {
     }
 }
 
+/// The tap while one server reads it. It goes back to the slot when it drops.
+struct Borrowed {
+    slot: TapSlot,
+    reader: Option<rtrb::Consumer<f32>>,
+}
+
+impl Borrowed {
+    fn take(slot: &TapSlot, wait: Duration) -> Option<Self> {
+        let until = Instant::now() + wait;
+        loop {
+            if let Some(reader) = slot.lock().ok().and_then(|mut s| s.take()) {
+                return Some(Self {
+                    slot: slot.clone(),
+                    reader: Some(reader),
+                });
+            }
+            if Instant::now() >= until {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn reader(&mut self) -> Option<&mut rtrb::Consumer<f32>> {
+        self.reader.as_mut()
+    }
+}
+
+impl Drop for Borrowed {
+    fn drop(&mut self) {
+        if let (Some(reader), Ok(mut slot)) = (self.reader.take(), self.slot.lock()) {
+            *slot = Some(reader);
+        }
+    }
+}
+
 impl Media {
     fn run(mut self, control: mpsc::Receiver<Control>) {
         let local = match self.socket.local_addr() {
             Ok(a) => a,
             Err(e) => return set_status(&self.status, WebRtcStatus::Failed(e.to_string())),
         };
+        // A server that stops gives the tap back as it ends. Wait a moment for it.
+        let Some(mut tap) = Borrowed::take(&self.frames, Duration::from_secs(3)) else {
+            return set_status(
+                &self.status,
+                WebRtcStatus::Failed("another WebRTC server still reads Program".into()),
+            );
+        };
+        let Some(frames) = tap.reader() else { return };
         let mut stun = Stun::new(&self.stun, local);
         let mut public = stun.query_blocking(&self.socket);
         self.publish_candidates(local, public);
@@ -367,13 +429,13 @@ impl Media {
             stun.refresh(&self.socket);
             let now = Instant::now();
             // A full ring means that this thread fell behind. Drop the backlog.
-            if self.frames.slots() == self.frames.buffer().capacity() {
-                while self.frames.pop().is_ok() {}
+            if frames.slots() == frames.buffer().capacity() {
+                while frames.pop().is_ok() {}
                 samples.clear();
             }
             loop {
                 while samples.len() < PACKET {
-                    match self.frames.pop() {
+                    match frames.pop() {
                         Ok(s) => samples.push(s),
                         Err(_) => break,
                     }
