@@ -684,6 +684,18 @@ fn status_line(
                     .color(colour),
             );
         }
+        // The link that anyone can open to listen, from anywhere.
+        if let Some(link) = &view.output.listen_link {
+            let label = RichText::new(icons::lead(Icon::Link, "Copy listen link"))
+                .font(theme::text(theme::LABEL));
+            if ui
+                .button(label)
+                .on_hover_text(format!("Copies {link}"))
+                .clicked()
+            {
+                ui.ctx().copy_text(link.clone());
+            }
+        }
         // The chip counts the alarms that nobody acknowledged, with the icon and colour of
         // the most serious one. It opens the Alarms window.
         let open = view.open_alarms().count();

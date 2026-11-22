@@ -678,6 +678,10 @@ impl EngineSource {
             Some(StreamStatus::Connected { .. }) => Status::Connected,
             Some(StreamStatus::Retrying { last_error, .. }) => Status::Failed(last_error.clone()),
         };
+        let listen_link = match &pv.outputs.webrtc {
+            Some(WebRtcStatus::Listening { link, relays, .. }) if *relays > 0 => link.clone(),
+            _ => None,
+        };
         let (webrtc, webrtc_listeners) = match &pv.outputs.webrtc {
             None | Some(WebRtcStatus::Stopped) => (Status::NotConnected, None),
             Some(WebRtcStatus::Starting) => (Status::Reconnecting { attempt: 0 }, None),
@@ -692,6 +696,7 @@ impl EngineSource {
             listeners: None,
             webrtc,
             webrtc_listeners,
+            listen_link,
         }
     }
 
