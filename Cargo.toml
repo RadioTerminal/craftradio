@@ -88,6 +88,8 @@ craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "a7f8d
 craft-keymap = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false, features = ["egui", "ui"] }
 # The menu bar, native on macOS and drawn in the window elsewhere, as in the Craft apps (MIT OR Apache-2.0).
 craft-menu = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d" }
+# Update checks, the update prompt and self-update, as in the Craft apps (MIT OR Apache-2.0). Same rev.
+craft-update = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false, features = ["egui"] }
 rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }

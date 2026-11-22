@@ -510,7 +510,8 @@ fn window(
             radio_ui_egui::numbers::install_system(&cc.egui_ctx);
             let mut app = RadioApp::new(source, clock)
                 .with_perf(perf)
-                .with_preferences(prefs);
+                .with_preferences(prefs)
+                .with_updates();
             if let Some(bridge) = bridge {
                 let _ = bridge.ctx.set(cc.egui_ctx.clone());
                 app = app.with_screenshots(bridge.requests);
