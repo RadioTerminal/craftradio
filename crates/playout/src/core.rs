@@ -527,7 +527,7 @@ impl Core {
             plans: 0,
             tick_overruns: 0,
         };
-        Ok(Core {
+        let mut core = Core {
             engine,
             engine_rx,
             mixer: opened.handle,
@@ -586,7 +586,11 @@ impl Core {
             planned_rules: Vec::new(),
             out_clock: opened.clock,
             aired_one_offs: std::collections::BTreeSet::new(),
-        })
+        };
+        if core.cfg.webrtc.is_some() {
+            core.seed_played();
+        }
+        Ok(core)
     }
 
     pub(crate) fn view(&self) -> Arc<Mutex<PlayoutView>> {

@@ -192,6 +192,7 @@ impl Core {
         // An item that hides its title stays out of the history too.
         let at = self.cfg.clock.now();
         let now = match shown.meta.publish {
+            PublishMode::KeepPrevious => None,
             PublishMode::FromTags => Some(NowPlaying {
                 title: shown.meta.title.clone(),
                 artist: shown.meta.artist.clone(),
@@ -202,7 +203,6 @@ impl Core {
                 at,
                 listed: true,
             }),
-            PublishMode::KeepPrevious => None,
             PublishMode::Custom | PublishMode::Hide => Some(NowPlaying {
                 title: title.clone(),
                 artist: String::new(),
@@ -234,6 +234,40 @@ impl Core {
             self.webrtc_now = Some(now);
         }
         self.title = title;
+    }
+
+    /// Fills the listener history from the as-played log of the last hour. Hidden and deleted items stay out.
+    pub(crate) fn seed_played(&mut self) {
+        let now = self.cfg.clock.now();
+        let hour_ago = now
+            .checked_sub(jiff::SignedDuration::from_hours(1))
+            .unwrap_or(now);
+        let Ok(rows) = self.log.history(hour_ago, PLAYED_MAX as u32 * 4) else {
+            return;
+        };
+        let station = &self.engine.state().station;
+        for row in rows {
+            // A row without an end did not finish, or it is the item that resumes now.
+            if row.end.is_none() || row.entry.start > now {
+                continue;
+            }
+            let item = station
+                .playlists
+                .iter()
+                .filter(|p| p.name == row.entry.playlist)
+                .flat_map(|p| p.items.iter())
+                .find(|i| i.title == row.entry.title && i.artist == row.entry.artist);
+            let Some((title, artist)) = item.and_then(|i| listed_title(i, &self.cfg.station_name))
+            else {
+                continue;
+            };
+            self.webrtc_played.push_front(Played {
+                title,
+                artist,
+                at: row.entry.start,
+            });
+        }
+        self.webrtc_played.truncate(PLAYED_MAX);
     }
 
     /// Starts or stops the WebRTC server to match its setting. A server that stops frees
@@ -299,6 +333,21 @@ pub(crate) struct NowPlaying {
 
 /// The longest history that listeners get.
 const PLAYED_MAX: usize = 40;
+
+/// The title and artist that listeners see of `item`, or `None` when it hides them.
+fn listed_title(item: &Item, station_name: &str) -> Option<(String, String)> {
+    let mut shown = item.clone();
+    if shown.meta.title.is_empty() {
+        shown.meta.title.clone_from(&item.title);
+        shown.meta.artist = item.artist.clone().unwrap_or_default();
+    }
+    match shown.meta.publish {
+        PublishMode::FromTags => Some((shown.meta.title.clone(), shown.meta.artist.clone())),
+        PublishMode::Custom => Some((stream_title(&shown, "", station_name), String::new())),
+        PublishMode::Hide | PublishMode::KeepPrevious => None,
+    }
+    .filter(|(title, _)| !title.trim().is_empty())
+}
 
 impl NowPlaying {
     fn send(&self, server: &WebRtcHandle, played: &std::collections::VecDeque<Played>) {
