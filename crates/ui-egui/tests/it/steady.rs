@@ -36,3 +36,29 @@ fn hovering_a_playlist_tab_keeps_its_size_and_its_neighbours_in_place() {
         assert_eq!(before, after, "hovering {hovered:?} changed the tab bar");
     }
 }
+
+/// Scrolling a playlist tab ends: its items list does not grow while the pane scrolls.
+#[test]
+fn a_playlist_tab_scrolls_a_bounded_distance() {
+    let mut h = harness();
+    h.get_by_label("    Jingles").click();
+    h.run_steps(FRAMES);
+    let caption = |h: &Harness<'_, RadioApp>| h.get_by_label("ITEMS (3)").rect().top();
+    let before = caption(&h);
+    let over = h.get_by_label("ITEMS (3)").rect().center();
+    h.hover_at(over);
+    for _ in 0..60 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -200.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(2);
+    }
+    h.run_steps(FRAMES * 4);
+    let moved = before - caption(&h);
+    // 60 wheel steps of 200 points: unbounded content would scroll thousands of points.
+    // The pane is a little taller than its window, so it scrolls only that little.
+    assert!(moved < 200.0, "the pane scrolled {moved} points");
+}

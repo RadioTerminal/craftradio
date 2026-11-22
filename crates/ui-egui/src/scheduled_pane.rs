@@ -461,11 +461,14 @@ fn playlist(
             actions.push(remove_items(p, decks, sel));
         }
     }
-    // The bottom of the pane: the items list stretches down to it.
-    let pane_bottom = ui.max_rect().bottom().min(ui.clip_rect().bottom());
+    // The height of the pane: the items list stretches down to its bottom.
+    let pane_h = ui.available_height();
     egui::ScrollArea::vertical()
         .id_salt(("playlist_scroll", &p.name))
         .show(ui, |ui| {
+            // Where the content starts. It moves with the scroll, as the cursor does, so the
+            // room left below the cursor does not change when the pane scrolls.
+            let content_top = ui.min_rect().top();
             ui.push_id(("playlist_tab", &p.name), |ui| {
                 ui.horizontal(|ui| {
                     let (dot, _) = ui
@@ -510,8 +513,9 @@ fn playlist(
                     // minimum height.
                     // Leave room for the header row and the card's bottom edge.
                     let edge = f32::from(pad::TIGHT.bottom) + size::HAIRLINE;
-                    let fill = (pane_bottom - ui.cursor().top() - size::DIVIDER_ROW - edge)
-                        .max(size::PLAYLIST_TABLE_H);
+                    let used = ui.cursor().top() - content_top;
+                    let fill =
+                        (pane_h - used - size::DIVIDER_ROW - edge).max(size::PLAYLIST_TABLE_H);
                     TableBuilder::new(ui)
                         .id_salt("items")
                         .min_scrolled_height(fill)

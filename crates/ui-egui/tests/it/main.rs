@@ -4,6 +4,7 @@ mod alarms;
 mod editing;
 mod folders;
 mod guards;
+mod icecast_form;
 mod keyboard;
 mod loudness;
 mod meters;

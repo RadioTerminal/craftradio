@@ -417,14 +417,17 @@ fn native(
             let out = egui::CentralPanel::default().frame(frame).show(ui, |ui| {
                 // Now and then an invisible sizing pass finds the natural width of the content.
                 // Content that fills the width cannot tell it, so the window can get narrower.
+                // The probe is made on every frame, measuring or not: a child takes one automatic
+                // id, and the content after it must keep its ids. Otherwise a text field would
+                // get a new id, and lose the focus, each time the probe measures.
+                let rect = egui::Rect::from_min_size(ui.min_rect().min, max);
+                let mut probe = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect)
+                        .sizing_pass()
+                        .invisible(),
+                );
                 if fit.measured.is_none_or(|at| at.elapsed() >= MEASURE_EVERY) {
-                    let rect = egui::Rect::from_min_size(ui.min_rect().min, max);
-                    let mut probe = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(rect)
-                            .sizing_pass()
-                            .invisible(),
-                    );
                     add(&mut probe);
                     fit.natural_w = Some(probe.min_rect().width());
                     fit.measured = Some(std::time::Instant::now());
