@@ -170,6 +170,9 @@ every file. How a release is made: [docs/releasing.md](docs/releasing.md).
 
 ### Linux
 
+Not in releases yet; build from source (see [Get started](#get-started)). When releases
+include Linux, they will have:
+
 | Format | x86_64 | aarch64 (ARM64) | Notes |
 |---|---|---|---|
 | AppImage | `craftradio-<ver>-linux-x86_64.AppImage` | `craftradio-<ver>-linux-aarch64.AppImage` | Runs anywhere; updates itself with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) (`.zsync` files) |
