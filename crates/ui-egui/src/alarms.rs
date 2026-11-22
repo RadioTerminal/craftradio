@@ -8,6 +8,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::app::{Action, hms};
 use crate::icons::{self, Icon};
 use crate::parts;
+use crate::preferences::Page;
 use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{AlarmView, Edit, Severity, StationView};
@@ -18,7 +19,6 @@ pub(crate) struct State {
     filter: String,
     /// The severities that a person switched off, in the order of `Severity::ALL`.
     hidden: [bool; 3],
-    settings: bool,
 }
 
 /// The icon of a severity. The word always comes with it.
@@ -70,11 +70,9 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let old_acked = parts::bool(view, parts::ALARMS, "show_acked", true);
-    let mut show_acked = old_acked;
-    let mut open = state.settings;
+    let show_acked = parts::bool(view, parts::ALARMS, "show_acked", true);
     let counts = Severity::ALL.map(|s| view.open_alarms().filter(|a| a.severity == s).count());
-    settings::header(ui, "Alarms", &mut open, |ui| {
+    settings::header_to(ui, "Alarms", Page::Alarms, actions, |ui| {
         let words: Vec<String> = Severity::ALL
             .iter()
             .zip(counts)
@@ -87,15 +85,6 @@ pub(crate) fn show(
                 .color(t.text_muted),
         );
     });
-    state.settings = open;
-    if state.settings {
-        settings::section(ui, "Alarms", view.preview, t, |ui| {
-            ui.checkbox(&mut show_acked, "Show acknowledged alarms");
-        });
-    }
-    if show_acked != old_acked {
-        actions.push(parts::set(parts::ALARMS, "show_acked", show_acked));
-    }
     if view.preview {
         ui.label(
             RichText::new("preview — sample alarms, not from a station")
@@ -327,5 +316,20 @@ fn concerns(
         None => {
             ui.add(egui::Label::new(text.color(ink)).truncate());
         }
+    }
+}
+
+/// The Alarms page of Preferences.
+pub(crate) fn preferences(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    actions: &mut Vec<Action>,
+    _t: &Tokens,
+) {
+    let old = parts::bool(view, parts::ALARMS, "show_acked", true);
+    let mut show_acked = old;
+    ui.checkbox(&mut show_acked, "Show acknowledged alarms");
+    if show_acked != old {
+        actions.push(parts::set(parts::ALARMS, "show_acked", show_acked));
     }
 }

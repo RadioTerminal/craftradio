@@ -27,6 +27,9 @@ pub(crate) const REDO: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::
 /// Play next starts the NEXT 1 deck. Fade out fades the item on air. Both arm first when
 /// they cut the item on air.
 pub(crate) const PLAY_NEXT: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::N);
+/// Preferences, as in every Craft app.
+pub(crate) const PREFERENCES: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
 pub(crate) const FADE: KeyboardShortcut = KeyboardShortcut::new(CMD_SHIFT, Key::F);
 /// Space plays the focused deck, or pauses it when it is on air.
 pub(crate) const PLAY_PAUSE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
@@ -78,6 +81,7 @@ pub(crate) struct Pressed {
     pub undo: bool,
     pub redo: bool,
     pub play_next: bool,
+    pub preferences: bool,
     pub fade: bool,
     pub play_pause: bool,
     pub stop_carts: bool,
@@ -114,6 +118,7 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.redo = i.consume_shortcut(&REDO);
         p.undo = i.consume_shortcut(&UNDO);
         p.play_next = i.consume_shortcut(&PLAY_NEXT);
+        p.preferences = i.consume_shortcut(&PREFERENCES);
         p.fade = i.consume_shortcut(&FADE);
         p.duplicate = i.consume_shortcut(&DUPLICATE);
         p.delete = i.consume_shortcut(&DELETE) | i.consume_shortcut(&BACKSPACE);

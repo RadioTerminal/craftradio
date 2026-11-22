@@ -28,7 +28,7 @@ fn click(harness: &mut Harness<'_, RadioApp>, label: &str) {
 fn typing_into_the_icecast_host_field_keeps_the_text() {
     let mut h = harness();
     click(&mut h, "Mixer");
-    click(&mut h, "Toggle Icecast settings");
+    click(&mut h, "Icecast preferences");
     let host = h
         .query_all_by_role(egui::accesskit::Role::TextInput)
         .next()

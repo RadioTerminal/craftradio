@@ -14,6 +14,9 @@ impl RadioApp {
         if p.redo {
             actions.push(Action::Edit(Edit::Redo));
         }
+        if p.preferences {
+            self.open.set(ToolWindow::Preferences, true);
+        }
         if let Some(n) = p.cart
             && let Some((cart, name)) = self.carts.fire_on_page(&self.view, n, now)
         {

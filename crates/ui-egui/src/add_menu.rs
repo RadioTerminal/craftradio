@@ -49,11 +49,35 @@ pub(crate) enum AddDialog {
     },
 }
 
+/// The live input that "Add live input…" starts from: the device and channels of Preferences ›
+/// Devices.
+pub(crate) struct Live<'a> {
+    pub devices: &'a [String],
+    pub device: String,
+    pub channels: (u32, u32),
+}
+
+/// The live input of Preferences › Devices: its device when present, else the first input.
+pub(crate) fn live(view: &StationView) -> Live<'_> {
+    let devices = view.input_devices.as_slice();
+    let chosen = &view.device_roles.input;
+    let device = if devices.contains(chosen) {
+        chosen.clone()
+    } else {
+        devices.first().cloned().unwrap_or_default()
+    };
+    Live {
+        devices,
+        device,
+        channels: crate::mixer::input_channels(view),
+    }
+}
+
 /// The fixed-size "+" button and its menu, for `playlist`.
 pub(crate) fn button(
     ui: &mut egui::Ui,
     playlist: &str,
-    inputs: &[String],
+    live: &Live<'_>,
     at: Option<usize>,
     actions: &mut Vec<Action>,
 ) {
@@ -75,7 +99,7 @@ pub(crate) fn button(
                 .weak(),
         );
         ui.separator();
-        items(ui, playlist, inputs, at, actions)
+        items(ui, playlist, live, at, actions)
     });
 }
 
@@ -83,7 +107,7 @@ pub(crate) fn button(
 pub(crate) fn items(
     ui: &mut egui::Ui,
     playlist: &str,
-    inputs: &[String],
+    live: &Live<'_>,
     at: Option<usize>,
     actions: &mut Vec<Action>,
 ) {
@@ -127,14 +151,14 @@ pub(crate) fn items(
             tried: false,
         }));
     }
-    ui.add_enabled_ui(!inputs.is_empty(), |ui| {
+    ui.add_enabled_ui(!live.devices.is_empty(), |ui| {
         if menu_item(ui, "Add live input…", None) {
             actions.push(Action::AddDialog(AddDialog::Live {
                 playlist: playlist.to_owned(),
                 at,
-                device: inputs.first().cloned().unwrap_or_default(),
-                left: 1,
-                right: 2,
+                device: live.device.clone(),
+                left: live.channels.0,
+                right: live.channels.1,
                 minutes: DEFAULT_PLANNED_MIN,
                 seconds: 0,
             }));
@@ -340,5 +364,34 @@ pub(crate) fn dialog(
         });
     if close {
         *slot = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::ViewSource;
+    use serde_json::json;
+
+    fn view() -> StationView {
+        let tz = jiff::tz::TimeZone::get("Europe/Ljubljana").expect("tz");
+        let now = "2026-11-21T13:58:00Z".parse().expect("timestamp");
+        crate::MockSource::new(tz).snapshot(now)
+    }
+
+    #[test]
+    fn add_live_input_starts_from_the_device_and_channels_of_preferences() {
+        let mut v = view();
+        v.input_devices = vec!["Desk inputs".to_owned(), "Studio interface".to_owned()];
+        v.device_roles.input = v.input_devices[1].clone();
+        let mixer = v
+            .settings
+            .entry(crate::parts::MIXER.to_owned())
+            .or_default();
+        mixer.insert("input_left".to_owned(), json!(3));
+        mixer.insert("input_right".to_owned(), json!(4));
+        let live = live(&v);
+        assert_eq!(live.device, v.input_devices[1], "the chosen live input");
+        assert_eq!(live.channels, (3, 4), "the chosen channels");
     }
 }

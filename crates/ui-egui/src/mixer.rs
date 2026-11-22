@@ -1,7 +1,7 @@
 //! The mixer: one strip per deck, the cart bus, the live input and the output.
 //! Levels come from the view-model. In the preview, the mock simulates them, and nothing plays.
 //! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
-//! The ⚙ swaps the strips for the settings page: Devices, Routing, Meters and Icecast.
+//! The ⚙ opens Preferences on the mixer's pages: Devices, Routing, Processing, Meters and Icecast.
 
 use crate::numbers;
 use crate::widgets;
@@ -11,7 +11,8 @@ use crate::app::Action;
 use crate::context_menu::{check_item, menu_item};
 use crate::icons::{self, Icon};
 use crate::parts;
-use crate::settings::{self, Dot, Tab};
+use crate::preferences::Page;
+use crate::settings::{self, Dot};
 use crate::theme::{self, Tokens, pad, size, space};
 use radio_model::{DynamicsSettings, LoudnessSettings, dynamics_range as range, loudness_range};
 
@@ -19,11 +20,15 @@ use crate::view::{
     DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
 };
 
+/// The settings part where the view source keeps the audio devices.
+const AUDIO_PART: &str = "audio";
+
 /// The dB marks beside a meter.
 const SCALE_DB: [f32; 5] = [0.0, -6.0, -12.0, -20.0, -40.0];
 const NOTE: &str = "preview — simulated levels, no audio";
-const RATES: [u32; 3] = [44_100, 48_000, 96_000];
-const DEFAULT_RATE: u32 = 48_000;
+/// The one rate of the audio path (the playout's `SAMPLE_RATE`): decks, carts, live input and
+/// outputs all run at it, and files are resampled to it.
+const AUDIO_RATE: u32 = 48_000;
 const BITRATES: [u32; 6] = [64, 96, 128, 192, 256, 320];
 /// The peak line stays this long by default, in seconds.
 const DEFAULT_PEAK_HOLD_S: f32 = 1.5;
@@ -43,15 +48,7 @@ pub(crate) enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [Self; 5] = [
-        Self::Devices,
-        Self::Routing,
-        Self::Processing,
-        Self::Meters,
-        Self::Icecast,
-    ];
-
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Devices => "Devices",
             Self::Routing => "Routing",
@@ -60,19 +57,14 @@ impl SettingsTab {
             Self::Icecast => "Icecast",
         }
     }
-
-    fn index(self) -> usize {
-        self as usize
-    }
 }
 
-/// The view state of the window. The mixer settings live in the view source.
+/// The view state of the window. The mixer settings live in the view source; the drafts are
+/// the mixer's Preferences pages while a person edits them.
 #[derive(Default)]
 pub(crate) struct State {
-    /// The settings page shows in place of the strips, on this tab.
-    page: Option<SettingsTab>,
-    /// The Icecast fields while a person edits them. Apply sends them. They stay while the
-    /// page is open, across tabs.
+    /// The Icecast fields while a person edits them. Apply sends them. They stay while
+    /// Preferences is open, across pages.
     icecast: Option<IcecastView>,
     /// The processing on Program while a person edits it. A field sends it when the edit
     /// ends, so a drag does not rebuild the processors at each step.
@@ -82,17 +74,8 @@ pub(crate) struct State {
 }
 
 impl State {
-    /// Open the settings page on the Icecast tab, as the ⚙ of the Out strip does.
-    pub(crate) fn open_icecast(&mut self) {
-        self.open(SettingsTab::Icecast);
-    }
-
-    fn open(&mut self, tab: SettingsTab) {
-        self.page = Some(tab);
-    }
-
-    fn close(&mut self) {
-        self.page = None;
+    /// Drops the drafts, as Preferences closes.
+    pub(crate) fn drop_drafts(&mut self) {
         self.icecast = None;
         self.dynamics = None;
         self.loudness = None;
@@ -114,10 +97,7 @@ pub(crate) fn show(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    if let Some(tab) = state.page {
-        settings_page(ui, view, state, tab, streaming, actions, t);
-        return;
-    }
+    let _ = (state, streaming);
     let mut open = false;
     settings::header(ui, "Mixer", &mut open, |ui| {
         if view.preview {
@@ -140,12 +120,31 @@ pub(crate) fn show(
         }
     });
     if let Some(tab) = wanted {
-        state.open(tab);
+        actions.push(Action::OpenPreferences(Page::from(tab)));
     }
 }
 
-/// The settings page in place of the strips.
-fn settings_page(
+/// The live input channels of Preferences › Devices, left and right, counted from 1. The add
+/// live input dialogs start from them.
+pub(crate) fn input_channels(view: &StationView) -> (u32, u32) {
+    (
+        parts::u32(view, parts::MIXER, "input_left", 1),
+        parts::u32(view, parts::MIXER, "input_right", 2),
+    )
+}
+
+/// The status dot of the Icecast page: connected or not, in words too.
+pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
+    let ice = icecast_status(view, t);
+    if ice.connected {
+        Dot::Good(ice.word)
+    } else {
+        Dot::Bad(ice.word)
+    }
+}
+
+/// The mixer's Preferences page `tab`.
+pub(crate) fn preferences(
     ui: &mut egui::Ui,
     view: &StationView,
     state: &mut State,
@@ -154,47 +153,19 @@ fn settings_page(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let ice = icecast_status(view, t);
-    let tabs = SettingsTab::ALL.map(|s| match s {
-        SettingsTab::Icecast => Tab {
-            label: s.label(),
-            dot: Some(if ice.connected {
-                Dot::Good(ice.word.clone())
-            } else {
-                Dot::Bad(ice.word.clone())
-            }),
-        },
-        _ => Tab::plain(s.label()),
-    });
-    let mut selected = tab.index();
-    let draft = &mut state.icecast;
-    let processing = &mut state.dynamics;
-    let loudness = &mut state.loudness;
-    let out = settings::page(
-        ui,
-        "Mixer settings",
-        view.preview,
-        &tabs,
-        &mut selected,
-        t,
-        |ui, i| match SettingsTab::ALL.get(i).copied().unwrap_or_default() {
-            SettingsTab::Devices => devices_tab(ui, view, actions, t),
-            SettingsTab::Routing => routing_tab(ui, view, actions, t),
-            SettingsTab::Processing => {
-                loudness_section(ui, view, loudness, actions, t);
-                processing_tab(ui, view, processing, actions, t);
-            }
-            SettingsTab::Meters => meters_tab(ui, view, actions, t),
-            SettingsTab::Icecast => {
-                let draft = draft.get_or_insert_with(|| view.icecast.clone());
-                icecast_tab(ui, view, draft, &ice, streaming, actions, t);
-            }
-        },
-    );
-    if out.done {
-        state.close();
-    } else if let Some(&s) = SettingsTab::ALL.get(selected) {
-        state.page = Some(s);
+    match tab {
+        SettingsTab::Devices => devices_tab(ui, view, actions, t),
+        SettingsTab::Routing => routing_tab(ui, view, actions, t),
+        SettingsTab::Processing => {
+            loudness_section(ui, view, &mut state.loudness, actions, t);
+            processing_tab(ui, view, &mut state.dynamics, actions, t);
+        }
+        SettingsTab::Meters => meters_tab(ui, view, actions, t),
+        SettingsTab::Icecast => {
+            let ice = icecast_status(view, t);
+            let draft = state.icecast.get_or_insert_with(|| view.icecast.clone());
+            icecast_tab(ui, view, draft, &ice, streaming, actions, t);
+        }
     }
 }
 
@@ -465,13 +436,18 @@ fn khz(rate: u32) -> String {
 
 fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
     let roles = &view.device_roles;
+    // The output device opens when the playout starts: a new pick waits for the next start,
+    // so the row shows the pick, and a note says which device plays until then.
+    let saved_out = view
+        .settings
+        .get(AUDIO_PART)
+        .and_then(|a| a.get("out"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|d| !d.is_empty())
+        .map(str::to_owned);
+    let out = saved_out.clone().unwrap_or_else(|| roles.out.clone());
     for (label, id, role, current) in [
-        (
-            "Output device (Out)",
-            "out_device",
-            DeviceRole::Out,
-            &roles.out,
-        ),
+        ("Output device (Out)", "out_device", DeviceRole::Out, &out),
         (
             "Cue device (PFL)",
             "cue_device",
@@ -497,9 +473,26 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
         if let Some(device) = picked {
             actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
         }
+        if role == DeviceRole::Out
+            && !view.preview
+            && saved_out.as_ref().is_some_and(|s| *s != roles.out)
+        {
+            let now = if roles.out.is_empty() {
+                "no sound card"
+            } else {
+                roles.out.as_str()
+            };
+            settings::form_note(
+                ui,
+                RichText::new(format!(
+                    "Opens at the next start. Until then the sound goes to {now}."
+                ))
+                .font(theme::text(theme::CAPTION))
+                .color(t.warn),
+            );
+        }
     }
-    let mut left = parts::u32(view, parts::MIXER, "input_left", 1);
-    let mut right = parts::u32(view, parts::MIXER, "input_right", 2);
+    let (mut left, mut right) = input_channels(view);
     let (old_left, old_right) = (left, right);
     settings::form_row(ui, "Live input channels", t, |ui| {
         // Two halves of the one cell, with the gap of the theme between them.
@@ -526,23 +519,17 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
     if right != old_right {
         actions.push(parts::set(parts::MIXER, "input_right", right));
     }
-    let rate = parts::u32(view, parts::MIXER, "sample_rate", DEFAULT_RATE);
+    // A fixed fact, not a choice: a picker here would change nothing.
     settings::form_row(ui, "Sample rate", t, |ui| {
-        craft_ui::ComboBox::from_id_salt("sample_rate")
-            .width(ui.available_width())
-            .selected_text(khz(rate))
-            .show_ui(ui, |ui| {
-                for r in RATES {
-                    if widgets::selectable(ui, r == rate, khz(r)).clicked() && r != rate {
-                        actions.push(parts::set(parts::MIXER, "sample_rate", r));
-                    }
-                }
-            })
-            .response
+        ui.label(format!("{}, fixed", khz(AUDIO_RATE)))
+            .on_hover_text("The audio always runs at this rate; files are resampled to it")
     });
 }
 
 fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    // A cue route needs a cue to go to, as in the strip menu: without one, Cue only would
+    // only silence the strip on Out.
+    let cue = view.cue_open && view.devices.contains(&view.device_roles.pfl);
     for m in &view.meters {
         settings::form_row(ui, &m.label, t, |ui| {
             craft_ui::ComboBox::from_id_salt(("route", &m.label))
@@ -550,9 +537,19 @@ fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
                 .selected_text(m.route.label())
                 .show_ui(ui, |ui| {
                     for r in Route::ALL {
-                        if r != Route::OutAndCue
-                            && widgets::selectable(ui, r == m.route, r.label()).clicked()
-                        {
+                        if r == Route::OutAndCue {
+                            continue;
+                        }
+                        let ok = r == Route::Out || cue;
+                        let pick = ui
+                            .add_enabled_ui(ok, |ui| {
+                                widgets::selectable(ui, r == m.route, r.label())
+                            })
+                            .inner
+                            .on_disabled_hover_text(
+                                "Cue routes need a present cue device and an open cue output",
+                            );
+                        if pick.clicked() {
                             actions.push(strip_edit(&m.label, StripChange::Route(r)));
                         }
                     }
@@ -575,6 +572,16 @@ fn meters_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
         );
         ui.add_sized([ui.available_width(), size::CONTROL_SM], field)
     });
+    let note = view.say(
+        "Preview: the simulated meters keep their own hold.",
+        "The meters take a new peak hold at the next start.",
+    );
+    settings::form_note(
+        ui,
+        RichText::new(note)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+    );
     if hold != old {
         actions.push(parts::set(parts::MIXER, "peak_hold_s", f64::from(hold)));
     }
@@ -857,7 +864,7 @@ fn icecast_tab(
     });
     let note = view.say(
         "The stream would carry this text. The preview sends nothing.",
-        "Changes to the mount apply on the next start of the app.",
+        "Applied changes take effect at the next start of the app.",
     );
     settings::form_note(
         ui,
@@ -885,10 +892,16 @@ fn icecast_tab(
     });
     settings::form_row(ui, "Mount", t, |ui| field(ui, &mut ice.mount));
     settings::form_row(ui, "User", t, |ui| field(ui, &mut ice.user));
-    let hint = if view.icecast.password_set {
-        "set · leave empty to keep it"
-    } else {
-        "not set"
+    // The password is kept for one server: user, host, port and mount. A change of any of
+    // them needs the password typed again, or Icecast stays off.
+    let same_server = ice.user == view.icecast.user
+        && ice.host == view.icecast.host
+        && ice.port == view.icecast.port
+        && ice.mount == view.icecast.mount;
+    let hint = match (view.icecast.password_set, same_server) {
+        (true, true) => "set · leave empty to keep it",
+        (true, false) => "type it again for this server",
+        (false, _) => "not set",
     };
     settings::form_row(ui, "Password", t, |ui| {
         let edit = egui::TextEdit::singleline(&mut ice.password)

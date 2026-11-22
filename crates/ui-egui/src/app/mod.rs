@@ -151,6 +151,11 @@ pub struct RadioApp {
     open: windows::Open,
     carts: cartwall::State,
     mixer: mixer::State,
+    preferences: crate::preferences::State,
+    /// This computer's preferences: in memory until the app gives a store.
+    prefs: crate::app_prefs::AppPrefs,
+    /// The window layout last kept, once the app has a store.
+    layout: Option<(Vec<&'static str>, bool)>,
     clock_state: clock_window::State,
     history: history::State,
     alarms: alarms::State,
@@ -185,6 +190,10 @@ pub struct RadioApp {
     out_moving: bool,
 }
 
+/// The settings key of the open tool windows, and of the docked Library.
+const OPEN_KEY: &str = "open";
+const DOCKED_KEY: &str = "library_docked";
+
 impl RadioApp {
     pub fn new(mut source: Box<dyn ViewSource>, clock: Box<dyn Fn() -> Timestamp>) -> Self {
         let view = source.snapshot(clock());
@@ -211,6 +220,9 @@ impl RadioApp {
             open: windows::Open::default(),
             carts,
             mixer: mixer::State::default(),
+            preferences: crate::preferences::State::default(),
+            prefs: crate::app_prefs::AppPrefs::memory(),
+            layout: None,
             clock_state: clock_window::State::default(),
             history: history::State::default(),
             alarms: alarms::State::default(),
@@ -295,6 +307,50 @@ impl RadioApp {
         self
     }
 
+    /// Keeps this computer's preferences in `prefs`. The display settings that the station
+    /// kept are copied there the first time.
+    pub fn with_preferences(mut self, prefs: crate::app_prefs::AppPrefs) -> Self {
+        self.prefs = prefs;
+        self.prefs.import(&self.view);
+        self.refresh(true);
+        // The windows open as they were left.
+        let open = crate::parts::strings(&self.view, crate::parts::WINDOWS, OPEN_KEY, &[]);
+        for w in ToolWindow::ALL {
+            if open.iter().any(|t| t == w.title()) {
+                self.open.set(w, true);
+            }
+        }
+        self.library.docked =
+            crate::parts::bool(&self.view, crate::parts::WINDOWS, DOCKED_KEY, false);
+        self.layout = Some(self.current_layout());
+        self
+    }
+
+    /// The open tool windows, by title, and whether the Library is docked.
+    fn current_layout(&self) -> (Vec<&'static str>, bool) {
+        let open = ToolWindow::ALL
+            .into_iter()
+            .filter(|w| self.open.get(*w))
+            .map(ToolWindow::title)
+            .collect();
+        (open, self.library.docked)
+    }
+
+    /// Keeps the open windows and the docked Library when they change.
+    fn keep_layout(&mut self) {
+        let now = self.current_layout();
+        if self.layout.as_ref() == Some(&now) {
+            return;
+        }
+        if self.layout.is_some() {
+            self.prefs
+                .set(crate::parts::WINDOWS, OPEN_KEY, serde_json::json!(now.0));
+            self.prefs
+                .set(crate::parts::WINDOWS, DOCKED_KEY, serde_json::json!(now.1));
+        }
+        self.layout = Some(now);
+    }
+
     /// Open or close a tool window.
     pub fn set_window(&mut self, w: ToolWindow, open: bool) {
         self.open.set(w, open);
@@ -305,6 +361,7 @@ impl RadioApp {
         let now = (self.clock)();
         if force || now.as_second() != self.view.now.timestamp().as_second() {
             self.view = self.source.snapshot(now);
+            self.prefs.overlay(&mut self.view);
             self.prepared = Prepared::new(&self.view, self.prepared.generation + 1);
         }
     }
@@ -363,8 +420,8 @@ impl RadioApp {
             .rows
             .iter()
             .find(|r| is_on_air(r, self.view.now.timestamp()));
-        // Only the mixer shows the stream title, so only an open mixer asks for it.
-        let streaming = if self.open.get(ToolWindow::Mixer) {
+        // Only the Icecast page shows the stream title, so only open Preferences asks for it.
+        let streaming = if self.open.get(ToolWindow::Preferences) {
             on_air.map_or_else(String::new, |r| self.source.stream_title(r))
         } else {
             String::new()
@@ -416,6 +473,38 @@ impl RadioApp {
                 alarms::show(ui, view, &mut self.alarms, actions, t);
             }),
         );
+        let w = ToolWindow::Preferences;
+        let mut done = false;
+        let was_open = open.get(w);
+        note(
+            w,
+            windows::show(ctx, w, open, saved(w), t, |ui| {
+                let parts = crate::preferences::Parts {
+                    mixer: &mut self.mixer,
+                    carts: &mut self.carts,
+                    library: &mut self.library,
+                };
+                done = crate::preferences::show(
+                    ui,
+                    view,
+                    &mut self.preferences,
+                    parts,
+                    &streaming,
+                    actions,
+                    t,
+                );
+            }),
+        );
+        if done {
+            open.set(w, false);
+        }
+        if (was_open && !open.get(w)) || self.preferences.page != crate::preferences::Page::Cartwall
+        {
+            self.carts.leave_preferences();
+        }
+        if was_open && !open.get(w) {
+            self.mixer.drop_drafts();
+        }
         if self.library.docked {
             // The docked library takes the place of its window.
             open.set(ToolWindow::Library, false);
@@ -433,7 +522,6 @@ impl RadioApp {
         for (w, c) in sized {
             let value = match c {
                 windows::SizeChange::Manual([x, y]) => serde_json::json!([x, y]),
-                windows::SizeChange::Fit => serde_json::Value::Null,
             };
             actions.push(Action::EditQuiet(Edit::SetPartSetting {
                 part: w.part().to_owned(),
@@ -445,6 +533,10 @@ impl RadioApp {
 }
 
 impl eframe::App for RadioApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.prefs.flush();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
@@ -454,6 +546,9 @@ impl eframe::App for RadioApp {
             self.styled = true;
         }
         self.refresh(false);
+        if let Some(failed) = self.prefs.tick(&ctx) {
+            self.toast(&ctx, failed);
+        }
         self.read_meters();
         // Work that finished after its edit reports here, as a toast.
         let notices = self.source.take_notices();
@@ -552,6 +647,7 @@ impl eframe::App for RadioApp {
             });
 
         self.tool_windows(&ctx, &mut actions, &t);
+        self.keep_layout();
         self.global_keys(&ctx, &mut actions);
         self.dialogs(&ctx, &mut actions, &t);
 
@@ -684,13 +780,13 @@ fn status_line(
             let text = RichText::new(text)
                 .font(theme::text(theme::LABEL))
                 .color(colour);
-            // The Icecast state opens its settings, behind the Mixer's ⚙.
+            // The Icecast state opens its page of Preferences.
             if name == "Icecast" {
                 let link = ui
                     .add(egui::Label::new(text).sense(egui::Sense::click()))
                     .on_hover_text("Click for the Icecast settings");
                 if link.clicked() {
-                    actions.push(Action::OpenIcecast);
+                    actions.push(Action::OpenPreferences(crate::preferences::Page::Icecast));
                 }
             } else {
                 ui.label(text);

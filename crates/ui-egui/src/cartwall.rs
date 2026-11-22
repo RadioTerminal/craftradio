@@ -11,11 +11,16 @@ use crate::context_menu::{PASTE, check_item, menu_item, menu_item_if};
 use crate::icons::{self, Icon};
 use crate::library::LibraryDrag;
 use crate::parts;
+use crate::preferences::Page;
 use crate::settings;
 use crate::shortcuts;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::{CartChange, CartMode, CartSlot, DropTarget, Edit, StationView};
 use crate::windows::ToolWindow;
+
+/// Ducking and the cart modes are kept, but the playout does not play them yet (roadmap M6).
+/// Their controls say so, so a choice does not look like it works (AGENTS.md rule 7).
+const NOT_PLAYED_YET: &str = "Saved, but the playout does not apply this yet";
 
 /// The ducking choices in the menu, in dB. Zero means off.
 const DUCKS: [f32; 4] = [0.0, -6.0, -12.0, -18.0];
@@ -35,7 +40,8 @@ pub(crate) struct State {
     /// The egui time at which each cart stops its flash.
     flash_until: Vec<f64>,
     last: Option<usize>,
-    settings: bool,
+    /// True while the Cartwall page of Preferences edits `names`.
+    names_drafted: bool,
     /// Page names while a person edits them.
     names: Vec<String>,
     /// True when the clipboard holds items, for this frame.
@@ -98,7 +104,6 @@ pub(crate) fn show(
     let cols = parts::u32(view, parts::CARTWALL, "cols", size::CART_COLS as u32).max(1) as usize;
     let now = ui.input(|i| i.time);
 
-    let mut open = state.settings;
     let flashing = state
         .last
         .filter(|&i| state.flash_until.get(i).is_some_and(|u| *u > now))
@@ -109,7 +114,7 @@ pub(crate) fn show(
         (Some(name), false) => format!("{name} fired"),
         (None, false) => String::new(),
     };
-    settings::header(ui, "Cartwall", &mut open, |ui| {
+    settings::header_to(ui, "Cartwall", Page::Cartwall, actions, |ui| {
         if wall.pages.len() > size::PAGE_TABS_MAX {
             // Many pages: one picker instead of a row of tabs that runs out of the window.
             let current = wall.pages.get(state.page).cloned().unwrap_or_default();
@@ -144,15 +149,6 @@ pub(crate) fn show(
             .truncate(),
         );
     });
-    if open && !state.settings {
-        state.names.clone_from(&wall.pages);
-    }
-    state.settings = open;
-    if state.settings {
-        settings::section(ui, "Cartwall", view.preview, t, |ui| {
-            cart_settings(ui, view, state, actions, t)
-        });
-    }
     ui.add_space(space::S);
 
     // The bar under the grid is as wide as the grid, so an auto-sized window fits the carts.
@@ -339,6 +335,7 @@ fn cart_menu(
         }
     });
     ui.menu_button("Ducking", |ui| {
+        not_played_yet(ui);
         for db in DUCKS {
             let label = if db == 0.0 {
                 "Off".to_owned()
@@ -351,12 +348,22 @@ fn cart_menu(
         }
     });
     ui.menu_button("Mode", |ui| {
+        not_played_yet(ui);
         for mode in CartMode::ALL {
             if check_item(ui, slot.mode == mode, mode.label()) {
                 actions.push(set_cart(i, CartChange::Mode(mode)));
             }
         }
     });
+}
+
+/// The note on the ducking and mode controls: kept, not played yet.
+fn not_played_yet(ui: &mut egui::Ui) {
+    ui.label(
+        RichText::new(NOT_PLAYED_YET)
+            .font(theme::text(theme::CAPTION))
+            .weak(),
+    );
 }
 
 fn cart_settings(
@@ -431,6 +438,7 @@ fn cart_settings(
         "Ducking per cart on this page (dB under the main output)",
         t,
     );
+    not_played_yet(ui);
     let first = state.page * wall.per_page;
     egui::Grid::new("cart_ducking")
         .spacing(egui::vec2(space::M, space::XS))
@@ -460,4 +468,27 @@ fn cart_settings(
                 }
             }
         });
+}
+
+impl State {
+    /// The Cartwall page of Preferences is no longer showing: the next visit drafts the page
+    /// names again.
+    pub(crate) fn leave_preferences(&mut self) {
+        self.names_drafted = false;
+    }
+}
+
+/// The Cartwall page of Preferences.
+pub(crate) fn preferences(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    if !state.names_drafted {
+        state.names.clone_from(&view.cartwall.pages);
+        state.names_drafted = true;
+    }
+    cart_settings(ui, view, state, actions, t);
 }

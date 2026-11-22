@@ -10,6 +10,7 @@ mod listen_link;
 mod loudness;
 mod meters;
 mod overflow;
+mod preferences;
 mod smoke;
 mod steady;
 mod tabs;

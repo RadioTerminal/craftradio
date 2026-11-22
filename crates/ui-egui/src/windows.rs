@@ -16,8 +16,6 @@ const WORK_AREA: f32 = 0.9;
 /// The settings key of a size that a person set by hand.
 pub(crate) const SIZE_KEY: &str = "window_size";
 /// The temporary data that tells a settings section about its window.
-const USER_SIZED: &str = "tool_window_user_sized";
-const FIT_TARGET: &str = "tool_window_fit_target";
 /// The temporary data where a settings page puts its natural size each frame it draws.
 const PAGE_FIT: &str = "tool_window_page_fit";
 /// The temporary data that tells content whether its window has a definite size.
@@ -32,16 +30,19 @@ pub enum ToolWindow {
     History,
     Library,
     Alarms,
+    /// Every setting of the app in one window, as in the Craft apps.
+    Preferences,
 }
 
 impl ToolWindow {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Cartwall,
         Self::Mixer,
         Self::Clock,
         Self::History,
         Self::Library,
         Self::Alarms,
+        Self::Preferences,
     ];
 
     pub fn title(self) -> &'static str {
@@ -52,6 +53,7 @@ impl ToolWindow {
             Self::History => "History",
             Self::Library => "Library",
             Self::Alarms => "Alarms",
+            Self::Preferences => "Preferences",
         }
     }
 
@@ -64,6 +66,7 @@ impl ToolWindow {
             Self::History => crate::parts::HISTORY,
             Self::Library => crate::parts::LIBRARY,
             Self::Alarms => crate::parts::ALARMS,
+            Self::Preferences => crate::parts::PREFERENCES,
         }
     }
 
@@ -75,6 +78,7 @@ impl ToolWindow {
             Self::History => [size::HISTORY_W, size::HISTORY_H],
             Self::Library => [size::LIBRARY_W, size::LIBRARY_H],
             Self::Alarms => [size::ALARMS_W, size::ALARMS_H],
+            Self::Preferences => [size::PREFERENCES_W, size::PREFERENCES_H],
         }
     }
 
@@ -87,6 +91,7 @@ impl ToolWindow {
             Self::History => [size::HISTORY_MIN_W, size::HISTORY_MIN_H],
             Self::Library => [size::LIBRARY_MIN_W, size::LIBRARY_MIN_H],
             Self::Alarms => [size::ALARMS_MIN_W, size::ALARMS_MIN_H],
+            Self::Preferences => [size::PREFERENCES_MIN_W, size::PREFERENCES_MIN_H],
         }
     }
 
@@ -209,8 +214,6 @@ impl Open {
 pub(crate) enum SizeChange {
     /// A person resized the window to this size.
     Manual([f32; 2]),
-    /// The window follows its content again.
-    Fit,
 }
 
 /// A row of toggle buttons, one per tool window.
@@ -228,22 +231,6 @@ pub(crate) fn toggles(ui: &mut egui::Ui, open: &mut Open, t: &Tokens) {
             }
         }
     });
-}
-
-/// The "Fit to content" item of a settings section. It shows only in a window with a size
-/// that a person set by hand.
-pub(crate) fn fit_item(ui: &mut egui::Ui) {
-    let ctx = ui.ctx().clone();
-    let user = ctx.data(|d| d.get_temp::<bool>(Id::unique(USER_SIZED)).unwrap_or(false));
-    let target = ctx.data(|d| d.get_temp::<Id>(Id::unique(FIT_TARGET)));
-    if let (true, Some(target)) = (user, target)
-        && ui
-            .button("Fit to content")
-            .on_hover_text("Size the window to its content again")
-            .clicked()
-    {
-        ctx.data_mut(|d| d.insert_temp(target, true));
-    }
 }
 
 /// The largest size of a tool window: a share of the monitor, never below the minimum.
@@ -294,27 +281,14 @@ pub(crate) fn show(
     }
     let i = w.index();
     let mut change = None;
-    let fit_id = Id::unique(("tool_window_fit", w.title()));
     {
         let fit = &mut open.fit[i];
         if !fit.loaded {
             fit.user = saved.map(egui::Vec2::from);
             fit.loaded = true;
         }
-        if ctx
-            .data_mut(|d| d.remove_temp::<bool>(fit_id))
-            .unwrap_or(false)
-        {
-            fit.user = None;
-            fit.applied = None;
-            change = Some(SizeChange::Fit);
-        }
     }
     let user = open.fit[i].user;
-    ctx.data_mut(|d| {
-        d.insert_temp(Id::unique(USER_SIZED), user.is_some());
-        d.insert_temp(Id::unique(FIT_TARGET), fit_id);
-    });
     let min = egui::Vec2::from(w.min_size());
     let max = max_size(ctx, min);
     let stays = if ctx.embed_viewports() {
@@ -330,7 +304,6 @@ pub(crate) fn show(
         open.set(w, false);
     }
     ctx.data_mut(|d| {
-        d.insert_temp(Id::unique(USER_SIZED), false);
         d.insert_temp(Id::unique(DEFINITE), false);
         d.remove_temp::<egui::Vec2>(Id::unique(PAGE_FIT));
     });

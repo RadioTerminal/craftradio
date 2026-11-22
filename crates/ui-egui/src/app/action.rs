@@ -50,8 +50,8 @@ pub(crate) enum Action {
     },
     OpenRules(String),
     OpenWindow(ToolWindow),
-    /// Open the mixer with the Icecast settings of Out.
-    OpenIcecast,
+    /// Open Preferences on a page.
+    OpenPreferences(crate::preferences::Page),
     ShowInLibrary(String),
     /// Open the metadata editor for these items.
     Metadata(Vec<MetaTarget>),
@@ -293,6 +293,14 @@ impl RadioApp {
 
     /// Run an edit. A loud edit shows its message; a quiet edit shows only an error.
     pub(super) fn run_edit(&mut self, ctx: &egui::Context, edit: Edit, loud: bool) {
+        // A display preference of this computer goes to its preferences, not to the station.
+        if let Edit::SetPartSetting { part, key, value } = &edit
+            && crate::app_prefs::is_display(part, key)
+        {
+            self.prefs.set(part, key, value.clone());
+            self.refresh(true);
+            return;
+        }
         match self.source.edit(edit.clone()) {
             Ok(n) if loud => {
                 self.toast(ctx, describe(&edit, n, self.view.preview));
@@ -390,9 +398,9 @@ impl RadioApp {
                     self.editor = Some(editor);
                 }
             }
-            Action::OpenIcecast => {
-                self.mixer.open_icecast();
-                self.open.set(ToolWindow::Mixer, true);
+            Action::OpenPreferences(page) => {
+                self.preferences.page = page;
+                self.open.set(ToolWindow::Preferences, true);
             }
             Action::OpenWindow(w) => {
                 if w == ToolWindow::Library && self.library.docked {

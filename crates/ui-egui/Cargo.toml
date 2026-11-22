@@ -17,10 +17,13 @@ jiff.workspace = true
 lucide-icons.workspace = true
 craft-ui.workspace = true
 craft-i18n.workspace = true
+craft-settings.workspace = true
 rfd.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 egui_kittest = { workspace = true, features = ["eframe", "wgpu", "snapshot"] }
 
 [lints]

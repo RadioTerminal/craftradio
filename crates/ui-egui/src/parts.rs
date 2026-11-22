@@ -14,6 +14,9 @@ pub(crate) const LIBRARY: &str = "library";
 pub(crate) const CARTWALL: &str = "cartwall";
 pub(crate) const MIXER: &str = "mixer";
 pub(crate) const DECKS: &str = "decks";
+pub(crate) const PREFERENCES: &str = "preferences";
+/// Which tool windows are open, by title, and whether the Library is docked.
+pub(crate) const WINDOWS: &str = "windows";
 
 fn get<'a>(view: &'a StationView, part: &str, key: &str) -> Option<&'a Value> {
     view.settings.get(part)?.get(key)

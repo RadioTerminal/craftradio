@@ -587,7 +587,7 @@ fn playlist(
                 if rules_editor::cog(ui, &p.name) {
                     actions.push(Action::OpenRules(p.name.clone()));
                 }
-                add_menu::button(ui, &p.name, &view.input_devices, None, actions);
+                add_menu::button(ui, &p.name, &add_menu::live(view), None, actions);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let n = p.items.len();
                     let noun = if n == 1 { "item" } else { "items" };
@@ -716,7 +716,7 @@ fn playlist(
                                 }
                             }
                             resp.context_menu(|ui| {
-                                item_menu(ui, p, decks, &view.input_devices, i, link, actions)
+                                item_menu(ui, p, decks, &add_menu::live(view), i, link, actions)
                             });
                         });
                     });
@@ -727,7 +727,7 @@ fn playlist(
             let on_row = pointer.is_some_and(|at| rows.iter().any(|r| r.contains(at)));
             if !on_row {
                 zone.response.interact(Sense::click()).context_menu(|ui| {
-                    add_menu::items(ui, &p.name, &view.input_devices, None, actions)
+                    add_menu::items(ui, &p.name, &add_menu::live(view), None, actions)
                 });
             }
             if let Some(drag) = dropped {
@@ -782,7 +782,7 @@ fn item_menu(
     ui: &mut egui::Ui,
     p: &PlaylistTab,
     decks: &[crate::view::DeckView],
-    inputs: &[String],
+    live: &add_menu::Live<'_>,
     i: usize,
     link: &mut Linked,
     actions: &mut Vec<Action>,
@@ -802,7 +802,7 @@ fn item_menu(
     // Remove acts on the selection when it holds this item.
     let remove = || remove_items(p, decks, link.playlist_sel.targets(id));
     ui.menu_button(icons::lead(Icon::Plus, "Add below"), |ui| {
-        add_menu::items(ui, &p.name, inputs, Some(i + 1), actions)
+        add_menu::items(ui, &p.name, live, Some(i + 1), actions)
     });
     // A cut removes the item only after a successful paste.
     if menu_item(ui, "Cut", Some(CUT)) {
