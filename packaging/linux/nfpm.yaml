@@ -1,0 +1,79 @@
+# The deb and rpm packages, made with nfpm (https://nfpm.goreleaser.com).
+# The package script stages the file tree and puts its path in place of ${STAGE}.
+# It also exports VERSION, NFPM_ARCH and CRAFTRADIO_MAINTAINER.
+#
+# These packages use the LAME library of the distribution. They do not bundle it.
+name: craftradio
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+# With semver, 0.2.0-rc.1 becomes 0.2.0~rc.1, so a pre-release sorts before the release.
+version_schema: semver
+release: 1
+section: sound
+priority: optional
+maintainer: ${CRAFTRADIO_MAINTAINER}
+vendor: CraftRadio contributors
+homepage: https://github.com/RadioTerminal/craftradio
+license: MIT OR Apache-2.0
+description: |-
+  Radio station automation and playout.
+  A playlist drives four decks and shows when each item starts. Items can be
+  pinned to an exact time, a cartwall fires jingles, and output goes to the
+  sound card and to Icecast. A CLI and an MCP server do everything the app does.
+
+# The programs link glibc, libgcc_s, ALSA and LAME directly.
+# The window system and the GPU load at runtime through dlopen.
+# The package tools cannot find those libraries, so this file lists them.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.35)
+      - libgcc-s1
+      - libasound2
+      - libmp3lame0
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libwayland-client0
+      - libx11-6
+      - libx11-xcb1
+      - libxcb1
+      - libxcursor1
+      - libxi6
+      - libvulkan1 | libegl1
+    recommends:
+      - mesa-vulkan-drivers
+      - libegl-mesa0
+      - xdg-desktop-portal
+  rpm:
+    # Soname provides resolve on Fedora, RHEL and openSUSE, which name the packages differently.
+    depends:
+      - libasound.so.2()(64bit)
+      - libmp3lame.so.0()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libX11.so.6()(64bit)
+      - libX11-xcb.so.1()(64bit)
+      - libxcb.so.1()(64bit)
+      - libXcursor.so.1()(64bit)
+      - libXi.so.6()(64bit)
+      - (libvulkan.so.1()(64bit) or libEGL.so.1()(64bit))
+    recommends:
+      - mesa-vulkan-drivers
+      - xdg-desktop-portal
+
+contents:
+  - src: ${STAGE}/usr/bin/craftradio
+    dst: /usr/bin/craftradio
+    file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/bin/craftradio-cli
+    dst: /usr/bin/craftradio-cli
+    file_info: { mode: 0755 }
+  - src: ${STAGE}/usr/share/
+    dst: /usr/share/
+    type: tree
+
+scripts:
+  postinstall: packaging/linux/postinst.sh
+  postremove: packaging/linux/postinst.sh

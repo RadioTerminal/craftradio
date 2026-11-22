@@ -8,13 +8,13 @@ fn example() -> PathBuf {
 }
 
 fn plan(station: &std::path::Path, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_radio-cli"))
+    Command::new(env!("CARGO_BIN_EXE_craftradio-cli"))
         .arg("plan")
         .arg(station)
         .args(["--now", NOW])
         .args(extra)
         .output()
-        .expect("radio-cli runs")
+        .expect("craftradio-cli runs")
 }
 
 fn station_file(toml: &str) -> (tempfile::TempDir, PathBuf) {
@@ -103,24 +103,24 @@ constraints = []
 
 #[test]
 fn version_prints_without_a_subcommand() {
-    let out = Command::new(env!("CARGO_BIN_EXE_radio-cli"))
+    let out = Command::new(env!("CARGO_BIN_EXE_craftradio-cli"))
         .arg("--version")
         .output()
         .unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains(env!("CARGO_PKG_VERSION")));
-    assert!(text.starts_with("radio-cli "));
+    assert!(text.starts_with("craftradio-cli "));
 }
 
 fn cmd(data_dir: &std::path::Path, json: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_radio-cli"))
+    Command::new(env!("CARGO_BIN_EXE_craftradio-cli"))
         .arg("cmd")
         .arg("--data-dir")
         .arg(data_dir)
         .arg(json)
         .output()
-        .expect("radio-cli runs")
+        .expect("craftradio-cli runs")
 }
 
 #[test]

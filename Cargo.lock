@@ -2683,24 +2683,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mp3lame-encoder"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a768064bbfe7e0853bda4d0fd9c2ee65e4642f9a4d085265a2a12702a8d30f78"
-dependencies = [
- "mp3lame-sys",
-]
-
-[[package]]
-name = "mp3lame-sys"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a01c8bcc75d256a40b8e3c8dfefbbebe704eef1615cab5025bf362ba2a55f0c0"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "naga"
 version = "30.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3870,6 +3852,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "radio-lame"
+version = "0.1.0"
+dependencies = [
+ "pkg-config",
+]
+
+[[package]]
 name = "radio-library"
 version = "0.1.0"
 dependencies = [
@@ -3950,10 +3939,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "jiff",
- "mp3lame-encoder",
  "ogg",
  "opus",
  "percent-encoding",
+ "radio-lame",
  "rcgen",
  "rtrb",
  "rustls",
@@ -6349,6 +6338,10 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
 
 [[package]]
 name = "yaml-rust"

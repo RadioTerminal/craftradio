@@ -18,7 +18,7 @@ fn tone(path: &std::path::Path) {
 }
 
 fn radio() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_radio"))
+    Command::new(env!("CARGO_BIN_EXE_craftradio"))
 }
 
 /// The preview runs without a window and stops by itself.

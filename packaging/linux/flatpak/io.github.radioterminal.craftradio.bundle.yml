@@ -1,0 +1,39 @@
+# Flatpak manifest for the single-file bundle on each GitHub release.
+# The bundle script builds it from the release tarball. It does not compile Rust.
+# Thus the binaries are the same as in the AppImage, deb and rpm.
+# The freedesktop runtime has glibc, ALSA, X11, Wayland, xkbcommon and Vulkan.
+# The tarball brings libmp3lame in lib/craftradio.
+id: io.github.radioterminal.craftradio
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: craftradio
+finish-args:
+  # Display: Wayland first. X11 only when no Wayland compositor runs.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # X11 shared memory. Without it, the X11 fallback is slow.
+  - --share=ipc
+  # GPU access for the wgpu renderer.
+  - --device=dri
+  # Sound output and live input. ALSA goes through the PulseAudio socket in the sandbox.
+  - --socket=pulseaudio
+  # Icecast output and internet streams.
+  - --share=network
+  # Stations, music libraries and logs are in the folders that the person chooses.
+  - --filesystem=home
+modules:
+  - name: craftradio
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/craftradio /app/bin/craftradio
+      - install -Dm755 bin/craftradio-cli /app/bin/craftradio-cli
+      # The app finds LAME through its RUNPATH, $ORIGIN/../lib/craftradio.
+      - mkdir -p /app/lib && cp -R lib/craftradio /app/lib/
+      - install -Dm644 share/applications/io.github.radioterminal.craftradio.desktop /app/share/applications/io.github.radioterminal.craftradio.desktop
+      # The package script already put the version and date in this file.
+      - install -Dm644 share/metainfo/io.github.radioterminal.craftradio.metainfo.xml /app/share/metainfo/io.github.radioterminal.craftradio.metainfo.xml
+      - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/craftradio /app/share/doc/
+    sources:
+      - type: dir
+        path: stage

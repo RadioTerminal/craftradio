@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened-runtime entitlements for CraftRadio. Add an exception only with a reason.
+     The app is not sandboxed. It opens files by path and loads only signed code. -->
+<plist version="1.0">
+<dict>
+  <!-- Live input from a sound card. Without it, the hardened runtime gives silence. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

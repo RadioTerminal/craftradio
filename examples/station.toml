@@ -1,4 +1,4 @@
-# Example station used by `radio-cli plan` and its tests. Every name is invented and the
+# Example station used by `craftradio-cli plan` and its tests. Every name is invented and the
 # paths are made up: the planner never opens a file.
 tz = "Europe/Ljubljana"
 

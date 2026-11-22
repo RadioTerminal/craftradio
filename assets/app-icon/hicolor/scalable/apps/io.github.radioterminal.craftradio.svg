@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- CraftRadio app icon: an on-air mark (a mast with broadcast waves) on a deep red tile.
+       Full-bleed 512 tile; packaging/icons.sh renders every platform's icon from this file. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d23a3a"/>
+      <stop offset="1" stop-color="#8e1f2a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#tile)"/>
+  <g fill="none" stroke="#fff6ec" stroke-linecap="round" stroke-width="30">
+    <path d="M176 140a136 136 0 0 0 0 192"/>
+    <path d="M336 140a136 136 0 0 1 0 192"/>
+    <path d="M122 92a204 204 0 0 0 0 288" opacity="0.7"/>
+    <path d="M390 92a204 204 0 0 1 0 288" opacity="0.7"/>
+  </g>
+  <circle cx="256" cy="236" r="44" fill="#fff6ec"/>
+  <path d="M256 268 214 432h84z" fill="#fff6ec"/>
+</svg>

@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# The shipped program is `craftradio` (packaging/, docs/releasing.md); the package stays `radio`.
+[[bin]]
+name = "craftradio"
+path = "src/main.rs"
+
 [dependencies]
 radio-ui-egui.workspace = true
 radio-ui-engine.workspace = true

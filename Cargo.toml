@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/*"]
+members = ["crates/*", "apps/*", "xtask"]
+exclude = ["ffi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -18,7 +19,7 @@ ebur128 = "0.1"
 blake3 = "1"
 notify = "8"
 tempfile = "3"
-mp3lame-encoder = "0.3"
+radio-lame = { path = "ffi/lame" }
 percent-encoding = "2"
 opus = "0.3"
 ogg = "0.9"
@@ -70,3 +71,4 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template. packaging/macos/package.sh replaces @VERSION@, @SHORT_VERSION@ and @BUILD_SHA@. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>CraftRadio</string>
+  <key>CFBundleName</key>
+  <string>CraftRadio</string>
+  <key>CFBundleExecutable</key>
+  <string>craftradio</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.radioterminal.craftradio</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@SHORT_VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@SHORT_VERSION@</string>
+  <key>CraftRadioVersion</key>
+  <string>@VERSION@</string>
+  <key>CraftRadioBuildCommit</key>
+  <string>@BUILD_SHA@</string>
+  <key>CFBundleIconFile</key>
+  <string>craftradio</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.music</string>
+  <!-- Keep this value the same as MACOSX_DEPLOYMENT_TARGET in package.sh. -->
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>NSRequiresAquaSystemAppearance</key>
+  <false/>
+  <!-- macOS shows this text when a playlist item uses live input from a sound card. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>CraftRadio plays live input from your sound card on air when a playlist item asks for it.</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © the CraftRadio contributors. MIT OR Apache-2.0.</string>
+</dict>
+</plist>
