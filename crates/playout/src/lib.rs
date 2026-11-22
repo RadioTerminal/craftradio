@@ -53,6 +53,9 @@ pub enum OutputChoice {
     Offline,
 }
 
+/// The settings part that turns the WebRTC listener server on and off.
+pub const WEBRTC_PART: &str = "webrtc";
+
 /// Settings for [`Playout::start`].
 #[derive(Clone)]
 pub struct PlayoutConfig {
@@ -83,7 +86,11 @@ pub struct PlayoutConfig {
     /// One Icecast mount that gets Program.
     pub icecast: Option<IcecastConfig>,
     /// A WebRTC server that browsers play Program from, peer to peer.
+    /// The `enabled` key of the [`WEBRTC_PART`] settings turns it on.
+    /// Its `port` key sets the port.
     pub webrtc: Option<WebRtcConfig>,
+    /// With this, the WebRTC server runs in any case, on the port of its config.
+    pub webrtc_always: bool,
     /// The stream title for items that hide their own title.
     pub station_name: String,
     /// Playout sends each alarm to this URL as a JSON POST, but it never waits for it.
@@ -143,6 +150,7 @@ impl PlayoutConfig {
             fallback_folder: None,
             icecast: None,
             webrtc: None,
+            webrtc_always: false,
             station_name: String::new(),
             webhook: None,
             confirm_timeout: Duration::from_secs(1),

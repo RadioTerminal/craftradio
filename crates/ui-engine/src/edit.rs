@@ -1086,6 +1086,14 @@ impl EngineSource {
             } => self.set_weight(&playlist, index, weight),
             Edit::SetStrip { strip, change } => self.set_strip(strip, change),
             Edit::SetIcecast(ice) => self.set_icecast(ice),
+            Edit::SetStreaming(on) => {
+                self.run_edit(Command::SettingsSet {
+                    part: radio_playout::WEBRTC_PART.into(),
+                    key: "enabled".into(),
+                    value: on.into(),
+                })?;
+                Ok(1)
+            }
             Edit::SetLoudness(l) => {
                 self.run_edit(Command::MixerSetLoudness {
                     enabled: Some(l.enabled),

@@ -85,6 +85,8 @@ pub struct MockSource {
     fade: Option<(Timestamp, f32)>,
     strips: HashMap<String, Strip>,
     icecast: IcecastView,
+    /// The streaming switch. The preview sends no audio, so its status stays off.
+    streaming: bool,
     dynamics: radio_model::DynamicsSettings,
     loudness: radio_model::LoudnessSettings,
     device_roles: DeviceRoles,
@@ -202,6 +204,7 @@ impl MockSource {
             paused_at: None,
             fade: None,
             strips: HashMap::new(),
+            streaming: false,
             icecast: IcecastView {
                 host: "stream.example.org".to_owned(),
                 port: ICECAST_PORT,

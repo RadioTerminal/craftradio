@@ -90,8 +90,10 @@ pub struct OutputStatus {
     pub local: LocalOutput,
     /// The Icecast mount, if the configuration has one.
     pub icecast: Option<StreamStatus>,
-    /// The WebRTC listener server, if the configuration has one.
+    /// The WebRTC listener server while it runs.
     pub webrtc: Option<WebRtcStatus>,
+    /// The configuration has a WebRTC server, so the setting can turn it on.
+    pub webrtc_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

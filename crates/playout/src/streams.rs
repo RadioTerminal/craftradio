@@ -1,5 +1,6 @@
 //! Internet streams on decks (spec §6.4), keep-alive beds, and the stream title on Icecast.
 
+use crate::WEBRTC_PART;
 use crate::alarm::Alarm;
 use crate::core::{CUT_FADE, Core, Phase, since};
 use crate::view::{DeckRole, StreamState};
@@ -8,7 +9,7 @@ use radio_audio::{CHANNELS, DeckId, LoadOptions, SAMPLE_RATE};
 use radio_engine::Mode;
 use radio_model::{Item, PublishMode, Source, stream_title};
 use radio_scheduler::{Entry, Origin};
-use radio_stream::{StreamInput, StreamInputHandle};
+use radio_stream::{StreamInput, StreamInputHandle, WebRtcHandle, WebRtcServer};
 use std::time::Duration;
 
 /// The ring of a stream deck holds this much audio.
@@ -175,7 +176,7 @@ impl Core {
 
     /// Sends the stream title for an item that just started.
     pub(crate) fn send_title(&mut self, item: &Item) {
-        if self.icecast.is_none() && self.webrtc.is_none() {
+        if self.icecast.is_none() && self.cfg.webrtc.is_none() {
             return;
         }
         let mut shown = item.clone();
@@ -187,23 +188,96 @@ impl Core {
         if let Some(ice) = &self.icecast {
             ice.set_title(title.clone());
         }
-        if let Some(w) = &self.webrtc {
-            // Listeners see the tags and the cover only when the item shows its own tags.
-            match shown.meta.publish {
-                PublishMode::FromTags => {
-                    let file = match &item.source {
-                        Source::File { path } => Some(std::path::PathBuf::from(path)),
-                        _ => None,
-                    };
-                    w.set_now(shown.meta.title.clone(), shown.meta.artist.clone(), file);
-                }
-                PublishMode::KeepPrevious => {}
-                PublishMode::Custom | PublishMode::Hide => w.set_title(title.clone()),
+        // Listeners see the tags and the cover only when the item shows its own tags.
+        let now = match shown.meta.publish {
+            PublishMode::FromTags => Some(NowPlaying {
+                title: shown.meta.title.clone(),
+                artist: shown.meta.artist.clone(),
+                file: match &item.source {
+                    Source::File { path } => Some(std::path::PathBuf::from(path)),
+                    _ => None,
+                },
+            }),
+            PublishMode::KeepPrevious => None,
+            PublishMode::Custom | PublishMode::Hide => Some(NowPlaying {
+                title: title.clone(),
+                artist: String::new(),
+                file: None,
+            }),
+        };
+        if let Some(now) = now {
+            if let Some(w) = &self.webrtc {
+                now.send(w);
             }
+            self.webrtc_now = Some(now);
         }
         self.title = title;
     }
 
+    /// Starts or stops the WebRTC server to match its setting. A server that stops frees
+    /// its ports on its own thread, and the next one starts after that.
+    pub(crate) fn sync_webrtc(&mut self) {
+        let Some(base) = &self.cfg.webrtc else { return };
+        let settings = self.engine.state().settings(WEBRTC_PART);
+        let on = self.cfg.webrtc_always
+            || settings
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+        let port = settings
+            .and_then(|s| s.get("port"))
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u16::try_from(p).ok())
+            .filter(|_| !self.cfg.webrtc_always)
+            .unwrap_or(base.bind.port());
+        let bind = std::net::SocketAddr::new(base.bind.ip(), port);
+        if self.webrtc.is_some() && (!on || self.webrtc_bind != Some(bind)) {
+            if let Some(server) = self.webrtc.take() {
+                self.webrtc_stopping = std::thread::Builder::new()
+                    .name("webrtc-stop".into())
+                    .spawn(move || drop(server))
+                    .ok();
+            }
+            self.webrtc_bind = None;
+            return;
+        }
+        if !on || self.webrtc.is_some() {
+            return;
+        }
+        if self
+            .webrtc_stopping
+            .as_ref()
+            .is_some_and(|t| !t.is_finished())
+        {
+            return;
+        }
+        self.webrtc_stopping = None;
+        let Some(tap) = &self.webrtc_tap else { return };
+        let mut cfg = base.clone();
+        cfg.bind = bind;
+        let server = WebRtcServer::start_shared(cfg, tap.clone());
+        if let Some(now) = &self.webrtc_now {
+            now.send(&server);
+        }
+        self.webrtc = Some(server);
+        self.webrtc_bind = Some(bind);
+    }
+}
+
+/// What plays now, as WebRTC listeners see it.
+pub(crate) struct NowPlaying {
+    title: String,
+    artist: String,
+    file: Option<std::path::PathBuf>,
+}
+
+impl NowPlaying {
+    fn send(&self, server: &WebRtcHandle) {
+        server.set_now(self.title.clone(), self.artist.clone(), self.file.clone());
+    }
+}
+
+impl Core {
     pub(crate) fn stream_states(&self) -> Vec<StreamState> {
         (0..4)
             .filter_map(|i| {

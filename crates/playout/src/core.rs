@@ -5,7 +5,7 @@ use crate::clock::{Clock, ClockMap};
 use crate::deadair::{Analysis, DeadAir};
 use crate::ops::{Carts, Check, Pending};
 use crate::output::{ProgramSource, feed_tap, feed_taps};
-use crate::streams::StreamSlot;
+use crate::streams::{NowPlaying, StreamSlot};
 use crate::view::{DeckPhase, DeckRole, DeckView, LocalOutput, OutputStatus, PlayoutView};
 use crate::work::{Done, Workers};
 use crate::{OutputChoice, PlayoutConfig, PlayoutError, Reply};
@@ -19,7 +19,7 @@ use radio_audio_device::{NullOutput, SampleClock};
 use radio_engine::{Command, Engine, EngineEvent, LogEntry, LogHandle, LogStatus, RowId};
 use radio_model::{FixMode, Item, ItemId, Source};
 use radio_scheduler::{Entry, Origin, PlanInput, PlayHistory, Played, Timeline, plan};
-use radio_stream::{IcecastClient, IcecastHandle, WebRtcHandle, WebRtcServer};
+use radio_stream::{IcecastClient, IcecastHandle, TapSlot, WebRtcHandle};
 use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -426,6 +426,14 @@ pub(crate) struct Core {
     pub(crate) next_bed: usize,
     pub(crate) icecast: Option<IcecastHandle>,
     pub(crate) webrtc: Option<WebRtcHandle>,
+    /// Program for the WebRTC server, kept while the server is off.
+    pub(crate) webrtc_tap: Option<TapSlot>,
+    /// The address of the running server.
+    pub(crate) webrtc_bind: Option<std::net::SocketAddr>,
+    /// The thread that stops the last server and frees its ports.
+    pub(crate) webrtc_stopping: Option<std::thread::JoinHandle<()>>,
+    /// What plays now, for a server that starts later.
+    pub(crate) webrtc_now: Option<NowPlaying>,
     /// The last stream title sent.
     pub(crate) title: String,
     pub(crate) save_due: bool,
@@ -484,10 +492,10 @@ impl Core {
             .icecast
             .clone()
             .and_then(|ice| Some(IcecastClient::start(ice, taps.next()?)));
-        let webrtc = cfg
+        let webrtc_tap = cfg
             .webrtc
-            .clone()
-            .and_then(|w| Some(WebRtcServer::start(w, taps.next()?)));
+            .as_ref()
+            .and_then(|_| Some(Arc::new(Mutex::new(Some(taps.next()?)))));
         let now = cfg.clock.now();
         let mut alarms = Alarms::new(cfg.webhook.clone());
         if let Some(reason) = opened.fallback {
@@ -507,6 +515,7 @@ impl Core {
                 local: opened.local.clone(),
                 icecast: None,
                 webrtc: None,
+                webrtc_available: cfg.webrtc.is_some(),
             },
             stream_states: Vec::new(),
             alarms: Vec::new(),
@@ -552,7 +561,11 @@ impl Core {
             dead_air: DeadAir::default(),
             next_bed: 0,
             icecast,
-            webrtc,
+            webrtc: None,
+            webrtc_tap,
+            webrtc_bind: None,
+            webrtc_stopping: None,
+            webrtc_now: None,
             title: String::new(),
             save_due: false,
             last_prune: None,
@@ -761,6 +774,7 @@ impl Core {
         for reason in self.cue.errors.try_iter() {
             self.alarms.raise(now, Alarm::DeviceLost { name: reason });
         }
+        self.sync_webrtc();
         self.ticks += 1;
         if self.ticks == 1 {
             self.resume(now);

@@ -697,6 +697,13 @@ impl EngineSource {
             webrtc,
             webrtc_listeners,
             listen_link,
+            streaming: pv.outputs.webrtc_available.then(|| {
+                pv.state
+                    .settings(radio_playout::WEBRTC_PART)
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            }),
         }
     }
 

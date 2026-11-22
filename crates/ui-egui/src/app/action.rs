@@ -138,6 +138,8 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             "Applied the mount {}:{}{}; it connects on the next start",
             ice.host, ice.port, ice.mount
         ),
+        Edit::SetStreaming(true) => "Streaming to listeners starts".to_owned(),
+        Edit::SetStreaming(false) => "Streaming to listeners stopped".to_owned(),
         Edit::SetDynamics(_) => "Changed the processing on Program".to_owned(),
         Edit::SetLoudness(_) => "Changed the loudness normalisation".to_owned(),
         Edit::SetDevice { device, .. } => {
@@ -222,6 +224,10 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         Edit::SetIcecast(ice) => format!(
             "saved the mount {}:{}{} · Icecast stays not connected",
             ice.host, ice.port, ice.mount
+        ),
+        Edit::SetStreaming(on) => format!(
+            "turned streaming {} · the preview sends no audio",
+            if *on { "on" } else { "off" }
         ),
         Edit::SetDynamics(_) => "changed the processing · nothing plays here".to_owned(),
         Edit::SetLoudness(_) => "changed the loudness · nothing plays here".to_owned(),
