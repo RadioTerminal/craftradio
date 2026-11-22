@@ -527,6 +527,9 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
 }
 
 fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
+    // A cue route needs a cue to go to, as in the strip menu: without one, Cue only would
+    // only silence the strip on Out.
+    let cue = view.cue_open && view.devices.contains(&view.device_roles.pfl);
     for m in &view.meters {
         settings::form_row(ui, &m.label, t, |ui| {
             craft_ui::ComboBox::from_id_salt(("route", &m.label))
@@ -534,9 +537,19 @@ fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
                 .selected_text(m.route.label())
                 .show_ui(ui, |ui| {
                     for r in Route::ALL {
-                        if r != Route::OutAndCue
-                            && widgets::selectable(ui, r == m.route, r.label()).clicked()
-                        {
+                        if r == Route::OutAndCue {
+                            continue;
+                        }
+                        let ok = r == Route::Out || cue;
+                        let pick = ui
+                            .add_enabled_ui(ok, |ui| {
+                                widgets::selectable(ui, r == m.route, r.label())
+                            })
+                            .inner
+                            .on_disabled_hover_text(
+                                "Cue routes need a present cue device and an open cue output",
+                            );
+                        if pick.clicked() {
                             actions.push(strip_edit(&m.label, StripChange::Route(r)));
                         }
                     }

@@ -602,3 +602,24 @@ fn the_sample_rate_is_stated_not_offered() {
         "no sample rate picker"
     );
 }
+
+/// Without a cue output, the Routing page offers Cue only grayed out, as the strip menu hides
+/// it: picking it would only silence the strip on Out.
+#[test]
+fn routing_offers_no_cue_route_without_a_cue() {
+    let mut harness = harness();
+    click(&mut harness, "Mixer");
+    click(&mut harness, "Mixer preferences");
+    click(&mut harness, "Routing");
+    let combo = harness
+        .query_all_by_role(egui::accesskit::Role::ComboBox)
+        .next()
+        .expect("a route picker");
+    combo.click();
+    harness.run_steps(FRAMES);
+    let cue_only = harness.get_by_label("Cue only");
+    assert!(
+        cue_only.accesskit_node().is_disabled(),
+        "Cue only is not offered without a cue"
+    );
+}
