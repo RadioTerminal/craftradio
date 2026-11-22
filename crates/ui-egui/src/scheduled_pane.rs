@@ -64,6 +64,9 @@ fn files_over(ui: &egui::Ui, rect: egui::Rect) -> bool {
     })
 }
 
+/// The tabs of the pane on one row: Upcoming, then the playlists. craft-ui fits them; the ones
+/// that do not fit are in a "More options" menu at the end of the row. Each is a tab to a
+/// screen reader, with its selected state.
 fn tab_bar(
     ui: &mut egui::Ui,
     view: &StationView,
@@ -72,14 +75,15 @@ fn tab_bar(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        let label = |s: &str| RichText::new(s).font(theme::text(theme::LABEL));
-        if widgets::selectable(ui, *tab == Tab::Upcoming, label("Upcoming").strong()).clicked() {
-            *tab = Tab::Upcoming;
-        }
-        for (i, p) in view.tabs.iter().enumerate() {
-            let selected = *tab == Tab::Playlist(i);
+    let font = theme::text(theme::LABEL);
+    let pad_x = ui.spacing().button_padding.x;
+    let height = ui.spacing().interact_size.y;
+    // A playlist tab has room for its colour dot before the name.
+    let dot_room = space::S + size::DOT_R * 2.0;
+    let labels: Vec<(String, bool)> = view
+        .tabs
+        .iter()
+        .map(|p| {
             // The playlist colour always comes with its name.
             let folder = if p.source.is_some() {
                 format!(" {}", icons::glyph(Icon::Folder))
@@ -87,14 +91,50 @@ fn tab_bar(
                 String::new()
             };
             let off = if !p.enabled { " (off)" } else { "" };
-            // A long name truncates; the tooltip has all of it.
-            let full = format!("    {}{folder}{off}", p.name);
-            let (shown, cut) = elide_chars(&full, size::TAB_MAX_CHARS);
-            let r = widgets::selectable(ui, selected, label(&shown));
-            let r = if cut { r.on_hover_text(full.trim()) } else { r };
-            let dot = egui::pos2(r.rect.left() + space::S + size::DOT_R, r.rect.center().y);
-            ui.painter()
-                .circle_filled(dot, size::DOT_R, Tokens::playlist(p.color));
+            elide_chars(&format!("{}{folder}{off}", p.name), size::TAB_MAX_CHARS)
+        })
+        .collect();
+    let measure = |ui: &egui::Ui, text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), t.text)
+            .size()
+            .x
+    };
+    let mut natural = vec![measure(ui, "Upcoming") + pad_x * 2.0];
+    natural.extend(
+        labels
+            .iter()
+            .map(|(l, _)| measure(ui, l) + pad_x * 2.0 + dot_room),
+    );
+    let selected = match *tab {
+        Tab::Upcoming => 0,
+        Tab::Playlist(i) => i + 1,
+    };
+    let new_label = icons::lead(Icon::Plus, "Playlist");
+    let new_w = measure(ui, &new_label) + pad_x * 2.0 + space::XS;
+    let more_w = height;
+    let available = ui.available_width() - new_w;
+    let fit = craft_ui::tabs::fit_whole(&natural, selected, available, more_w);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for &(k, w) in &fit.shown {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, height), Sense::hover());
+            if k == 0 {
+                let r = tab_at(ui, rect, "Upcoming", "Upcoming", None, selected == 0, t);
+                if r.clicked() {
+                    *tab = Tab::Upcoming;
+                }
+                continue;
+            }
+            let i = k - 1;
+            let p = &view.tabs[i];
+            let (shown, cut) = &labels[i];
+            let r = tab_at(ui, rect, &p.name, shown, Some(p.color), selected == k, t);
+            let r = if *cut {
+                r.on_hover_text(p.name.as_str())
+            } else {
+                r
+            };
             // A library item dropped on a tab joins that playlist.
             if let Some(drag) = r.dnd_release_payload::<LibraryDrag>() {
                 actions.push(Action::Drop {
@@ -113,14 +153,84 @@ fn tab_bar(
             }
             r.context_menu(|ui| tab_menu(ui, p, actions, t));
         }
+        if !fit.overflow.is_empty() {
+            let items: Vec<craft_ui::menu::MenuItem> = fit
+                .overflow
+                .iter()
+                .map(|&k| match k {
+                    0 => craft_ui::menu::MenuItem::new("0", "Upcoming"),
+                    k => {
+                        craft_ui::menu::MenuItem::new(k.to_string(), view.tabs[k - 1].name.as_str())
+                    }
+                })
+                .collect();
+            let labels = craft_ui::menu::MenuLabels {
+                more: "More playlists".to_owned(),
+                ..Default::default()
+            };
+            if let Some(k) = craft_ui::menu::overflow(ui, &items, &labels)
+                .and_then(|id| id.parse::<usize>().ok())
+            {
+                *tab = if k == 0 {
+                    Tab::Upcoming
+                } else {
+                    Tab::Playlist(k - 1)
+                };
+            }
+        }
+        ui.add_space(space::XS);
         if ui
-            .button(icons::lead(Icon::Plus, "Playlist"))
+            .button(new_label)
             .on_hover_text("Make a new, empty playlist")
             .clicked()
         {
             actions.push(Action::Edit(Edit::NewPlaylist("New playlist".to_owned())));
         }
     });
+}
+
+/// One tab at `rect`: craft-ui's `Tab`, painted as the pane's buttons are, with the colour dot
+/// of a playlist before its name. `name` is what a screen reader says.
+fn tab_at(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    name: &str,
+    shown: &str,
+    colour: Option<[u8; 3]>,
+    selected: bool,
+    t: &Tokens,
+) -> egui::Response {
+    let id = ui.make_persistent_id(("pane_tab", name));
+    let font = theme::text(theme::LABEL);
+    craft_ui::tabs::Tab::new(id, name, selected)
+        .focus_stroke(Stroke::new(size::HAIRLINE, t.accent_ink))
+        .show_at(ui, rect, |ui, r| {
+            let v = ui.style().interact_selectable(r, selected);
+            if selected || r.hovered() {
+                ui.painter().rect(
+                    rect,
+                    t.radius,
+                    v.weak_bg_fill,
+                    v.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            let mut x = rect.left() + ui.spacing().button_padding.x;
+            if let Some(rgb) = colour {
+                let dot = egui::pos2(x + size::DOT_R, rect.center().y);
+                ui.painter()
+                    .circle_filled(dot, size::DOT_R, Tokens::playlist(rgb));
+                x += space::S + size::DOT_R * 2.0;
+            }
+            let ink = v.text_color();
+            ui.painter().text(
+                egui::pos2(x, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                shown,
+                font.clone(),
+                ink,
+            );
+        })
 }
 
 fn tab_menu(ui: &mut egui::Ui, p: &PlaylistTab, actions: &mut Vec<Action>, t: &Tokens) {

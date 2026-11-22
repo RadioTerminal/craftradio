@@ -1,7 +1,8 @@
 //! Controls keep one size in every state: hovering a tab does not move its neighbours.
 
+use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{By, Queryable};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::{MockSource, RadioApp};
@@ -20,19 +21,24 @@ fn harness() -> Harness<'static, RadioApp> {
     harness
 }
 
+/// The tab of the pane named `label`.
+fn tab(label: &str) -> By<'_> {
+    By::new().label(label).role(Role::Tab)
+}
+
 fn rect(h: &Harness<'_, RadioApp>, label: &str) -> egui::Rect {
-    h.get_by_label(label).rect()
+    h.get(tab(label)).rect()
 }
 
 #[test]
 fn hovering_a_playlist_tab_keeps_its_size_and_its_neighbours_in_place() {
-    // "Upcoming" is selected at start; "    Jingles" is a tab at rest.
-    for hovered in ["    Jingles", "Upcoming"] {
+    // "Upcoming" is selected at start; "Jingles" is a tab at rest.
+    for hovered in ["Jingles", "Upcoming"] {
         let mut h = harness();
-        let before = [rect(&h, "Upcoming"), rect(&h, "    Jingles")];
-        h.get_by_label(hovered).hover();
+        let before = [rect(&h, "Upcoming"), rect(&h, "Jingles")];
+        h.get(tab(hovered)).hover();
         h.run_steps(FRAMES);
-        let after = [rect(&h, "Upcoming"), rect(&h, "    Jingles")];
+        let after = [rect(&h, "Upcoming"), rect(&h, "Jingles")];
         assert_eq!(before, after, "hovering {hovered:?} changed the tab bar");
     }
 }
@@ -42,7 +48,7 @@ fn hovering_a_playlist_tab_keeps_its_size_and_its_neighbours_in_place() {
 #[test]
 fn a_playlist_tab_scrolls_only_its_items_list() {
     let mut h = harness();
-    h.get_by_label("    Jingles").click();
+    h.get(tab("Jingles")).click();
     h.run_steps(FRAMES);
     let header = |h: &Harness<'_, RadioApp>| h.get_by_label_contains("3 items").rect().top();
     let before = header(&h);
