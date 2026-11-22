@@ -851,7 +851,7 @@ fn icecast_tab(
     });
     let note = view.say(
         "The stream would carry this text. The preview sends nothing.",
-        "Changes to the mount apply on the next start of the app.",
+        "Applied changes take effect at the next start of the app.",
     );
     settings::form_note(
         ui,
@@ -879,10 +879,16 @@ fn icecast_tab(
     });
     settings::form_row(ui, "Mount", t, |ui| field(ui, &mut ice.mount));
     settings::form_row(ui, "User", t, |ui| field(ui, &mut ice.user));
-    let hint = if view.icecast.password_set {
-        "set · leave empty to keep it"
-    } else {
-        "not set"
+    // The password is kept for one server: user, host, port and mount. A change of any of
+    // them needs the password typed again, or Icecast stays off.
+    let same_server = ice.user == view.icecast.user
+        && ice.host == view.icecast.host
+        && ice.port == view.icecast.port
+        && ice.mount == view.icecast.mount;
+    let hint = match (view.icecast.password_set, same_server) {
+        (true, true) => "set · leave empty to keep it",
+        (true, false) => "type it again for this server",
+        (false, _) => "not set",
     };
     settings::form_row(ui, "Password", t, |ui| {
         let edit = egui::TextEdit::singleline(&mut ice.password)

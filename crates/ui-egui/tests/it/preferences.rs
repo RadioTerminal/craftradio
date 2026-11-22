@@ -112,3 +112,66 @@ fn a_new_output_device_shows_as_picked_and_says_it_waits_for_the_next_start() {
         "and says where the sound goes until then"
     );
 }
+
+/// A station whose Icecast password is set.
+struct PasswordSet(MockSource);
+
+impl radio_ui_egui::ViewSource for PasswordSet {
+    fn snapshot(&mut self, now: Timestamp) -> radio_ui_egui::view::StationView {
+        let mut v = self.0.snapshot(now);
+        v.icecast.password_set = true;
+        v
+    }
+    fn edit(&mut self, edit: radio_ui_egui::view::Edit) -> Result<usize, String> {
+        self.0.edit(edit)
+    }
+    fn stream_title(&self, row: &radio_ui_egui::view::Row) -> String {
+        self.0.stream_title(row)
+    }
+}
+
+/// The hint of the empty password field: the placeholder of the field named "Password".
+fn password_hint(harness: &Harness<'_, RadioApp>) -> String {
+    harness
+        .query_all_by_label("Password")
+        .filter_map(|n| n.accesskit_node().placeholder().map(str::to_owned))
+        .next()
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_password_hint_asks_again_once_the_server_changes() {
+    let tz = TimeZone::get("Europe/Ljubljana").expect("tz database has Ljubljana");
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .build_eframe(move |_cc| {
+            RadioApp::new(
+                Box::new(PasswordSet(MockSource::new(tz))),
+                Box::new(fixed_clock),
+            )
+        });
+    harness.run_steps(FRAMES);
+    harness.get_by_label("Mixer").click();
+    harness.run_steps(FRAMES);
+    harness.get_by_label("Icecast preferences").click();
+    harness.run_steps(FRAMES);
+    assert_eq!(password_hint(&harness), "set · leave empty to keep it");
+    let host = harness
+        .query_all_by_label("Host")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::TextInput)
+        .expect("the Host field");
+    host.focus();
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness
+        .query_all_by_label("Host")
+        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::TextInput)
+        .expect("the Host field")
+        .type_text("relay.example.net");
+    harness.run_steps(FRAMES);
+    assert_eq!(
+        password_hint(&harness),
+        "type it again for this server",
+        "the kept password belongs to the old server"
+    );
+}
