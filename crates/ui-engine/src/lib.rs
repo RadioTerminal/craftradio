@@ -18,6 +18,7 @@ pub use icecast::{
 };
 mod map;
 mod one_off;
+mod outputs;
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
 /// with: `None` when none is set, so the playout keeps its own.
@@ -76,7 +77,7 @@ use radio_stream::{StreamStatus, WebRtcStatus};
 use radio_ui_egui::view::{
     AlarmSource, AlarmView, CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles,
     DropTarget, Edit, FitView, FolderSource, Imported, LibraryItem, MeterView, Origin,
-    OutputStatus, PlayMode, PlaylistTab, Route, Row, Severity, StationView, Status, StreamState,
+    OutputStatus, PlayMode, PlaylistTab, Row, Severity, StationView, Status, StreamState,
     ViewSource,
 };
 
@@ -116,6 +117,10 @@ pub struct EngineSource {
     replies: fader::Replies,
     /// The meter reader of the mixer, for the meters of every frame. A read never blocks.
     meter_reader: std::sync::Mutex<radio_audio::MeterReader>,
+    /// The level meters of the outputs, and the strips of the last snapshot that say which
+    /// of them send.
+    output_meters: radio_playout::OutputMeters,
+    output_views: Vec<radio_ui_egui::view::OutputMeterView>,
     playout: Playout,
     tz: TimeZone,
     station: String,
@@ -236,6 +241,8 @@ impl EngineSource {
             merger,
             replies,
             meter_reader,
+            output_meters: playout.output_meters(),
+            output_views: Vec::new(),
             playout,
             tz: opts.tz,
             station: opts.station_name,
@@ -822,13 +829,17 @@ impl EngineSource {
                 let label = strip_label(*s);
                 let st = strips.get(label).copied().unwrap_or_default();
                 MeterView {
-                    label: label.to_owned(),
+                    strip: label.to_owned(),
+                    label: if *s == Strip::Out {
+                        "Program".to_owned()
+                    } else {
+                        label.to_owned()
+                    },
                     level_db: m.rms_db,
                     peak_db: m.peak_hold_db,
                     gain_db: self.strip_gain.get(label).copied().unwrap_or(st.gain_db),
                     mute: st.mute,
-                    pfl: st.snd,
-                    route: Route::Out,
+                    snd: st.snd,
                 }
             })
             .collect()
@@ -1044,6 +1055,7 @@ impl ViewSource for EngineSource {
             label.push_str(&format!(" · NOT SAVED: {reason}"));
         }
         let alarms = self.alarm_views(&pv, now);
+        self.output_views = outputs::output_meter_views(&pv.outputs);
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {
@@ -1067,7 +1079,8 @@ impl ViewSource for EngineSource {
                 .cloned()
                 .chain(self.files.iter().map(|f| f.view.clone()))
                 .collect(),
-            cue_open: pv.monitor_open,
+            monitor_open: pv.monitor_open,
+            output_meters: self.output_views.clone(),
             devices: self.devices.clone(),
             input_devices: self.input_devices.clone(),
             device_roles: DeviceRoles {
@@ -1075,7 +1088,7 @@ impl ViewSource for EngineSource {
                     LocalOutput::Device { name } => name.clone(),
                     _ => String::new(),
                 },
-                pfl: self
+                monitor: self
                     .state
                     .settings(AUDIO_PART)
                     .and_then(|s| s.get(radio_engine::MONITOR_KEY))
@@ -1156,6 +1169,14 @@ impl ViewSource for EngineSource {
                 .map(|s| snap.strip(*s).peak_hold_db)
                 .collect(),
             at_sample: snap.at_sample,
+            output_level_db: outputs::gated_levels(
+                &self.output_views,
+                &[
+                    self.output_meters.device.take(),
+                    self.output_meters.icecast.take(),
+                    self.output_meters.webrtc.take(),
+                ],
+            ),
         })
     }
 

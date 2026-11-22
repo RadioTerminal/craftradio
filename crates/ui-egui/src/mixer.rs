@@ -1,7 +1,7 @@
 //! The mixer: one strip per deck, the cart bus, the live input and the output.
 //! Levels come from the view-model. In the preview, the mock simulates them, and nothing plays.
-//! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
-//! The ⚙ opens Preferences on the mixer's pages: Devices, Routing, Processing, Meters and Icecast.
+//! Faders, mute, SND, devices and Icecast go to the view source as edits.
+//! The ⚙ opens Preferences on the mixer's pages: Devices, Processing, Meters and Icecast.
 
 use crate::numbers;
 use crate::widgets;
@@ -17,7 +17,7 @@ use crate::theme::{self, Tokens, pad, size, space};
 use radio_model::{DynamicsSettings, LoudnessSettings, dynamics_range as range, loudness_range};
 
 use crate::view::{
-    DeviceRole, Edit, IcecastView, MeterView, Route, StationView, Status, StreamFormat, StripChange,
+    DeviceRole, Edit, IcecastView, MeterView, StationView, Status, StreamFormat, StripChange,
 };
 
 /// The settings part where the view source keeps the audio devices.
@@ -41,7 +41,6 @@ const HZ_PER_KHZ: f64 = 1000.0;
 pub(crate) enum SettingsTab {
     #[default]
     Devices,
-    Routing,
     Processing,
     Meters,
     Icecast,
@@ -51,7 +50,6 @@ impl SettingsTab {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Devices => "Devices",
-            Self::Routing => "Routing",
             Self::Processing => "Processing",
             Self::Meters => "Meters",
             Self::Icecast => "Icecast",
@@ -112,8 +110,8 @@ pub(crate) fn show(
     ui.add_space(space::S);
     ui.horizontal_top(|ui| {
         for meter in &view.meters {
-            let is_out = meter.label == "Out";
-            let cue = view.cue_open && view.devices.contains(&view.device_roles.pfl);
+            let is_out = meter.is_program();
+            let cue = monitor_ready(view);
             if let Some(tab) = strip_ui(ui, meter, is_out, cue, actions, t) {
                 wanted = Some(tab);
             }
@@ -186,7 +184,6 @@ pub(crate) fn preferences(
 ) {
     match tab {
         SettingsTab::Devices => devices_tab(ui, view, actions, t),
-        SettingsTab::Routing => routing_tab(ui, view, actions, t),
         SettingsTab::Processing => {
             loudness_section(ui, view, &mut state.loudness, actions, t);
             processing_tab(ui, view, &mut state.dynamics, actions, t);
@@ -263,27 +260,26 @@ fn strip_ui(
                     if toggle(ui, word, fill, t).clicked() {
                         mute = !mute;
                     }
-                    if ui
-                        .add_enabled(
-                            cue && !is_out,
-                            egui::Button::new(if cue && !is_out && meter.pfl {
-                                "PFL ON"
-                            } else {
-                                "PFL"
-                            }),
+                    let snd_word = if cue && meter.snd { "SND ON" } else { "SND" };
+                    let snd = ui
+                        .add_enabled(cue, egui::Button::new(snd_word))
+                        .on_disabled_hover_text(SND_NEEDS);
+                    // The name starts with the visible word and says which strip it is.
+                    snd.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            cue,
+                            format!("{snd_word} {}", meter.label),
                         )
-                        .on_disabled_hover_text(
-                            "PFL needs a present cue device and an open cue output",
-                        )
-                        .clicked()
-                    {
-                        actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
+                    });
+                    if snd.clicked() {
+                        actions.push(strip_edit(&meter.strip, StripChange::Snd(!meter.snd)));
                     }
                 });
             });
         });
     if gain != meter.gain_db {
-        actions.push(strip_edit(&meter.label, StripChange::Gain(gain)));
+        actions.push(strip_edit(&meter.strip, StripChange::Gain(gain)));
     }
     if mute != meter.mute {
         actions.push(mute_action(meter, is_out, mute));
@@ -295,6 +291,14 @@ fn strip_ui(
     } else {
         settings_wanted
     }
+}
+
+/// Why SND is off: it plays on the monitor device, which must be there and open.
+const SND_NEEDS: &str = "SND needs a present monitor device and an open monitor output";
+
+/// The monitor output plays, so SND can be heard.
+fn monitor_ready(view: &StationView) -> bool {
+    view.monitor_open && view.devices.contains(&view.device_roles.monitor)
 }
 
 /// A framed toggle button with a fill that shows its state.
@@ -310,7 +314,7 @@ fn toggle(ui: &mut egui::Ui, word: &str, fill: egui::Color32, t: &Tokens) -> egu
 
 /// The action for a Mute press. Muting Out silences the whole programme, so it asks first.
 fn mute_action(meter: &MeterView, is_out: bool, mute: bool) -> Action {
-    let edit = strip_edit(&meter.label, StripChange::Mute(mute));
+    let edit = strip_edit(&meter.strip, StripChange::Mute(mute));
     if is_out && mute {
         Action::Confirm {
             text: "Mute Out? Listeners hear silence until you unmute it.".to_owned(),
@@ -348,23 +352,16 @@ fn strip_menu(
     if check_item(ui, meter.mute, "Mute") {
         actions.push(mute_action(meter, is_out, !meter.mute));
     }
-    ui.add_enabled_ui(cue && !is_out, |ui| {
-        if check_item(ui, meter.pfl, "PFL") {
-            actions.push(strip_edit(&meter.label, StripChange::Pfl(!meter.pfl)));
+    ui.add_enabled_ui(cue, |ui| {
+        if check_item(ui, meter.snd, "SND") {
+            actions.push(strip_edit(&meter.strip, StripChange::Snd(!meter.snd)));
         }
     })
     .response
-    .on_disabled_hover_text("PFL needs a present cue device and an open cue output");
+    .on_disabled_hover_text(SND_NEEDS);
     if menu_item(ui, "Reset gain to 0 dB", None) {
-        actions.push(strip_edit(&meter.label, StripChange::Gain(0.0)));
+        actions.push(strip_edit(&meter.strip, StripChange::Gain(0.0)));
     }
-    ui.menu_button("Route to", |ui| {
-        for route in Route::ALL {
-            if (route == Route::Out || cue) && check_item(ui, meter.route == route, route.label()) {
-                actions.push(strip_edit(&meter.label, StripChange::Route(route)));
-            }
-        }
-    });
     ui.separator();
     if is_out
         && menu_item(
@@ -479,12 +476,12 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
     let out = saved_out.clone().unwrap_or_else(|| roles.out.clone());
     settings::section(ui, "Audio devices", t, |ui| {
         for (label, id, role, current) in [
-            ("Output device (Out)", "out_device", DeviceRole::Out, &out),
+            ("Program device", "out_device", DeviceRole::Out, &out),
             (
-                "Cue device (PFL)",
-                "cue_device",
-                DeviceRole::Pfl,
-                &roles.pfl,
+                "Monitor device (SND)",
+                "monitor_device",
+                DeviceRole::Monitor,
+                &roles.monitor,
             ),
             (
                 "Live input device",
@@ -559,39 +556,6 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
                 .on_hover_text("The audio always runs at this rate; files are resampled to it")
         });
     });
-}
-
-fn routing_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {
-    // A cue route needs a cue to go to, as in the strip menu: without one, Cue only would
-    // only silence the strip on Out.
-    let cue = view.cue_open && view.devices.contains(&view.device_roles.pfl);
-    for m in &view.meters {
-        settings::form_row(ui, &m.label, t, |ui| {
-            craft_ui::ComboBox::from_id_salt(("route", &m.label))
-                .width(ui.available_width())
-                .selected_text(m.route.label())
-                .show_ui(ui, |ui| {
-                    for r in Route::ALL {
-                        if r == Route::OutAndCue {
-                            continue;
-                        }
-                        let ok = r == Route::Out || cue;
-                        let pick = ui
-                            .add_enabled_ui(ok, |ui| {
-                                widgets::selectable(ui, r == m.route, r.label())
-                            })
-                            .inner
-                            .on_disabled_hover_text(
-                                "Cue routes need a present cue device and an open cue output",
-                            );
-                        if pick.clicked() {
-                            actions.push(strip_edit(&m.label, StripChange::Route(r)));
-                        }
-                    }
-                })
-                .response
-        });
-    }
 }
 
 fn meters_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, t: &Tokens) {

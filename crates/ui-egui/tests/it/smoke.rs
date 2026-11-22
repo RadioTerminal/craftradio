@@ -82,10 +82,10 @@ fn each_tool_window_opens_from_the_deck_strip() {
 fn the_mixer_cog_shows_the_device_pickers() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    assert!(!shows(&harness, "Output device (Out)"));
+    assert!(!shows(&harness, "Program device"));
     click(&mut harness, "Mixer preferences");
-    assert!(shows(&harness, "Output device (Out)"));
-    assert!(shows(&harness, "Cue device (PFL)"));
+    assert!(shows(&harness, "Program device"));
+    assert!(shows(&harness, "Monitor device (SND)"));
     assert!(shows(&harness, "Live input device"));
 }
 
@@ -201,7 +201,7 @@ fn the_mixer_cog_opens_preferences_beside_the_strips_and_done_closes_it() {
     click(&mut harness, "Mixer preferences");
     assert!(shows(&harness, "Done"), "Preferences opens");
     assert!(
-        shows(&harness, "Output device (Out)"),
+        shows(&harness, "Program device"),
         "on the mixer's Devices page"
     );
     assert!(
@@ -209,7 +209,7 @@ fn the_mixer_cog_opens_preferences_beside_the_strips_and_done_closes_it() {
         "the strips stay in the mixer"
     );
     let devices = size(&harness, ToolWindow::Preferences);
-    for tab in ["Routing", "Processing", "Meters"] {
+    for tab in ["Processing", "Meters"] {
         click(&mut harness, tab);
         let other = size(&harness, ToolWindow::Preferences);
         assert!(
@@ -234,10 +234,7 @@ fn the_out_cog_opens_preferences_on_icecast() {
     click(&mut harness, "Icecast preferences");
     assert!(shows(&harness, "Done"), "the page opens");
     assert!(shows(&harness, "Password"), "on the Icecast tab");
-    assert!(
-        !shows(&harness, "Output device (Out)"),
-        "not on the Devices tab"
-    );
+    assert!(!shows(&harness, "Program device"), "not on the Devices tab");
 }
 
 /// The Icecast state in the status line opens Preferences on the Icecast page. (The on-air
@@ -503,12 +500,12 @@ fn the_arrow_keys_move_between_settings_tabs() {
     click(&mut harness, "Mixer preferences");
     harness.get_by_label("Devices").focus();
     harness.run_steps(FRAMES);
-    for _ in 0..3 {
+    for _ in 0..2 {
         harness.key_press(egui::Key::ArrowDown);
         harness.run_steps(FRAMES);
     }
-    assert!(shows(&harness, "Peak hold"), "three steps down is Meters");
-    assert!(!shows(&harness, "Output device (Out)"), "Devices is gone");
+    assert!(shows(&harness, "Peak hold"), "two steps down is Meters");
+    assert!(!shows(&harness, "Program device"), "Devices is gone");
     harness.key_press(egui::Key::ArrowUp);
     harness.run_steps(FRAMES);
     assert!(!shows(&harness, "Peak hold"), "one step up leaves Meters");
@@ -611,25 +608,14 @@ fn the_sample_rate_is_stated_not_offered() {
     );
 }
 
-/// Without a cue output, the Routing page offers Cue only grayed out, as the strip menu hides
-/// it: picking it would only silence the strip on Out.
+/// Without a monitor output, SND cannot be heard, so the preview (which plays nothing)
+/// offers it disabled instead of a button that seems to work.
 #[test]
-fn routing_offers_no_cue_route_without_a_cue() {
+fn snd_is_disabled_without_a_monitor_device() {
     let mut harness = harness();
     click(&mut harness, "Mixer");
-    click(&mut harness, "Mixer preferences");
-    click(&mut harness, "Routing");
-    let combo = harness
-        .query_all_by_role(egui::accesskit::Role::ComboBox)
-        .next()
-        .expect("a route picker");
-    combo.click();
-    harness.run_steps(FRAMES);
-    let cue_only = harness.get_by_label("Cue only");
-    assert!(
-        cue_only.accesskit_node().is_disabled(),
-        "Cue only is not offered without a cue"
-    );
+    let snd = harness.get_by_label("SND A");
+    assert!(snd.accesskit_node().is_disabled(), "SND A is disabled");
 }
 
 /// Cart ducking is kept but not played yet, and its controls say so instead of looking like

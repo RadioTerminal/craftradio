@@ -1,0 +1,165 @@
+//! The output meter strips: what each output says about itself, and whether its level is real.
+
+use radio_playout::{LocalOutput, OutputStatus};
+use radio_stream::{StreamStatus, WebRtcStatus};
+use radio_ui_egui::view::{OutputKind, OutputMeterView};
+
+/// The output strips in mixer order: the Program device, Icecast, WebRTC. An output is live
+/// only while it really sends: a sound card is open, Icecast is connected, or somebody
+/// listens over WebRTC.
+pub(crate) fn output_meter_views(out: &OutputStatus) -> Vec<OutputMeterView> {
+    let device = match &out.local {
+        LocalOutput::Device { name } => (true, name.clone()),
+        LocalOutput::Lost { name } => (false, format!("Lost: {name}")),
+        LocalOutput::Null | LocalOutput::Offline => (false, "No device".to_owned()),
+    };
+    let icecast = match &out.icecast {
+        None => (false, "Not set up"),
+        Some(StreamStatus::Connected { .. }) => (true, "Connected"),
+        Some(StreamStatus::Connecting) => (false, "Connecting"),
+        Some(StreamStatus::Retrying { .. }) => (false, "Not connected"),
+        Some(StreamStatus::Stopped) => (false, "Off"),
+    };
+    let webrtc = match &out.webrtc {
+        None | Some(WebRtcStatus::Stopped) => (false, "Off".to_owned()),
+        Some(WebRtcStatus::Starting) => (false, "Starting".to_owned()),
+        Some(WebRtcStatus::Failed(e)) => (false, format!("Failed: {e}")),
+        Some(WebRtcStatus::Listening { listeners: 0, .. }) => {
+            (false, "On — 0 listeners".to_owned())
+        }
+        Some(WebRtcStatus::Listening { listeners: 1, .. }) => (true, "1 listener".to_owned()),
+        Some(WebRtcStatus::Listening { listeners, .. }) => (true, format!("{listeners} listeners")),
+    };
+    [
+        (OutputKind::Device, "Program device", device),
+        (
+            OutputKind::Icecast,
+            "Icecast",
+            (icecast.0, icecast.1.to_owned()),
+        ),
+        (OutputKind::WebRtc, "WebRTC", webrtc),
+    ]
+    .into_iter()
+    .map(|(kind, label, (live, note))| OutputMeterView {
+        kind,
+        label: label.to_owned(),
+        live,
+        note,
+        level_db: [radio_stream::LEVEL_FLOOR_DB; 2],
+        peak_db: [radio_stream::LEVEL_FLOOR_DB; 2],
+    })
+    .collect()
+}
+
+/// The levels to show for `views`: a level only under a live output, silence otherwise.
+pub(crate) fn gated_levels(views: &[OutputMeterView], levels: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    views
+        .iter()
+        .zip(levels)
+        .map(|(v, l)| {
+            if v.live {
+                *l
+            } else {
+                [radio_stream::LEVEL_FLOOR_DB; 2]
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FLOOR: f32 = radio_stream::LEVEL_FLOOR_DB;
+
+    fn status(local: LocalOutput) -> OutputStatus {
+        OutputStatus {
+            local,
+            icecast: None,
+            webrtc: None,
+            webrtc_available: true,
+        }
+    }
+
+    fn view(out: &OutputStatus, kind: OutputKind) -> OutputMeterView {
+        output_meter_views(out)
+            .into_iter()
+            .find(|v| v.kind == kind)
+            .unwrap()
+    }
+
+    #[test]
+    fn program_device_without_a_card_is_not_live() {
+        for (local, note) in [
+            (LocalOutput::Null, "No device"),
+            (LocalOutput::Offline, "No device"),
+            (
+                LocalOutput::Lost {
+                    name: "Studio out".into(),
+                },
+                "Lost: Studio out",
+            ),
+        ] {
+            let v = view(&status(local), OutputKind::Device);
+            assert!(!v.live);
+            assert_eq!(v.note, note);
+        }
+        let v = view(
+            &status(LocalOutput::Device {
+                name: "Studio out".into(),
+            }),
+            OutputKind::Device,
+        );
+        assert!(v.live);
+        assert_eq!(v.note, "Studio out");
+    }
+
+    #[test]
+    fn icecast_not_connected_is_not_live_and_says_so() {
+        let mut out = status(LocalOutput::Null);
+        out.icecast = Some(StreamStatus::Retrying {
+            in_secs: 4,
+            last_error: "refused".into(),
+        });
+        let v = view(&out, OutputKind::Icecast);
+        assert!(!v.live);
+        assert_eq!(v.note, "Not connected");
+        out.icecast = None;
+        assert_eq!(view(&out, OutputKind::Icecast).note, "Not set up");
+    }
+
+    #[test]
+    fn webrtc_with_no_listeners_is_not_live() {
+        let mut out = status(LocalOutput::Null);
+        let listening = |listeners| WebRtcStatus::Listening {
+            url: "http://127.0.0.1/".into(),
+            public: None,
+            listeners,
+            since: jiff::Timestamp::UNIX_EPOCH,
+            link: None,
+            relays: 0,
+            mapped: None,
+        };
+        out.webrtc = Some(listening(0));
+        let v = view(&out, OutputKind::WebRtc);
+        assert!(!v.live);
+        assert_eq!(v.note, "On — 0 listeners");
+        out.webrtc = Some(listening(2));
+        let v = view(&out, OutputKind::WebRtc);
+        assert!(v.live);
+        assert_eq!(v.note, "2 listeners");
+        out.webrtc = None;
+        assert_eq!(view(&out, OutputKind::WebRtc).note, "Off");
+    }
+
+    #[test]
+    fn a_live_output_passes_its_level_through_and_a_down_one_shows_silence() {
+        let mut out = status(LocalOutput::Device {
+            name: "Studio out".into(),
+        });
+        out.icecast = Some(StreamStatus::Connecting);
+        let views = output_meter_views(&out);
+        let levels = gated_levels(&views, &[[-6.0, -6.0], [-6.0, -6.0], [-6.0, -6.0]]);
+        assert_eq!(levels, vec![[-6.0, -6.0], [FLOOR, FLOOR], [FLOOR, FLOOR]]);
+    }
+}

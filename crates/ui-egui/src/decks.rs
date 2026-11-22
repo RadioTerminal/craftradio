@@ -1026,7 +1026,7 @@ fn live_chip(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let out = view.meters.iter().find(|m| m.label == "Out");
+    let out = view.meters.iter().find(|m| m.is_program());
     let sound =
         out.is_some_and(|m| !m.mute && m.level_db[0].max(m.level_db[1]) > size::METER_MIN_DB);
     let on = view.output.streaming.unwrap_or(false);
@@ -1169,7 +1169,7 @@ fn out_meter(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let Some(m) = view.meters.iter().find(|m| m.label == "Out") else {
+    let Some(m) = view.meters.iter().find(|m| m.is_program()) else {
         return;
     };
     let db = |v: f32| {

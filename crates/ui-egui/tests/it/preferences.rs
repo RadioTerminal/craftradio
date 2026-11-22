@@ -96,7 +96,7 @@ fn a_new_output_device_shows_as_picked_and_says_it_waits_for_the_next_start() {
     harness.get_by_label("Devices").click();
     harness.run_steps(FRAMES);
     let shown: Vec<String> = harness
-        .query_all_by_label("Output device (Out)")
+        .query_all_by_label("Program device")
         .filter_map(|n| n.accesskit_node().value())
         .collect();
     assert!(

@@ -9,7 +9,7 @@ use radio_model::{Item, ItemId, PickOrder, PlaylistId, Source};
 use radio_ui_egui::theme::PALETTE;
 use radio_ui_egui::view::{
     CartChange, CartMode, DeckCommand, DeckState, DeviceRole, DropTarget, Edit, Imported,
-    MetaTarget, MoveTo, Place, PlayMode, PlaylistTab, Route, StripChange,
+    MetaTarget, MoveTo, Place, PlayMode, PlaylistTab, StripChange,
 };
 
 use crate::map::{display_title, model_meta};
@@ -1124,7 +1124,7 @@ impl EngineSource {
             Edit::SetDevice { role, device } => {
                 let key = match role {
                     DeviceRole::Out => "out",
-                    DeviceRole::Pfl => radio_engine::MONITOR_KEY,
+                    DeviceRole::Monitor => radio_engine::MONITOR_KEY,
                     DeviceRole::Input => "input",
                 };
                 self.run_edit(Command::SettingsSet {
@@ -1319,13 +1319,7 @@ impl EngineSource {
         match change {
             StripChange::Gain(g) => gain_db = Some(g),
             StripChange::Mute(m) => mute = Some(m),
-            StripChange::Pfl(p) => snd = Some(p),
-            // Mute and SND replaced routes; the view loses them in the next change.
-            StripChange::Route(r) => match r {
-                Route::Out => {}
-                Route::OutAndCue => snd = Some(true),
-                Route::CueOnly => (mute, snd) = (Some(true), Some(true)),
-            },
+            StripChange::Snd(p) => snd = Some(p),
         }
         let cmd = Command::MixerSetStrip {
             strip,
