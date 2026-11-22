@@ -415,3 +415,20 @@ fn no_snd_means_a_silent_monitor() {
     assert!(program.iter().skip(512).any(|x| x.abs() > 0.1));
     assert!(monitor.iter().all(|x| *x == 0.0));
 }
+
+/// Listening to air while pre-listening a deck is the common monitor use: the two together
+/// pass the soft limit, they are not cut off at full scale.
+#[test]
+fn program_and_a_source_snd_together_are_soft_limited() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    constant_deck(&mut handle, DeckId::A, 0.5);
+    handle.set_snd(Strip::Deck(DeckId::A), true);
+    handle.set_snd(Strip::Out, true);
+    let (_, monitor) = radio_audio::render_offline_buses(&mut mixer, 1024);
+    let loudest = monitor.iter().fold(0.0f32, |a, x| a.max(x.abs()));
+    assert!(loudest > 0.6, "both are heard: {loudest}");
+    assert!(
+        loudest < 0.9,
+        "under the −1 dBFS ceiling, not clipped: {loudest}"
+    );
+}

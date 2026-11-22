@@ -552,13 +552,17 @@ impl Mixer {
         for c in mon_iter {
             *c = [0.0; CHANNELS];
         }
-        // The source SNDs pass the soft limit; Program, already limited, adds unchanged, so
-        // Program SND alone is exactly what listeners hear. The sum never leaves full scale.
+        // Program is already limited, so alone it passes unchanged: Program SND is exactly
+        // what listeners hear. With a source SND too, the sum passes the soft limit.
         let program_snd = snd_mask & (1 << Strip::Out.index()) != 0;
+        let source_snd = snd_mask & !(1 << Strip::Out.index()) != 0;
         for (m, y) in mon_frames.iter_mut().zip(out_frames.iter()) {
             for (c, p) in m.iter_mut().zip(y) {
-                let program = if program_snd { *p } else { 0.0 };
-                *c = (limit(*c) + program).clamp(-1.0, 1.0);
+                *c = match (program_snd, source_snd) {
+                    (true, false) => *p,
+                    (true, true) => limit(*c + *p),
+                    (false, _) => limit(*c),
+                };
             }
         }
         mon_rest.fill(0.0);
