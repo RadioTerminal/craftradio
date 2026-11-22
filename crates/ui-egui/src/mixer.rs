@@ -120,6 +120,15 @@ pub(crate) fn show(
     }
 }
 
+/// The live input channels of Preferences › Devices, left and right, counted from 1. The add
+/// live input dialogs start from them.
+pub(crate) fn input_channels(view: &StationView) -> (u32, u32) {
+    (
+        parts::u32(view, parts::MIXER, "input_left", 1),
+        parts::u32(view, parts::MIXER, "input_right", 2),
+    )
+}
+
 /// The status dot of the Icecast page: connected or not, in words too.
 pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
     let ice = icecast_status(view, t);
@@ -456,8 +465,7 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
             actions.push(Action::EditQuiet(Edit::SetDevice { role, device }));
         }
     }
-    let mut left = parts::u32(view, parts::MIXER, "input_left", 1);
-    let mut right = parts::u32(view, parts::MIXER, "input_right", 2);
+    let (mut left, mut right) = input_channels(view);
     let (old_left, old_right) = (left, right);
     settings::form_row(ui, "Live input channels", t, |ui| {
         // Two halves of the one cell, with the gap of the theme between them.
