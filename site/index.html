@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tune in</title>
+<meta name="description" content="Listen to a radio station straight from its computer, over WebRTC.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --room: #d9e2dc;          /* the wall behind the radio */
+    --enamel: #0f3b3a;        /* the radio body */
+    --enamel-edge: #0a2b2a;
+    --glass: #e7eed8;         /* backlit dial glass */
+    --ink: #13201f;
+    --ink-soft: #4a5e5b;
+    --needle: #c8322b;
+    --lamp: #f2b33d;
+    --on-enamel: #e7eed8;
+    --on-enamel-soft: #a9c2bd;
+    --focus: #f2b33d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --room: #0c1716; --enamel: #12403f; --enamel-edge: #1c5251; --ink-soft: #3f524f; }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--room); color: var(--ink);
+    font: 400 1rem/1.55 "Barlow", system-ui, sans-serif;
+    display: grid; place-items: start center; padding: 3rem 1rem 4rem;
+  }
+  main { width: 100%; max-width: 36rem; }
+
+  /* The radio */
+  .radio {
+    background: var(--enamel); color: var(--on-enamel);
+    border-radius: 28px; padding: 1.5rem 1.5rem 1.75rem;
+    box-shadow: inset 0 0 0 2px var(--enamel-edge), 0 18px 40px -22px rgba(6, 30, 29, .75);
+  }
+  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+  h1 {
+    margin: 0; font: 700 2.25rem/1 "Barlow Condensed", "Arial Narrow", sans-serif;
+    letter-spacing: .01em;
+  }
+  .lamp { display: inline-flex; align-items: center; gap: .5rem; color: var(--on-enamel-soft);
+          font: 500 1.05rem/1 "Barlow Condensed", "Arial Narrow", sans-serif; }
+  .lamp i { width: .8rem; height: .8rem; border-radius: 50%; display: inline-block;
+            background: #2a5654; box-shadow: inset 0 0 0 2px #3b6b68; }
+  .lamp.on { color: var(--on-enamel); }
+  .lamp.on i { background: var(--lamp); box-shadow: 0 0 0 3px rgba(242,179,61,.25), 0 0 14px rgba(242,179,61,.8); }
+
+  /* Dial glass with the frequency scale and the needle */
+  .dial {
+    position: relative; margin-top: 1.25rem; height: 7.5rem; border-radius: 14px;
+    background: linear-gradient(var(--glass), #d6e1c4); color: var(--ink);
+    box-shadow: inset 0 2px 0 rgba(255,255,255,.6), inset 0 -10px 24px rgba(19,32,31,.12);
+    overflow: hidden;
+  }
+  .scale { position: absolute; inset: 1rem 1.25rem auto; height: 3rem; }
+  .ticks { position: absolute; inset: 0 0 auto; height: 1.6rem; display: flex; justify-content: space-between; align-items: flex-start; }
+  .ticks i { width: 1px; height: .7rem; background: var(--ink); opacity: .45; }
+  .ticks i.mid { height: 1rem; opacity: .6; }
+  .ticks i.major { width: 2px; height: 1.45rem; opacity: .9; }
+  .nums { position: absolute; top: 1.9rem; inset-inline: 0; display: flex; justify-content: space-between;
+          font: 500 1.1rem/1 "Barlow Condensed", "Arial Narrow", sans-serif; color: var(--ink-soft); }
+  .nums span { width: 0; display: flex; justify-content: center; }
+  .needle { position: absolute; top: .4rem; bottom: .4rem; width: 3px; left: 8%;
+            background: var(--needle); border-radius: 2px; box-shadow: 0 0 0 1px rgba(200,50,43,.15);
+            transition: left 1.4s cubic-bezier(.2,.8,.2,1); }
+  .readout { position: absolute; left: 1.25rem; bottom: .75rem; font: 700 1.35rem/1 "Barlow Condensed", "Arial Narrow", sans-serif; }
+  .readout small { font-weight: 500; color: var(--ink-soft); margin-left: .25rem; font-size: .95rem; }
+
+  /* Level meter: real levels of the incoming audio */
+  .meter { position: absolute; right: 1.25rem; bottom: .8rem; display: flex; gap: 3px; align-items: flex-end; height: 1.4rem; }
+  .meter b { width: 5px; height: 15%; background: var(--ink-soft); border-radius: 1px; opacity: .35; }
+  .meter.live b { opacity: 1; background: var(--enamel); }
+
+  /* Controls */
+  .controls { display: grid; grid-template-columns: auto 1fr; gap: 1.25rem; align-items: center; margin-top: 1.5rem; }
+  .knob {
+    width: 5rem; height: 5rem; border-radius: 50%; border: 0; cursor: pointer;
+    background: radial-gradient(circle at 35% 30%, #f3f6ea, #cfd9bd 60%, #a9b79a);
+    color: var(--ink); box-shadow: 0 6px 0 var(--enamel-edge), 0 10px 18px -8px rgba(0,0,0,.6);
+    font: 700 1.15rem/1 "Barlow Condensed", "Arial Narrow", sans-serif;
+    transition: transform .08s, box-shadow .08s;
+  }
+  .knob:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--enamel-edge), 0 4px 10px -6px rgba(0,0,0,.6); }
+  .now-block { min-width: 0; }
+  #now { margin: 0; font: 700 1.35rem/1.2 "Barlow Condensed", "Arial Narrow", sans-serif; min-height: 1.6rem;
+         overflow-wrap: anywhere; }
+  #state { margin: .2rem 0 0; color: var(--on-enamel-soft); }
+
+  .tuner { margin-top: 1.5rem; }
+  .tuner label { display: block; font-weight: 600; margin-bottom: .35rem; }
+  .tuner input {
+    width: 100%; padding: .65rem .8rem; font: inherit; color: var(--on-enamel);
+    background: var(--enamel-edge); border: 1px solid #2d6461; border-radius: 10px;
+  }
+  .tuner input::placeholder { color: #7f9e99; }
+  .hint { margin: .45rem 0 0; color: var(--on-enamel-soft); font-size: .92rem; }
+  .hint code { font-size: .92em; color: var(--on-enamel); }
+
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+  /* Under the radio */
+  .notes { margin: 1.75rem .5rem 0; color: var(--ink); max-width: 34rem; }
+  @media (prefers-color-scheme: dark) { .notes { color: #b9ccc8; } .notes code { background: #183130; } }
+  .notes p { margin: .6rem 0; }
+  .notes code { font-size: .92em; background: #c7d3cb; padding: .05rem .35rem; border-radius: 4px; }
+
+  @media (max-width: 30rem) {
+    body { padding-top: 1.25rem; }
+    .radio { padding: 1.25rem 1rem 1.5rem; border-radius: 22px; }
+    h1 { font-size: 1.9rem; }
+    .nums span:nth-child(even) { visibility: hidden; }
+    .knob { width: 4.25rem; height: 4.25rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .needle, .knob { transition: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="radio" aria-labelledby="title">
+    <div class="top">
+      <h1 id="title">Tune in</h1>
+      <span class="lamp" id="lamp"><i aria-hidden="true"></i><span id="lamp-text">Off air</span></span>
+    </div>
+
+    <div class="dial" aria-hidden="true">
+      <div class="scale">
+        <div class="ticks" id="ticks"></div>
+        <div class="nums"><span>88</span><span>92</span><span>96</span><span>100</span><span>104</span><span>108</span></div>
+      </div>
+      <div class="needle" id="needle"></div>
+      <div class="readout" id="readout">--.-<small>MHz</small></div>
+      <div class="meter" id="meter"></div>
+    </div>
+
+    <div class="controls">
+      <button id="listen" class="knob" type="button">Listen</button>
+      <div class="now-block">
+        <p id="now" aria-live="polite"></p>
+        <p id="state" role="status">Enter a station address, then press Listen.</p>
+      </div>
+    </div>
+
+    <div class="tuner">
+      <label for="station">Station address</label>
+      <input id="station" type="url" placeholder="http://localhost:8000" autocomplete="url" spellcheck="false" aria-describedby="station-hint">
+      <p class="hint" id="station-hint">A station started with <code>--webrtc</code>, or a TinyIce mount such as <code>https://radio.example.com/live</code>.</p>
+    </div>
+    <audio id="audio" autoplay></audio>
+  </section>
+
+  <div class="notes">
+    <p>The sound comes over WebRTC, with about a second of delay, and you install nothing. A station started with <code>--webrtc</code> sends it straight from its own computer. A TinyIce server sends it on to many listeners.</p>
+    <p>To run a station, start <code>radio --headless --webrtc 8000</code>. It prints the address to share.
+    This page on GitHub Pages can reach a station on your own computer (<code>localhost</code>) or one with an HTTPS address, such as a Cloudflare quick tunnel.
+    On a local network, open the station address itself.</p>
+  </div>
+</main>
+<script>
+"use strict";
+const ICE = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] }];
+const input = document.getElementById("station");
+const button = document.getElementById("listen");
+const state = document.getElementById("state");
+const now = document.getElementById("now");
+const audio = document.getElementById("audio");
+const needle = document.getElementById("needle");
+const readout = document.getElementById("readout");
+const lamp = document.getElementById("lamp");
+const lampText = document.getElementById("lamp-text");
+const meter = document.getElementById("meter");
+const BARS = 14;
+for (let i = 0; i < BARS; i++) meter.appendChild(document.createElement("b"));
+// 88.0 to 108.0 in 0.5 MHz steps: a long tick every 4 MHz, a middle one every 1 MHz.
+const ticks = document.getElementById("ticks");
+for (let i = 0; i <= 40; i++) {
+  const t = document.createElement("i");
+  if (i % 8 === 0) t.className = "major"; else if (i % 2 === 0) t.className = "mid";
+  ticks.appendChild(t);
+}
+let pc = null, resource = null, poll = null, ctx = null, raf = 0;
+
+const query = new URLSearchParams(location.search).get("station");
+const served = !location.hostname.endsWith("github.io") && location.protocol.startsWith("http");
+input.value = query || (served ? location.origin : "");
+
+function base() { return input.value.trim().replace(/\/+$/, ""); }
+function say(text) { state.textContent = text; }
+
+// Each station address gets its own place on the dial, between 88.0 and 108.0.
+function frequency(url) {
+  let h = 2166136261;
+  for (const c of url) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+  return 88 + (h % 201) / 10;
+}
+function tune(freq) {
+  if (freq === null) { needle.style.left = "8%"; readout.firstChild.textContent = "--.-"; return; }
+  const scaleLeft = 1.25 * 16, width = needle.parentElement.clientWidth - 2 * scaleLeft;
+  needle.style.left = (scaleLeft + width * (freq - 88) / 20 - 1) + "px";
+  readout.firstChild.textContent = freq.toFixed(1);
+}
+function onAir(on) {
+  lamp.classList.toggle("on", on);
+  lampText.textContent = on ? "On air" : "Off air";
+}
+
+function startMeter(stream) {
+  try {
+    ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const bars = meter.children;
+    meter.classList.add("live");
+    // Bands on a log scale, as the ear hears them, from about 190 Hz to 24 kHz.
+    const edges = Array.from({ length: BARS + 1 }, (_, i) =>
+      Math.min(data.length, Math.round(Math.pow(data.length, i / BARS))));
+    const draw = () => {
+      analyser.getByteFrequencyData(data);
+      for (let i = 0; i < BARS; i++) {
+        let v = 0;
+        for (let j = edges[i]; j < Math.max(edges[i + 1], edges[i] + 1); j++) v = Math.max(v, data[j] || 0);
+        bars[i].style.height = Math.max(12, v / 255 * 100) + "%";
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+  } catch (_) { /* The meter is optional; the sound plays without it. */ }
+}
+function stopMeter() {
+  cancelAnimationFrame(raf);
+  if (ctx) ctx.close().catch(() => {});
+  ctx = null;
+  meter.classList.remove("live");
+  for (const b of meter.children) b.style.height = "";
+}
+
+function blockedMixed(url) {
+  if (location.protocol !== "https:" || !url.startsWith("http:")) return false;
+  const host = new URL(url).hostname;
+  return !["localhost", "127.0.0.1", "[::1]"].includes(host);
+}
+
+async function stop(message) {
+  clearInterval(poll); poll = null;
+  if (resource) fetch(resource, { method: "DELETE" }).catch(() => {});
+  if (pc) pc.close();
+  pc = null; resource = null;
+  stopMeter();
+  audio.srcObject = null; now.textContent = "";
+  button.textContent = "Listen";
+  onAir(false); tune(null);
+  say(message || "Stopped. Press Listen to tune in again.");
+}
+
+async function listen() {
+  const url = base();
+  if (!url) { say("Enter the station address first."); input.focus(); return; }
+  try { new URL(url); } catch (_) { say("That is not an address. It looks like http://localhost:8000."); input.focus(); return; }
+  if (blockedMixed(url)) {
+    say("This HTTPS page cannot reach an http:// station on another computer. Open " + url + " directly, or give the station an HTTPS tunnel.");
+    return;
+  }
+  history.replaceState(null, "", "?station=" + encodeURIComponent(url));
+  button.textContent = "Stop";
+  tune(frequency(url));
+  say("Tuning in…");
+  pc = new RTCPeerConnection({ iceServers: ICE });
+  pc.addTransceiver("audio", { direction: "recvonly" });
+  pc.ontrack = (e) => {
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    audio.srcObject = stream;
+    audio.play().catch(() => {});
+    startMeter(stream);
+  };
+  pc.onconnectionstatechange = () => {
+    const s = pc && pc.connectionState;
+    if (s === "connected") { onAir(true); say("Connected. Playing."); }
+    if (s === "failed") { onAir(false); say("Could not connect. The station may be behind a strict NAT."); }
+    if (s === "disconnected") { onAir(false); say("Connection lost. It tries again for a few seconds."); }
+  };
+  try {
+    const offer = await pc.createOffer();
+    // Ask for stereo: browsers decode Opus as mono unless the offer says stereo=1.
+    offer.sdp = offer.sdp.replace(/(a=fmtp:\d+ [^\r\n]*)/g, (l) => l.includes("stereo=") ? l : l + ";stereo=1");
+    await pc.setLocalDescription(offer);
+    await new Promise((done) => {
+      if (pc.iceGatheringState === "complete") return done();
+      pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && done();
+      setTimeout(done, 2000);
+    });
+    const res = await fetch(url + "/whep", {
+      method: "POST", headers: { "Content-Type": "application/sdp" }, body: pc.localDescription.sdp,
+    });
+    if (res.status !== 201) throw new Error(await res.text() || "HTTP " + res.status);
+    const loc = res.headers.get("Location");
+    resource = loc ? new URL(loc, url + "/").href : null;
+    await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
+    const title = async () => {
+      try {
+        const r = await fetch(url + "/now");
+        if (r.ok) { now.textContent = await r.text(); return; }
+      } catch (_) {}
+      // TinyIce and Icecast give the title in their stats, by mount.
+      try {
+        const u = new URL(url);
+        const r = await fetch(u.origin + "/status-json.xsl");
+        if (!r.ok) return;
+        const stats = (await r.json()).icestats || {};
+        const sources = [].concat(stats.source || []);
+        const mount = u.pathname.replace(/\/+$/, "") || "/";
+        const s = sources.find((x) => (x.listenurl || "").replace(/\/+$/, "").endsWith(mount)) || sources[0];
+        if (s) now.textContent = [s.artist, s.title].filter(Boolean).join(" – ") || s.server_name || "";
+      } catch (_) {}
+    };
+    title(); poll = setInterval(title, 5000);
+  } catch (e) {
+    await stop("The station did not answer: " + e.message + ". Check the address and that the station runs with --webrtc.");
+  }
+}
+
+button.addEventListener("click", () => (pc ? stop() : listen()));
+input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !pc) listen(); });
+window.addEventListener("resize", () => { if (pc) tune(frequency(base())); });
+window.addEventListener("pagehide", () => { if (resource) fetch(resource, { method: "DELETE", keepalive: true }); });
+</script>
+</body>
+</html>

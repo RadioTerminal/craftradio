@@ -30,7 +30,7 @@ use radio_engine::{LogStatus, Mode, State};
 use radio_model::{Item, ItemId, PlaylistId, Source};
 use radio_playout::{DeckPhase, LocalOutput, Playout, PlayoutView};
 use radio_scheduler::Origin as SOrigin;
-use radio_stream::StreamStatus;
+use radio_stream::{StreamStatus, WebRtcStatus};
 use radio_ui_egui::view::{
     AlarmSource, AlarmView, CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles,
     DropTarget, Edit, FitView, FolderSource, Imported, LibraryItem, MeterView, Origin,
@@ -678,10 +678,20 @@ impl EngineSource {
             Some(StreamStatus::Connected { .. }) => Status::Connected,
             Some(StreamStatus::Retrying { last_error, .. }) => Status::Failed(last_error.clone()),
         };
+        let (webrtc, webrtc_listeners) = match &pv.outputs.webrtc {
+            None | Some(WebRtcStatus::Stopped) => (Status::NotConnected, None),
+            Some(WebRtcStatus::Starting) => (Status::Reconnecting { attempt: 0 }, None),
+            Some(WebRtcStatus::Listening { listeners, .. }) => {
+                (Status::Connected, Some(*listeners))
+            }
+            Some(WebRtcStatus::Failed(e)) => (Status::Failed(e.clone()), None),
+        };
         OutputStatus {
             local,
             icecast,
             listeners: None,
+            webrtc,
+            webrtc_listeners,
         }
     }
 

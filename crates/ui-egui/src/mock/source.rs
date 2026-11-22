@@ -109,6 +109,8 @@ impl ViewSource for MockSource {
                 local: Status::Preview,
                 icecast: Status::NotConnected,
                 listeners: None,
+                webrtc: Status::NotConnected,
+                webrtc_listeners: None,
             },
             folders: self.folder_views(),
             settings: self.settings.clone(),

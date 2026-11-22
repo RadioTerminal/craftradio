@@ -886,13 +886,16 @@ pub enum Status {
     Failed(String),
 }
 
-/// The state of the local output and of Icecast.
+/// The state of the local output, of Icecast and of WebRTC listening.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputStatus {
     pub local: Status,
     pub icecast: Status,
     /// The listener count from the Icecast server, when it reports one.
     pub listeners: Option<u32>,
+    pub webrtc: Status,
+    /// How many WebRTC listeners play now, while the server listens.
+    pub webrtc_listeners: Option<usize>,
 }
 
 /// The job of an audio device.

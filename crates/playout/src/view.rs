@@ -7,7 +7,7 @@ use radio_engine::Mode;
 use radio_engine::State;
 use radio_model::ItemId;
 use radio_scheduler::Timeline;
-use radio_stream::StreamStatus;
+use radio_stream::{StreamStatus, WebRtcStatus};
 use std::sync::Arc;
 
 /// Everything a UI shows about playout, cheap to take once a second. Meters for 30 fps
@@ -90,6 +90,8 @@ pub struct OutputStatus {
     pub local: LocalOutput,
     /// The Icecast mount, if the configuration has one.
     pub icecast: Option<StreamStatus>,
+    /// The WebRTC listener server, if the configuration has one.
+    pub webrtc: Option<WebRtcStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

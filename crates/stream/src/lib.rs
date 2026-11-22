@@ -1,10 +1,12 @@
-//! Threaded MP3 and Ogg/Opus output and HTTP radio input. Samples are interleaved stereo at 48 kHz.
+//! Threaded MP3 and Ogg/Opus output, WebRTC listening, and HTTP radio input. All samples use interleaved stereo at 48 kHz.
 mod input;
 #[cfg(feature = "mp3")]
 mod mp3;
 mod output;
+mod webrtc;
 pub use input::*;
 pub use output::*;
+pub use webrtc::*;
 
 /// True when this build can encode MP3 (the `mp3` feature, LAME).
 pub const MP3: bool = cfg!(feature = "mp3");

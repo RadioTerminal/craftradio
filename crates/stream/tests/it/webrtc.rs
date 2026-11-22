@@ -1,0 +1,282 @@
+use radio_stream::*;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+use str0m::media::{Direction, MediaKind};
+use str0m::net::{Protocol, Receive};
+use str0m::{Candidate, Event, Input, Output, RtcConfig};
+
+fn http(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String, String) {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    write!(
+        s,
+        "{method} {path} HTTP/1.1\r\nHost: test\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    let (head, body) = out.split_once("\r\n\r\n").unwrap();
+    let code = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (code, head.to_owned(), body.to_owned())
+}
+
+fn listeners(h: &WebRtcHandle) -> Option<usize> {
+    match h.status() {
+        WebRtcStatus::Listening { listeners, .. } => Some(listeners),
+        _ => None,
+    }
+}
+
+fn wait(h: &WebRtcHandle, f: impl Fn(Option<usize>) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !f(listeners(h)) {
+        assert!(Instant::now() < deadline, "status stayed {:?}", h.status());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_whep_listener_receives_program_audio_and_leaves() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    let (mut producer, consumer) = rtrb::RingBuffer::new(48_000 * 2);
+    let server = WebRtcServer::start(cfg, consumer);
+    let addr = server.local_addr().unwrap();
+    wait(&server, |l| l == Some(0));
+
+    let running = Arc::new(AtomicBool::new(true));
+    let feeding = running.clone();
+    let feed = std::thread::spawn(move || {
+        let mut n = 0u64;
+        while feeding.load(Ordering::Relaxed) {
+            for _ in 0..960 {
+                let s = ((n as f32 * 440.0 * std::f32::consts::TAU) / 48_000.0).sin() * 0.2;
+                let _ = producer.push(s);
+                let _ = producer.push(s);
+                n += 1;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+
+    let (code, _, page) = http(addr, "GET", "/", "");
+    assert_eq!(code, 200);
+    assert!(page.contains("RTCPeerConnection"));
+
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let local = socket.local_addr().unwrap();
+    let mut rtc = RtcConfig::new()
+        .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+        .build(Instant::now());
+    rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
+    let mut api = rtc.sdp_api();
+    api.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+    let (offer, pending) = api.apply().unwrap();
+
+    let (code, head, answer) = http(addr, "POST", "/whep", &offer.to_sdp_string());
+    assert_eq!(code, 201, "{answer}");
+    let location = head
+        .lines()
+        .find_map(|l| l.strip_prefix("Location: "))
+        .unwrap()
+        .to_owned();
+    let answer = str0m::change::SdpAnswer::from_sdp_string(&answer).unwrap();
+    rtc.sdp_api().accept_answer(pending, answer).unwrap();
+
+    let mut buf = vec![0u8; 2000];
+    let mut audio = 0usize;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while audio < 10 {
+        assert!(Instant::now() < deadline, "no audio arrived");
+        let timeout = loop {
+            match rtc.poll_output().unwrap() {
+                Output::Timeout(t) => break t,
+                Output::Transmit(t) => {
+                    socket.send_to(&t.contents, t.destination).unwrap();
+                }
+                Output::Event(Event::MediaData(d)) => {
+                    assert!(!d.data.is_empty());
+                    audio += 1;
+                }
+                Output::Event(_) => {}
+            }
+        };
+        let wait = timeout
+            .saturating_duration_since(Instant::now())
+            .clamp(Duration::from_millis(1), Duration::from_millis(20));
+        socket.set_read_timeout(Some(wait)).unwrap();
+        let input = match socket.recv_from(&mut buf) {
+            Ok((n, source)) => Input::Receive(
+                Instant::now(),
+                Receive {
+                    proto: Protocol::Udp,
+                    source,
+                    destination: local,
+                    contents: buf[..n].try_into().unwrap(),
+                },
+            ),
+            Err(_) => Input::Timeout(Instant::now()),
+        };
+        rtc.handle_input(input).unwrap();
+    }
+    assert_eq!(listeners(&server), Some(1));
+
+    // Another page cannot guess the resource and drop this listener.
+    for guess in ["/whep/1", "/whep/0", &format!("/whep/{}", "0".repeat(32))] {
+        http(addr, "DELETE", guess, "");
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        listeners(&server),
+        Some(1),
+        "a guessed DELETE dropped the listener"
+    );
+
+    let (code, _, _) = http(addr, "DELETE", &location, "");
+    assert_eq!(code, 200);
+    wait(&server, |l| l == Some(0));
+
+    server.stop();
+    assert_eq!(server.status(), WebRtcStatus::Stopped);
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+}
+
+#[test]
+fn a_station_that_cannot_bind_reports_failed() {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut cfg = WebRtcConfig::new(taken.local_addr().unwrap());
+    cfg.stun.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    assert!(matches!(server.status(), WebRtcStatus::Failed(_)));
+}
+
+#[test]
+fn whep_refuses_a_listener_past_the_maximum() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.max_listeners = 0;
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let (code, _, _) = http(server.local_addr().unwrap(), "POST", "/whep", "v=0\r\n");
+    assert_eq!(code, 503);
+}
+
+fn xor_mapped(id: [u8; 12], addr: SocketAddr) -> Vec<u8> {
+    let SocketAddr::V4(v4) = addr else {
+        unreachable!()
+    };
+    let magic = 0x2112_A442u32.to_be_bytes();
+    let mut attr = vec![0x00, 0x20, 0x00, 0x08, 0x00, 0x01];
+    attr.extend((v4.port() ^ 0x2112).to_be_bytes());
+    attr.extend(v4.ip().octets().iter().zip(magic).map(|(b, m)| b ^ m));
+    let mut msg = vec![0x01, 0x01];
+    msg.extend((attr.len() as u16).to_be_bytes());
+    msg.extend(magic);
+    msg.extend(id);
+    msg.extend(attr);
+    msg
+}
+
+#[test]
+fn stun_response_gives_the_mapped_address_for_its_own_request_only() {
+    let id = [7u8; 12];
+    let public: SocketAddr = "203.0.113.9:54321".parse().unwrap();
+    let request = binding_request(id);
+    assert_eq!(&request[8..], &id);
+    let response = xor_mapped(id, public);
+    assert_eq!(parse_binding_response(&response, id), Some(public));
+    assert_eq!(parse_binding_response(&response, [8u8; 12]), None);
+    assert_eq!(parse_binding_response(&response[..24], id), None);
+}
+
+fn offer() -> String {
+    let mut rtc = RtcConfig::new()
+        .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+        .build(Instant::now());
+    let mut api = rtc.sdp_api();
+    api.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+    api.apply().unwrap().0.to_sdp_string()
+}
+
+#[test]
+fn listeners_that_still_connect_count_toward_the_maximum() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.max_listeners = 1;
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let addr = server.local_addr().unwrap();
+    let (first, _, _) = http(addr, "POST", "/whep", &offer());
+    let (second, _, _) = http(addr, "POST", "/whep", &offer());
+    assert_eq!(first, 201);
+    assert_eq!(
+        second, 503,
+        "a second offer passed while the first still connects"
+    );
+}
+
+#[test]
+fn a_client_that_sends_nothing_does_not_hold_up_others() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let addr = server.local_addr().unwrap();
+    let _silent: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect(addr).unwrap()).collect();
+    let start = Instant::now();
+    let (code, _, _) = http(addr, "GET", "/now", "");
+    assert_eq!(code, 200);
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn one_address_cannot_fill_the_station_with_offers_that_never_connect() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let addr = server.local_addr().unwrap();
+    let codes: Vec<u16> = (0..4)
+        .map(|_| http(addr, "POST", "/whep", &offer()).0)
+        .collect();
+    assert_eq!(codes.iter().filter(|c| **c == 201).count(), 2, "{codes:?}");
+    assert!(codes[2..].iter().all(|c| *c == 503), "{codes:?}");
+}
+
+#[test]
+fn an_internet_client_cannot_point_the_station_at_its_own_network() {
+    let sdp = "v=0\r\n\
+        a=candidate:1 1 udp 1 192.168.1.20 5000 typ host\r\n\
+        a=candidate:2 1 udp 1 127.0.0.1 5000 typ host\r\n\
+        a=candidate:3 1 udp 1 10.0.0.1 5000 typ host\r\n\
+        a=candidate:4 1 udp 1 203.0.113.7 5000 typ srflx raddr 0.0.0.0 rport 0\r\n\
+        a=candidate:5 1 udp 1 abcd.local 5000 typ host\r\n\
+        a=mid:0\r\n";
+    let public = filter_candidates(sdp, "198.51.100.4".parse().unwrap());
+    assert!(public.contains("203.0.113.7"));
+    for internal in ["192.168.1.20", "127.0.0.1", "10.0.0.1", "abcd.local"] {
+        assert!(!public.contains(internal), "{internal} stayed");
+    }
+    assert!(public.contains("a=mid:0"));
+    let local = filter_candidates(sdp, "192.168.1.9".parse().unwrap());
+    assert_eq!(local.matches("a=candidate:").count(), 5);
+    let many: String = (0..20)
+        .map(|i| format!("a=candidate:{i} 1 udp 1 203.0.113.{i} 5000 typ host\r\n"))
+        .collect();
+    let kept = filter_candidates(&many, "198.51.100.4".parse().unwrap());
+    assert!(kept.matches("a=candidate:").count() < 20);
+}
