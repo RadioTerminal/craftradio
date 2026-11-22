@@ -15,7 +15,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(
     version,
-    name = "radio-cli",
+    name = "craftradio-cli",
     about = "Radio station manager command line"
 )]
 struct Cli {

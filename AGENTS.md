@@ -71,7 +71,7 @@ output. Spec: `docs/2026-11-21-radio-station-manager-design.md`. Roadmap and pla
 | L6 | `ui-engine` | the adapter that maps the engine and playout to the `ui-egui` view-model; the only crate that depends on `ui-egui` and the engine both |
 | — | `testkit` | test helpers (dev-dependency only) |
 
-Apps: `apps/radio` (desktop, `--headless`) and `apps/radio-cli` (CLI and `mcp`).
+Apps: `apps/radio` (desktop, `--headless`; ships as `craftradio`) and `apps/radio-cli` (CLI and `mcp`; ships as `craftradio-cli`).
 Every user-visible action is a command in `engine`; the UI, CLI, MCP and scripts dispatch it by id.
 
 ### Conventions

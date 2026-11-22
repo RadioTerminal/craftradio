@@ -25,7 +25,7 @@ const APP_DIR: &str = "radio-station-manager";
 
 /// Radio station manager.
 #[derive(Parser)]
-#[command(version)]
+#[command(version, name = "craftradio")]
 struct Args {
     /// Show the UI preview with mock data. It plays no audio and saves nothing.
     #[arg(long)]
@@ -281,6 +281,8 @@ fn window(
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(title)
+            // Matches the desktop file and icon name in packaging/linux, so docks show the icon.
+            .with_app_id("io.github.radioterminal.craftradio")
             .with_inner_size([size::WINDOW_W, size::WINDOW_H])
             .with_min_inner_size([size::WINDOW_MIN_W, size::WINDOW_MIN_H]),
         ..Default::default()
