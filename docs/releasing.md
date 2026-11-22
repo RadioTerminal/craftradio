@@ -1,34 +1,41 @@
 # Releasing CraftRadio
 
 A release is whatever is on the `release` branch. Pushing to it runs
-`.github/workflows/release.yml`, which calls the shared release workflow of the Craft apps
-(`storytold/craft-common-actions/.github/workflows/release.yml`, pinned to a commit; the same one
-[craft-anything](https://github.com/storytold/craft-anything) uses). That workflow runs this
-repository's own `packaging/<platform>/package.*` scripts, signs what they produce and attaches it
-to a **draft** GitHub Release named **CraftRadio vX.Y.Z**. A maintainer publishes the draft once
-every job is green and the checks below pass.
+`.github/workflows/release.yml`, the repository's own release workflow, adapted from SolidCraft's
+(tangency-labs/solidcraft). It runs this repository's `packaging/<platform>/package.*` scripts,
+signs what they produce when the signing secrets exist, and attaches it with `SHA256SUMS.txt` (which
+the in-app updater reads) to a **draft** GitHub Release named **CraftRadio vX.Y.Z**. A maintainer
+publishes the draft once every job is green and the checks below pass.
 
-Signing needs the maintainers' certificates, stored as secrets of the repository's `release`
-environment. On the `release` branch the shared workflow refuses to build macOS or Windows without
-them. A run from any other branch builds unsigned packages.
+Signing is optional, as in SolidCraft. Each platform signs when its secrets exist in the repository's
+`release` environment (only the release branch uses it) and builds unsigned, with a warning, when
+they don't:
 
-> [!IMPORTANT]
-> **Nothing has been released yet.** The workflow and scripts are in place, but no run of
-> `release.yml` has happened, the `release` environment has no secrets, and only
-> `packaging/macos/package.sh` has been run (locally, ad-hoc signed). Treat the first run as a test
-> (`gh workflow run release.yml --ref <branch> -f version=0.1.0-rc.1`).
+| Platform | Secrets | Without them |
+|---|---|---|
+| macOS | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | ad-hoc signed, not notarized |
+| Windows | `WINDOWS_CERTIFICATE` and its password, or the `AZURE_*` Trusted Signing values | unsigned |
+| `SHA256SUMS.txt` | `LINUX_SIGNING_KEY` (armored OpenPGP key) | no `.asc` signature |
+
+Runners are GitHub-hosted (Ubuntu 22.04 for Linux, so the binaries need only glibc 2.35;
+`macos-15`; `windows-2025` and `windows-11-arm`). A repository variable switches one to another,
+for example a Blacksmith runner as SolidCraft uses: `RUNNER_LINUX`, `RUNNER_LINUX_ARM`,
+`RUNNER_MACOS`, `RUNNER_WINDOWS`, `RUNNER_WINDOWS_ARM`. The release builds with Rust 1.100.0
+(`RUST_TOOLCHAIN` in the workflow).
 
 ## Cutting a release
 
 1. Bump the version on `main`: `cargo xtask version set X.Y.Z`. The workspace version in the root
    `Cargo.toml` is the only source; `cargo xtask version` prints it.
 2. Fast-forward `release` to `main` and push. The run builds every platform and creates or updates
-   the draft.
+   the draft. A tag that already exists, or a release already published, stops it.
 3. When every job is green, install the draft's packages on each platform and run the check below.
 4. Publish the draft. GitHub writes the release notes from the merged pull requests
-   (`gh release create --generate-notes` in the shared workflow); edit them before publishing.
+   (`--generate-notes`); edit them before publishing.
 
-A dry run of the unsigned platforms from any branch: `gh workflow run release.yml --ref <branch>`.
+A dry run from any branch builds and checks every package and keeps them as the run's
+`release-assets` artifact, with no release:
+`gh workflow run release.yml --ref <branch> [-f version=0.1.0-rc.1]`.
 
 ## Before publishing: check the packages
 
@@ -49,24 +56,18 @@ draft.
 |---|---|
 | macOS | `craftradio-<v>-macos-universal.dmg` (`CraftRadio.app`), `craftradio-cli-<v>-macos-universal.zip` |
 | Windows | `craftradio-<v>-windows-{x64,arm64}.msi` and `-portable.zip` |
-| Linux | `craftradio-<v>-linux-{x86_64,aarch64}.{AppImage,AppImage.zsync,deb,rpm,tar.gz,flatpak}` |
+| Linux | `craftradio-<v>-linux-{x86_64,aarch64}.{AppImage,AppImage.zsync,deb,rpm,tar.gz}` |
 
-Plus `SHA256SUMS.txt` (and its signature when `LINUX_SIGNING_KEY` is set).
-
-The shared workflow can also build FreeBSD, Arch Linux, riscv64 and WebAssembly; `release.yml`
-turns those off.
+Plus `SHA256SUMS.txt` (and `SHA256SUMS.txt.asc` when `LINUX_SIGNING_KEY` is set).
 
 ## Known gaps
 
 - **Windows opens a console window with the app.** `craftradio.exe` is a console program so that
   `craftradio --headless` can print; `package.ps1` checks for that.
-- **The shared workflow is pinned, its actions are not.** `release.yml` pins the reusable workflow
-  to a commit, because it comes from another organisation and receives the signing secrets. The
-  workflow itself still calls `storytold/craft-common-actions/actions/*@main` (43 places), so
-  that organisation can still change what runs with the secrets. Vendoring the workflow would
-  close that. `packages: write` stays: the shared Flatpak job asks for it.
-- **The macOS job runs on `macos-15-xlarge`**, a paid larger runner. RadioTerminal needs it enabled
-  (and billed) or the job waits for a runner that never comes.
+- **No Flatpak yet.** The shared Craft workflow built one; this workflow does not, though
+  `packaging/linux/flatpak-bundle.sh` is still here.
+- **macOS runners are billed.** GitHub-hosted macOS minutes need the account's billing in order,
+  or the job never starts. `RUNNER_MACOS` can point at another provider.
 - **No CI gate yet.** There is no `ci.yml`; run the checks in `AGENTS.md` before a release.
 
 ## App-specific choices

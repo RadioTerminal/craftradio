@@ -173,7 +173,6 @@ every file. How a release is made: [docs/releasing.md](docs/releasing.md).
 | Format | x86_64 | aarch64 (ARM64) | Notes |
 |---|---|---|---|
 | AppImage | `craftradio-<ver>-linux-x86_64.AppImage` | `craftradio-<ver>-linux-aarch64.AppImage` | Runs anywhere; updates itself with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) (`.zsync` files) |
-| Flatpak | `craftradio-<ver>-linux-x86_64.flatpak` | `craftradio-<ver>-linux-aarch64.flatpak` | `flatpak install --user <file>` |
 | Debian/Ubuntu | `craftradio-<ver>-linux-x86_64.deb` | `craftradio-<ver>-linux-aarch64.deb` | |
 | Fedora/RHEL/openSUSE | `craftradio-<ver>-linux-x86_64.rpm` | `craftradio-<ver>-linux-aarch64.rpm` | |
 | Tarball | `craftradio-<ver>-linux-x86_64.tar.gz` | `craftradio-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
