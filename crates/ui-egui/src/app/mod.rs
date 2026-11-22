@@ -657,12 +657,27 @@ fn status_line(
             .output
             .webrtc_listeners
             .map(|n| format!("listening, {n} listeners"));
+        // The switch for streaming to listeners. It sends a command; the status after it
+        // shows what the server really does.
+        if let Some(on) = view.output.streaming {
+            let mut wanted = on;
+            let label = RichText::new("Stream to listeners").font(theme::text(theme::LABEL));
+            if ui
+                .checkbox(&mut wanted, label)
+                .on_hover_text("Plays the station in browsers, with a link to share")
+                .changed()
+            {
+                actions.push(Action::Edit(Edit::SetStreaming(wanted)));
+            }
+        }
         for (name, status, connected) in [
             ("Local", &view.output.local, None),
             ("Icecast", &view.output.icecast, None),
             ("WebRTC", &view.output.webrtc, webrtc_word.as_deref()),
         ] {
+            let off = name == "WebRTC" && view.output.streaming == Some(false);
             let (dot, word, colour) = match status {
+                Status::NotConnected if off => (Icon::Circle, "off".to_owned(), t.text_muted),
                 Status::Connected => (
                     Icon::CircleDot,
                     connected.unwrap_or("connected").to_owned(),

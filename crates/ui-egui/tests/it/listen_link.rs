@@ -1,5 +1,6 @@
+use egui::accesskit::Toggled;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::view::{Edit, MeterFrame, Row, StationView, ViewSource};
@@ -68,4 +69,27 @@ fn the_status_line_copies_the_listen_link_only_while_it_works() {
         .iter()
         .any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == LINK));
     assert!(copied, "the click copies the link");
+}
+
+#[test]
+fn the_streaming_switch_turns_streaming_on_and_shows_off_until_then() {
+    let mut h = harness(None);
+    let texts: Vec<String> = h
+        .root()
+        .query_all(egui_kittest::kittest::By::new().predicate(|n| {
+            n.value().is_some_and(|v| v.contains("WebRTC"))
+                || n.label().is_some_and(|v| v.contains("WebRTC"))
+        }))
+        .filter_map(|n| n.accesskit_node().value().or(n.accesskit_node().label()))
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.ends_with(" off")),
+        "the status says off while the switch is off: {texts:?}"
+    );
+    let switch = h.get_by_label("Stream to listeners");
+    assert_eq!(switch.accesskit_node().toggled(), Some(Toggled::False));
+    switch.click();
+    h.run_steps(4);
+    let switch = h.get_by_label("Stream to listeners");
+    assert_eq!(switch.accesskit_node().toggled(), Some(Toggled::True));
 }

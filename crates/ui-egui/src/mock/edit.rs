@@ -32,6 +32,7 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::PlayNext { .. }
             | Edit::SetStrip { .. }
             | Edit::SetIcecast(_)
+            | Edit::SetStreaming(_)
             | Edit::SetDynamics(_)
             | Edit::SetLoudness(_)
             | Edit::SetDevice { .. }
@@ -541,6 +542,10 @@ impl MockSource {
             }
             Edit::SetIcecast(ice) => {
                 self.icecast = ice;
+                Ok(1)
+            }
+            Edit::SetStreaming(on) => {
+                self.streaming = on;
                 Ok(1)
             }
             Edit::SetDynamics(d) => {

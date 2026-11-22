@@ -899,6 +899,8 @@ pub struct OutputStatus {
     /// The link that plays the station from anywhere. It is set only while a tracker
     /// carries the offers, because without one the link does not work.
     pub listen_link: Option<String>,
+    /// The streaming switch: `None` when this station has no WebRTC output.
+    pub streaming: Option<bool>,
 }
 
 /// The job of an audio device.
@@ -1092,6 +1094,8 @@ pub enum Edit {
         change: StripChange,
     },
     SetIcecast(IcecastView),
+    /// Turns streaming to listeners (WebRTC, with the listen link) on or off.
+    SetStreaming(bool),
     /// The compressor and the limiter on Program, whole.
     SetDynamics(radio_model::DynamicsSettings),
     /// Loudness normalisation on the decks, whole.

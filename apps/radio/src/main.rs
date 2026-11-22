@@ -60,8 +60,8 @@ struct Args {
     /// Open this tool window at the start: cartwall, mixer, clock, history or library.
     #[arg(long)]
     open: Vec<String>,
-    /// Serve Program to browsers over WebRTC on this port (TCP and UDP), such as 8000 or
-    /// 0.0.0.0:8000. Listeners open the address in a browser.
+    /// Stream to listeners on this port (TCP and UDP), such as 8000 or 0.0.0.0:8000, for this
+    /// run. Without it, the switch in the status line turns streaming on, on port 8000.
     #[arg(long, value_parser = parse_listen)]
     webrtc: Option<std::net::SocketAddr>,
 }
@@ -187,11 +187,13 @@ fn real(args: &Args) -> Result<(), String> {
     };
     let mut cfg = PlayoutConfig::new(Arc::new(SystemClock), output);
     cfg.icecast = icecast;
-    cfg.webrtc = args.webrtc.map(|bind| {
-        let mut w = radio_stream::WebRtcConfig::new(bind);
-        w.identity = station_identity(&dir);
-        w
-    });
+    // The switch in the status line (the `webrtc.enabled` setting) starts streaming.
+    // With `--webrtc`, streaming runs for this run in any case.
+    let mut webrtc =
+        radio_stream::WebRtcConfig::new(args.webrtc.unwrap_or(([0, 0, 0, 0], 8000).into()));
+    webrtc.identity = station_identity(&dir);
+    cfg.webrtc = Some(webrtc);
+    cfg.webrtc_always = args.webrtc.is_some();
     cfg.station_name = STATION_NAME.to_owned();
     let fallback = dir.join("Fallback");
     cfg.fallback_folder = fallback.is_dir().then_some(fallback);
