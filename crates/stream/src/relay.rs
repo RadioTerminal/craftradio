@@ -65,6 +65,13 @@ impl Identity {
         hex(digest.as_ref())[..20].to_owned()
     }
 
+    /// The Ed25519 signature of `message`.
+    pub(crate) fn sign(&self, message: &[u8]) -> [u8; 64] {
+        let mut out = [0; 64];
+        out.copy_from_slice(self.pair.sign(message).as_ref());
+        out
+    }
+
     /// The answer with a signature line at the end. The signature covers the offer ID,
     /// a newline and the SDP before the signature line.
     pub fn sign_answer(&self, offer_id: &str, sdp: &str) -> String {

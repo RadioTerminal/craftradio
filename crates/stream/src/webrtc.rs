@@ -1,4 +1,5 @@
-//! WebRTC listening: browsers play Program peer to peer, as Opus over RTP.
+//! WebRTC listening: browsers play Program peer to peer, as Opus over RTP, or as Opus packets
+//! with signed blocks on a data channel (see `packets`).
 //!
 //! One port carries the listener page and WHEP signalling (TCP) and the media (UDP).
 //! A public STUN server tells the station its address outside the NAT, for remote listeners.
@@ -260,6 +261,11 @@ impl WebRtcServer {
             pending: pending.clone(),
             title: title.clone(),
             relays: relays.clone(),
+            blocks: crate::packets::Blocks::new(
+                cfg.identity
+                    .as_deref()
+                    .and_then(crate::relay::Identity::new),
+            ),
             link: identity
                 .as_ref()
                 .map(|i| format!("{LISTEN_SITE}#{}", i.id())),
@@ -338,7 +344,18 @@ struct Listener {
     outbox: VecDeque<crate::now::Message>,
     /// Keys of the thumbnails that the listener has. Each goes out once.
     sent_thumbs: HashSet<String>,
+    /// The data channel that carries the audio as Opus packets, when the page opens one.
+    /// The listener then gets no RTP.
+    audio: Option<ChannelId>,
+    /// Signed blocks that wait for room in the "now" channel. They go before what plays now.
+    blocks_out: VecDeque<Arc<[u8]>>,
 }
+
+/// Blocks that wait for one listener, at most: 5 s. A listener that falls further behind
+/// loses the oldest; its page then skips those packets.
+const MAX_BLOCKS_OUT: usize = 25;
+/// What plays now may hold this much of the send buffer while the audio channel is open.
+const NOW_BUFFERED: usize = 64 * 1024;
 
 struct Media {
     socket: UdpSocket,
@@ -351,6 +368,7 @@ struct Media {
     pending: Pending,
     title: SharedNow,
     relays: Arc<AtomicUsize>,
+    blocks: crate::packets::Blocks,
     link: Option<String>,
     url: String,
 }
@@ -475,13 +493,19 @@ impl Media {
                 if listeners.iter().any(|l| l.connected)
                     && let Ok(packet) = self.encoder.encode(&samples)
                 {
+                    let (message, block) = self.blocks.push(&packet);
+                    let block: Option<Arc<[u8]>> = block.map(Into::into);
                     let packet: Arc<[u8]> = packet.into();
                     for l in listeners.iter_mut().filter(|l| l.connected) {
-                        if let (Some(mid), Some(pt)) = (l.mid, l.pt)
+                        // A page with the audio channel still offers RTP, for older
+                        // stations. It gets the audio once, on the channel.
+                        if l.audio.is_none()
+                            && let (Some(mid), Some(pt)) = (l.mid, l.pt)
                             && let Some(w) = l.rtc.writer(mid)
                         {
                             let _ = w.write(pt, now, time, packet.clone());
                         }
+                        l.send_audio(&message, block.as_ref());
                     }
                 }
                 samples.clear();
@@ -624,6 +648,21 @@ impl Media {
 }
 
 impl Listener {
+    /// Sends one packet on the audio channel, and queues its block. A packet that finds no
+    /// room is dropped: it would come too late to play.
+    fn send_audio(&mut self, message: &[u8], block: Option<&Arc<[u8]>>) {
+        let Some(id) = self.audio else { return };
+        if let Some(mut ch) = self.rtc.channel(id) {
+            let _ = ch.write(true, message);
+        }
+        if let Some(b) = block {
+            if self.blocks_out.len() >= MAX_BLOCKS_OUT {
+                self.blocks_out.pop_front();
+            }
+            self.blocks_out.push_back(b.clone());
+        }
+    }
+
     /// Queues what plays now when it changed, and sends as much as the channel takes.
     fn send_now(&mut self, rev: u64, messages: &[crate::now::Message]) {
         let Some(id) = self.channel else { return };
@@ -638,7 +677,19 @@ impl Listener {
         let Some(mut ch) = self.rtc.channel(id) else {
             return;
         };
+        while let Some(b) = self.blocks_out.front() {
+            if !ch.write(true, b).unwrap_or(false) {
+                return;
+            }
+            self.blocks_out.pop_front();
+        }
         while let Some(m) = self.outbox.front() {
+            // All channels of a connection share one send buffer (128 KiB in str0m). What
+            // plays now waits while it holds half of it, so the audio still finds room.
+            let held = ch.buffered_amount();
+            if self.audio.is_some() && held > 0 && held + m.text.len() > NOW_BUFFERED {
+                break;
+            }
             if !ch.write(false, m.text.as_bytes()).unwrap_or(false) {
                 break;
             }
@@ -667,6 +718,10 @@ impl Listener {
                         });
                     }
                     Event::Connected => self.connected = true,
+                    Event::ChannelOpen(id, label) if label == crate::packets::AUDIO_CHANNEL => {
+                        self.audio = Some(id);
+                    }
+                    Event::ChannelClose(id) if self.audio == Some(id) => self.audio = None,
                     Event::ChannelOpen(id, _) => {
                         self.channel = Some(id);
                         self.sent_rev = 0;
@@ -1061,6 +1116,8 @@ impl Gate {
                     connected: false,
                     created: Instant::now(),
                     channel: None,
+                    audio: None,
+                    blocks_out: VecDeque::new(),
                     sent_rev: 0,
                     outbox: VecDeque::new(),
                     sent_thumbs: HashSet::new(),

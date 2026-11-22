@@ -4,6 +4,7 @@ use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use str0m::channel::{ChannelConfig, Reliability};
 use str0m::media::{Direction, MediaKind};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, RtcConfig};
@@ -310,4 +311,164 @@ fn parallel_offers_from_one_address_cannot_pass_its_limit() {
         .collect();
     let codes: Vec<u16> = threads.into_iter().map(|t| t.join().unwrap()).collect();
     assert_eq!(codes.iter().filter(|c| **c == 201).count(), 2, "{codes:?}");
+}
+
+/// Feeds a tone into Program until the returned flag goes false.
+fn feed_tone(mut producer: rtrb::Producer<f32>) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let running = Arc::new(AtomicBool::new(true));
+    let feeding = running.clone();
+    let feed = std::thread::spawn(move || {
+        let mut n = 0u64;
+        while feeding.load(Ordering::Relaxed) {
+            for _ in 0..960 {
+                let s = ((n as f32 * 440.0 * std::f32::consts::TAU) / 48_000.0).sin() * 0.2;
+                let _ = producer.push(s);
+                let _ = producer.push(s);
+                n += 1;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+    (running, feed)
+}
+
+#[test]
+fn a_page_on_the_audio_channel_gets_packets_that_match_signed_blocks_and_rtp_stops() {
+    let pkcs8 = Identity::generate().unwrap();
+    let public_key = ring::signature::Ed25519KeyPair::from_pkcs8(&pkcs8)
+        .map(|k| ring::signature::KeyPair::public_key(&k).as_ref().to_vec())
+        .unwrap();
+    let station_id = Identity::new(&pkcs8).unwrap().id();
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.trackers.clear();
+    cfg.identity = Some(pkcs8);
+    let (producer, consumer) = rtrb::RingBuffer::new(48_000 * 2);
+    let server = WebRtcServer::start(cfg, consumer);
+    let addr = server.local_addr().unwrap();
+    wait(&server, |l| l == Some(0));
+    let (running, feed) = feed_tone(producer);
+
+    // The page's offer: RTP audio for older stations, and the two data channels.
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let local = socket.local_addr().unwrap();
+    let mut rtc = RtcConfig::new()
+        .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+        .build(Instant::now());
+    rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
+    let mut api = rtc.sdp_api();
+    api.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+    let now_id = api.add_channel("now".into());
+    let audio_id = api.add_channel_with_config(ChannelConfig {
+        label: AUDIO_CHANNEL.into(),
+        ordered: false,
+        reliability: Reliability::MaxRetransmits { retransmits: 0 },
+        ..Default::default()
+    });
+    let (offer, pending) = api.apply().unwrap();
+    let (code, _, answer) = http(addr, "POST", "/whep", &offer.to_sdp_string());
+    assert_eq!(code, 201, "{answer}");
+    let answer = str0m::change::SdpAnswer::from_sdp_string(&answer).unwrap();
+    rtc.sdp_api().accept_answer(pending, answer).unwrap();
+
+    let mut packets: std::collections::BTreeMap<u32, Vec<u8>> = Default::default();
+    let mut blocks: Vec<Vec<u8>> = Vec::new();
+    let mut rtp = 0usize;
+    let mut buf = vec![0u8; 2000];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while blocks.len() < 3 {
+        assert!(
+            Instant::now() < deadline,
+            "got {} packets and {} blocks",
+            packets.len(),
+            blocks.len()
+        );
+        let timeout = loop {
+            match rtc.poll_output().unwrap() {
+                Output::Timeout(t) => break t,
+                Output::Transmit(t) => {
+                    socket.send_to(&t.contents, t.destination).unwrap();
+                }
+                // RTP may flow in the moment before the channel opens, not after.
+                Output::Event(Event::MediaData(_)) if packets.len() >= 10 => rtp += 1,
+                Output::Event(Event::ChannelData(d)) if d.id == audio_id => {
+                    assert_eq!(d.data[0], KIND_AUDIO);
+                    assert_eq!(d.data[5], 0, "the station sends hops 0");
+                    let seq = u32::from_be_bytes(d.data[1..5].try_into().unwrap());
+                    packets.insert(seq, d.data[6..].to_vec());
+                }
+                Output::Event(Event::ChannelData(d)) if d.id == now_id && d.binary => {
+                    blocks.push(d.data.clone());
+                }
+                Output::Event(_) => {}
+            }
+        };
+        let wait = timeout
+            .saturating_duration_since(Instant::now())
+            .clamp(Duration::from_millis(1), Duration::from_millis(20));
+        socket.set_read_timeout(Some(wait)).unwrap();
+        let input = match socket.recv_from(&mut buf) {
+            Ok((n, source)) => Input::Receive(
+                Instant::now(),
+                Receive {
+                    proto: Protocol::Udp,
+                    source,
+                    destination: local,
+                    contents: buf[..n].try_into().unwrap(),
+                },
+            ),
+            Err(_) => Input::Timeout(Instant::now()),
+        };
+        rtc.handle_input(input).unwrap();
+    }
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert_eq!(
+        rtp, 0,
+        "once the audio channel is open, the station sends no RTP"
+    );
+
+    let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public_key);
+    let mut checked = 0;
+    for block in &blocks {
+        assert_eq!(block[0], KIND_BLOCK);
+        let first = u32::from_be_bytes(block[1..5].try_into().unwrap());
+        let count = block[5] as usize;
+        assert_eq!(count, BLOCK_PACKETS);
+        let signed_len = 6 + count * HASH_LEN;
+        assert_eq!(block.len(), signed_len + SIGNATURE_LEN);
+        let mut message = BLOCK_CONTEXT.to_vec();
+        message.extend_from_slice(station_id.as_bytes());
+        message.extend_from_slice(&block[..signed_len]);
+        key.verify(&message, &block[signed_len..])
+            .expect("the block carries the station's signature");
+        let mut forged = message.clone();
+        *forged.last_mut().unwrap() ^= 1;
+        assert!(key.verify(&forged, &block[signed_len..]).is_err());
+
+        for i in 0..count {
+            let seq = first.wrapping_add(i as u32);
+            let hash = &block[6 + i * HASH_LEN..6 + (i + 1) * HASH_LEN];
+            if let Some(opus) = packets.get(&seq) {
+                assert_eq!(
+                    packet_hash(seq, opus),
+                    hash,
+                    "packet {seq} matches its block"
+                );
+                let mut changed = opus.clone();
+                changed[0] ^= 1;
+                assert_ne!(packet_hash(seq, &changed), hash, "a changed packet fails");
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked >= BLOCK_PACKETS,
+        "only {checked} packets were in blocks"
+    );
+    let seqs: Vec<u32> = packets.keys().copied().collect();
+    assert!(
+        seqs.windows(2).all(|w| w[1] == w[0] + 1),
+        "sequence numbers have gaps on loopback: {seqs:?}"
+    );
 }
