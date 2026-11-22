@@ -1108,6 +1108,16 @@ impl Core {
             }
             previous = Some(entry.clone());
         }
+        // A waiting soft event never starts before the plan says. The plan puts it after the
+        // locked entries in its way, and those keep their times.
+        for s in self.slots.iter_mut().flatten() {
+            if s.not_started() && !s.is_hard() && s.entry.fixed.is_some() {
+                let planned = tl.entries.iter().find(|e| same_event(e, &s.entry));
+                if let Some(e) = planned {
+                    s.entry.start = s.entry.start.max(e.start);
+                }
+            }
+        }
         let old = std::mem::replace(&mut self.timeline, tl);
         if edited {
             if self.planned {

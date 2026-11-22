@@ -480,38 +480,36 @@ fn hard_event_beats_locked_entry() {
 }
 
 #[test]
-fn soft_event_among_locked_entries_starts_after_the_one_in_its_way() {
-    // Every track is locked, as when a person adds them. The soft event at 200 s falls in
-    // track 2 (178 s to 356 s), so it starts late, right after that track, and the locked
-    // tracks after it give way.
+fn soft_event_waits_for_the_run_of_locked_entries_in_its_way() {
+    // Tracks 2 and 3 are locked, as when a person placed them. The soft event at 200 s
+    // falls in track 2 (178 s to 356 s), and track 3 follows it. Locked entries never move,
+    // so the event waits until track 3 hands over.
     let st = make_station(tracks(1, 8, 180), vec![(jingle(100, 60), 0)], Vec::new());
     let target = at(200);
     let mut tl = timeline(&st, &[(target, FixMode::Soft)]);
     for e in tl.entries.iter_mut() {
-        e.locked = e.fixed.is_none();
+        e.locked = e.item == ItemId(2) || e.item == ItemId(3);
     }
-    let in_way = tl
-        .entries
-        .iter()
-        .rfind(|e| e.locked && e.start < target)
-        .cloned()
-        .unwrap();
+    let planned: Vec<Entry> = tl.entries.iter().filter(|e| e.locked).cloned().collect();
     fit(&st, &mut tl);
-    let ev = event_index(&tl, 100);
-    let start = tl.entries[ev].start;
-    let item = find(&st, in_way.item).0;
-    let handover = in_way.start + radio_timing::advance(item, Some(item));
+    for p in &planned {
+        let e = tl.entries.iter().find(|e| e.item == p.item).unwrap();
+        assert_eq!(e.start, p.start, "locked {:?} keeps its start", p.item);
+    }
+    let last = planned.last().unwrap();
+    let item = find(&st, last.item).0;
+    let handover = last.start + radio_timing::advance(item, Some(item));
+    let start = tl.entries[event_index(&tl, 100)].start;
     assert!(start > target + TOL, "it cannot start in its tolerance");
     assert!(
-        start <= handover,
-        "it starts once the track in its way hands over"
+        start >= handover,
+        "it starts after the last locked entry in its way"
     );
-    assert_eq!(tl.entries[ev - 1].item, in_way.item);
     assert!(
-        tl.warnings
+        !tl.warnings
             .iter()
             .any(|w| matches!(w, Warning::LockedMoved { .. })),
-        "the locked track after it starts late"
+        "no locked entry moved"
     );
     no_overlap_with_fixed(&st, &tl);
 }

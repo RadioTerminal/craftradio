@@ -142,6 +142,15 @@ imported (my call); editors can adjust them.
 3. **Trim.** As a last resort, the last item before the event is faded early, or (for
    `soft` events) the event starts slightly late, within tolerance.
 4. **Alarm.** If the result is still outside tolerance, raise a visible alarm and log it.
+   A `soft` event that cannot start inside its tolerance still airs, late, as soon as the
+   item in its way hands over.
+
+**Locked items in the way (operator, 2026-11-22).** Locked items never move: not their
+order and not their start time. A `hard` event still cuts in at its time, and a locked item
+it overlaps starts right after it. A `soft` event never moves a locked item. When locked
+items are in its way, it waits until the whole run of locked items in its way has ended (the
+first point where it no longer overlaps a locked item), then airs there, late, with the
+`FixedLate` alarm.
 
 **When it re-plans (my call):** the fit is re-run whenever the playlist or timing changes. It
 becomes *locked* N minutes before the event (default 10), and after that only steps 2–3
@@ -590,7 +599,9 @@ The ⚙ on each playlist opens its rules editor, with Visual and Script tabs (§
 - **Stop after current** works in every mode.
 - The desktop UI always runs Auto; Assist/Manual stay in the engine for the CLI/MCP.
 - **Hand edits are locked:** any item an operator adds or moves by hand is locked, and the
-  fitting step (§6.3) never moves or drops it. The lock shows as a pin icon and can be removed.
+  fitting step (§6.3) never moves or drops it: not its order and not its start time. A `soft`
+  event waits for the locked items in its way (§6.3); only a `hard` event moves one. The lock
+  shows as a pin icon and can be removed.
 
 ## 7. Left to the builder
 
