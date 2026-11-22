@@ -54,6 +54,7 @@ radio-engine = { path = "crates/engine" }
 radio-audio = { path = "crates/audio" }
 radio-audio-device = { path = "crates/audio-device" }
 radio-library = { path = "crates/library" }
+radio-control = { path = "crates/control" }
 # The radio app explicitly enables MP3 output; other consumers opt in.
 radio-stream = { path = "crates/stream", default-features = false }
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -71,6 +72,8 @@ lucide-icons = "1.77"
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
 # How the user's region writes numbers, for the number fields (MIT OR Apache-2.0). Same rev.
 craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
+# The local control channel: per-launch token, loopback JSON lines (MIT OR Apache-2.0). Same rev.
+craft-control = { git = "https://github.com/storytold/craft-libs", rev = "a7f8dd621e0d95dc81fb455a35467cbd56d75e3d", default-features = false }
 rfd = "0.18"
 radio-ui-egui = { path = "crates/ui-egui" }
 radio-ui-engine = { path = "crates/ui-engine" }

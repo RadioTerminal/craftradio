@@ -1235,6 +1235,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-control"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=a7f8dd621e0d95dc81fb455a35467cbd56d75e3d#a7f8dd621e0d95dc81fb455a35467cbd56d75e3d"
@@ -4424,6 +4434,7 @@ dependencies = [
  "eframe",
  "hound",
  "jiff",
+ "radio-control",
  "radio-engine",
  "radio-library",
  "radio-model",
@@ -4473,6 +4484,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "radio-control"
+version = "0.1.0"
+dependencies = [
+ "craft-control",
+ "dirs",
+ "jiff",
+ "radio-engine",
+ "radio-model",
+ "radio-playout",
+ "serde_json",
 ]
 
 [[package]]
