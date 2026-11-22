@@ -3,6 +3,7 @@
 //! Faders, mute, PFL, routing, devices and Icecast go to the view source as edits.
 //! The ⚙ swaps the strips for the settings page: Devices, Routing, Meters and Icecast.
 
+use crate::numbers;
 use crate::widgets;
 use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
@@ -508,11 +509,14 @@ fn devices_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
         let h = size::CONTROL_SM;
         let l = ui.add_sized(
             [half, h],
-            DragValue::new(&mut left).range(chans.clone()).prefix("L "),
+            numbers::field(
+                ui,
+                DragValue::new(&mut left).range(chans.clone()).prefix("L "),
+            ),
         );
         let r = ui.add_sized(
             [half, h],
-            DragValue::new(&mut right).range(chans).prefix("R "),
+            numbers::field(ui, DragValue::new(&mut right).range(chans).prefix("R ")),
         );
         l.union(r)
     });
@@ -562,10 +566,13 @@ fn meters_tab(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>, 
     let mut hold = parts::f32(view, parts::MIXER, "peak_hold_s", DEFAULT_PEAK_HOLD_S);
     let old = hold;
     settings::form_row(ui, "Peak hold", t, |ui| {
-        let field = DragValue::new(&mut hold)
-            .range(0.0..=MAX_PEAK_HOLD_S)
-            .speed(0.1)
-            .suffix(" s");
+        let field = numbers::field(
+            ui,
+            DragValue::new(&mut hold)
+                .range(0.0..=MAX_PEAK_HOLD_S)
+                .speed(0.1)
+                .suffix(" s"),
+        );
         ui.add_sized([ui.available_width(), size::CONTROL_SM], field)
     });
     if hold != old {
@@ -586,13 +593,16 @@ fn dyn_field(
 ) -> bool {
     let mut done = false;
     settings::form_row(ui, label, t, |ui| {
-        let field = DragValue::new(value)
-            .range(lo..=hi)
-            .speed(speed)
-            .max_decimals(1)
-            .suffix(suffix)
-            // A typed value counts when the typing ends, not at each key.
-            .update_while_editing(false);
+        let field = numbers::field(
+            ui,
+            DragValue::new(value)
+                .range(lo..=hi)
+                .speed(speed)
+                .max_decimals(1)
+                .suffix(suffix)
+                // A typed value counts when the typing ends, not at each key.
+                .update_while_editing(false),
+        );
         let r = ui.add_sized([ui.available_width(), size::CONTROL_SM], field);
         done = r.drag_stopped() || (r.changed() && !r.dragged());
         r
@@ -865,7 +875,9 @@ fn icecast_tab(
     };
     settings::form_row(ui, "Host", t, |ui| field(ui, &mut ice.host));
     settings::form_row(ui, "Port", t, |ui| {
-        let port = DragValue::new(&mut ice.port).range(1..=u16::MAX);
+        // A port is an address, not a quantity: 8000, never 8,000.
+        let port =
+            numbers::field(ui, DragValue::new(&mut ice.port).range(1..=u16::MAX)).ungrouped();
         ui.add_sized([ui.available_width(), size::CONTROL_SM], port)
     });
     settings::form_row(ui, "TLS", t, |ui| {

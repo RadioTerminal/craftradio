@@ -1,6 +1,7 @@
 //! The "Add" menu of a playlist: files, a folder, a stream, the live input, or the library.
 //! The view source reads the files. The menu only picks paths and sends edits.
 
+use crate::numbers;
 use crate::widgets;
 use std::time::Duration;
 
@@ -154,16 +155,18 @@ pub(crate) fn items(
 pub(crate) fn planned(ui: &mut egui::Ui, minutes: &mut u32, seconds: &mut u32, t: &Tokens) {
     ui.label(RichText::new("Planned length").color(t.text_muted));
     ui.horizontal(|ui| {
-        ui.add(
+        ui.add(numbers::field(
+            ui,
             DragValue::new(minutes)
                 .range(0..=MAX_PLANNED_MIN)
                 .suffix(" min"),
-        );
-        ui.add(
+        ));
+        ui.add(numbers::field(
+            ui,
             DragValue::new(seconds)
                 .range(0..=SECONDS_PER_MINUTE - 1)
                 .suffix(" s"),
-        );
+        ));
     });
     ui.end_row();
 }
@@ -271,8 +274,14 @@ pub(crate) fn dialog(
                         ui.end_row();
                         ui.label(RichText::new("Channels").color(t.text_muted));
                         ui.horizontal(|ui| {
-                            ui.add(DragValue::new(left).range(1..=MAX_CHANNEL).prefix("L "));
-                            ui.add(DragValue::new(right).range(1..=MAX_CHANNEL).prefix("R "));
+                            ui.add(numbers::field(
+                                ui,
+                                DragValue::new(left).range(1..=MAX_CHANNEL).prefix("L "),
+                            ));
+                            ui.add(numbers::field(
+                                ui,
+                                DragValue::new(right).range(1..=MAX_CHANNEL).prefix("R "),
+                            ));
                         });
                         ui.end_row();
                         planned(ui, minutes, seconds, t);

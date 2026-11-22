@@ -1,6 +1,7 @@
 //! The as-played log: newest first, with a text filter and a playlist filter.
 //! The table draws only the visible rows.
 
+use crate::numbers;
 use crate::widgets;
 use egui::{Align, DragValue, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -92,11 +93,12 @@ pub(crate) fn show(
             });
             ui.horizontal(|ui| {
                 settings::label(ui, "Show the last", t);
-                ui.add(
+                ui.add(numbers::field(
+                    ui,
                     DragValue::new(&mut hours_back)
                         .range(1..=MAX_HOURS_BACK)
                         .suffix(" h"),
-                );
+                ));
             });
         });
     }

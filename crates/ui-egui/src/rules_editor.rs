@@ -4,6 +4,7 @@
 //! shows the script, and a person can edit it by hand. Apply stores the copy in the view source.
 //! Nothing reaches a scheduler yet, and the window says so.
 
+use crate::numbers;
 use craft_ui::ComboBox;
 use egui::{Align, DragValue, Layout, RichText, Stroke, TextEdit};
 use egui_extras::{Column, TableBuilder};
@@ -260,12 +261,15 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
         match rule.trigger {
             Trigger::EveryTracks => {
                 changed |= ui
-                    .add(DragValue::new(&mut rule.tracks).range(1..=20))
+                    .add(numbers::field(
+                        ui,
+                        DragValue::new(&mut rule.tracks).range(1..=20),
+                    ))
                     .changed();
             }
             Trigger::AtMinutes => {
                 for m in &mut rule.minutes {
-                    let field = DragValue::new(m).range(0..=59).prefix(":");
+                    let field = numbers::field(ui, DragValue::new(m).range(0..=59).prefix(":"));
                     changed |= ui.add(field).changed();
                 }
                 if rule.minutes.len() > 1
@@ -285,11 +289,17 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
             }
             Trigger::Daily => {
                 changed |= ui
-                    .add(DragValue::new(&mut rule.time.0).range(0..=23))
+                    .add(numbers::field(
+                        ui,
+                        DragValue::new(&mut rule.time.0).range(0..=23),
+                    ))
                     .changed();
                 ui.label(":");
                 changed |= ui
-                    .add(DragValue::new(&mut rule.time.1).range(0..=59))
+                    .add(numbers::field(
+                        ui,
+                        DragValue::new(&mut rule.time.1).range(0..=59),
+                    ))
                     .changed();
             }
         }
@@ -304,16 +314,22 @@ fn rule_row(ui: &mut egui::Ui, i: usize, rule: &mut RuleView) -> bool {
                 }
             });
         if rule.place.is_fixed() {
-            let tol = DragValue::new(&mut rule.tolerance_s)
-                .range(0.0..=MAX_TOLERANCE_S)
-                .speed(0.1)
-                .prefix("± ")
-                .suffix(" s");
+            let tol = numbers::field(
+                ui,
+                DragValue::new(&mut rule.tolerance_s)
+                    .range(0.0..=MAX_TOLERANCE_S)
+                    .speed(0.1)
+                    .prefix("± ")
+                    .suffix(" s"),
+            );
             changed |= ui.add(tol).changed();
         }
         ui.label("· take");
         changed |= ui
-            .add(DragValue::new(&mut rule.take).range(1..=10))
+            .add(numbers::field(
+                ui,
+                DragValue::new(&mut rule.take).range(1..=10),
+            ))
             .changed();
     });
     ui.horizontal_wrapped(|ui| {
@@ -358,7 +374,9 @@ fn constraint(ui: &mut egui::Ui, id: (usize, usize), c: &mut Constraint) -> bool
             }
         });
     if c.kind.has_value() {
-        changed |= ui.add(DragValue::new(&mut c.n).range(1..=99)).changed();
+        changed |= ui
+            .add(numbers::field(ui, DragValue::new(&mut c.n).range(1..=99)))
+            .changed();
     }
     changed
 }

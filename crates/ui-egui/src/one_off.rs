@@ -1,6 +1,7 @@
 //! The one-off dialog of Upcoming. It picks a source, a local start time, the timing and a
 //! repeat. The view source schedules the one-off.
 
+use crate::numbers;
 use crate::widgets;
 use std::time::Duration;
 
@@ -392,16 +393,18 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
             ui.end_row();
             label(ui, "Channels", t);
             ui.horizontal(|ui| {
-                ui.add(
+                ui.add(numbers::field(
+                    ui,
                     DragValue::new(&mut d.left)
                         .range(1..=MAX_CHANNEL)
                         .prefix("L "),
-                );
-                ui.add(
+                ));
+                ui.add(numbers::field(
+                    ui,
                     DragValue::new(&mut d.right)
                         .range(1..=MAX_CHANNEL)
                         .prefix("R "),
-                );
+                ));
             });
             ui.end_row();
             add_menu::planned(ui, &mut d.minutes, &mut d.seconds, t);
@@ -495,14 +498,15 @@ pub(crate) fn show(
                     ui.end_row();
                     let l = label(ui, "Tolerance", t);
                     ui.add_enabled_ui(!d.hard, |ui| {
-                        ui.add(
+                        ui.add(numbers::field(
+                            ui,
                             DragValue::new(&mut d.tolerance_s)
                                 .range(0.0..=MAX_TOLERANCE_S)
                                 .speed(0.1)
                                 .fixed_decimals(1)
                                 .prefix("± ")
                                 .suffix(" s"),
-                        )
+                        ))
                         .labelled_by(l.id);
                     })
                     .response

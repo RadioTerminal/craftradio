@@ -1,5 +1,6 @@
 //! The top bar: four deck cards with their buttons, the mode and the station clock.
 
+use crate::numbers;
 use egui::{Align, DragValue, Layout, RichText, Sense, Stroke};
 
 use crate::app::{Action, hms, mmss};
@@ -508,20 +509,26 @@ fn deck_body(
                 );
                 ui.horizontal(|ui| {
                     let label = ui.label(RichText::new("Fade-in").color(t.text_muted));
-                    let fade = DragValue::new(&mut state.fade_in_s[i])
-                        .range(size::FADE_IN_MIN_S..=size::FADE_MAX_S)
-                        .speed(0.1)
-                        .suffix(" s");
+                    let fade = numbers::field(
+                        ui,
+                        DragValue::new(&mut state.fade_in_s[i])
+                            .range(size::FADE_IN_MIN_S..=size::FADE_MAX_S)
+                            .speed(0.1)
+                            .suffix(" s"),
+                    );
                     ui.add(fade)
                         .labelled_by(label.id)
                         .on_hover_text("Play this deck and Play next fade this deck in so long");
                 });
                 ui.horizontal(|ui| {
                     let label = ui.label(RichText::new("Fade-out").color(t.text_muted));
-                    let fade = DragValue::new(&mut state.fade_s[i])
-                        .range(size::FADE_MIN_S..=size::FADE_MAX_S)
-                        .speed(0.1)
-                        .suffix(" s");
+                    let fade = numbers::field(
+                        ui,
+                        DragValue::new(&mut state.fade_s[i])
+                            .range(size::FADE_MIN_S..=size::FADE_MAX_S)
+                            .speed(0.1)
+                            .suffix(" s"),
+                    );
                     ui.add(fade).labelled_by(label.id).on_hover_text(
                         "Stored for this deck. Fade out in the header now uses the fade-out \
                              of the item, or 1 s",
