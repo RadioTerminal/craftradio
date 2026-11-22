@@ -62,7 +62,9 @@ for bin in "${BINS[@]}"; do
 done
 # The programs must load only the system's libraries, never one from the build machine.
 for bin in "${BINS[@]}"; do
-  if otool -L "$WORK/bin/$bin" | tail -n +2 | grep -vqE '^[[:space:]]+(/usr/lib/|/System/)'; then
+  # otool prints a header line for each architecture of a universal binary; only the indented
+  # lines are libraries.
+  if otool -L "$WORK/bin/$bin" | grep -E '^[[:space:]]' | grep -vqE '^[[:space:]]+(/usr/lib/|/System/)'; then
     otool -L "$WORK/bin/$bin" >&2
     echo "error: $bin loads a library that is not part of macOS" >&2
     exit 1
