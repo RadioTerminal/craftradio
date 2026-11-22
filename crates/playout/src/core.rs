@@ -434,6 +434,8 @@ pub(crate) struct Core {
     pub(crate) webrtc_stopping: Option<std::thread::JoinHandle<()>>,
     /// What plays now, for a server that starts later.
     pub(crate) webrtc_now: Option<NowPlaying>,
+    /// What listeners saw before the item on air, newest first, for the last hour.
+    pub(crate) webrtc_played: std::collections::VecDeque<radio_stream::Played>,
     /// The last stream title sent.
     pub(crate) title: String,
     pub(crate) save_due: bool,
@@ -566,6 +568,7 @@ impl Core {
             webrtc_bind: None,
             webrtc_stopping: None,
             webrtc_now: None,
+            webrtc_played: std::collections::VecDeque::new(),
             title: String::new(),
             save_due: false,
             last_prune: None,

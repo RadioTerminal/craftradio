@@ -1,7 +1,8 @@
 //! What plays now, as data channel messages for WebRTC listeners.
 //!
-//! A change gives one `now` message with the title and artist. A cover follows in
-//! `cover` messages of [`PART`] bytes each, because browsers refuse large messages.
+//! A change gives one `now` message with the title and artist, and one `history` message
+//! with what played before. A cover follows in `cover` messages of [`PART`] bytes each,
+//! because browsers refuse large messages.
 
 use base64::Engine;
 use serde_json::json;
@@ -24,13 +25,39 @@ pub(crate) struct Now {
 
 pub(crate) type SharedNow = Arc<Mutex<Now>>;
 
-/// Sets the title and artist now. The cover follows when a thread has read it.
-pub(crate) fn set(now: &SharedNow, title: String, artist: String, file: Option<PathBuf>) {
+/// An item that played before the one on air, as listeners saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Played {
+    pub title: String,
+    pub artist: String,
+    /// When it started.
+    pub at: jiff::Timestamp,
+}
+
+/// The `history` message: the items that played before, newest first.
+#[doc(hidden)]
+pub fn history_message(history: &[Played]) -> String {
+    let items: Vec<serde_json::Value> = history
+        .iter()
+        .map(|p| json!({ "title": p.title, "artist": p.artist, "at": p.at.as_millisecond() }))
+        .collect();
+    json!({ "type": "history", "items": items }).to_string()
+}
+
+/// Sets what plays now and what played before. The cover follows when a thread has read it.
+pub(crate) fn set(
+    now: &SharedNow,
+    title: String,
+    artist: String,
+    file: Option<PathBuf>,
+    history: &[Played],
+) {
+    let history = history_message(history);
     let rev = {
         let Ok(mut n) = now.lock() else { return };
         n.rev += 1;
         n.title.clone_from(&title);
-        n.messages = Arc::new(vec![meta(&title, &artist, None)]);
+        n.messages = Arc::new(vec![meta(&title, &artist, None), history.clone()]);
         n.rev
     };
     let Some(file) = file else { return };
@@ -47,7 +74,9 @@ pub(crate) fn set(now: &SharedNow, title: String, artist: String, file: Option<P
                 return;
             }
             n.rev += 1;
-            n.messages = Arc::new(cover_messages(&title, &artist, n.rev, &mime, &data));
+            let mut messages = cover_messages(&title, &artist, n.rev, &mime, &data);
+            messages.insert(1, history);
+            n.messages = Arc::new(messages);
         });
 }
 

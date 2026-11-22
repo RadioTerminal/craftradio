@@ -141,12 +141,19 @@ impl WebRtcHandle {
     }
     /// Sets the title that `GET /now` gives to the listener page.
     pub fn set_title(&self, title: String) {
-        crate::now::set(&self.now, title, String::new(), None);
+        crate::now::set(&self.now, title, String::new(), None, &[]);
     }
 
-    /// Sets what plays now. Listeners get the cover of `file` when it has one.
-    pub fn set_now(&self, title: String, artist: String, file: Option<std::path::PathBuf>) {
-        crate::now::set(&self.now, title, artist, file);
+    /// Sets what plays now, and what played before it, newest first. Listeners get the
+    /// cover of `file` when it has one.
+    pub fn set_now(
+        &self,
+        title: String,
+        artist: String,
+        file: Option<std::path::PathBuf>,
+        history: &[crate::now::Played],
+    ) {
+        crate::now::set(&self.now, title, artist, file, history);
     }
     /// The bound TCP address, when the server could bind it.
     pub fn local_addr(&self) -> Option<SocketAddr> {
