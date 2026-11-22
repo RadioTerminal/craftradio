@@ -172,5 +172,8 @@ fn the_webrtc_page_keeps_its_port_and_restores_it() {
     click(&mut h, "WebRTC");
     assert!(shows(&h, "Port"), "the page has a Port row");
     let restore = h.get_by_label("Restore page defaults");
-    assert!(!restore.accesskit_node().is_disabled(), "WebRTC has defaults");
+    assert!(
+        !restore.accesskit_node().is_disabled(),
+        "WebRTC has defaults"
+    );
 }
