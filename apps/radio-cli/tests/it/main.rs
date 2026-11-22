@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 const NOW: &str = "2026-11-21T13:00:00Z";
 
@@ -112,6 +112,22 @@ constraints = []
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(err.contains("dead air"), "stderr: {err}");
+}
+
+#[test]
+fn a_reader_that_stops_early_is_not_an_error() {
+    // `craftradio-cli commands | head -1`: the reader goes away before the list is written.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_craftradio-cli"))
+        .arg("commands")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(out.status.success(), "exit {:?}, stderr: {err}", out.status);
+    assert!(err.is_empty(), "nothing on stderr, got: {err}");
 }
 
 #[test]

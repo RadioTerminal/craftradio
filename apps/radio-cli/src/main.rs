@@ -98,7 +98,7 @@ fn run_command(data_dir: &std::path::Path, json: &str) -> Result<u8, String> {
         .map_err(|e| format!("the change is not saved: {e}"))?;
     let text = serde_json::to_string_pretty(&outcome)
         .map_err(|e| format!("cannot write the outcome: {e}"))?;
-    writeln!(io::stdout().lock(), "{text}").map_err(|e| e.to_string())?;
+    still_open(writeln!(io::stdout().lock(), "{text}"))?;
     if let Some(note) = &outcome.note {
         eprintln!("note: {note}");
     }
@@ -126,8 +126,9 @@ fn run(cli: Cli) -> Result<u8, String> {
                     radio_engine::Tier::ReadOnly => "read-only",
                     radio_engine::Tier::OnAir => "on-air",
                 };
-                writeln!(out, "{:<28} {tier:<9} {}", spec.id, spec.summary)
-                    .map_err(|e| e.to_string())?;
+                if !still_open(writeln!(out, "{:<28} {tier:<9} {}", spec.id, spec.summary))? {
+                    break;
+                }
             }
             Ok(0)
         }
@@ -165,11 +166,8 @@ fn run(cli: Cli) -> Result<u8, String> {
             } else {
                 print_text(&station, &tz, &timeline)
             };
-            match printed {
-                Ok(()) => {}
-                // `| head` closed the pipe: stop quietly.
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(exit_code(&timeline)),
-                Err(e) => return Err(format!("cannot write output: {e}")),
+            if !still_open(printed)? {
+                return Ok(exit_code(&timeline));
             }
             let tz = TimeZone::get(&station.tz).unwrap_or(TimeZone::UTC);
             for w in &timeline.warnings {
@@ -177,6 +175,16 @@ fn run(cli: Cli) -> Result<u8, String> {
             }
             Ok(exit_code(&timeline))
         }
+    }
+}
+
+/// Whether stdout still takes output. A reader that stopped early (`| head`) closed the pipe:
+/// the output ends quietly, without an error. Any other write error is one.
+fn still_open(written: io::Result<()>) -> Result<bool, String> {
+    match written {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(false),
+        Err(e) => Err(format!("cannot write output: {e}")),
     }
 }
 
