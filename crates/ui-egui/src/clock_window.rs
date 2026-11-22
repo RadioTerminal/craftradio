@@ -162,10 +162,20 @@ fn body(
         .iter()
         .filter(|b| **b)
         .count();
-    let side = avail
-        .x
-        .min(avail.y * size::CLOCK_RING_SHARE)
-        .max(size::CONTROL_LG);
+    // The ring takes all the room the countdown lines below it leave, and the whole block
+    // sits in the middle of the window. A window that fits its content has no height to fill.
+    let per_ring = lines as f32 * size::CLOCK_LINE_PER_RING * size::CLOCK_LINE_HEIGHT;
+    let gap = if lines == 0 { 0.0 } else { space::S };
+    let side = if avail.y.is_finite() {
+        avail.x.min((avail.y - gap) / (1.0 + per_ring))
+    } else {
+        avail.x * size::CLOCK_RING_SHARE
+    }
+    .max(size::CONTROL_LG);
+    let block = side * (1.0 + per_ring) + gap;
+    if avail.y.is_finite() && avail.y > block {
+        ui.add_space((avail.y - block) / 2.0);
+    }
     let (rect, ring) = ui.allocate_exact_size(egui::vec2(avail.x, side), Sense::click());
     ring.context_menu(|ui| {
         if check_item(ui, prefs.h24, "24-hour time") {

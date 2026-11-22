@@ -291,6 +291,8 @@ pub mod size {
     /// The date text size as a part of the digit size.
     pub const CLOCK_DATE_PER_DIGITS: f32 = 0.3;
     pub const CLOCK_LINE_PER_RING: f32 = 0.08;
+    /// A countdown line's height for its font size.
+    pub const CLOCK_LINE_HEIGHT: f32 = 1.3;
     /// In its last seconds, a clock countdown grows by this factor and warns.
     pub const CLOCK_URGENT_S: u64 = 30;
     pub const CLOCK_URGENT_GROW: f32 = 1.25;
