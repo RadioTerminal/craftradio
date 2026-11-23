@@ -432,10 +432,12 @@ Preferences page from §7. Spec edit for §2 item 8.
     pages play by address through WHEP anyway, with no trackers;
   - UPnP maps only the UDP media port, so the TCP port isn't reachable from outside.
 
-  Ways on, for the operator to choose: (a) signalling through the mesh: a page that already
-  plays sends its repair offers through its sources' `now` channels, so repairs need no
-  tracker (only the first connection does); (b) item 3, a second route over `wss://` (Nostr
-  relays), so the link survives both public trackers failing; (c) drop item 2.
+  Ways on that were weighed: (a) signalling through the mesh: a page that already plays
+  sends its repair offers through its sources' `now` channels, so repairs need no tracker;
+  (b) item 3, a second route over `wss://` (Nostr relays); (c) drop item 2.
+- **Decided (operator, 2026-11-23): item 2 is dropped, and signalling through the mesh is
+  not pursued: too complicated to support.** Listeners keep finding the station and each
+  other through the public trackers.
 
 Proposed roadmap row: **M5.5 P2P listening**, relaying of WebRTC listeners (this plan), with
 P1–P4 as above. Ends with: three browsers on one station slot all play, and the audio is
