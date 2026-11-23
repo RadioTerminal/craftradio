@@ -65,6 +65,9 @@ pub struct WebRtcConfig {
     pub identity: Option<Vec<u8>>,
     /// WebTorrent trackers as `wss://` addresses. They carry offers and answers only.
     pub trackers: Vec<String>,
+    /// Listener pages may pass the audio on to other listeners. The station tells each page
+    /// when it connects.
+    pub relay: bool,
 }
 
 impl WebRtcConfig {
@@ -79,6 +82,7 @@ impl WebRtcConfig {
                 .iter()
                 .map(|s| (*s).to_owned())
                 .collect(),
+            relay: true,
         }
     }
 }
@@ -111,6 +115,9 @@ pub enum WebRtcStatus {
         relays: usize,
         /// The address that the home router forwards to the station (UPnP or NAT-PMP), while it does.
         mapped: Option<SocketAddr>,
+        /// Listeners that pages say they pass the audio on to, with theirs in turn. The
+        /// station cannot check this number.
+        reported: usize,
     },
     Failed(String),
     Stopped,
@@ -266,6 +273,8 @@ impl WebRtcServer {
                     .as_deref()
                     .and_then(crate::relay::Identity::new),
             ),
+            hello: hello(cfg.relay),
+            relay: cfg.relay,
             link: identity
                 .as_ref()
                 .map(|i| format!("{LISTEN_SITE}#{}", i.id())),
@@ -349,6 +358,35 @@ struct Listener {
     audio: Option<ChannelId>,
     /// Signed blocks that wait for room in the "now" channel. They go before what plays now.
     blocks_out: VecDeque<Arc<[u8]>>,
+    /// The page has the [`hello`] message.
+    greeted: bool,
+    /// Listeners that the page says it passes the audio on to.
+    reported: usize,
+}
+
+/// Hops from the station, at most. A page this far away passes the audio on to no one.
+pub const MAX_HOPS: u8 = 6;
+/// A page's report is capped at this, so one page cannot claim a crowd.
+const MAX_REPORTED: usize = 1000;
+/// The longest report the station reads.
+const MAX_REPORT_LEN: usize = 256;
+
+/// The first message on the "now" channel: whether the page may pass the audio on.
+fn hello(relay: bool) -> String {
+    serde_json::json!({ "type": "relay", "allowed": relay, "max_hops": MAX_HOPS }).to_string()
+}
+
+/// The listeners in a page's `report` message, capped. Other messages give `None`.
+fn parse_report(data: &[u8]) -> Option<usize> {
+    if data.len() > MAX_REPORT_LEN {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(data).ok()?;
+    if v["type"].as_str() != Some("report") {
+        return None;
+    }
+    let n = v["listeners"].as_u64()?;
+    Some(usize::try_from(n).unwrap_or(MAX_REPORTED).min(MAX_REPORTED))
 }
 
 /// Blocks that wait for one listener, at most: 5 s. A listener that falls further behind
@@ -369,6 +407,8 @@ struct Media {
     title: SharedNow,
     relays: Arc<AtomicUsize>,
     blocks: crate::packets::Blocks,
+    hello: String,
+    relay: bool,
     link: Option<String>,
     url: String,
 }
@@ -528,7 +568,7 @@ impl Media {
                 .map(|n| (n.rev, n.messages.clone()))
                 .unwrap_or_default();
             for l in &mut listeners {
-                l.send_now(rev, &messages);
+                l.send_now(&self.hello, rev, &messages);
             }
             let now_mapped = mapped.lock().ok().and_then(|m| *m);
             if now_mapped != forwarded {
@@ -536,9 +576,18 @@ impl Media {
                 self.publish_candidates(local, public, forwarded);
             }
             let count = listeners.iter().filter(|l| l.connected).count();
+            let reported = if self.relay {
+                listeners
+                    .iter()
+                    .filter(|l| l.connected)
+                    .map(|l| l.reported)
+                    .sum()
+            } else {
+                0
+            };
             let relays = self.relays.load(Ordering::Acquire);
-            if shown != Some((count, public, relays, forwarded)) {
-                shown = Some((count, public, relays, forwarded));
+            if shown != Some((count, public, relays, forwarded, reported)) {
+                shown = Some((count, public, relays, forwarded, reported));
                 set_status(
                     &self.status,
                     WebRtcStatus::Listening {
@@ -549,6 +598,7 @@ impl Media {
                         link: self.link.clone(),
                         relays,
                         mapped: forwarded,
+                        reported,
                     },
                 );
             }
@@ -664,7 +714,7 @@ impl Listener {
     }
 
     /// Queues what plays now when it changed, and sends as much as the channel takes.
-    fn send_now(&mut self, rev: u64, messages: &[crate::now::Message]) {
+    fn send_now(&mut self, hello: &str, rev: u64, messages: &[crate::now::Message]) {
         let Some(id) = self.channel else { return };
         if self.sent_rev != rev {
             self.sent_rev = rev;
@@ -677,6 +727,12 @@ impl Listener {
         let Some(mut ch) = self.rtc.channel(id) else {
             return;
         };
+        if !self.greeted {
+            if !ch.write(false, hello.as_bytes()).unwrap_or(false) {
+                return;
+            }
+            self.greeted = true;
+        }
         while let Some(b) = self.blocks_out.front() {
             if !ch.write(true, b).unwrap_or(false) {
                 return;
@@ -722,12 +778,21 @@ impl Listener {
                         self.audio = Some(id);
                     }
                     Event::ChannelClose(id) if self.audio == Some(id) => self.audio = None,
+                    Event::ChannelData(d) if Some(d.id) == self.channel && !d.binary => {
+                        if let Some(n) = parse_report(&d.data) {
+                            self.reported = n;
+                        }
+                    }
                     Event::ChannelOpen(id, _) => {
                         self.channel = Some(id);
+                        self.greeted = false;
                         self.sent_rev = 0;
                         self.sent_thumbs.clear();
                     }
-                    Event::ChannelClose(id) if self.channel == Some(id) => self.channel = None,
+                    Event::ChannelClose(id) if self.channel == Some(id) => {
+                        self.channel = None;
+                        self.reported = 0;
+                    }
                     Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                         self.rtc.disconnect();
                     }
@@ -1118,6 +1183,8 @@ impl Gate {
                     channel: None,
                     audio: None,
                     blocks_out: VecDeque::new(),
+                    greeted: false,
+                    reported: 0,
                     sent_rev: 0,
                     outbox: VecDeque::new(),
                     sent_thumbs: HashSet::new(),

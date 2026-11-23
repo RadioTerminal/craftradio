@@ -472,3 +472,186 @@ fn a_page_on_the_audio_channel_gets_packets_that_match_signed_blocks_and_rtp_sto
         "sequence numbers have gaps on loopback: {seqs:?}"
     );
 }
+
+/// A page's connection to the station: RTP audio, then the "audio" and "now" channels.
+struct Page {
+    rtc: str0m::Rtc,
+    socket: UdpSocket,
+    now: str0m::channel::ChannelId,
+}
+
+impl Page {
+    fn connect(addr: SocketAddr) -> Self {
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let local = socket.local_addr().unwrap();
+        let mut rtc = RtcConfig::new()
+            .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+            .build(Instant::now());
+        rtc.add_local_candidate(Candidate::host(local, "udp").unwrap());
+        let mut api = rtc.sdp_api();
+        api.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+        api.add_channel_with_config(ChannelConfig {
+            label: AUDIO_CHANNEL.into(),
+            ordered: false,
+            reliability: Reliability::MaxRetransmits { retransmits: 0 },
+            ..Default::default()
+        });
+        let now = api.add_channel("now".into());
+        let (offer, pending) = api.apply().unwrap();
+        let (code, _, answer) = http(addr, "POST", "/whep", &offer.to_sdp_string());
+        assert_eq!(code, 201, "{answer}");
+        let answer = str0m::change::SdpAnswer::from_sdp_string(&answer).unwrap();
+        rtc.sdp_api().accept_answer(pending, answer).unwrap();
+        Self { rtc, socket, now }
+    }
+
+    /// Runs the connection until `done` returns true for the text messages on "now" so far,
+    /// and returns them.
+    fn until(
+        &mut self,
+        what: &str,
+        mut done: impl FnMut(&mut str0m::Rtc, &[String]) -> bool,
+    ) -> Vec<String> {
+        let local = self.socket.local_addr().unwrap();
+        let mut texts = Vec::new();
+        let mut buf = vec![0u8; 2000];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(&mut self.rtc, &texts) {
+            assert!(Instant::now() < deadline, "{what}: got {texts:?}");
+            let timeout = loop {
+                match self.rtc.poll_output().unwrap() {
+                    Output::Timeout(t) => break t,
+                    Output::Transmit(t) => {
+                        self.socket.send_to(&t.contents, t.destination).unwrap();
+                    }
+                    Output::Event(Event::ChannelData(d)) if d.id == self.now && !d.binary => {
+                        texts.push(String::from_utf8(d.data.clone()).unwrap());
+                    }
+                    Output::Event(_) => {}
+                }
+            };
+            let wait = timeout
+                .saturating_duration_since(Instant::now())
+                .clamp(Duration::from_millis(1), Duration::from_millis(20));
+            self.socket.set_read_timeout(Some(wait)).unwrap();
+            let input = match self.socket.recv_from(&mut buf) {
+                Ok((n, source)) => Input::Receive(
+                    Instant::now(),
+                    Receive {
+                        proto: Protocol::Udp,
+                        source,
+                        destination: local,
+                        contents: buf[..n].try_into().unwrap(),
+                    },
+                ),
+                Err(_) => Input::Timeout(Instant::now()),
+            };
+            self.rtc.handle_input(input).unwrap();
+        }
+        texts
+    }
+}
+
+fn reported(h: &WebRtcHandle) -> Option<usize> {
+    match h.status() {
+        WebRtcStatus::Listening { reported, .. } => Some(reported),
+        _ => None,
+    }
+}
+
+fn relay_station(relay: bool) -> (WebRtcHandle, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.trackers.clear();
+    cfg.relay = relay;
+    let (producer, consumer) = rtrb::RingBuffer::new(48_000 * 2);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let (running, feed) = feed_tone(producer);
+    (server, running, feed)
+}
+
+#[test]
+fn a_page_learns_first_whether_it_may_pass_the_audio_on() {
+    for relay in [true, false] {
+        let (server, running, feed) = relay_station(relay);
+        let mut page = Page::connect(server.local_addr().unwrap());
+        let texts = page.until("the hello", |_, texts| !texts.is_empty());
+        running.store(false, Ordering::Relaxed);
+        feed.join().unwrap();
+        let hello: serde_json::Value = serde_json::from_str(&texts[0]).unwrap();
+        assert_eq!(hello["type"], "relay", "the first message is the hello");
+        assert_eq!(hello["allowed"], relay);
+        assert!(hello["max_hops"].as_u64().is_some_and(|h| h >= 1));
+    }
+}
+
+/// Sends `report` on the page's "now" channel until the station shows `want` reported.
+fn report_until(page: &mut Page, server: &WebRtcHandle, report: &str, want: usize) {
+    let now = page.now;
+    page.until(&format!("reported {want}"), |rtc, _| {
+        if reported(server) == Some(want) {
+            return true;
+        }
+        if let Some(mut c) = rtc.channel(now) {
+            let _ = c.write(false, report.as_bytes());
+        }
+        false
+    });
+}
+
+#[test]
+fn listeners_that_pages_report_show_apart_from_direct_ones_and_are_capped() {
+    let (server, running, feed) = relay_station(true);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    page.until("the hello", |_, texts| !texts.is_empty());
+    wait(&server, |l| l == Some(1));
+    assert_eq!(reported(&server), Some(0));
+    report_until(&mut page, &server, r#"{"type":"report","listeners":3}"#, 3);
+    assert_eq!(
+        listeners(&server),
+        Some(1),
+        "reported listeners are not direct ones"
+    );
+    report_until(
+        &mut page,
+        &server,
+        r#"{"type":"report","listeners":5000000}"#,
+        1000,
+    );
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+}
+
+#[test]
+fn a_station_that_forbids_relaying_counts_no_reported_listeners() {
+    let (server, running, feed) = relay_station(false);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    page.until("the hello", |_, texts| !texts.is_empty());
+    wait(&server, |l| l == Some(1));
+    let now = page.now;
+    let until = Instant::now() + Duration::from_millis(500);
+    page.until("time to pass", |rtc, _| {
+        if let Some(mut c) = rtc.channel(now) {
+            let _ = c.write(false, br#"{"type":"report","listeners":3}"#);
+        }
+        Instant::now() >= until
+    });
+    assert_eq!(reported(&server), Some(0));
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+}
+
+#[test]
+fn the_station_answers_an_offer_that_asks_for_the_station_only() {
+    // The page adds this line so that relays leave the offer alone. The station must not.
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.trackers.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let marked = offer() + "a=x-radio-station-only\r\n";
+    let (code, _, answer) = http(server.local_addr().unwrap(), "POST", "/whep", &marked);
+    assert_eq!(code, 201, "{answer}");
+}
