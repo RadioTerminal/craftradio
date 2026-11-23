@@ -109,7 +109,10 @@ pub(crate) fn show(
         }
     });
     let mut wanted = open.then_some(SettingsTab::Devices);
-    ui.add_space(space::S);
+    if crate::windows::title_band(ui) == crate::windows::Band::None {
+        // The header is a row of the content here, and the strips keep their distance from it.
+        ui.add_space(space::S);
+    }
     let mut page = None;
     ui.horizontal_top(|ui| {
         for meter in &view.meters {
@@ -223,9 +226,8 @@ fn strip_ui(
     let mut mute = meter.mute;
 
     strip_frame(ui, t, |ui| {
-        let font = theme::mono(theme::CARD);
         let gear = is_out.then_some(&mut devices);
-        let head = strip_head(ui, &meter.label, font, is_out, gear, t);
+        let head = strip_head(ui, &meter.label, is_out, gear, t);
         head.context_menu(|ui| {
             if let Some(tab) = strip_menu(ui, meter, is_out, cue, actions) {
                 settings_wanted = Some(tab);
@@ -321,7 +323,6 @@ fn strip_frame(ui: &mut egui::Ui, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) 
 fn strip_head(
     ui: &mut egui::Ui,
     label: &str,
-    font: egui::FontId,
     accent: bool,
     gear: Option<&mut bool>,
     t: &Tokens,
@@ -339,11 +340,15 @@ fn strip_head(
             egui::pos2(band.right() - side, band.top()),
             egui::Vec2::splat(side),
         );
+        // The name keeps clear of the button and of the left edge of the band.
         name_rect.set_right(at.left());
+        name_rect.set_left(band.left() + space::XS);
         ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
             settings::settings_button_sized(ui, label, open, side);
         });
     }
+    // One size for every strip, small enough that "Program" fits beside its button.
+    let font = theme::text(theme::LABEL);
     let name = RichText::new(label).font(font).color(t.text).strong();
     ui.put(
         name_rect,
@@ -402,8 +407,7 @@ fn toggle(
 fn output_strip(ui: &mut egui::Ui, out: &OutputMeterView, t: &Tokens) -> Option<Page> {
     let mut open = false;
     strip_frame(ui, t, |ui| {
-        let font = theme::text(theme::CAPTION);
-        strip_head(ui, &out.label, font, false, Some(&mut open), t);
+        strip_head(ui, &out.label, false, Some(&mut open), t);
         let silent = [size::METER_MIN_DB; 2];
         let (level, peak) = if out.live {
             (out.level_db, out.peak_db)

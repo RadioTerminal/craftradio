@@ -23,6 +23,150 @@ const PAGE_FIT: &str = "tool_window_page_fit";
 /// The temporary data that tells content whether its window has a definite size.
 const DEFINITE: &str = "tool_window_definite";
 
+/// The temporary data that offers the title bar of a native window to its header row.
+const BAND: &str = "tool_window_band";
+/// The temporary data where the header row says how wide it was in the title bar.
+const BAND_USED: &str = "tool_window_band_used";
+
+/// True where a native tool window draws its header row in the title bar, beside the window
+/// buttons, as the Craft apps do on macOS. Elsewhere the system's title bar stays as it is.
+const MERGED_TITLE_BAR: bool = cfg!(target_os = "macos");
+
+/// Where the header row of a window goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Band {
+    /// The window has no title bar of its own: the row is a row of the content.
+    None,
+    /// The row goes in the title bar, in this rectangle.
+    At(egui::Rect),
+    /// The row goes in the title bar, and this pass only measures the content.
+    Measuring,
+}
+
+/// Where the header row of the window that `ui` draws goes.
+pub(crate) fn title_band(ui: &egui::Ui) -> Band {
+    let rect = ui
+        .ctx()
+        .data(|d| d.get_temp::<egui::Rect>(Id::unique(BAND)));
+    match rect {
+        None => Band::None,
+        Some(_) if ui.is_sizing_pass() => Band::Measuring,
+        Some(rect) => Band::At(rect),
+    }
+}
+
+/// Draws the header row `body` in the title bar, from its right end.
+pub(crate) fn in_title_band(ui: &mut egui::Ui, rect: egui::Rect, body: impl FnOnce(&mut egui::Ui)) {
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    // The content is clipped to its own panel, and the title bar is above it.
+    child.set_clip_rect(rect);
+    body(&mut child);
+    let used = child.min_rect().width();
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(Id::unique(BAND_USED), used));
+}
+
+/// The title bar of a native window: the title after the window buttons, and room for the
+/// header row, `row_w` wide, at the right. A drag on it moves the window. It returns the width
+/// that the title and the window buttons need.
+fn title_bar(ui: &mut egui::Ui, w: ToolWindow, row_w: f32, t: &Tokens) -> f32 {
+    egui::Panel::top(("tool_window_title_bar", w.title()))
+        .resizable(false)
+        .show_separator_line(false)
+        .exact_size(size::TITLE_BAR)
+        .frame(egui::Frame::new().fill(t.canvas))
+        .show(ui, |ui| {
+            let band = ui.max_rect();
+            // Before the header row, so the controls of the row take the pointer first.
+            moves_window(ui, band);
+            let inset = buttons_inset(ui);
+            let left = band.left() + inset;
+            let right = band.right() - pad_x();
+            let row_left = (right - row_w).max(left);
+            let text = RichText::new(w.title())
+                .font(theme::text(theme::LABEL))
+                .strong();
+            let galley = egui::WidgetText::from(text).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                (row_left - space::M - left).max(0.0),
+                egui::FontSelection::Default,
+            );
+            // The whole title, also when this frame has no room for all of it.
+            let title_w = ui
+                .painter()
+                .layout_no_wrap(w.title().to_owned(), theme::text(theme::LABEL), t.text)
+                .size()
+                .x;
+            let at = egui::pos2(left, band.center().y - galley.size().y / 2.0);
+            ui.painter().galley(at, galley, t.text);
+            let row = egui::Rect::from_x_y_ranges(left..=right, band.y_range());
+            ui.ctx().data_mut(|d| d.insert_temp(Id::unique(BAND), row));
+            inset + title_w + space::M + pad_x()
+        })
+        .inner
+}
+
+/// The room the window buttons take at the left of a title bar. A full-screen window shows no
+/// buttons, so the bar starts at its margin.
+fn buttons_inset(ui: &egui::Ui) -> f32 {
+    if ui.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+        space::M
+    } else {
+        size::TITLE_BAR_BUTTONS
+    }
+}
+
+/// The empty part of a title bar at `band`: a drag there moves the window, and a double click
+/// zooms it. Controls drawn after this call take the pointer first.
+fn moves_window(ui: &egui::Ui, band: egui::Rect) {
+    let bar = ui.interact(
+        band,
+        ui.scope_id().with("move_window"),
+        egui::Sense::click_and_drag(),
+    );
+    if bar.drag_started_by(egui::PointerButton::Primary) {
+        ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+    }
+    if bar.double_clicked() {
+        let zoomed = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx()
+            .send_viewport_cmd(ViewportCommand::Maximized(!zoomed));
+    }
+}
+
+/// The first row of the main window, drawn in its title bar: `row` after the window buttons,
+/// then the window `title` at the right end, where there is room for it.
+pub(crate) fn main_title_bar(
+    ui: &mut egui::Ui,
+    title: &str,
+    t: &Tokens,
+    row: impl FnOnce(&mut egui::Ui),
+) {
+    let size = egui::vec2(ui.available_width(), size::TITLE_BAR);
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        // The bar reaches the edges of the window, past the margin of its panel.
+        let band = ui.max_rect().expand2(egui::vec2(f32::INFINITY, 0.0));
+        moves_window(ui, band.intersect(ui.clip_rect()));
+        let buttons = ui.clip_rect().left() + buttons_inset(ui);
+        ui.add_space((buttons - ui.cursor().left()).max(0.0));
+        row(ui);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let text = RichText::new(title)
+                .font(theme::text(theme::LABEL))
+                .color(t.text_muted);
+            ui.add(egui::Label::new(text).truncate().selectable(false));
+        });
+    });
+}
+
+/// The room between the header row and the right edge of the title bar.
+fn pad_x() -> f32 {
+    space::S
+}
+
 /// A tool window that the deck strip can open and close.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolWindow {
@@ -148,6 +292,8 @@ struct Fit {
     content: Option<egui::Vec2>,
     /// While a settings page shows: the size of the window before it.
     page: Option<PageFit>,
+    /// The width of the header row in the title bar in the last frame.
+    band_w: f32,
     /// The saved place of the window, where it opens.
     pos: Option<egui::Pos2>,
     /// The place of the window in the last frame.
@@ -440,6 +586,13 @@ fn native(
         .with_title(w.title())
         .with_inner_size(start)
         .with_min_inner_size(min);
+    // The header row takes the place of the title in the title bar. The window keeps its
+    // buttons, its frame and its title in the window list.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
     let builder = match fit.pos {
         Some(p) => builder.with_position(p),
         None => builder,
@@ -455,6 +608,7 @@ fn native(
                 add(ui);
                 return ui.input(|i| i.viewport().close_requested());
             }
+            let bar_w = MERGED_TITLE_BAR.then(|| title_bar(ui, w, fit.band_w, t));
             let out = egui::CentralPanel::default().frame(frame).show(ui, |ui| {
                 // Now and then an invisible sizing pass finds the natural width of the content.
                 // Content that fills the width cannot tell it, so the window can get narrower.
@@ -492,10 +646,21 @@ fn native(
                     size
                 }
             });
-            let margin = frame.total_margin().sum();
+            let mut margin = frame.total_margin().sum();
             let mut content = out.inner;
             if let Some(natural) = fit.natural_w {
                 content.x = content.x.min(natural);
+            }
+            if let Some(bar_w) = bar_w {
+                // The title bar is part of the window now, and the content must not get
+                // narrower than the title and the header row beside it.
+                let used = ui.ctx().data_mut(|d| {
+                    d.remove::<egui::Rect>(Id::unique(BAND));
+                    d.remove_temp::<f32>(Id::unique(BAND_USED))
+                });
+                fit.band_w = used.unwrap_or(0.0);
+                margin.y += size::TITLE_BAR;
+                content.x = content.x.max(bar_w + fit.band_w - margin.x);
             }
             let want = desired(w, content, margin, min, max);
             // A settings page in place of the content: the window fits the page, and goes

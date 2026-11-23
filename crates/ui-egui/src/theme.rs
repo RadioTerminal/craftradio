@@ -123,6 +123,11 @@ pub mod size {
     pub const DIALOG_WIDE_W: f32 = 600.0;
     /// The header of a dialog or a floating window: icon, title and close.
     pub const WINDOW_HEADER: f32 = 40.0;
+    /// The title bar of a native tool window on macOS, which holds the window's header row.
+    /// The window buttons sit on its centre line.
+    pub const TITLE_BAR: f32 = 32.0;
+    /// The room the close, minimise and zoom buttons take at the left of that title bar.
+    pub const TITLE_BAR_BUTTONS: f32 = 76.0;
     /// The least width of a dialog's footer button.
     pub const DIALOG_BUTTON_W: f32 = 88.0;
     /// The deck badge on a row of a list.

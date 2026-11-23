@@ -191,6 +191,8 @@ pub struct RadioApp {
     prepared: Prepared,
     /// The frame time readout, when the app runs with `--perf`.
     perf: Option<Perf>,
+    /// The title of the main window, when its first row is drawn in the title bar.
+    title_bar: Option<String>,
     decks: decks::State,
     /// The levels that the meters show, after the ballistics, and when they last moved.
     meter_shown: Vec<Ballistics>,
@@ -267,6 +269,7 @@ impl RadioApp {
             one_off: None,
             prepared,
             perf: None,
+            title_bar: None,
             decks: decks::State::default(),
             meter_shown: Vec::new(),
             output_shown: Vec::new(),
@@ -357,6 +360,13 @@ impl RadioApp {
         requests: std::sync::mpsc::Receiver<crate::capture::ScreenshotRequest>,
     ) -> Self {
         self.captures = Some(crate::capture::Captures::new(requests));
+        self
+    }
+
+    /// The main window has no title bar of its own: its first row is drawn there, beside the
+    /// window buttons, with `title` at its end, as the Craft apps do on macOS.
+    pub fn with_title_bar(mut self, title: impl Into<String>) -> Self {
+        self.title_bar = Some(title.into());
         self
     }
 
@@ -817,22 +827,36 @@ impl eframe::App for RadioApp {
         };
         self.link.keys = pressed.or(std::mem::take(&mut self.menu_keys));
 
+        let title_bar = self.title_bar.take();
+        let mut margin = pad::GUTTER;
+        if title_bar.is_some() {
+            // The first row is the title bar, from the top edge of the window.
+            margin.top = 0;
+        }
         egui::Panel::top("decks")
             .resizable(false)
-            .frame(theme::bar_frame(&t, pad::GUTTER))
+            .frame(theme::bar_frame(&t, margin))
             .show(ui, |ui| {
                 // The menus open the row where there is no native menu bar, as in the Craft
                 // apps; the window toggles follow them.
-                ui.horizontal(|ui| {
+                let mut row = |ui: &mut egui::Ui| {
                     if self.native_menu.is_none() {
                         self.menu_bar_ui(ui);
                         ui.separator();
                     }
                     windows::toggles(ui, &mut self.open, &t);
-                });
+                };
+                match &title_bar {
+                    Some(title) => windows::main_title_bar(ui, title, &t, row),
+                    None => {
+                        ui.horizontal(|ui| row(ui));
+                    }
+                }
                 ui.add_space(space::S);
                 decks::show(ui, &self.view, &mut self.decks, &mut actions, &t);
             });
+
+        self.title_bar = title_bar;
 
         egui::Panel::bottom("status")
             .resizable(false)
