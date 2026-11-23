@@ -2,7 +2,8 @@
 //! with signed blocks on a data channel (see `packets`).
 //!
 //! One port carries the listener page and WHEP signalling (TCP) and the media (UDP).
-//! A public STUN server tells the station its address outside the NAT, for remote listeners.
+//! The home router's port mapping (UPnP or NAT-PMP) gives the station its address outside the
+//! NAT, for remote listeners. Without one, a public STUN server tells it.
 //! There is no TURN, so a listener behind a strict NAT does not connect.
 
 use crate::now::SharedNow;
@@ -534,7 +535,7 @@ impl Media {
                     Err(mpsc::TryRecvError::Empty) => break,
                 }
             }
-            stun.refresh(&self.socket);
+            stun.refresh(&self.socket, forwarded.is_some());
             let now = Instant::now();
             // A full ring means that this thread fell behind. Drop the backlog.
             if frames.slots() == frames.buffer().capacity() {
@@ -695,7 +696,7 @@ impl Media {
         }
     }
 
-    /// The addresses that the station offers: local, from STUN, and from the router.
+    /// The addresses that the station offers: local, and the one outside the NAT.
     fn publish_candidates(
         &self,
         local: SocketAddr,
@@ -703,16 +704,10 @@ impl Media {
         forwarded: Option<SocketAddr>,
     ) {
         let mut list: Vec<Candidate> = Candidate::host(local, "udp").into_iter().collect();
-        let mut outside: Vec<SocketAddr> = Vec::new();
-        for addr in [forwarded, public].into_iter().flatten() {
-            if addr != local && !outside.contains(&addr) {
-                outside.push(addr);
-            }
-        }
-        for addr in outside {
-            if let Ok(c) = Candidate::server_reflexive(addr, local, "udp") {
-                list.push(c);
-            }
+        if let Some(addr) = outside_address(local, public, forwarded)
+            && let Ok(c) = Candidate::server_reflexive(addr, local, "udp")
+        {
+            list.push(c);
         }
         if let Ok(mut c) = self.candidates.lock() {
             *c = list;
@@ -830,6 +825,16 @@ impl Listener {
     }
 }
 
+/// The address outside the NAT that the station offers: the one the router forwards while it
+/// does, else the one STUN reported. The local address is never offered twice.
+fn outside_address(
+    local: SocketAddr,
+    public: Option<SocketAddr>,
+    forwarded: Option<SocketAddr>,
+) -> Option<SocketAddr> {
+    forwarded.or(public).filter(|a| *a != local)
+}
+
 /// STUN Binding requests (RFC 8489) find the address outside the NAT.
 struct Stun {
     servers: Vec<SocketAddr>,
@@ -886,8 +891,13 @@ impl Stun {
     }
 
     /// Sends a new request when the last one is old. The answer comes back through
-    /// [`Stun::take_response`].
-    fn refresh(&mut self, socket: &UdpSocket) {
+    /// [`Stun::take_response`]. While the router forwards the port, the station knows its
+    /// address and needs no NAT kept open, so it asks no one.
+    fn refresh(&mut self, socket: &UdpSocket, mapped: bool) {
+        if mapped {
+            self.pending = None;
+            return;
+        }
         let due = self.last.is_none_or(|t| t.elapsed() >= STUN_REFRESH);
         if due && let Some(server) = self.servers.first().copied() {
             self.send(socket, server);
@@ -1424,4 +1434,43 @@ fn answer(offer: &str, local: &[Candidate]) -> Result<(Rtc, String), String> {
         .accept_offer(offer)
         .map_err(|e| e.to_string())?;
     Ok((rtc, answer.to_sdp_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_router_address_replaces_the_stun_address() {
+        let local: SocketAddr = "192.168.1.20:8000".parse().unwrap();
+        let stun: SocketAddr = "81.2.69.160:51000".parse().unwrap();
+        let router: SocketAddr = "81.2.69.160:8000".parse().unwrap();
+        assert_eq!(
+            outside_address(local, Some(stun), Some(router)),
+            Some(router)
+        );
+        assert_eq!(outside_address(local, Some(stun), None), Some(stun));
+        assert_eq!(outside_address(local, None, Some(local)), None);
+    }
+
+    #[test]
+    fn a_station_with_a_mapped_port_asks_no_stun_server() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let station = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut stun = Stun::new(
+            &[server.local_addr().unwrap().to_string()],
+            station.local_addr().unwrap(),
+        );
+        let mut buf = [0u8; 64];
+        stun.refresh(&station, true);
+        assert!(server.recv_from(&mut buf).is_err(), "nothing while mapped");
+        stun.refresh(&station, false);
+        assert!(
+            server.recv_from(&mut buf).is_ok(),
+            "asks once the mapping is gone"
+        );
+    }
 }
