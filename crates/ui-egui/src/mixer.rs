@@ -109,7 +109,10 @@ pub(crate) fn show(
         }
     });
     let mut wanted = open.then_some(SettingsTab::Devices);
-    ui.add_space(space::S);
+    if crate::windows::title_band(ui) == crate::windows::Band::None {
+        // The header is a row of the content here, and the strips keep their distance from it.
+        ui.add_space(space::S);
+    }
     let mut page = None;
     ui.horizontal_top(|ui| {
         for meter in &view.meters {

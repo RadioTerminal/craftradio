@@ -512,13 +512,22 @@ fn window(
         .into_iter()
         .filter(|w| args.open.iter().any(|o| o.eq_ignore_ascii_case(w.title())))
         .collect();
+    let viewport = eframe::egui::ViewportBuilder::default()
+        .with_title(title)
+        // Matches the desktop file and icon name in packaging/linux, so docks show the icon.
+        .with_app_id("io.github.radioterminal.craftradio")
+        .with_inner_size([size::WINDOW_W, size::WINDOW_H])
+        .with_min_inner_size([size::WINDOW_MIN_W, size::WINDOW_MIN_H]);
+    // On macOS the first row of the window is drawn in the title bar, beside the window
+    // buttons, as the Craft apps do. The window keeps its title in the window list.
+    #[cfg(target_os = "macos")]
+    let viewport = viewport
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
+    let bar_title = cfg!(target_os = "macos").then(|| title.to_owned());
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title(title)
-            // Matches the desktop file and icon name in packaging/linux, so docks show the icon.
-            .with_app_id("io.github.radioterminal.craftradio")
-            .with_inner_size([size::WINDOW_W, size::WINDOW_H])
-            .with_min_inner_size([size::WINDOW_MIN_W, size::WINDOW_MIN_H]),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -532,6 +541,9 @@ fn window(
                 .with_perf(perf)
                 .with_preferences(prefs)
                 .with_updates();
+            if let Some(title) = bar_title {
+                app = app.with_title_bar(title);
+            }
             if let Some(bridge) = bridge {
                 let _ = bridge.ctx.set(cc.egui_ctx.clone());
                 app = app.with_screenshots(bridge.requests);

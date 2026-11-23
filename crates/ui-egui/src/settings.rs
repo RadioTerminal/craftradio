@@ -10,6 +10,7 @@ use crate::icons::Icon;
 use crate::preferences::Page;
 use crate::theme::{self, Tokens, size, space};
 use crate::widgets;
+use crate::windows::Band;
 
 pub(crate) const NOT_SAVED: &str = "preview — not saved";
 
@@ -69,12 +70,20 @@ pub(crate) fn header(
 ) {
     // The window title bar names the part, so the header row does not repeat it:
     // The settings button far right, then the part's own controls and notes.
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            settings_button(ui, title, open);
-            extra(ui);
-        });
-    });
+    let body = |ui: &mut egui::Ui| {
+        settings_button(ui, title, open);
+        extra(ui);
+    };
+    match crate::windows::title_band(ui) {
+        // The window's title bar has room for the row, so it takes no row of the content.
+        Band::At(rect) => crate::windows::in_title_band(ui, rect, body),
+        Band::Measuring => {}
+        Band::None => {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), body);
+            });
+        }
+    }
 }
 
 /// A label in the left column of a settings grid.
