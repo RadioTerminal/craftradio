@@ -234,14 +234,16 @@ Decided: packet playback is the default from P1 on, before relaying ships, despi
 
 1. **Page size (rule 4).** P1 took the page from 590 to 809 lines (decoding, buffer, loss,
    drift, checking blocks, the fallback), and P2 to 1,068 (relaying, one connection per
-   offer, choosing a relay). P3 adds an estimated 80–120 more. It stays one file with no
+   offer, choosing a relay), and P3 to 1,178 (two sources, repair, the Settings card), not
+   the 80–120 more estimated. It stays one file with no
    build step. Is that still "small"?
 2. **Relaying is on by default or off.** A relaying listener's IP address is seen by its
    children and parents. Before P2 only the station and the trackers saw it. Built as
-   proposed: on by default, with a visible line ("Passing it on to N listeners. Listeners who
-   play through you see your IP address.") and a switch on the page (stored in
-   `localStorage`). The station can also turn it off for everyone (§7).
-3. **`direct_reserve`.** Proposal: 10 of the default 50.
+   proposed: on by default, with a switch on the page (stored in `localStorage`). Since P3
+   the switch is "Help others listen" in a collapsed Settings card, with the note that
+   listeners who share see each other's IP addresses, not a line under the player (operator,
+   2026-11-23). The station can also turn it off for everyone (§7).
+3. **`direct_reserve`.** Decided: 10 of the default 50 (operator, 2026-11-23).
 4. **Mobile data.** Browsers barely say whether the connection is metered
    (`navigator.connection` exists only in Chromium). Proposal: on phones, pages default to 1
    child, not 3.
@@ -354,6 +356,59 @@ Preferences page from §7. Spec edit for §2 item 8.
   with it do.
 - Manual check: six profiles. Close relays one at a time. No listener has a gap longer than
   the buffer.
+- Built (2026-11-23). Decisions and what changed on the way:
+  - **A listener on the station needs no second source (operator, 2026-11-23).** The
+    station's answer still wins at once. A page that plays through a relay looks for a
+    second one; when the station answers that search, the page plays from the station alone
+    and lets its relays go, once the station's packets arrive.
+  - **Reserve.** `direct_reserve` (10) is a WebRTC setting, on Preferences › WebRTC ›
+    Passing it on. It applies only to offers through trackers: offers by address never wait
+    for it. Offers with `a=x-radio-no-relay` or `a=x-radio-station-only` may take it (a
+    page with the switch off, `?rtp`, or no decoder cannot play through a relay). Without
+    relaying there is no reserve, and at least one slot always stays for everyone. The
+    station checks this before the offer costs any of its answer budget.
+  - **`no-relay` round.** A first search adds `a=x-radio-no-relay` to the offers it posts
+    again after 4 s with no relay answer, not after a whole failed search (20 s).
+  - **One player, many sources.** Packets from both sources go into one buffer. The first
+    copy of each `seq` is kept and passed on; a second copy that differs is kept until the
+    first passes the check, and a failure counts against the source that sent it. Blocks
+    are passed on once, after their signature checks out.
+  - **Depth** is 1 + the highest hops of the page's sources. A second source must be closer
+    to the station than the page (hops below its depth), so no page plays through its own
+    listeners. A page ignores its own offers and answers.
+  - **Repairs cost relays little.** A page keeps one tracker peer ID for a whole tune-in, so
+    a relay that already feeds it doesn't answer its repair offers. A repair offer carries
+    `a=x-radio-depth:<n>`, and relays at or past that depth stay silent. A search that finds
+    no one waits 15 s before the next, then twice as long each time, up to 4 minutes.
+  - **Counted once.** A page reports its listeners to its first source and tells the second
+    `{"type":"report","listeners":0,"counted":false}`, so the second leaves it out of its
+    total. Titles and the hello come from the first source only.
+  - A source is dropped, and a relay not tried again, when it can't be reached (5 s for a
+    relay, 10 s for the station), is lost for 5 s, sends nothing for 4 s, stops for 3 s, or
+    sends more than 5 packets or blocks that fail the check. The page starts over only when
+    its last source goes.
+  - **What the listener sees (operator, 2026-11-23).** The player says "Live", never
+    which or how many listeners it plays through; that goes to the browser console only.
+    Retry messages don't name relays. The switch moved from under the player to a
+    collapsed "Settings" card ("Help others listen"), which shows for every station link,
+    before play too, with the note about IP addresses. On a page that can't share (`?rtp`,
+    no decoder, the RTP fallback) the switch is disabled, with the reason.
+- Done (2026-11-23), in the app's Chromium browser pane, a station with two slots:
+  - tabs 1 and 2 on the station, tab 3 through both (2 sources, hops 1, depth 2), and the
+    station reported 1, not 2;
+  - tab 2 closed: tab 3 played on from tab 1 with no pause past its usual decoding pace
+    (about 220 ms in a background tab, inside the 400 ms buffer). Its next search found the
+    freed station slot, and it moved to the station with no pause either. A first version
+    that let the relays go before the station's packets came paused for 420 ms; fixed.
+  - `no-relay` round, a station with two slots and one kept back: a `?rtp` tab took the open
+    slot, and the next tab was refused, then played from the kept slot after 5.3 s;
+  - three slots, four tabs: tab 4 through tabs 1 and 3. Tab 3 flipped a byte in every packet
+    it passed on: tab 4 dropped it within 1 s (6 failed packets) with no pause, and its next
+    search took tab 2, the free relay, within 4 s;
+  - the two reserve tests, 20 runs in a row: no flakes.
+
+  Not done: six profiles, separate machines or NATs (every tab here shares one browser and
+  one network), Firefox, Safari, and relays under many listeners at once.
 
 **P4: fewer third parties.** §6 items 1 and 2, each as its own change. Item 3 after that.
 - Tests (Rust): with a mapped port, the station's candidate is the external address and
