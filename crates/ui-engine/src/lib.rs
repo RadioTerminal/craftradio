@@ -27,7 +27,8 @@ pub fn peak_hold(state: &State) -> Option<Duration> {
 }
 
 /// The WebRTC stream settings that Preferences keeps, put onto `cfg`: the port (on the address
-/// it has), the bitrate and the most listeners. Values out of range are left as they were.
+/// it has), the bitrate, the most listeners and whether listeners pass the audio on. Values
+/// out of range are left as they were.
 pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
     let Some(s) = state.settings(radio_playout::WEBRTC_PART) else {
         return;
@@ -44,6 +45,9 @@ pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
     }
     if let Some(max) = get("max_listeners").filter(|m| (1..=1000).contains(m)) {
         cfg.max_listeners = max as usize;
+    }
+    if let Some(relay) = s.get("relay").and_then(serde_json::Value::as_bool) {
+        cfg.relay = relay;
     }
 }
 
@@ -758,13 +762,15 @@ impl EngineSource {
             Some(WebRtcStatus::Listening { link, relays, .. }) if *relays > 0 => link.clone(),
             _ => None,
         };
-        let (webrtc, webrtc_listeners) = match &pv.outputs.webrtc {
-            None | Some(WebRtcStatus::Stopped) => (Status::NotConnected, None),
-            Some(WebRtcStatus::Starting) => (Status::Reconnecting { attempt: 0 }, None),
-            Some(WebRtcStatus::Listening { listeners, .. }) => {
-                (Status::Connected, Some(*listeners))
-            }
-            Some(WebRtcStatus::Failed(e)) => (Status::Failed(e.clone()), None),
+        let (webrtc, webrtc_listeners, webrtc_reported) = match &pv.outputs.webrtc {
+            None | Some(WebRtcStatus::Stopped) => (Status::NotConnected, None, None),
+            Some(WebRtcStatus::Starting) => (Status::Reconnecting { attempt: 0 }, None, None),
+            Some(WebRtcStatus::Listening {
+                listeners,
+                reported,
+                ..
+            }) => (Status::Connected, Some(*listeners), Some(*reported)),
+            Some(WebRtcStatus::Failed(e)) => (Status::Failed(e.clone()), None, None),
         };
         OutputStatus {
             local,
@@ -772,6 +778,7 @@ impl EngineSource {
             listeners: None,
             webrtc,
             webrtc_listeners,
+            webrtc_reported,
             listen_link,
             forwarded: match &pv.outputs.webrtc {
                 Some(WebRtcStatus::Listening {

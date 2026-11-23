@@ -979,8 +979,8 @@ fn status_line(
         // Only a connected output shows a filled green dot. Every other state is hollow and muted.
         let webrtc_word = view
             .output
-            .webrtc_listeners
-            .map(|n| format!("listening, {n} listeners"));
+            .webrtc_listeners_text()
+            .map(|n| format!("listening, {n}"));
         for (name, status, connected) in [
             ("Local", &view.output.local, None),
             ("Icecast", &view.output.icecast, None),

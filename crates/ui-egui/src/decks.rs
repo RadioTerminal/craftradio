@@ -1032,8 +1032,8 @@ fn live_chip(
     let on = view.output.streaming.unwrap_or(false);
     let listeners = view
         .output
-        .webrtc_listeners
-        .map_or(String::new(), |n| format!(", {n} listeners"));
+        .webrtc_listeners_text()
+        .map_or(String::new(), |n| format!(", {n}"));
     let (icon, word, ink, fill, why) = match (&view.output.local, &view.output.webrtc) {
         (Status::Preview, _) => (
             Icon::Eye,

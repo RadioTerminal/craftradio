@@ -111,6 +111,7 @@ impl ViewSource for MockSource {
                 listeners: None,
                 webrtc: Status::NotConnected,
                 webrtc_listeners: None,
+                webrtc_reported: None,
                 listen_link: None,
                 local_link: None,
                 forwarded: None,

@@ -72,6 +72,10 @@ struct Args {
     /// run. Without it, the switch in the status line turns streaming on, on port 8000.
     #[arg(long, value_parser = parse_listen)]
     webrtc: Option<std::net::SocketAddr>,
+    /// Listeners pass the stream on to no one: each one plays from the station. Without it,
+    /// Preferences › WebRTC decides (on by default).
+    #[arg(long)]
+    no_relay: bool,
     /// Listen for the CLI and MCP on this loopback port (docs/control.md). Without it, the
     /// control channel takes port 17470 or the next free one.
     #[arg(long, conflicts_with = "no_control")]
@@ -212,6 +216,9 @@ fn real(args: &Args) -> Result<(), String> {
     if args.webrtc.is_none() {
         // Preferences keeps the port, bitrate and listener cap; --webrtc names its own address.
         radio_ui_engine::webrtc_settings(engine.state(), &mut webrtc);
+    }
+    if args.no_relay {
+        webrtc.relay = false;
     }
     webrtc.identity = station_identity(&dir);
     cfg.webrtc = Some(webrtc);
@@ -451,9 +458,15 @@ fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool) {
             link,
             relays,
             mapped,
+            reported,
             ..
         } => {
             println!("radio: WebRTC listening, {listeners} listeners, {relays} trackers connected");
+            if *reported > 0 {
+                println!(
+                    "radio: listeners report {reported} more who play through them (not checked)"
+                );
+            }
             match mapped {
                 Some(m) => {
                     println!("radio: the router forwards {m} to the station (UPnP or NAT-PMP)")
