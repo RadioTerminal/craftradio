@@ -4,8 +4,8 @@
 listeners no longer depends on the station's upload. A relaying listener cannot change the
 audio without being caught. Second goal: the station needs fewer third-party servers.
 
-**Status (2026-11-22):** P1 is built (§9). P2–P4 are not. The open decisions (§8) need the
-operator before P2.
+**Status (2026-11-22):** P1 and P2 are built (§9). P3 and P4 are not. P2 went ahead with
+the proposals in §8 for the decisions still open.
 
 **Spec:** `docs/2026-11-21-radio-station-manager-design.md` §2 item 8 (WebRTC listening, listen
 link). Roadmap: `docs/superpowers/plans/2026-11-21-roadmap.md` (proposed row in §9).
@@ -202,15 +202,21 @@ guarantee.
 
 ## 7. Station, settings and what the operator sees
 
-- `WebRtcConfig` gets `relay: bool` (pages may relay; default per §8), `direct_reserve: usize`
-  and `max_hops: u8`. They go to the page in the `now` channel's first message, so the
-  station can switch relaying off for all listeners.
-- Rule 6: each setting is an engine command, a `radio --webrtc` CLI flag and an MCP tool.
-  Rule 9: they live on Preferences → the WebRTC listening page.
+- `WebRtcConfig` gets `relay: bool` (pages may relay; on by default). The station sends it
+  as the first message on the `now` channel, `{"type":"relay","allowed":…,"max_hops":6}`,
+  and relays pass that hello on, so the station can switch relaying off for all listeners.
+  `max_hops` is the constant `MAX_HOPS` (6), not a setting. P3 adds `direct_reserve`.
+- Rule 6: `relay` is the `webrtc.relay` setting, which the generic `settings.set` command (so
+  the CLI and MCP) already sets. `craftradio --no-relay` turns it off for one run. Rule 9: the
+  switch is on Preferences › WebRTC, under "Passing it on", with a note that listeners who
+  pass it on see each other's IP addresses. Like the other WebRTC settings, it is taken up at
+  the next start of the app.
 - Station status shows **direct listeners** (counted by the station) and **reported listeners
-  through relays**. The second number is what pages report on the `now` channel, every 30 s,
-  summed up the tree. Rule 7: it is labelled "reported", because the station cannot check it.
-  It must never look like the measured number.
+  through relays** (`WebRtcStatus::Listening::reported`). The second number is what pages
+  report on the `now` channel, `{"type":"report","listeners":n}`, on each change and every
+  30 s, summed up the tree. The station caps each page's report at 1000. Rule 7: the status
+  line and the output list say "3 listeners, 5 more reported by listeners", and the headless
+  app prints them as "not checked". They never add up to one number.
 - `ChannelOpen(id, label)`: the station matches channels by label (`now`, `audio`) instead of
   taking the first one.
 - The page always offers `recvonly` RTP audio, so an older station, which sends only RTP,
@@ -227,12 +233,14 @@ Decided: packet playback is the default from P1 on, before relaying ships, despi
 0.4–0.6 s more delay than RTP (operator, 2026-11-22).
 
 1. **Page size (rule 4).** P1 took the page from 590 to 809 lines (decoding, buffer, loss,
-   drift, checking blocks, the fallback). Relaying and choosing parents (P2, P3) add an
-   estimated 150–250 more. It stays one file with no build step. Is that still "small"?
+   drift, checking blocks, the fallback), and P2 to 1,068 (relaying, one connection per
+   offer, choosing a relay). P3 adds an estimated 80–120 more. It stays one file with no
+   build step. Is that still "small"?
 2. **Relaying is on by default or off.** A relaying listener's IP address is seen by its
-   children and parents. Today only the station and the trackers see it. Proposal: on by
-   default, with a visible "Sharing the stream with N listeners" line and a switch on the
-   page (stored in `localStorage`). The station can also turn it off for everyone (§7).
+   children and parents. Before P2 only the station and the trackers saw it. Built as
+   proposed: on by default, with a visible line ("Passing it on to N listeners. Listeners who
+   play through you see your IP address.") and a switch on the page (stored in
+   `localStorage`). The station can also turn it off for everyone (§7).
 3. **`direct_reserve`.** Proposal: 10 of the default 50.
 4. **Mobile data.** Browsers barely say whether the connection is metered
    (`navigator.connection` exists only in Chromium). Proposal: on phones, pages default to 1
@@ -274,14 +282,71 @@ fallback. No relaying yet.
 `audio` and `sig`, accept unsigned relay answers, one connection per offer, the `hops` and
 `free` lines. Station: `relay`, `max_hops`, the reported count, and the commands, flags and
 Preferences page from §7. Spec edit for §2 item 8.
-- Tests (Rust): the station sends `relay: false` and the new settings to the page; the
-  reported count is kept apart from the direct count in status.
+- Built (2026-11-22). What changed on the way:
+  - **One connection per offer had to come in P2, not P3.** With one SDP under five offer
+    IDs, every relay that answered started its ICE checks against the same offer. The page
+    took one answer, but another relay's checks got through, and DTLS never finished. Now each
+    offer is its own `RTCPeerConnection`; the page keeps the chosen one and closes the rest.
+    An offer goes out again only while no one has answered it.
+  - **Station first (operator, 2026-11-23), until P3 gives each listener two sources.** The
+    station's answer wins at once. Only when relays alone answer does the page wait 1.5 s for
+    the closest one: a relay answers only once it has gathered its candidates. So relays
+    carry listeners only once the station is full. This replaces "the closest relay wins" in
+    §5 until P3.
+  - Any answer uses up its offer, even one the page throws away (a relay for a page that
+    plays from the station only, or a bad signature), because the peer that sent it already
+    checks against it. When all five are used and none was usable, the page starts again
+    with new connections.
+  - A page that takes the station only (the switch off, or no packet path) marks its offers
+    `a=x-radio-station-only`, and relays leave them alone. With the switch off, no relay sees
+    the page, though trackers still pass its offers to the station's swarm.
+  - A relay answers each listener once, though the listener sends five offers.
+  - A page drops its relay, and doesn't take it again, when any of these happens:
+    - it can't reach it in 5 s (both behind NAT);
+    - the connection fails or is lost;
+    - nothing decodes within 4 s;
+    - no packet arrives for 3 s;
+    - more than 25 packets fail the check.
+
+    A relay sends no RTP, so the RTP fallback is only for the station.
+  - A relay's tracker socket that closes is dropped, so the relay joins the swarm again.
+  - Titles, covers, history and the hello pass through relays **unsigned**: a relay can change
+    what its listeners see as playing, though not what they hear. Signing them is left open.
+  - The relay keeps the hello, the history, its thumbnails and the messages since the last
+    `now`, to greet a new listener with them.
+- Tests (Rust, `crates/stream/tests/it/webrtc.rs`):
+  - the hello comes first and says whether relaying is allowed;
+  - reported listeners stay apart from direct ones in the status, capped at 1000;
+  - a station that forbids relaying counts no reported listeners.
+
+  - the station answers an offer with the station-only line.
+
+  Test in `crates/ui-egui/tests/it/listen_link.rs`: the status text names reported listeners
+  apart from the direct count.
 - The relay logic is in the page, which has no test harness (rule 4: no build step). The
   check is manual and written in this plan: one station with `max_listeners = 1`, and three
   browser profiles open the listen link. The second and third play through the first; the
   station shows 1 direct and 2 reported. Close the first: the others reconnect within 5 s.
   Make one relay send changed bytes (a DevTools override): its children drop it and keep
   playing.
+- Done (2026-11-22) with three tabs of the app's Chromium browser pane, a station with one
+  slot, and the public trackers:
+  - tabs 2 and 3 played through tab 1 (2 hops, no packet rejected), and the station showed 1
+    direct and 2 reported;
+  - tab 1 stopped: tab 3 took the station's slot, and tab 2 played through tab 3. That took
+    about 13 s (a 4 s check, a 2 s retry, then the search), not 5 s. P3's second parent is
+    what closes that gap;
+  - tab 1 flipped a byte in every packet it passed on: tab 2 dropped it within 1 s. With the
+    station's one slot taken, it then found no source; P3's reserve is for that.
+
+- Done again (2026-11-23) after the fixes, with a station with two slots:
+  - station first: tabs 1 and 2 took the station's slots, and tab 3 played through a relay;
+  - both relays made unreachable (`iceTransportPolicy: "relay"` with no TURN): tab 3 dropped
+    each after 5 s. Once a station slot was free, it played from the station;
+  - a `?rtp` page next to a relay: the relay saw 10 offers and answered none.
+
+  Not done: separate browser profiles or machines (every tab here shares one browser and one
+  network, so no real NAT stood between them), Firefox, Safari.
 
 **P3: two parents, repair, reserve.** Two parents with deduplication, repair on loss, the
 `hops` loop rule, `direct_reserve` and `a=x-radio-no-relay`.
