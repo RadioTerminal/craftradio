@@ -2,7 +2,29 @@
 
 use radio_playout::{LocalOutput, OutputStatus};
 use radio_stream::{StreamStatus, WebRtcStatus};
-use radio_ui_egui::view::{OutputKind, OutputMeterView};
+use radio_ui_egui::view::{OutputKind, OutputMeterView, Status};
+
+/// What the station says when the Program device it wants did not open.
+pub(crate) const CARD_NOT_OPEN: &str = "The sound card did not open: nothing plays the sound here";
+
+/// True when the station wants a Program device and runs without one. No device by choice
+/// is not a fault.
+pub(crate) fn card_not_open(local: &LocalOutput, card_wanted: bool) -> bool {
+    card_wanted && matches!(local, LocalOutput::Null)
+}
+
+/// The state of the local output for the status line.
+pub(crate) fn local_status(local: &LocalOutput, card_wanted: bool) -> Status {
+    match local {
+        LocalOutput::Device { .. } => Status::Connected,
+        LocalOutput::Lost { name } => Status::Failed(format!("Output device lost: {name}")),
+        LocalOutput::Null if card_not_open(local, card_wanted) => {
+            Status::Failed(CARD_NOT_OPEN.to_owned())
+        }
+        LocalOutput::Null => Status::NotConnected,
+        LocalOutput::Offline => Status::Preview,
+    }
+}
 
 /// The output strips in mixer order: the Program device, Icecast, WebRTC. An output is live
 /// only while it really sends: a sound card is open, Icecast is connected, or somebody
@@ -123,6 +145,18 @@ mod tests {
         assert!(!v.live);
         assert_eq!(v.note, "Not open");
         assert_eq!(output_meter_views(&out, false).remove(0).note, "No device");
+    }
+
+    #[test]
+    fn no_device_by_choice_is_not_a_failure_but_a_card_that_did_not_open_is() {
+        let chosen = local_status(&LocalOutput::Null, false);
+        assert!(!matches!(chosen, Status::Failed(_) | Status::Connected));
+        assert!(!card_not_open(&LocalOutput::Null, false));
+        assert!(matches!(
+            local_status(&LocalOutput::Null, true),
+            Status::Failed(_)
+        ));
+        assert!(card_not_open(&LocalOutput::Null, true));
     }
 
     #[test]

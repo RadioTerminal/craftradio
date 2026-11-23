@@ -762,13 +762,8 @@ impl EngineSource {
         (carts, wall)
     }
 
-    fn output(pv: &PlayoutView) -> OutputStatus {
-        let local = match &pv.outputs.local {
-            LocalOutput::Device { .. } => Status::Connected,
-            LocalOutput::Lost { name } => Status::Failed(format!("Output device lost: {name}")),
-            LocalOutput::Null => Status::Failed("No sound card: nothing plays the sound".into()),
-            LocalOutput::Offline => Status::Preview,
-        };
+    fn output(pv: &PlayoutView, card_wanted: bool) -> OutputStatus {
+        let local = outputs::local_status(&pv.outputs.local, card_wanted);
         let icecast = match &pv.outputs.icecast {
             None | Some(StreamStatus::Stopped) => Status::NotConnected,
             Some(StreamStatus::Connecting) => Status::Reconnecting { attempt: 0 },
@@ -847,7 +842,12 @@ impl EngineSource {
 
     /// The current alarms and warnings, from playout, the plan, the outputs and the store.
     // Playout alarms that cleared are not in the list.
-    fn alarm_views(&mut self, pv: &PlayoutView, now: Timestamp) -> Vec<AlarmView> {
+    fn alarm_views(
+        &mut self,
+        pv: &PlayoutView,
+        card_wanted: bool,
+        now: Timestamp,
+    ) -> Vec<AlarmView> {
         let names = alarms::Names {
             station: &pv.state.station,
             tz: &self.tz,
@@ -880,12 +880,13 @@ impl EngineSource {
                 format!("Output device lost: {name}"),
                 here.clone(),
             )),
-            LocalOutput::Null => out.push(alarms::from_state(
+            // No Program device by choice is not a warning.
+            local if outputs::card_not_open(local, card_wanted) => out.push(alarms::from_state(
                 "no_device",
                 "",
                 Severity::Warning,
                 AlarmSource::Device,
-                "No sound card: nothing plays the sound here".to_owned(),
+                outputs::CARD_NOT_OPEN.to_owned(),
                 here.clone(),
             )),
             _ => {}
@@ -1054,7 +1055,6 @@ impl ViewSource for EngineSource {
         if let Some(reason) = self.playout.log().persistence_error() {
             label.push_str(&format!(" · NOT SAVED: {reason}"));
         }
-        let alarms = self.alarm_views(&pv, now);
         // A Program device is wanted unless the setting says none.
         let card_wanted = self
             .state
@@ -1062,6 +1062,7 @@ impl ViewSource for EngineSource {
             .and_then(|s| s.get(radio_engine::OUT_KEY))
             .and_then(|v| v.as_str())
             != Some(radio_engine::NO_DEVICE);
+        let alarms = self.alarm_views(&pv, card_wanted, now);
         self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted);
         StationView {
             now: self.zoned(now),
@@ -1115,7 +1116,7 @@ impl ViewSource for EngineSource {
             icecast: self.icecast(),
             dynamics: self.state.dynamics.unwrap_or_default(),
             loudness: self.state.loudness,
-            output: Self::output(&pv),
+            output: Self::output(&pv, card_wanted),
             folders: self.folder_views(),
             settings: self.settings(),
             alarms,

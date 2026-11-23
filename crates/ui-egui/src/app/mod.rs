@@ -1011,6 +1011,10 @@ fn status_line(
             let off = name == "WebRTC" && view.output.streaming == Some(false);
             let (dot, word, colour) = match status {
                 Status::NotConnected if off => (Icon::Circle, "off".to_owned(), t.text_muted),
+                // No Program device is a choice, not a fault.
+                Status::NotConnected if name == "Local" => {
+                    (Icon::Circle, "no device".to_owned(), t.text_muted)
+                }
                 Status::Connected => (
                     Icon::CircleDot,
                     connected.unwrap_or("connected").to_owned(),
