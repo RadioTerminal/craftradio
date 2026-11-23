@@ -291,6 +291,16 @@ fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Ve
             for (key, value) in WEBRTC_DEFAULTS {
                 actions.push(crate::parts::set(crate::parts::WEBRTC, key, value));
             }
+            actions.push(crate::parts::set(
+                crate::parts::WEBRTC,
+                "relay",
+                RELAY_DEFAULT,
+            ));
+            actions.push(crate::parts::set(
+                crate::parts::WEBRTC,
+                "direct_reserve",
+                RESERVE_DEFAULT,
+            ));
         }
         // Pages without defaults show the button disabled with the reason.
         Page::Devices | Page::Icecast | Page::Cartwall | Page::Shortcuts => {}
@@ -299,6 +309,10 @@ fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Ve
 
 /// The defaults of the WebRTC stream, as the playout has them: port, bitrate and listeners.
 const WEBRTC_DEFAULTS: [(&str, u32); 3] = [("port", 8000), ("kbps", 96), ("max_listeners", 50)];
+/// Listeners pass the audio on unless the station turns it off.
+const RELAY_DEFAULT: bool = true;
+/// Of the most listeners, the slots kept for listeners who find no one to play through.
+const RESERVE_DEFAULT: u32 = 10;
 
 /// The WebRTC page: the switch of the status line, and the port, bitrate and listener cap that
 /// the stream takes at its next start.
@@ -376,6 +390,47 @@ fn webrtc_page(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
                 actions.push(parts::set(parts::WEBRTC, key, new));
             }
         }
+    });
+    settings::section(ui, "Passing it on", t, |ui| {
+        let on = parts::bool(view, parts::WEBRTC, "relay", RELAY_DEFAULT);
+        let mut want = on;
+        settings::form_row(ui, "Relay", t, |ui| {
+            ui.checkbox(&mut want, "Let listeners pass the stream on")
+        });
+        if want != on {
+            actions.push(parts::set(parts::WEBRTC, "relay", want));
+        }
+        let kept = parts::u32(view, parts::WEBRTC, "direct_reserve", RESERVE_DEFAULT);
+        let mut reserve = kept;
+        settings::form_row(ui, "Kept back", t, |ui| {
+            ui.add_enabled_ui(on, |ui| {
+                let field = crate::numbers::field(
+                    ui,
+                    DragValue::new(&mut reserve)
+                        .range(0..=1000)
+                        .suffix(" listeners"),
+                );
+                ui.add_sized([ui.available_width(), size::CONTROL_SM], field)
+            })
+            .inner
+        });
+        if reserve != kept {
+            actions.push(parts::set(parts::WEBRTC, "direct_reserve", reserve));
+        }
+        settings::form_note(
+            ui,
+            RichText::new(
+                "Each listener who opens the station link may pass the audio on to a few \
+                 others, so more people can listen than the station's upload allows. The \
+                 station signs the audio, so no one can change it on the way. Listeners who \
+                 pass it on see each other's IP addresses, and each can turn it off on the \
+                 page. Of the most listeners, the station keeps some back for those who find \
+                 no one to play through, or who turned it off; at least one place stays open \
+                 for everyone. Taken up at the next start of the app.",
+            )
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+        );
     });
 }
 

@@ -1,7 +1,9 @@
-//! WebRTC listening: browsers play Program peer to peer, as Opus over RTP.
+//! WebRTC listening: browsers play Program peer to peer, as Opus over RTP, or as Opus packets
+//! with signed blocks on a data channel (see `packets`).
 //!
 //! One port carries the listener page and WHEP signalling (TCP) and the media (UDP).
-//! A public STUN server tells the station its address outside the NAT, for remote listeners.
+//! The home router's port mapping (UPnP or NAT-PMP) gives the station its address outside the
+//! NAT, for remote listeners. Without one, a public STUN server tells it.
 //! There is no TURN, so a listener behind a strict NAT does not connect.
 
 use crate::now::SharedNow;
@@ -64,6 +66,14 @@ pub struct WebRtcConfig {
     pub identity: Option<Vec<u8>>,
     /// WebTorrent trackers as `wss://` addresses. They carry offers and answers only.
     pub trackers: Vec<String>,
+    /// Listener pages may pass the audio on to other listeners. The station tells each page
+    /// when it connects.
+    pub relay: bool,
+    /// Slots of [`max_listeners`](Self::max_listeners) kept for listeners that cannot play
+    /// through another listener: their offer through a tracker carries [`NO_RELAY_LINE`] or
+    /// [`STATION_ONLY_LINE`]. Offers by address never wait for these. Without `relay`, no
+    /// slot is kept; with it, at least one slot stays for everyone.
+    pub direct_reserve: usize,
 }
 
 impl WebRtcConfig {
@@ -78,6 +88,8 @@ impl WebRtcConfig {
                 .iter()
                 .map(|s| (*s).to_owned())
                 .collect(),
+            relay: true,
+            direct_reserve: 10,
         }
     }
 }
@@ -110,6 +122,9 @@ pub enum WebRtcStatus {
         relays: usize,
         /// The address that the home router forwards to the station (UPnP or NAT-PMP), while it does.
         mapped: Option<SocketAddr>,
+        /// Listeners that pages say they pass the audio on to, with theirs in turn. The
+        /// station cannot check this number.
+        reported: usize,
     },
     Failed(String),
     Stopped,
@@ -270,6 +285,13 @@ impl WebRtcServer {
             pending: pending.clone(),
             title: title.clone(),
             relays: relays.clone(),
+            blocks: crate::packets::Blocks::new(
+                cfg.identity
+                    .as_deref()
+                    .and_then(crate::relay::Identity::new),
+            ),
+            hello: hello(cfg.relay),
+            relay: cfg.relay,
             link: identity
                 .as_ref()
                 .map(|i| format!("{LISTEN_SITE}#{}", i.id())),
@@ -291,6 +313,11 @@ impl WebRtcServer {
             candidates,
             status: status.clone(),
             max: cfg.max_listeners,
+            reserve: if cfg.relay {
+                cfg.direct_reserve.min(cfg.max_listeners.saturating_sub(1))
+            } else {
+                0
+            },
             taken,
             pending,
         };
@@ -349,7 +376,59 @@ struct Listener {
     outbox: VecDeque<crate::now::Message>,
     /// Keys of the thumbnails that the listener has. Each goes out once.
     sent_thumbs: HashSet<String>,
+    /// The data channel that carries the audio as Opus packets, when the page opens one.
+    /// The listener then gets no RTP.
+    audio: Option<ChannelId>,
+    /// Signed blocks that wait for room in the "now" channel. They go before what plays now.
+    blocks_out: VecDeque<Arc<[u8]>>,
+    /// The page has the [`hello`] message.
+    greeted: bool,
+    /// Listeners that the page says it passes the audio on to.
+    reported: usize,
 }
+
+/// In an offer: this page found no listener to play through, so it may take a slot of the
+/// [`direct_reserve`](WebRtcConfig::direct_reserve).
+pub const NO_RELAY_LINE: &str = "a=x-radio-no-relay";
+/// In an offer: this page plays from the station only. Relays leave it alone, and it may take
+/// a slot of the reserve.
+pub const STATION_ONLY_LINE: &str = "a=x-radio-station-only";
+
+/// True when the SDP holds this attribute line.
+fn has_line(sdp: &str, line: &str) -> bool {
+    sdp.lines().any(|l| l.trim_end() == line)
+}
+
+/// Hops from the station, at most. A page this far away passes the audio on to no one.
+pub const MAX_HOPS: u8 = 6;
+/// A page's report is capped at this, so one page cannot claim a crowd.
+const MAX_REPORTED: usize = 1000;
+/// The longest report the station reads.
+const MAX_REPORT_LEN: usize = 256;
+
+/// The first message on the "now" channel: whether the page may pass the audio on.
+fn hello(relay: bool) -> String {
+    serde_json::json!({ "type": "relay", "allowed": relay, "max_hops": MAX_HOPS }).to_string()
+}
+
+/// The listeners in a page's `report` message, capped. Other messages give `None`.
+fn parse_report(data: &[u8]) -> Option<usize> {
+    if data.len() > MAX_REPORT_LEN {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(data).ok()?;
+    if v["type"].as_str() != Some("report") {
+        return None;
+    }
+    let n = v["listeners"].as_u64()?;
+    Some(usize::try_from(n).unwrap_or(MAX_REPORTED).min(MAX_REPORTED))
+}
+
+/// Blocks that wait for one listener, at most: 5 s. A listener that falls further behind
+/// loses the oldest; its page then skips those packets.
+const MAX_BLOCKS_OUT: usize = 25;
+/// What plays now may hold this much of the send buffer while the audio channel is open.
+const NOW_BUFFERED: usize = 64 * 1024;
 
 struct Media {
     socket: UdpSocket,
@@ -362,6 +441,9 @@ struct Media {
     pending: Pending,
     title: SharedNow,
     relays: Arc<AtomicUsize>,
+    blocks: crate::packets::Blocks,
+    hello: String,
+    relay: bool,
     link: Option<String>,
     url: String,
     meter: Arc<crate::LevelMeter>,
@@ -465,7 +547,7 @@ impl Media {
                     Err(mpsc::TryRecvError::Empty) => break,
                 }
             }
-            stun.refresh(&self.socket);
+            stun.refresh(&self.socket, forwarded.is_some());
             let now = Instant::now();
             // A full ring means that this thread fell behind. Drop the backlog.
             if frames.slots() == frames.buffer().capacity() {
@@ -488,13 +570,19 @@ impl Media {
                     && let Ok(packet) = self.encoder.encode(&samples)
                 {
                     self.meter.add(&samples);
+                    let (message, block) = self.blocks.push(&packet);
+                    let block: Option<Arc<[u8]>> = block.map(Into::into);
                     let packet: Arc<[u8]> = packet.into();
                     for l in listeners.iter_mut().filter(|l| l.connected) {
-                        if let (Some(mid), Some(pt)) = (l.mid, l.pt)
+                        // A page with the audio channel still offers RTP, for older
+                        // stations. It gets the audio once, on the channel.
+                        if l.audio.is_none()
+                            && let (Some(mid), Some(pt)) = (l.mid, l.pt)
                             && let Some(w) = l.rtc.writer(mid)
                         {
                             let _ = w.write(pt, now, time, packet.clone());
                         }
+                        l.send_audio(&message, block.as_ref());
                     }
                 }
                 samples.clear();
@@ -517,7 +605,7 @@ impl Media {
                 .map(|n| (n.rev, n.messages.clone()))
                 .unwrap_or_default();
             for l in &mut listeners {
-                l.send_now(rev, &messages);
+                l.send_now(&self.hello, rev, &messages);
             }
             let now_mapped = mapped.lock().ok().and_then(|m| *m);
             if now_mapped != forwarded {
@@ -525,9 +613,18 @@ impl Media {
                 self.publish_candidates(local, public, forwarded);
             }
             let count = listeners.iter().filter(|l| l.connected).count();
+            let reported = if self.relay {
+                listeners
+                    .iter()
+                    .filter(|l| l.connected)
+                    .map(|l| l.reported)
+                    .sum()
+            } else {
+                0
+            };
             let relays = self.relays.load(Ordering::Acquire);
-            if shown != Some((count, public, relays, forwarded)) {
-                shown = Some((count, public, relays, forwarded));
+            if shown != Some((count, public, relays, forwarded, reported)) {
+                shown = Some((count, public, relays, forwarded, reported));
                 set_status(
                     &self.status,
                     WebRtcStatus::Listening {
@@ -538,6 +635,7 @@ impl Media {
                         link: self.link.clone(),
                         relays,
                         mapped: forwarded,
+                        reported,
                     },
                 );
             }
@@ -611,7 +709,7 @@ impl Media {
         }
     }
 
-    /// The addresses that the station offers: local, from STUN, and from the router.
+    /// The addresses that the station offers: local, and the one outside the NAT.
     fn publish_candidates(
         &self,
         local: SocketAddr,
@@ -619,16 +717,10 @@ impl Media {
         forwarded: Option<SocketAddr>,
     ) {
         let mut list: Vec<Candidate> = Candidate::host(local, "udp").into_iter().collect();
-        let mut outside: Vec<SocketAddr> = Vec::new();
-        for addr in [forwarded, public].into_iter().flatten() {
-            if addr != local && !outside.contains(&addr) {
-                outside.push(addr);
-            }
-        }
-        for addr in outside {
-            if let Ok(c) = Candidate::server_reflexive(addr, local, "udp") {
-                list.push(c);
-            }
+        if let Some(addr) = outside_address(local, public, forwarded)
+            && let Ok(c) = Candidate::server_reflexive(addr, local, "udp")
+        {
+            list.push(c);
         }
         if let Ok(mut c) = self.candidates.lock() {
             *c = list;
@@ -637,8 +729,23 @@ impl Media {
 }
 
 impl Listener {
+    /// Sends one packet on the audio channel, and queues its block. A packet that finds no
+    /// room is dropped: it would come too late to play.
+    fn send_audio(&mut self, message: &[u8], block: Option<&Arc<[u8]>>) {
+        let Some(id) = self.audio else { return };
+        if let Some(mut ch) = self.rtc.channel(id) {
+            let _ = ch.write(true, message);
+        }
+        if let Some(b) = block {
+            if self.blocks_out.len() >= MAX_BLOCKS_OUT {
+                self.blocks_out.pop_front();
+            }
+            self.blocks_out.push_back(b.clone());
+        }
+    }
+
     /// Queues what plays now when it changed, and sends as much as the channel takes.
-    fn send_now(&mut self, rev: u64, messages: &[crate::now::Message]) {
+    fn send_now(&mut self, hello: &str, rev: u64, messages: &[crate::now::Message]) {
         let Some(id) = self.channel else { return };
         if self.sent_rev != rev {
             self.sent_rev = rev;
@@ -651,7 +758,25 @@ impl Listener {
         let Some(mut ch) = self.rtc.channel(id) else {
             return;
         };
+        if !self.greeted {
+            if !ch.write(false, hello.as_bytes()).unwrap_or(false) {
+                return;
+            }
+            self.greeted = true;
+        }
+        while let Some(b) = self.blocks_out.front() {
+            if !ch.write(true, b).unwrap_or(false) {
+                return;
+            }
+            self.blocks_out.pop_front();
+        }
         while let Some(m) = self.outbox.front() {
+            // All channels of a connection share one send buffer (128 KiB in str0m). What
+            // plays now waits while it holds half of it, so the audio still finds room.
+            let held = ch.buffered_amount();
+            if self.audio.is_some() && held > 0 && held + m.text.len() > NOW_BUFFERED {
+                break;
+            }
             if !ch.write(false, m.text.as_bytes()).unwrap_or(false) {
                 break;
             }
@@ -680,12 +805,25 @@ impl Listener {
                         });
                     }
                     Event::Connected => self.connected = true,
+                    Event::ChannelOpen(id, label) if label == crate::packets::AUDIO_CHANNEL => {
+                        self.audio = Some(id);
+                    }
+                    Event::ChannelClose(id) if self.audio == Some(id) => self.audio = None,
+                    Event::ChannelData(d) if Some(d.id) == self.channel && !d.binary => {
+                        if let Some(n) = parse_report(&d.data) {
+                            self.reported = n;
+                        }
+                    }
                     Event::ChannelOpen(id, _) => {
                         self.channel = Some(id);
+                        self.greeted = false;
                         self.sent_rev = 0;
                         self.sent_thumbs.clear();
                     }
-                    Event::ChannelClose(id) if self.channel == Some(id) => self.channel = None,
+                    Event::ChannelClose(id) if self.channel == Some(id) => {
+                        self.channel = None;
+                        self.reported = 0;
+                    }
                     Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                         self.rtc.disconnect();
                     }
@@ -698,6 +836,16 @@ impl Listener {
             }
         }
     }
+}
+
+/// The address outside the NAT that the station offers: the one the router forwards while it
+/// does, else the one STUN reported. The local address is never offered twice.
+fn outside_address(
+    local: SocketAddr,
+    public: Option<SocketAddr>,
+    forwarded: Option<SocketAddr>,
+) -> Option<SocketAddr> {
+    forwarded.or(public).filter(|a| *a != local)
 }
 
 /// STUN Binding requests (RFC 8489) find the address outside the NAT.
@@ -756,8 +904,13 @@ impl Stun {
     }
 
     /// Sends a new request when the last one is old. The answer comes back through
-    /// [`Stun::take_response`].
-    fn refresh(&mut self, socket: &UdpSocket) {
+    /// [`Stun::take_response`]. While the router forwards the port, the station knows its
+    /// address and needs no NAT kept open, so it asks no one.
+    fn refresh(&mut self, socket: &UdpSocket, mapped: bool) {
+        if mapped {
+            self.pending = None;
+            return;
+        }
         let due = self.last.is_none_or(|t| t.elapsed() >= STUN_REFRESH);
         if due && let Some(server) = self.servers.first().copied() {
             self.send(socket, server);
@@ -866,6 +1019,8 @@ pub(crate) struct Gate {
     candidates: Arc<Mutex<Vec<Candidate>>>,
     status: Arc<Mutex<WebRtcStatus>>,
     max: usize,
+    /// Of `max`, the slots kept for offers from trackers that cannot use a relay.
+    reserve: usize,
     /// Listeners that connect or play now. The media thread counts down when one leaves.
     taken: Arc<AtomicUsize>,
     pending: Pending,
@@ -988,8 +1143,28 @@ impl Gate {
         is_running(&self.status)
     }
 
+    /// The listeners this offer may fill the station up to. Through a tracker, an offer that
+    /// could play through a relay leaves the reserve free.
+    fn limit(&self, sdp: &str, origin: &Origin) -> usize {
+        match origin {
+            Origin::Tracker
+                if !has_line(sdp, NO_RELAY_LINE) && !has_line(sdp, STATION_ONLY_LINE) =>
+            {
+                self.max - self.reserve
+            }
+            _ => self.max,
+        }
+    }
+
+    /// True when the station may answer this offer now. Callers check this before they spend
+    /// anything on the offer; [`admit`](Self::admit) checks again.
+    pub(crate) fn has_room(&self, sdp: &str, origin: &Origin) -> bool {
+        self.taken.load(Ordering::Acquire) < self.limit(sdp, origin)
+    }
+
     /// Answers an offer. Returns the listener token and the SDP answer.
     pub(crate) fn admit(&self, sdp: &str, origin: Origin) -> Result<(String, String), Response> {
+        let limit = self.limit(sdp, &origin);
         // Offers from trackers have no limit here: the media thread pushes out the oldest.
         let (peer, pending_limit, timeout) = match origin {
             Origin::Http(peer) => (peer, Some(PENDING_PER_ADDRESS), CONNECT_TIMEOUT),
@@ -1001,7 +1176,7 @@ impl Gate {
         ) {
             return Err(Response::text(503, "the station is not ready"));
         }
-        self.reserve(peer, pending_limit)?;
+        self.reserve(peer, pending_limit, limit)?;
         let added = self.add_listener(sdp, peer, timeout);
         if added.is_err() {
             self.unreserve(peer);
@@ -1011,7 +1186,12 @@ impl Gate {
 
     /// Takes both places for `peer` in one step.
     /// The media thread frees them when the listener leaves.
-    fn reserve(&self, peer: IpAddr, pending_limit: Option<usize>) -> Result<(), Response> {
+    fn reserve(
+        &self,
+        peer: IpAddr,
+        pending_limit: Option<usize>,
+        limit: usize,
+    ) -> Result<(), Response> {
         let Ok(mut map) = self.pending.lock() else {
             return Err(Response::text(503, "the station is not ready"));
         };
@@ -1022,11 +1202,15 @@ impl Gate {
             ));
         }
         // The count includes listeners that still connect, so parallel offers cannot pass the limit.
-        if self.taken.fetch_add(1, Ordering::AcqRel) >= self.max {
+        if self.taken.fetch_add(1, Ordering::AcqRel) >= limit {
             self.taken.fetch_sub(1, Ordering::AcqRel);
             return Err(Response::text(
                 503,
-                "the station has its maximum of listeners",
+                if limit < self.max {
+                    "the station keeps its last places for listeners that find no one to play through"
+                } else {
+                    "the station has its maximum of listeners"
+                },
             ));
         }
         // Only a reservation that passes both checks adds an entry, so refusals cannot grow the map.
@@ -1074,6 +1258,10 @@ impl Gate {
                     connected: false,
                     created: Instant::now(),
                     channel: None,
+                    audio: None,
+                    blocks_out: VecDeque::new(),
+                    greeted: false,
+                    reported: 0,
                     sent_rev: 0,
                     outbox: VecDeque::new(),
                     sent_thumbs: HashSet::new(),
@@ -1259,4 +1447,43 @@ fn answer(offer: &str, local: &[Candidate]) -> Result<(Rtc, String), String> {
         .accept_offer(offer)
         .map_err(|e| e.to_string())?;
     Ok((rtc, answer.to_sdp_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_router_address_replaces_the_stun_address() {
+        let local: SocketAddr = "192.168.1.20:8000".parse().unwrap();
+        let stun: SocketAddr = "81.2.69.160:51000".parse().unwrap();
+        let router: SocketAddr = "81.2.69.160:8000".parse().unwrap();
+        assert_eq!(
+            outside_address(local, Some(stun), Some(router)),
+            Some(router)
+        );
+        assert_eq!(outside_address(local, Some(stun), None), Some(stun));
+        assert_eq!(outside_address(local, None, Some(local)), None);
+    }
+
+    #[test]
+    fn a_station_with_a_mapped_port_asks_no_stun_server() {
+        let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let station = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut stun = Stun::new(
+            &[server.local_addr().unwrap().to_string()],
+            station.local_addr().unwrap(),
+        );
+        let mut buf = [0u8; 64];
+        stun.refresh(&station, true);
+        assert!(server.recv_from(&mut buf).is_err(), "nothing while mapped");
+        stun.refresh(&station, false);
+        assert!(
+            server.recv_from(&mut buf).is_ok(),
+            "asks once the mapping is gone"
+        );
+    }
 }

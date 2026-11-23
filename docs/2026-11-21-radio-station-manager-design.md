@@ -28,8 +28,14 @@ accuracy outrank features.
 8. Outputs: local audio device(s) and Icecast, with now-playing metadata.
    WebRTC listening (added 2026-11-22): `--webrtc <port>` serves Program peer to peer to
    browsers over WHEP, with public STUN for the address outside the NAT. The listener page is
-   `site/index.html`, on GitHub Pages too. It is for quick trials, not a CDN: each listener
-   costs the station's own upload, and there is no TURN.
+   `site/index.html`, on GitHub Pages too. There is no TURN.
+   Signed packets and relaying (added 2026-11-22, plan
+   `docs/superpowers/plans/2026-11-22-p2p-listener-relay.md`): the station sends Program as
+   Opus packets on a data channel, with signed blocks of their hashes, and the page checks
+   each packet before it plays it. Listeners who play from the listen link pass the packets
+   on to a few others, so the station's upload no longer caps the number of listeners. The
+   station counts its direct listeners and shows the ones that pages report apart, as not
+   checked. Preferences › WebRTC, or `--no-relay`, turns relaying off.
    Listen link (added 2026-11-22): the station keeps an Ed25519 key in its data folder, and
    `https://radioterminal.github.io/craftradio/#<public key>` plays it from anywhere. The
    station answers offers through public WebTorrent trackers over `wss://` (no port-forward),

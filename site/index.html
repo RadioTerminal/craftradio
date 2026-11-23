@@ -116,6 +116,13 @@
   .field button { padding: 0 16px; border: 0; border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer;
                   background: rgba(255,255,255,.9); color: #16181d; }
   .hint { margin: 10px 0 0; font-size: 13px; color: var(--faint); }
+  .tuner + .tuner { margin-top: 10px; }
+  .relay { margin: 10px 0 0; font-size: 14px; color: var(--soft); }
+  .relay .hint { display: block; }
+  .relay label { cursor: pointer; }
+  .relay input { accent-color: var(--live); vertical-align: -2px; margin: 0 6px 0 0; }
+  .relay input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  #relay-state { display: block; margin-top: 4px; color: var(--faint); }
   .hint code { color: var(--soft); font-size: 12.5px; }
 
   @media (prefers-reduced-motion: reduce) {
@@ -177,6 +184,15 @@
       </div>
       <p class="hint" id="station-hint">Paste the link a station shares, an address such as <code>http://192.168.1.20:8000</code>, or a TinyIce mount such as <code>https://radio.example.com/live</code>.</p>
     </details>
+
+    <details class="tuner" id="relay" hidden>
+      <summary>Settings</summary>
+      <p class="relay">
+        <label><input type="checkbox" id="relay-on" aria-describedby="relay-note"> Help others listen</label>
+        <span class="hint" id="relay-note">Shares the stream with a few other listeners, so more people can tune in. They can see your IP address.</span>
+        <span id="relay-state" role="status"></span>
+      </p>
+    </details>
   </div>
   <audio id="audio" autoplay></audio>
 </main>
@@ -194,7 +210,8 @@ for (let i = 0; i < BARS; i++) meter.appendChild(document.createElement("b"));
 const PLAY = '<path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/>';
 const STOP = '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/>';
 
-let pc = null, resource = null, poll = null, ctx = null, raf = 0, sockets = [], coverUrl = null, cover = null, gotMeta = false;
+let player = null, rtpStream = null, searching = [];
+let resource = null, poll = null, ctx = null, raf = 0, sockets = [], coverUrl = null, cover = null, gotMeta = false;
 
 // A station is either an ID (from a shared link) or an http(s) address.
 const ID_RE = /^[A-Za-z0-9_-]{43}$/;
@@ -348,6 +365,12 @@ function startMeter(stream) {
     draw();
   } catch (_) { /* The meter is optional; the sound plays without it. */ }
 }
+function playStream(stream) {
+  stopMeter();
+  audio.srcObject = stream;
+  audio.play().catch(() => {});
+  startMeter(stream);
+}
 function stopMeter() {
   cancelAnimationFrame(raf);
   if (ctx) ctx.close().catch(() => {});
@@ -356,21 +379,417 @@ function stopMeter() {
   for (const b of meter.children) b.style.height = "";
 }
 
+// Program as Opus packets on the "audio" data channel. Each packet is checked against the
+// station's signed block of hashes, decoded here, and played by a worklet that keeps the
+// buffer. Browsers without Opus in WebCodecs, and older stations, use the RTP track instead.
+const PREROLL = 20;   // packets (20 ms each) that wait before the sound starts or restarts
+const LOW = 3;        // with fewer queued, a missing packet counts as lost
+const BLOCK_CONTEXT = new TextEncoder().encode("craftradio-block\n");
+const WORKLET = `
+const HIGH = 40, FADE = 120;
+class Out extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.q = []; this.f = null; this.off = 0; this.g = 0; this.skip = false; this.calls = 0;
+    this.port.onmessage = (e) => { if (e.data === "clear") { this.q = []; this.f = null; } else this.q.push(e.data); };
+  }
+  process(_, outputs) {
+    const L = outputs[0][0], R = outputs[0][1] || L;
+    for (let i = 0; i < L.length; i++) {
+      if (this.f && this.off >= this.f.n) this.f = null;
+      if (!this.f) { this.f = this.q.shift() || null; this.off = 0; }
+      if (!this.f) { L[i] = R[i] = 0; this.g = 0; continue; }
+      // The clock of the station runs fast against this one: drop a packet, faded.
+      if (this.q.length > HIGH) this.skip = true;
+      const quietNext = !this.q.length || this.q[0].gap;
+      const target = this.skip || this.f.gap || (quietNext && this.f.n - this.off <= FADE) ? 0 : 1;
+      this.g += Math.max(-1 / FADE, Math.min(1 / FADE, target - this.g));
+      if (this.skip && this.g <= 0) { this.skip = false; this.f = null; this.q.shift(); i--; continue; }
+      L[i] = this.f.gap ? 0 : this.f.l[this.off] * this.g;
+      R[i] = this.f.gap ? 0 : this.f.r[this.off] * this.g;
+      this.off++;
+    }
+    if (++this.calls % 8 === 0) this.port.postMessage(this.q.length + (this.f ? 1 : 0));
+    return true;
+  }
+}
+registerProcessor("radio-out", Out);`;
+const canDecode = (async () => {
+  try {
+    if (!window.AudioDecoder || !window.AudioWorkletNode) return false;
+    return !!(await AudioDecoder.isConfigSupported({ codec: "opus", sampleRate: 48000, numberOfChannels: 2 })).supported;
+  } catch (_) { return false; }
+})();
+// ?rtp in the address keeps the RTP track, to compare the two.
+const forceRtp = new URLSearchParams(location.search).has("rtp");
+// This page plays the plain RTP track only, so it has nothing to pass on.
+let cannotShare = forceRtp;
+canDecode.then((ok) => { if (!ok) { cannotShare = true; relayTick(); } });
+
+// The output runs from the first Play to the end of the page. Its context is made in the
+// click, so browsers let it sound.
+let out = null, outReady = null;
+function primeOutput() {
+  if (out || forceRtp || !window.AudioWorkletNode) return;
+  try {
+    const octx = new AudioContext({ sampleRate: 48000 });
+    out = { ctx: octx, node: null, dest: octx.createMediaStreamDestination() };
+    outReady = octx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })))
+      .then(() => { out.node = new AudioWorkletNode(octx, "radio-out", { outputChannelCount: [2] }); out.node.connect(out.dest); });
+  } catch (_) { out = null; }
+}
+async function output() {
+  if (!out) return null;
+  // Without a click (a new link, a retry), resume() may wait for one: do not wait on it.
+  try { await outReady; out.ctx.resume().catch(() => {}); return out.node ? out : null; } catch (_) { return null; }
+}
+
+function makePlayer(o, key, id) {
+  const packets = new Map(), hashes = new Map(), blocks = new Set(), slots = [];
+  let next = null, last = -1, queued = 0, newest = -1, closed = false, dec = null;
+  // got: packets that arrived; played: packets decoded into the worklet, the last at `at`;
+  // onFail: the decoder keeps failing, so the RTP track has to play; onBad(source): a source
+  // sent something that failed the check.
+  const player = { got: 0, bad: 0, played: 0, at: 0, errors: 0, onFail: null, onBad: null };
+  function decoder() {
+    dec = new AudioDecoder({
+      output: (d) => {
+        const slot = slots.find((x) => !x.gap && !x.l);
+        try {
+          const n = d.numberOfFrames, l = new Float32Array(n), r = new Float32Array(n);
+          d.copyTo(l, { planeIndex: 0, format: "f32-planar" });
+          d.copyTo(r, { planeIndex: d.numberOfChannels > 1 ? 1 : 0, format: "f32-planar" });
+          if (slot) { slot.l = l; slot.r = r; slot.n = n; }
+        } catch (_) {
+          if (slot) slot.gap = true;
+          if (++player.errors > 10 && player.onFail) player.onFail();
+        }
+        d.close();
+        flush();
+      },
+      // A packet the decoder cannot take. What still decodes becomes a gap; start again.
+      error: () => {
+        for (const x of slots) if (!x.l) x.gap = true;
+        flush();
+        if (closed) return;
+        if (++player.errors > 10 && player.onFail) player.onFail();
+        else decoder();
+      },
+    });
+    dec.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 2 });
+  }
+  decoder();
+  function flush() {
+    while (slots.length && (slots[0].gap || slots[0].l)) {
+      const x = slots.shift();
+      if (closed) continue;
+      if (x.gap) o.node.port.postMessage({ gap: true, n: 960 });
+      else { o.node.port.postMessage({ l: x.l, r: x.r, n: x.n }, [x.l.buffer, x.r.buffer]); player.played++; player.at = performance.now(); }
+      queued++;
+    }
+  }
+  const ok = (seq) => { const p = packets.get(seq); return !!(p && p.ok); };
+  function pump() {
+    if (closed) return;
+    if (next === null) {
+      // Start, or start again after the buffer ran dry, once enough checked packets wait.
+      const ready = [...packets.keys()].filter(ok).sort((a, b) => a - b);
+      if (ready.length < PREROLL) return;
+      next = ready[0];
+    }
+    for (;;) {
+      if (ok(next)) {
+        const slot = {};
+        slots.push(slot);
+        try { dec.decode(new EncodedAudioChunk({ type: "key", timestamp: next * 20000, data: packets.get(next).opus })); }
+        catch (_) { slot.gap = true; flush(); }
+      } else if (queued + slots.length < LOW && newest > next) {
+        slots.push({ gap: true }); flush();
+      } else break;
+      packets.delete(next); last = next; next++;
+    }
+    for (const seq of hashes.keys()) if (seq <= last) hashes.delete(seq);
+    for (const first of blocks) if (first + 255 < last) blocks.delete(first);
+  }
+  o.node.port.onmessage = (e) => {
+    queued = e.data;
+    if (queued === 0 && !slots.length && next !== null && !ok(next)) next = null;
+    pump();
+  };
+  function hashThen(seq, p) {
+    // Without a station key (an address, not a link), the DTLS link to the station is the check.
+    if (!key) { p.ok = true; if (seq > newest) newest = seq; pump(); return; }
+    const head = new Uint8Array(4); new DataView(head.buffer).setUint32(0, seq);
+    crypto.subtle.digest("SHA-256", concat(head, p.opus)).then((h) => { p.h = new Uint8Array(h, 0, 16); check(seq); });
+  }
+  function blame(src) {
+    player.bad++;
+    if (src) { src.bad++; if (player.onBad) player.onBad(src); }
+  }
+  function check(seq) {
+    const p = packets.get(seq), want = hashes.get(seq);
+    if (!p || p.ok || !p.h || !want) return;
+    if (p.h.every((b, i) => b === want[i])) { p.ok = true; if (seq > newest) newest = seq; pump(); return; }
+    blame(p.src);
+    // The copy from the other source may be the right one.
+    if (p.alt) { const q = { opus: p.alt.opus, src: p.alt.src, ok: false, h: null }; packets.set(seq, q); hashThen(seq, q); }
+    else packets.delete(seq);
+  }
+  // Gives true for the first copy of a packet: the one to pass on. A second copy that
+  // differs is kept until the first passes the check.
+  player.onAudio = (buf, src) => {
+    const u = new Uint8Array(buf);
+    if (closed || u.length < 7 || u[0] !== 1) return false;
+    const seq = new DataView(buf).getUint32(1);
+    if (src) { src.got++; src.lastAt = performance.now(); src.hops = u[5]; }
+    if (seq <= last) return false;
+    const had = packets.get(seq);
+    if (had) {
+      if (!had.ok && !had.alt && had.src !== src) had.alt = { opus: u.slice(6), src };
+      return false;
+    }
+    const p = { opus: u.slice(6), ok: false, h: null, src, alt: null };
+    packets.set(seq, p);
+    player.got++;
+    hashThen(seq, p);
+    return true;
+  };
+  // Gives true for a block that passed the check and is new: the one to pass on.
+  player.onBlock = async (buf, src) => {
+    const u = new Uint8Array(buf);
+    if (closed || !key || u.length < 6 || u[0] !== 2) return false;
+    const first = new DataView(buf).getUint32(1), count = u[5], signed = 6 + count * 16;
+    if (u.length !== signed + 64 || blocks.has(first) || first + count <= last + 1) return false;
+    const good = await crypto.subtle.verify({ name: "Ed25519" }, key, u.slice(signed), concat(BLOCK_CONTEXT, id, u.subarray(0, signed))).catch(() => false);
+    if (!good) { blame(src); return false; }
+    if (closed || blocks.has(first)) return false;
+    blocks.add(first);
+    for (let i = 0; i < count; i++) {
+      hashes.set(first + i, u.slice(6 + i * 16, 6 + (i + 1) * 16));
+      check(first + i);
+    }
+    return true;
+  };
+  player.close = () => {
+    closed = true;
+    try { dec.close(); } catch (_) {}
+    o.node.port.onmessage = null;
+    o.node.port.postMessage("clear");
+  };
+  o.node.port.postMessage("clear");
+  return player;
+}
+function concat(...parts) {
+  const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) { all.set(p, at); at += p.length; }
+  return all;
+}
+
+// Passing the stream on. A listener that plays from a station link, smoothly and close
+// enough to the station, answers offers in the station's swarm like the station does. It
+// forwards the packets and the signed blocks as they are; each listener checks them itself.
+// Its answers carry no station signature, so a page takes them only on the packet path.
+const RELAY_LINE = "a=x-radio-relay:";
+// In an offer from a page that takes only the station: relays leave it alone.
+const STATION_ONLY = "a=x-radio-station-only\r\n";
+// In an offer from a page that found no listener to play through: the station may answer it
+// from the places it keeps back.
+const NO_RELAY = "a=x-radio-no-relay\r\n";
+// In an offer from a page that already plays: its depth. Only relays closer to the station
+// may answer, so no relay spends a slot on a page that would turn it down.
+const DEPTH_LINE = "a=x-radio-depth:";
+const MAX_CHILDREN = /Mobi|Android/i.test(navigator.userAgent) ? 1 : 3;
+const relayRow = $("relay"), relayOn = $("relay-on"), relayState = $("relay-state");
+let shareWanted = true;
+try { shareWanted = localStorage.getItem("relay") !== "0"; } catch (_) {}
+relayOn.checked = shareWanted;
+relayOn.addEventListener("change", () => {
+  shareWanted = relayOn.checked;
+  try { localStorage.setItem("relay", shareWanted ? "1" : "0"); } catch (_) {}
+  if (!shareWanted) stopRelay(true);
+  relayTick();
+});
+// From the station, through any relays: whether listeners may pass it on, and how far.
+let relayAllowed = false, maxHops = 0, depth = 0, children = [], relaySockets = [];
+let relayPeer = null, searchPeer = null;
+const badPeers = new Set();
+// What plays now, kept to greet a new listener: the hello, the history and its thumbnails,
+// and the messages since the last "now".
+let metaNow = [], metaHistory = null, metaHello = null;
+const metaThumbs = new Map();
+
+async function infoHashOf(id) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", b64url(id)));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 20);
+}
+
+// A text message from the parent: kept and passed on.
+function fromParent(text) {
+  let m = null; try { m = JSON.parse(text); } catch (_) {}
+  if (m && m.type === "relay") {
+    relayAllowed = m.allowed === true;
+    maxHops = Math.min(Number(m.max_hops) || 0, 16);
+    metaHello = text;
+    relayTick();
+    return;
+  }
+  if (m && m.type === "now") metaNow = [text];
+  else if (m && m.type === "history") metaHistory = text;
+  else if (m && m.type === "thumb") { metaThumbs.set(m.key, text); if (metaThumbs.size > 60) metaThumbs.delete(metaThumbs.keys().next().value); }
+  else metaNow.push(text);
+  for (const c of children) sendTo(c.now, text);
+  onMessage(text);
+}
+function sendTo(ch, data) {
+  if (ch && ch.readyState === "open" && ch.bufferedAmount < 256 * 1024) { try { ch.send(data); } catch (_) {} }
+}
+// The first copy of a packet, passed on with this listener's hops.
+function forwardAudio(u) {
+  if (!children.length) return;
+  const copy = u.slice(); copy[5] = depth;
+  for (const c of children) if (c.audio && c.audio.readyState === "open" && c.audio.bufferedAmount < 64 * 1024) { try { c.audio.send(copy); } catch (_) {} }
+}
+function forwardBlock(buf) { for (const c of children) sendTo(c.now, buf); }
+
+function relayReason() {
+  if (cannotShare || (sources.length && !player)) return "Not available in this browser, or on the plain stream.";
+  if (!player || station.kind !== "id" || !player.played) return null;
+  if (!relayAllowed) return "This station doesn't use sharing.";
+  if (!shareWanted) return "";
+  if (depth >= maxHops) return "Not needed right now.";
+  if (player.played < PREROLL) return "";
+  return "";
+}
+// Every 2 s while connected: join or leave the swarm, report listeners up, show the state.
+function relayTick() {
+  const why = relayReason();
+  relayRow.hidden = !station || station.kind !== "id";
+  relayOn.disabled = why === "This station doesn't use sharing." || (why || "").startsWith("Not available");
+  if (why === "" && shareWanted && player.played >= PREROLL) {
+    startRelay();
+    const n = children.filter((c) => c.open).length;
+    relayState.textContent = n ? "Now sharing with " + n + (n === 1 ? " listener." : " listeners.") : "";
+  } else {
+    stopRelay(false);
+    relayState.textContent = why || "";
+  }
+  // A listener that plays through two counts once: the second source leaves it out.
+  const total = children.reduce((n, c) => n + (c.open && c.counted ? 1 + c.reported : 0), 0);
+  sources.forEach((src, i) => {
+    const n = i ? -1 : total;
+    if (!src.channel || src.channel.readyState !== "open" || (src.told === n && Date.now() - src.toldAt < 30000)) return;
+    src.told = n; src.toldAt = Date.now();
+    try { src.channel.send(JSON.stringify(i ? { type: "report", listeners: 0, counted: false } : { type: "report", listeners: total })); } catch (_) {}
+  });
+}
+
+async function startRelay() {
+  if (relaySockets.length) return;
+  const mine = gen, infoHash = await infoHashOf(station.id), peerId = randomId(20);
+  if (gen !== mine || relaySockets.length) return;
+  relayPeer = peerId;
+  const announce = (ws, event) => ws.readyState === 1 && ws.send(JSON.stringify({
+    action: "announce", info_hash: infoHash, peer_id: peerId, numwant: 0,
+    uploaded: 0, downloaded: 0, left: 0, offers: [], ...(event ? { event } : {}),
+  }));
+  for (const url of TRACKERS) {
+    let ws;
+    try { ws = new WebSocket(url); } catch (_) { continue; }
+    relaySockets.push(ws);
+    ws.onopen = () => announce(ws, "started");
+    ws.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+      if (m.info_hash !== infoHash) return;
+      if (m.offer && m.offer_id && m.peer_id) answerChild(m, ws, infoHash, peerId);
+    };
+    ws.again = setInterval(() => announce(ws), 60000);
+    // A tracker that drops the socket: the next tick joins again once none is left.
+    ws.onclose = () => { clearInterval(ws.again); relaySockets = relaySockets.filter((x) => x !== ws); };
+  }
+}
+function stopRelay(dropChildren) {
+  for (const ws of relaySockets) { clearInterval(ws.again); try { ws.close(); } catch (_) {} }
+  relaySockets = [];
+  if (dropChildren) for (const c of [...children]) dropChild(c);
+}
+function dropChild(c) {
+  children = children.filter((x) => x !== c);
+  try { c.pc.close(); } catch (_) {}
+}
+
+async function answerChild(m, ws, infoHash, peerId) {
+  if (children.length >= MAX_CHILDREN || typeof m.offer.sdp !== "string" || m.offer.sdp.length > 20000) return;
+  if (m.offer.sdp.includes(STATION_ONLY) || m.peer_id === searchPeer) return;
+  // A listener sends several offers; one answer each is enough.
+  if (children.some((x) => x.peer === m.peer_id)) return;
+  const at = m.offer.sdp.indexOf(DEPTH_LINE);
+  if (at >= 0 && depth >= parseInt(m.offer.sdp.slice(at + DEPTH_LINE.length), 10)) return;
+  const mine = gen;
+  const c = { pc: new RTCPeerConnection({ iceServers: ICE }), audio: null, now: null, reported: 0, counted: true, open: false, peer: m.peer_id };
+  children.push(c);
+  c.pc.ondatachannel = (e) => {
+    const ch = e.channel;
+    ch.binaryType = "arraybuffer";
+    if (ch.label === "audio") { c.audio = ch; return; }
+    if (ch.label !== "now") return;
+    c.now = ch;
+    const greet = () => {
+      for (const text of [metaHello, metaHistory, ...metaThumbs.values(), ...metaNow]) if (text) sendTo(ch, text);
+    };
+    if (ch.readyState === "open") greet(); else ch.onopen = greet;
+    ch.onmessage = (ev) => {
+      if (typeof ev.data !== "string" || ev.data.length > 256) return;
+      try { const r = JSON.parse(ev.data); if (r.type === "report") { c.reported = Math.max(0, Math.min(1000, r.listeners | 0)); c.counted = r.counted !== false; } } catch (_) {}
+    };
+  };
+  c.pc.onconnectionstatechange = () => {
+    const st = c.pc.connectionState;
+    c.open = st === "connected";
+    if (st === "failed" || st === "closed") dropChild(c);
+    if (st === "disconnected") setTimeout(() => { if (c.pc.connectionState !== "connected") dropChild(c); }, 5000);
+    relayTick();
+  };
+  // A listener that took another answer never connects here.
+  setTimeout(() => { if (c.pc.connectionState !== "connected") dropChild(c); }, 10000);
+  try {
+    await c.pc.setRemoteDescription(m.offer);
+    await c.pc.setLocalDescription(await c.pc.createAnswer());
+    await new Promise((done) => {
+      if (c.pc.iceGatheringState === "complete") return done();
+      c.pc.onicegatheringstatechange = () => c.pc.iceGatheringState === "complete" && done();
+      setTimeout(done, 2000);
+    });
+    if (gen !== mine || !children.includes(c)) return;
+    const sdp = c.pc.localDescription.sdp + RELAY_LINE + depth + ";" + (MAX_CHILDREN - children.length) + "\r\n";
+    ws.send(JSON.stringify({ action: "announce", info_hash: infoHash, peer_id: peerId, to_peer_id: m.peer_id, offer_id: m.offer_id, answer: { type: "answer", sdp } }));
+  } catch (_) { dropChild(c); }
+}
+
 function closeTrackers() { for (const s of sockets) { try { s.close(); } catch (_) {} } sockets = []; }
 
 // The listener wants to hear the station from Play until Stop. In between, a lost or
 // failed connection retries on its own, so a station that restarts comes back.
-let wanted = false, attempt = 0, retryTimer = null, lostTimer = null, gen = 0;
+let wanted = false, attempt = 0, retryTimer = null, gen = 0;
 
 // Ends the connection, but not the wish to listen.
 function teardown() {
   gen++;
-  clearTimeout(lostTimer); lostTimer = null;
   clearInterval(poll); poll = null;
   closeTrackers();
   if (resource) fetch(resource, { method: "DELETE" }).catch(() => {});
-  if (pc) pc.close();
-  pc = null; resource = null;
+  resource = null;
+  clearInterval(health); health = null;
+  clearTimeout(repairTimer); repairTimer = null; repairing = false; repairAfter = 0;
+  for (const src of sources) { try { src.me.close(); } catch (_) {} }
+  sources = [];
+  for (const c of searching) c.me.close();
+  searching = [];
+  stopRelay(true);
+  relayAllowed = false; depth = 0; searchPeer = null; repairFails = 0;
+  metaNow = []; metaHistory = null; metaHello = null; metaThumbs.clear();
+  if (player) player.close();
+  player = null; rtpStream = null;
   stopMeter();
   audio.srcObject = null;
   onAir(false);
@@ -385,6 +804,7 @@ async function stop(message) {
 }
 
 function start() {
+  primeOutput();
   wanted = true; attempt = 0;
   clearTimeout(retryTimer); retryTimer = null;
   listen();
@@ -416,34 +836,49 @@ function b64url(text) {
 
 // Through the trackers: post the offer to the station's swarm, take the first answer
 // that carries the signature of the station key.
-async function viaTrackers(id, offerSdp) {
-  const publicKey = b64url(id);
+async function stationKey(id) {
   // Browsers check signatures only on https:// pages and on this computer.
   if (!window.isSecureContext || !crypto.subtle) {
     throw lasting("a station link needs a secure page. Open https://radioterminal.github.io/craftradio/#" + id);
   }
-  let key;
-  try { key = await crypto.subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, ["verify"]); }
+  try { return await crypto.subtle.importKey("raw", b64url(id), { name: "Ed25519" }, false, ["verify"]); }
   catch (_) { throw lasting("this browser cannot check the station signature. Update it, or open the station address directly"); }
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey));
-  const infoHash = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 20);
-  const peerId = randomId(20);
+}
+
+// Each offer is its own connection: one peer answers it, so no other peer's checks get in.
+// Answers from listeners that pass the stream on count only with `relays`: their audio is
+// checked packet by packet, and they carry no station signature. The station's answer wins
+// at once (operator, 2026-11-23: a listener on the station needs no second source). When
+// only relays answer, the closest of those in 1.5 s wins.
+// - `below`: take only relays closer to the station than this (none at or past it, so no
+//   listener plays through its own listeners);
+// - `skip`: relays this page already plays through;
+// - `reserve`: when no relay has answered in 4 s, the offers that go out again ask for the
+//   places the station keeps back.
+// Gives the answer and the index of its offer.
+async function viaTrackers(id, key, sdps, { relays, below = 0, skip = [], reserve = false }) {
+  const infoHash = await infoHashOf(id);
+  // One peer ID for a whole tune-in: a relay answers each listener once, repairs included.
+  const peerId = searchPeer || (searchPeer = randomId(20)), born = performance.now();
   return new Promise((resolve, reject) => {
-    const ids = new Set();
-    let done = false, open = 0;
-    const offers = () => Array.from({ length: 5 }, () => {
-      const offerId = randomId(20); ids.add(offerId);
-      return { offer: { type: "offer", sdp: offerSdp }, offer_id: offerId };
+    const ids = new Map(), answered = new Set(), answers = [];
+    let done = false, open = 0, choose = null;
+    const mark = () => !relays ? STATION_ONLY : below ? DEPTH_LINE + below + "\r\n" :
+      reserve && !answers.length && performance.now() - born > 4000 ? NO_RELAY : "";
+    // An offer goes out again only while no one has answered it.
+    const offers = () => sdps.map((sdp, i) => i).filter((i) => !answered.has(i)).map((i) => {
+      const offerId = randomId(20); ids.set(offerId, i);
+      return { offer: { type: "offer", sdp: sdps[i] + mark() }, offer_id: offerId };
     });
     const announce = (ws) => ws.readyState === 1 && ws.send(JSON.stringify({
-      action: "announce", info_hash: infoHash, peer_id: peerId, numwant: 5,
+      action: "announce", info_hash: infoHash, peer_id: peerId, numwant: sdps.length,
       uploaded: 0, downloaded: 0, left: 1, event: "started", offers: offers(),
     }));
-    const timer = setTimeout(() => finish(new Error("the station did not answer. It may be off air")), 20000);
+    const timer = setTimeout(() => finish(new Error("the station did not answer. It may be off air, or full")), 20000);
     const again = setInterval(() => sockets.forEach(announce), 5000);
     function finish(result) {
       if (done) return; done = true;
-      clearTimeout(timer); clearInterval(again); closeTrackers();
+      clearTimeout(timer); clearInterval(again); clearTimeout(choose); closeTrackers();
       result instanceof Error ? reject(result) : resolve(result);
     }
     for (const url of TRACKERS) {
@@ -454,14 +889,29 @@ async function viaTrackers(id, offerSdp) {
       ws.onerror = () => { if (!sockets.some((s) => s.readyState <= 1) && !open) finish(new Error("no tracker could be reached")); };
       ws.onmessage = async (e) => {
         let m; try { m = JSON.parse(e.data); } catch (_) { return; }
-        if (!m.answer || !ids.has(m.offer_id) || done) return;
+        const index = ids.get(m.offer_id);
+        if (!m.answer || index === undefined || answered.has(index) || done) return;
+        // Any answer uses up its offer: the peer that sent it already checks against it.
+        answered.add(index);
+        if (answered.size === sdps.length && !answers.length) setTimeout(() => {
+          if (!answers.length) finish(new Error("no usable answer came"));
+        }, 1500);
         const signed = m.answer.sdp || "";
-        const at = signed.lastIndexOf(SIG);
-        if (at < 0) return;
-        const sdp = signed.slice(0, at);
-        const sig = b64url(signed.slice(at + SIG.length).trim());
-        const ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, new TextEncoder().encode(m.offer_id + "\n" + sdp)).catch(() => false);
-        if (ok) finish(sdp);
+        const at = signed.lastIndexOf(SIG), rel = signed.lastIndexOf(RELAY_LINE);
+        if (at >= 0) {
+          const sdp = signed.slice(0, at);
+          const sig = b64url(signed.slice(at + SIG.length).trim());
+          const ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, new TextEncoder().encode(m.offer_id + "\n" + sdp)).catch(() => false);
+          if (!ok || done) return;
+          return finish({ sdp, hops: 0, free: 0, peer: null, index });
+        } else if (relays && rel >= 0 && !badPeers.has(m.peer_id) && !skip.includes(m.peer_id) && m.peer_id !== relayPeer) {
+          const [hops, free] = signed.slice(rel + RELAY_LINE.length).trim().split(";").map((n) => parseInt(n, 10));
+          if (!(hops >= 1) || (below && hops >= below)) return;
+          answers.push({ sdp: signed.slice(0, rel), hops, free: free || 0, peer: m.peer_id, index });
+        } else return;
+        if (answers.length && !choose) choose = setTimeout(() => {
+          finish(answers.sort((x, y) => x.hops - y.hops || y.free - x.free)[0]);
+        }, 1500);
       };
     }
     if (!sockets.length) finish(new Error("no tracker could be reached"));
@@ -488,6 +938,169 @@ async function titleFromServer(url) {
   } catch (_) {}
 }
 
+// A connection that offers RTP audio (an older station sends only that) and, on the packet
+// path, the "audio" channel; with its offer made and its candidates gathered.
+async function connection(o) {
+  const me = new RTCPeerConnection({ iceServers: ICE });
+  me.addTransceiver("audio", { direction: "recvonly" });
+  // Created before "now": an older station takes the last channel as its "now".
+  const a = o ? me.createDataChannel("audio", { ordered: false, maxRetransmits: 0 }) : null;
+  if (a) a.binaryType = "arraybuffer";
+  const channel = me.createDataChannel("now");
+  channel.binaryType = "arraybuffer";
+  const offer = await me.createOffer();
+  // Ask for stereo: browsers decode Opus as mono unless the offer says stereo=1.
+  offer.sdp = offer.sdp.replace(/(a=fmtp:\d+ [^\r\n]*)/g, (l) => l.includes("stereo=") ? l : l + ";stereo=1");
+  await me.setLocalDescription(offer);
+  await new Promise((done) => {
+    if (me.iceGatheringState === "complete") return done();
+    me.onicegatheringstatechange = () => me.iceGatheringState === "complete" && done();
+    setTimeout(done, 2000);
+  });
+  return { me, a, channel };
+}
+
+// The connections this page plays from: the station alone, or up to two listeners who pass
+// it on. Packets from both go into the one player, which keeps the first copy that passes
+// the check; what plays now and the report go through the first source only.
+let sources = [], health = null, repairTimer = null, repairing = false, repairAfter = 0, repairFails = 0;
+let listenKey = null, listenOut = null;
+const primary = () => sources[0] || null;
+function setDepth() { if (sources.length) depth = 1 + Math.max(...sources.map((x) => x.hops)); }
+
+// Plays through a connection that got an answer, next to the sources there are.
+function addSource({ me, a, channel }, peer, hops) {
+  const src = { me, a, channel, peer, hops, got: 0, bad: 0, lastAt: 0, born: performance.now(), up: 0, lost: 0 };
+  sources.push(src);
+  setDepth();
+  if (a) a.onmessage = (e) => {
+    if (typeof e.data === "string") return src === primary() && onMessage(e.data);
+    if (player && player.onAudio(e.data, src)) { setDepth(); forwardAudio(new Uint8Array(e.data)); }
+  };
+  channel.onmessage = async (e) => {
+    if (typeof e.data === "string") return src === primary() && fromParent(e.data);
+    if (player && await player.onBlock(e.data, src)) forwardBlock(e.data);
+  };
+  me.ontrack = (e) => {
+    rtpStream = e.streams[0] || new MediaStream([e.track]);
+    if (!player && sources.includes(src)) playStream(rtpStream);
+  };
+  me.onconnectionstatechange = () => {
+    if (!sources.includes(src)) return;
+    const st = me.connectionState;
+    if (st === "connected") {
+      if (!src.up) src.up = performance.now();
+      src.lost = 0; attempt = 0;
+      onAir(true); say(liveText());
+    }
+    if (st === "failed") dropSource(src, "The connection failed.");
+    // A short drop can heal on its own: the check below waits 5 s.
+    if (st === "disconnected") {
+      src.lost = performance.now();
+      if (sources.every((x) => x.lost || !x.up)) { onAir(false); say("Connection lost, waiting…"); }
+    }
+  };
+  if (!health) health = setInterval(checkSources, 1000);
+  return src;
+}
+// Where the sound comes from is for the console only; the player says "Live".
+function liveText() {
+  const n = sources.filter((x) => x.peer && x.up).length;
+  console.debug("radio: playing from", n ? n + " relay(s), depth " + depth : "the station");
+  return "Live";
+}
+
+// Leaves one source. The others play on, and a search looks for a new second one. A relay
+// that failed is not tried again.
+function dropSource(src, why, failed = true) {
+  if (!sources.includes(src)) return;
+  if (failed && src.peer) badPeers.add(src.peer);
+  sources = sources.filter((x) => x !== src);
+  try { src.me.close(); } catch (_) {}
+  if (!sources.length) return retry(why);
+  setDepth();
+  say(liveText());
+  repairSoon();
+}
+
+// To the RTP track: closing the audio channel tells the station to send RTP again.
+function fallBack() {
+  const src = primary();
+  if (!src || src.peer || !player) return;
+  player.close(); player = null;
+  if (src.a) src.a.close();
+  if (rtpStream) playStream(rtpStream);
+}
+
+// Every second: drop the sources that fail, look for a second one, pass it on.
+function checkSources() {
+  const now = performance.now();
+  // The station plays: it alone is enough, so the relays can go.
+  if (sources.some((x) => !x.peer && x.got > PREROLL)) for (const x of sources.filter((y) => y.peer)) dropSource(x, "", false);
+  for (const src of [...sources]) {
+    if (!src.up) {
+      // A source this page cannot reach (a relay: both behind NAT).
+      if (now - src.born > (src.peer ? 5000 : 10000)) dropSource(src, "The connection failed.", !!src.peer);
+      continue;
+    }
+    if (src.lost && now - src.lost > 5000) { dropSource(src, "The connection was lost."); continue; }
+    if (!player || !src.peer) continue;
+    if (!src.got && now - src.up > 4000) dropSource(src, "The stream stopped.");
+    else if (src.got && now - src.lastAt > 3000) dropSource(src, "The stream stopped.");
+  }
+  if (!sources.length) return;
+  const ups = sources.filter((x) => x.up).map((x) => x.up);
+  if (player && ups.length) {
+    // Nothing plays though packets may come: an older station that sends no packets, a
+    // browser that cannot decode them, or sources that send nothing that passes the check.
+    const quiet = player.played ? now - player.at > 3000 : now - Math.min(...ups) > 4000;
+    if (quiet) {
+      if (!player.played && !primary().peer) return fallBack();
+      for (const x of sources) if (x.peer) badPeers.add(x.peer);
+      return retry("The stream stopped.");
+    }
+  }
+  relayTick();
+  repairSoon();
+}
+
+// A page that plays through one listener looks for a second, so that the loss of one is
+// no gap. When the station answers instead, it alone is the source.
+function needsMore() {
+  return wanted && !!player && station.kind === "id" && sources.length === 1 && !!sources[0].peer && !!sources[0].up && player.played >= PREROLL;
+}
+function repairSoon() {
+  if (repairTimer || repairing || !needsMore() || performance.now() < repairAfter) return;
+  repairTimer = setTimeout(repair, 1000);
+}
+async function repair() {
+  repairTimer = null;
+  if (!needsMore()) return;
+  repairing = true;
+  const mine = gen;
+  let conns = [];
+  try {
+    conns = await Promise.all([0, 1, 2].map(() => connection(listenOut)));
+    searching = conns;
+    if (gen !== mine) throw new Error("stopped");
+    const got = await viaTrackers(station.id, listenKey, conns.map((c) => c.me.localDescription.sdp), {
+      relays: true, below: depth, skip: sources.map((x) => x.peer),
+    });
+    if (gen !== mine || !needsMore()) throw new Error("not needed");
+    const chosen = conns[got.index];
+    for (const c of conns) if (c !== chosen) c.me.close();
+    searching = [];
+    addSource(chosen, got.peer, got.hops);
+    await chosen.me.setRemoteDescription({ type: "answer", sdp: got.sdp });
+    repairFails = 0;
+  } catch (_) {
+    for (const c of conns) if (!sources.some((x) => x.me === c.me)) c.me.close();
+    // 15 s, then twice as long after each search that found no one, up to 4 minutes.
+    if (gen === mine) { searching = []; repairAfter = performance.now() + Math.min(240000, 15000 * 2 ** repairFails++); }
+  }
+  if (gen === mine) repairing = false;
+}
+
 async function listen() {
   if (!station) { await stop("Paste a station link first"); $("tuner").open = true; input.focus(); return; }
   if (station.kind === "url" && blockedMixed(station.url)) {
@@ -498,52 +1111,25 @@ async function listen() {
   const mine = gen;
   setIcon(true); gotMeta = false;
   say(station.kind === "id" ? "Finding the station…" : "Connecting…");
-  const me = new RTCPeerConnection({ iceServers: ICE });
-  pc = me;
-  me.addTransceiver("audio", { direction: "recvonly" });
-  const channel = me.createDataChannel("now");
-  channel.onmessage = (e) => onMessage(e.data);
-  me.ontrack = (e) => {
-    const stream = e.streams[0] || new MediaStream([e.track]);
-    audio.srcObject = stream;
-    audio.play().catch(() => {});
-    startMeter(stream);
-  };
-  me.onconnectionstatechange = () => {
-    if (pc !== me) return;
-    const s = me.connectionState;
-    if (s === "connected") {
-      attempt = 0;
-      clearTimeout(lostTimer); lostTimer = null;
-      onAir(true); say("Live");
-    }
-    if (s === "failed") retry("The connection failed.");
-    if (s === "disconnected") {
-      // A short drop can heal on its own. Wait a moment before a new connection.
-      onAir(false); say("Connection lost, waiting…");
-      clearTimeout(lostTimer);
-      lostTimer = setTimeout(() => {
-        if (pc === me && me.connectionState !== "connected") retry("The connection was lost.");
-      }, 5000);
-    }
-  };
+  const o = forceRtp || !(await canDecode) ? null : await output();
+  if (gen !== mine) return;
+  listenOut = o;
+  let conns = [];
   try {
-    const offer = await pc.createOffer();
-    // Ask for stereo: browsers decode Opus as mono unless the offer says stereo=1.
-    offer.sdp = offer.sdp.replace(/(a=fmtp:\d+ [^\r\n]*)/g, (l) => l.includes("stereo=") ? l : l + ";stereo=1");
-    await pc.setLocalDescription(offer);
-    await new Promise((done) => {
-      if (pc.iceGatheringState === "complete") return done();
-      pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && done();
-      setTimeout(done, 2000);
-    });
-    let answer;
+    // Five offers through the trackers, each its own connection; one to a station address.
+    conns = await Promise.all(Array.from({ length: station.kind === "id" ? 5 : 1 }, () => connection(o)));
+    searching = conns;
+    if (gen !== mine) { for (const c of conns) c.me.close(); return; }
+    let answer, key = null, chosen = conns[0], peer = null, hops = 0;
     if (station.kind === "id") {
-      answer = await viaTrackers(station.id, pc.localDescription.sdp);
+      key = await stationKey(station.id);
+      // With the switch off, the page plays from the station only: no relay sees it.
+      const got = await viaTrackers(station.id, key, conns.map((c) => c.me.localDescription.sdp), { relays: !!o && shareWanted, reserve: true });
+      answer = got.sdp; peer = got.peer; hops = got.hops; chosen = conns[got.index];
       say("Connecting…");
     } else {
       const res = await fetch(station.url + "/whep", {
-        method: "POST", headers: { "Content-Type": "application/sdp" }, body: pc.localDescription.sdp,
+        method: "POST", headers: { "Content-Type": "application/sdp" }, body: chosen.me.localDescription.sdp,
       });
       if (res.status !== 201) throw new Error(await res.text() || "HTTP " + res.status);
       const loc = res.headers.get("Location");
@@ -552,10 +1138,23 @@ async function listen() {
       titleFromServer(station.url);
       poll = setInterval(() => titleFromServer(station.url), 5000);
     }
-    if (gen !== mine) return;
-    await me.setRemoteDescription({ type: "answer", sdp: answer });
+    for (const c of conns) if (c !== chosen) c.me.close();
+    searching = [];
+    if (gen !== mine) { chosen.me.close(); return; }
+    listenKey = key;
+    if (o) {
+      player = makePlayer(o, key, station.kind === "id" ? new TextEncoder().encode(station.id) : null);
+      player.onFail = fallBack;
+      // A relay whose packets or blocks keep failing the check changes the audio.
+      player.onBad = (src) => { if (src.peer && src.bad > 5) dropSource(src, "The stream stopped."); };
+      playStream(o.dest.stream);
+    }
+    addSource(chosen, peer, hops);
+    await chosen.me.setRemoteDescription({ type: "answer", sdp: answer });
   } catch (e) {
+    for (const c of conns) if (!sources.some((x) => x.me === c.me)) c.me.close();
     if (gen !== mine) return;
+    searching = [];
     if (e.lasting) await stop("Could not tune in: " + e.message);
     else retry("Could not tune in: " + e.message + ".");
   }
@@ -566,12 +1165,13 @@ function tuneTo(text) {
   if (!next) { say("That is not a station link or address"); input.focus(); return; }
   station = next;
   history.replaceState(null, "", next.kind === "id" ? "#" + next.id : "?station=" + encodeURIComponent(next.url));
-  paint(next.label); setNow("", ""); setCover(null); played = []; renderHistory(); shareBtn.hidden = next.kind !== "id";
+  paint(next.label); setNow("", ""); setCover(null); played = []; renderHistory(); shareBtn.hidden = next.kind !== "id"; relayRow.hidden = next.kind !== "id";
   $("tuner").open = false;
   stop().then(start);
 }
 
 shareBtn.hidden = !(station && station.kind === "id");
+relayTick();
 shareBtn.addEventListener("click", async () => {
   try { await navigator.clipboard.writeText(location.href); shareText.textContent = "Copied"; }
   catch (_) { shareText.textContent = "Copy failed"; }

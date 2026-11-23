@@ -38,3 +38,4 @@ rustls-native-certs.workspace = true
 
 [dev-dependencies]
 rcgen.workspace = true
+ring.workspace = true

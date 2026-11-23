@@ -93,3 +93,24 @@ fn the_on_air_chip_turns_streaming_on_and_the_status_says_off_until_then() {
     let chip = h.get_by_label("PREVIEW");
     assert_eq!(chip.accesskit_node().toggled(), Some(Toggled::True));
 }
+
+#[test]
+fn listeners_reported_by_pages_show_apart_from_the_direct_ones() {
+    let tz = TimeZone::get("Europe/Ljubljana").expect("tz");
+    let now: Timestamp = "2026-11-21T13:58:00Z".parse().expect("ts");
+    let mut out = MockSource::new(tz).snapshot(now).output;
+    out.webrtc_listeners = Some(3);
+    out.webrtc_reported = Some(0);
+    let direct = out.webrtc_listeners_text().expect("listening");
+    assert!(direct.contains('3') && !direct.contains("reported"));
+    out.webrtc_reported = Some(5);
+    let text = out.webrtc_listeners_text().expect("listening");
+    assert!(
+        text.starts_with("3 listeners"),
+        "the direct count stays as it is: {text}"
+    );
+    assert!(
+        text.contains("5 more reported"),
+        "the reported ones are named as such: {text}"
+    );
+}

@@ -5,6 +5,7 @@ mod meter;
 mod mp3;
 mod now;
 mod output;
+mod packets;
 mod relay;
 mod upnp;
 mod webrtc;
@@ -12,6 +13,10 @@ pub use input::*;
 pub use meter::{LEVEL_FLOOR_DB, LevelMeter};
 pub use now::{Played, cover_messages, history_message};
 pub use output::*;
+pub use packets::{
+    AUDIO_CHANNEL, BLOCK_CONTEXT, BLOCK_PACKETS, HASH_LEN, KIND_AUDIO, KIND_BLOCK, SIGNATURE_LEN,
+    packet_hash,
+};
 pub use relay::{DEFAULT_TRACKERS, Identity, SIGNATURE_LINE};
 pub use webrtc::*;
 

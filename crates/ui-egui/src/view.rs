@@ -928,6 +928,9 @@ pub struct OutputStatus {
     pub webrtc: Status,
     /// How many WebRTC listeners play now, while the server listens.
     pub webrtc_listeners: Option<usize>,
+    /// Listeners that pages say they pass the audio on to. The station cannot check it, so
+    /// it never shows as part of [`webrtc_listeners`](Self::webrtc_listeners).
+    pub webrtc_reported: Option<usize>,
     /// The link that plays the station from anywhere. It is set only while a tracker
     /// carries the offers, because without one the link does not work.
     pub listen_link: Option<String>,
@@ -937,6 +940,19 @@ pub struct OutputStatus {
     pub forwarded: Option<String>,
     /// The streaming switch: `None` when this station has no WebRTC output.
     pub streaming: Option<bool>,
+}
+
+impl OutputStatus {
+    /// The WebRTC listeners in words, such as "3 listeners, 5 more reported by listeners".
+    /// The reported ones stay apart, because the station cannot check them.
+    pub fn webrtc_listeners_text(&self) -> Option<String> {
+        let n = self.webrtc_listeners?;
+        let mut text = format!("{n} listeners");
+        if let Some(more) = self.webrtc_reported.filter(|m| *m > 0) {
+            text.push_str(&format!(", {more} more reported by listeners"));
+        }
+        Some(text)
+    }
 }
 
 /// The job of an audio device.

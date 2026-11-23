@@ -51,8 +51,22 @@ pub(crate) fn output_meter_views(out: &OutputStatus, card_wanted: bool) -> Vec<O
         Some(WebRtcStatus::Listening { listeners: 0, .. }) => {
             (false, "On — 0 listeners".to_owned())
         }
-        Some(WebRtcStatus::Listening { listeners: 1, .. }) => (true, "1 listener".to_owned()),
-        Some(WebRtcStatus::Listening { listeners, .. }) => (true, format!("{listeners} listeners")),
+        // Listeners that pages report stay apart: the station cannot check them.
+        Some(WebRtcStatus::Listening {
+            listeners,
+            reported,
+            ..
+        }) => {
+            let direct = if *listeners == 1 {
+                "1 listener".to_owned()
+            } else {
+                format!("{listeners} listeners")
+            };
+            match reported {
+                0 => (true, direct),
+                n => (true, format!("{direct}, {n} more reported by listeners")),
+            }
+        }
     };
     [
         (OutputKind::Device, "Sound card", device),
@@ -184,6 +198,7 @@ mod tests {
             link: None,
             relays: 0,
             mapped: None,
+            reported: 0,
         };
         out.webrtc = Some(listening(0));
         let v = view(&out, OutputKind::WebRtc);
@@ -195,6 +210,25 @@ mod tests {
         assert_eq!(v.note, "2 listeners");
         out.webrtc = None;
         assert_eq!(view(&out, OutputKind::WebRtc).note, "Off");
+    }
+
+    #[test]
+    fn webrtc_listeners_that_pages_report_never_add_to_the_direct_count() {
+        let mut out = status(LocalOutput::Null);
+        out.webrtc = Some(WebRtcStatus::Listening {
+            url: "http://127.0.0.1/".into(),
+            public: None,
+            listeners: 3,
+            since: jiff::Timestamp::UNIX_EPOCH,
+            link: None,
+            relays: 0,
+            mapped: None,
+            reported: 5,
+        });
+        let note = view(&out, OutputKind::WebRtc).note;
+        assert!(note.starts_with("3 listeners"), "{note}");
+        assert!(note.contains("5 more reported"), "{note}");
+        assert!(!note.contains('8'), "never one sum: {note}");
     }
 
     #[test]

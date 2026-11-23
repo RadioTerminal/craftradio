@@ -248,3 +248,114 @@ fn a_flood_of_tracker_offers_cannot_lock_out_a_later_listener() {
     send(&mut ws, "real-listener");
     assert_eq!(answers(&mut ws), vec!["real-listener".to_owned()]);
 }
+
+/// With the station full but for its reserve, an offer through a tracker gets an answer only
+/// when the page cannot play through another listener.
+#[test]
+fn the_reserve_is_kept_for_pages_that_found_no_one_to_play_through() {
+    let pkcs8 = Identity::generate().unwrap();
+    let info_hash = Identity::new(&pkcs8).unwrap().info_hash();
+    let tracker = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("ws://{}", tracker.local_addr().unwrap());
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.identity = Some(pkcs8);
+    cfg.trackers = vec![url];
+    cfg.max_listeners = 4;
+    cfg.direct_reserve = 2;
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+
+    let (stream, _) = tracker.accept().unwrap();
+    let mut ws = tungstenite::accept(stream).unwrap();
+    ws.read().unwrap();
+    while relays(&server) != Some(1) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    ws.get_ref()
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let sdp = offer_sdp();
+    // Offers that never connect keep their slot for 5 s, longer than this test.
+    let mut answered = |line: &str, id: &str| {
+        let msg = serde_json::json!({
+            "action": "announce", "info_hash": info_hash, "peer_id": "reserve-peer-0000001",
+            "offer_id": id, "offer": { "type": "offer", "sdp": format!("{sdp}{line}") },
+        });
+        ws.send(tungstenite::Message::text(msg.to_string()))
+            .unwrap();
+        let mut ids = Vec::new();
+        while let Ok(m) = ws.read() {
+            if let tungstenite::Message::Text(t) = m {
+                let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                if v.get("answer").is_some() {
+                    ids.push(v["offer_id"].as_str().unwrap().to_owned());
+                }
+            }
+        }
+        ids == [id]
+    };
+
+    let no_relay = format!("{NO_RELAY_LINE}\r\n");
+    let station_only = format!("{STATION_ONLY_LINE}\r\n");
+    assert!(answered("", "first"), "a free slot outside the reserve");
+    assert!(answered("", "second"), "the last slot outside the reserve");
+    assert!(!answered("", "plain"), "the rest is the reserve");
+    assert!(
+        answered(&no_relay, "no-relay"),
+        "a page that found no relay"
+    );
+    assert!(
+        answered(&station_only, "station-only"),
+        "a page that takes the station only"
+    );
+    assert!(!answered(&no_relay, "full"), "the reserve is used up too");
+}
+
+/// A station that lets no listener pass the audio on keeps no reserve: every slot is for
+/// anyone.
+#[test]
+fn without_relaying_the_station_keeps_no_reserve() {
+    let pkcs8 = Identity::generate().unwrap();
+    let info_hash = Identity::new(&pkcs8).unwrap().info_hash();
+    let tracker = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("ws://{}", tracker.local_addr().unwrap());
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    cfg.identity = Some(pkcs8);
+    cfg.trackers = vec![url];
+    cfg.max_listeners = 2;
+    cfg.direct_reserve = 2;
+    cfg.relay = false;
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+
+    let (stream, _) = tracker.accept().unwrap();
+    let mut ws = tungstenite::accept(stream).unwrap();
+    ws.read().unwrap();
+    while relays(&server) != Some(1) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    ws.get_ref()
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let sdp = offer_sdp();
+    let mut ids = Vec::new();
+    for id in ["one", "two", "three"] {
+        let msg = serde_json::json!({
+            "action": "announce", "info_hash": info_hash, "peer_id": "reserve-peer-0000002",
+            "offer_id": id, "offer": { "type": "offer", "sdp": sdp },
+        });
+        ws.send(tungstenite::Message::text(msg.to_string()))
+            .unwrap();
+        while let Ok(m) = ws.read() {
+            if let tungstenite::Message::Text(t) = m {
+                let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                if v.get("answer").is_some() {
+                    ids.push(v["offer_id"].as_str().unwrap().to_owned());
+                }
+            }
+        }
+    }
+    assert_eq!(ids, ["one", "two"], "both slots, then full");
+}
