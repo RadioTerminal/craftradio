@@ -21,16 +21,36 @@ pub static APP: App = App {
 /// The version of this build. The release workflow writes it into the workspace.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// True when a copy running `running` follows prereleases: it is one itself (`0.2.0-rc.1`). A
-/// stable copy and a build from source follow stable releases only.
-fn follows_prereleases(running: &str) -> bool {
+/// True when the version `running` is itself a published prerelease (`0.2.0-rc.1`). A build
+/// from source has a suffix too, and is not one.
+fn suffixed_prerelease(running: &str) -> bool {
     version::parse(running).is_some_and(|v| !version::is_stable(&v) && !version::is_local_build(&v))
 }
 
-/// The release in GitHub's release list `json` to offer a prerelease copy running `running`:
-/// the newest published release, prerelease or not, when it is newer than the copy.
-fn offered_to_prerelease(json: &str, running: &str) -> Result<Option<Release>, String> {
-    let newest = craft_update::parse_github_release_list(json, APP.repo, true)?;
+/// True when GitHub's release list `json` marks the release of the version `running` as a
+/// prerelease. A release can be one without a suffix in its version (`v0.1.3`, published with
+/// "Set as a pre-release"), and only the list tells.
+fn published_as_prerelease(json: &str, running: &str) -> bool {
+    let Some(running) = version::parse(running) else {
+        return false;
+    };
+    let list: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    list.as_array().is_some_and(|list| {
+        list.iter().any(|item| {
+            let tag = item["tag_name"].as_str().unwrap_or_default();
+            let same = version::parse(tag.trim_start_matches('v'))
+                .is_some_and(|v| version::compare(&v, &running).is_eq());
+            same && item["prerelease"].as_bool().unwrap_or(false)
+        })
+    })
+}
+
+/// The release in GitHub's release list `json` to offer a copy running `running`. A copy of a
+/// prerelease is offered the newest published release of either kind, so it follows the next
+/// prerelease and then the stable release. Any other copy is offered stable releases only.
+fn offered(json: &str, running: &str) -> Result<Option<Release>, String> {
+    let prereleases = suffixed_prerelease(running) || published_as_prerelease(json, running);
+    let newest = craft_update::parse_github_release_list(json, APP.repo, prereleases)?;
     let running = version::parse(running);
     Ok(newest.filter(|release| {
         release
@@ -41,9 +61,9 @@ fn offered_to_prerelease(json: &str, running: &str) -> Result<Option<Release>, S
     }))
 }
 
-/// The check of a prerelease copy. craft-update's own check offers stable releases only, so a
+/// The update check. craft-update's own check offers stable releases only, so a copy of a
 /// prerelease would never hear of the next one.
-fn prerelease_check(running: String) -> CheckSource {
+fn check(running: String) -> CheckSource {
     Arc::new(move || {
         let http = Http::new(&format!("{}/Update", APP.name))?;
         let url = format!(
@@ -51,7 +71,7 @@ fn prerelease_check(running: String) -> CheckSource {
             APP.repo
         );
         match http.get_api(&url, None)? {
-            Fetched::Body { text, .. } => offered_to_prerelease(&text, &running),
+            Fetched::Body { text, .. } => offered(&text, &running),
             Fetched::RateLimited { .. } => Err("GitHub's request limit was reached".into()),
             Fetched::NotModified | Fetched::NotFound => Ok(None),
         }
@@ -69,12 +89,8 @@ impl Updates {
         // The version this copy counts as, which a test run can set.
         let running = craft_update::self_update::current_version(&APP, VERSION)
             .map_or_else(|| VERSION.to_owned(), |v| v.to_string());
-        let mut updater = Updater::new(&APP, VERSION);
-        if follows_prereleases(&running) {
-            updater = updater.with_source(prerelease_check(running));
-        }
         Self {
-            updater,
+            updater: Updater::new(&APP, VERSION).with_source(check(running)),
             result: CheckResultDialog::new(&APP, VERSION),
         }
     }
@@ -124,35 +140,38 @@ impl Updates {
 mod tests {
     use super::*;
 
-    const LIST: &str = r#"[
+    /// Releases as this repository publishes them: prereleases without a suffix.
+    const MARKED: &str = r#"[
+        {"tag_name":"v0.1.4","prerelease":true,"draft":false,"assets":[]},
+        {"tag_name":"v0.1.3","prerelease":true,"draft":false,"assets":[]},
+        {"tag_name":"v0.1.0","prerelease":false,"draft":false,"assets":[]}]"#;
+
+    const SUFFIXED: &str = r#"[
         {"tag_name":"v0.3.0-rc.2","prerelease":true,"draft":false,"assets":[]},
         {"tag_name":"v0.3.0-rc.1","prerelease":true,"draft":false,"assets":[]},
         {"tag_name":"v0.2.0","prerelease":false,"draft":false,"assets":[]}]"#;
 
-    fn offered(list: &str, running: &str) -> Option<String> {
-        offered_to_prerelease(list, running)
+    fn tag(list: &str, running: &str) -> Option<String> {
+        offered(list, running)
             .expect("the list reads")
             .map(|release| release.tag)
     }
 
     #[test]
-    fn only_a_prerelease_copy_follows_prereleases() {
-        assert!(follows_prereleases("0.3.0-rc.1"));
-        assert!(!follows_prereleases("0.2.0"), "a stable copy stays stable");
-        assert!(
-            !follows_prereleases("0.3.0-dev"),
-            "a build from source is not a published prerelease"
-        );
+    fn a_copy_of_a_marked_prerelease_is_offered_the_next_one() {
+        assert_eq!(tag(MARKED, "0.1.3").as_deref(), Some("v0.1.4"));
+        assert_eq!(tag(MARKED, "0.1.4"), None, "the newest has no update");
     }
 
     #[test]
-    fn a_prerelease_copy_is_offered_the_next_prerelease() {
-        assert_eq!(offered(LIST, "0.3.0-rc.1").as_deref(), Some("v0.3.0-rc.2"));
-        assert_eq!(
-            offered(LIST, "0.3.0-rc.2"),
-            None,
-            "the newest has no update"
-        );
+    fn a_stable_copy_is_not_offered_a_prerelease() {
+        assert_eq!(tag(MARKED, "0.1.0"), None);
+        assert_eq!(tag(SUFFIXED, "0.2.0"), None);
+    }
+
+    #[test]
+    fn a_suffixed_prerelease_copy_is_offered_the_next_one() {
+        assert_eq!(tag(SUFFIXED, "0.3.0-rc.1").as_deref(), Some("v0.3.0-rc.2"));
     }
 
     #[test]
@@ -160,14 +179,20 @@ mod tests {
         let list = r#"[
             {"tag_name":"v0.3.0","prerelease":false,"draft":false,"assets":[]},
             {"tag_name":"v0.3.0-rc.2","prerelease":true,"draft":false,"assets":[]}]"#;
-        assert_eq!(offered(list, "0.3.0-rc.2").as_deref(), Some("v0.3.0"));
+        assert_eq!(tag(list, "0.3.0-rc.2").as_deref(), Some("v0.3.0"));
+    }
+
+    #[test]
+    fn a_build_from_source_is_not_offered_a_prerelease() {
+        assert_eq!(tag(SUFFIXED, "0.2.0-dev"), None);
     }
 
     #[test]
     fn a_draft_is_never_offered() {
         let list = r#"[
-            {"tag_name":"v0.3.0-rc.3","prerelease":true,"draft":true,"assets":[]},
-            {"tag_name":"v0.3.0-rc.2","prerelease":true,"draft":false,"assets":[]}]"#;
-        assert_eq!(offered(list, "0.3.0-rc.1").as_deref(), Some("v0.3.0-rc.2"));
+            {"tag_name":"v0.1.5","prerelease":true,"draft":true,"assets":[]},
+            {"tag_name":"v0.1.4","prerelease":true,"draft":false,"assets":[]},
+            {"tag_name":"v0.1.3","prerelease":true,"draft":false,"assets":[]}]"#;
+        assert_eq!(tag(list, "0.1.3").as_deref(), Some("v0.1.4"));
     }
 }

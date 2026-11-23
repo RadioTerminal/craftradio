@@ -38,8 +38,8 @@ the run notes when the two differ.
 - **A version without a suffix** is a release, unless it was published as a prerelease; then it
   stays one.
 - The in-app updater offers stable installs only releases that are neither marked prerelease nor
-  suffixed. An install of a prerelease is offered the newest release of either kind, so it
-  follows the next prerelease and then the stable release. The README's download link,
+  suffixed. An install of a prerelease (suffixed, or marked as one on GitHub) is offered the
+  newest release of either kind, so it follows the next prerelease and then the stable release. The README's download link,
   `releases/latest`, never points at a prerelease.
 
 ## Cutting a release
