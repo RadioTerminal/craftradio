@@ -116,6 +116,11 @@
   .field button { padding: 0 16px; border: 0; border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer;
                   background: rgba(255,255,255,.9); color: #16181d; }
   .hint { margin: 10px 0 0; font-size: 13px; color: var(--faint); }
+  .relay { margin: 14px 6px 0; font-size: 13px; color: var(--soft); }
+  .relay label { cursor: pointer; }
+  .relay input { accent-color: var(--live); vertical-align: -2px; margin: 0 6px 0 0; }
+  .relay input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  #relay-state { display: block; margin-top: 4px; color: var(--faint); }
   .hint code { color: var(--soft); font-size: 12.5px; }
 
   @media (prefers-reduced-motion: reduce) {
@@ -159,6 +164,11 @@
       </div>
     </section>
 
+    <p class="relay" id="relay" hidden>
+      <label><input type="checkbox" id="relay-on"> Pass the stream on to other listeners</label>
+      <span id="relay-state" role="status"></span>
+    </p>
+
     <section class="history" id="history" aria-labelledby="history-title" hidden>
       <h2 id="history-title">
         <button class="history-toggle" id="history-toggle" type="button" aria-expanded="false" aria-controls="history-list">
@@ -194,7 +204,7 @@ for (let i = 0; i < BARS; i++) meter.appendChild(document.createElement("b"));
 const PLAY = '<path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/>';
 const STOP = '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/>';
 
-let player = null, rtpStream = null, fallbackTimer = null;
+let player = null, rtpStream = null, fallbackTimer = null, searching = [];
 let pc = null, resource = null, poll = null, ctx = null, raf = 0, sockets = [], coverUrl = null, cover = null, gotMeta = false;
 
 // A station is either an ID (from a shared link) or an http(s) address.
@@ -509,6 +519,7 @@ function makePlayer(o, key, id) {
     const p = { opus: u.slice(6), ok: false, h: null };
     packets.set(seq, p);
     player.got++;
+    player.lastAt = performance.now();
     // Without a station key (an address, not a link), the DTLS link to the station is the check.
     if (!key) { p.ok = true; if (seq > newest) newest = seq; pump(); return; }
     const head = new Uint8Array(4); new DataView(head.buffer).setUint32(0, seq);
@@ -543,6 +554,176 @@ function concat(...parts) {
   return all;
 }
 
+// Passing the stream on. A listener that plays from a station link, smoothly and close
+// enough to the station, answers offers in the station's swarm like the station does. It
+// forwards the packets and the signed blocks as they are; each listener checks them itself.
+// Its answers carry no station signature, so a page takes them only on the packet path.
+const RELAY_LINE = "a=x-radio-relay:";
+// In an offer from a page that takes only the station: relays leave it alone.
+const STATION_ONLY = "a=x-radio-station-only\r\n";
+const MAX_CHILDREN = /Mobi|Android/i.test(navigator.userAgent) ? 1 : 3;
+const relayRow = $("relay"), relayOn = $("relay-on"), relayState = $("relay-state");
+let shareWanted = true;
+try { shareWanted = localStorage.getItem("relay") !== "0"; } catch (_) {}
+relayOn.checked = shareWanted;
+relayOn.addEventListener("change", () => {
+  shareWanted = relayOn.checked;
+  try { localStorage.setItem("relay", shareWanted ? "1" : "0"); } catch (_) {}
+  if (!shareWanted) stopRelay(true);
+  relayTick();
+});
+// From the station, through any relays: whether listeners may pass it on, and how far.
+let relayAllowed = false, maxHops = 0, depth = 0, children = [], relaySockets = [], relayTimer = null;
+let reportedUp = -1, reportAt = 0, nowChannel = null, parentPeer = null;
+const badPeers = new Set();
+// What plays now, kept to greet a new listener: the hello, the history and its thumbnails,
+// and the messages since the last "now".
+let metaNow = [], metaHistory = null, metaHello = null;
+const metaThumbs = new Map();
+
+async function infoHashOf(id) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", b64url(id)));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 20);
+}
+
+// A text message from the parent: kept and passed on.
+function fromParent(text) {
+  let m = null; try { m = JSON.parse(text); } catch (_) {}
+  if (m && m.type === "relay") {
+    relayAllowed = m.allowed === true;
+    maxHops = Math.min(Number(m.max_hops) || 0, 16);
+    metaHello = text;
+    relayTick();
+    return;
+  }
+  if (m && m.type === "now") metaNow = [text];
+  else if (m && m.type === "history") metaHistory = text;
+  else if (m && m.type === "thumb") { metaThumbs.set(m.key, text); if (metaThumbs.size > 60) metaThumbs.delete(metaThumbs.keys().next().value); }
+  else metaNow.push(text);
+  for (const c of children) sendTo(c.now, text);
+  onMessage(text);
+}
+function sendTo(ch, data) {
+  if (ch && ch.readyState === "open" && ch.bufferedAmount < 256 * 1024) { try { ch.send(data); } catch (_) {} }
+}
+// A packet from the parent, passed on with this listener's hops.
+function forwardAudio(buf) {
+  const u = new Uint8Array(buf);
+  if (u.length > 6 && u[0] === 1) depth = u[5] + 1;
+  if (!children.length) return;
+  const copy = u.slice(); copy[5] = depth;
+  for (const c of children) if (c.audio && c.audio.readyState === "open" && c.audio.bufferedAmount < 64 * 1024) { try { c.audio.send(copy); } catch (_) {} }
+}
+function forwardBlock(buf) { for (const c of children) sendTo(c.now, buf); }
+
+function relayReason() {
+  if (!player || station.kind !== "id" || !player.played) return null;
+  if (!relayAllowed) return "This station lets no listener pass it on.";
+  if (!shareWanted) return "Off: this page plays from the station only and passes nothing on.";
+  if (depth >= maxHops) return "Not now: this page is already far from the station.";
+  if (player.played < PREROLL) return "Starts once the sound plays smoothly.";
+  return "";
+}
+// Every 2 s while connected: join or leave the swarm, report listeners up, show the state.
+function relayTick() {
+  const why = relayReason();
+  relayRow.hidden = why === null;
+  relayOn.disabled = !relayAllowed;
+  if (why === "") {
+    startRelay();
+    const n = children.filter((c) => c.open).length;
+    relayState.textContent = (n ? "Passing it on to " + n + (n === 1 ? " listener" : " listeners") : "Ready to pass it on to up to " + MAX_CHILDREN + (MAX_CHILDREN === 1 ? " listener" : " listeners")) +
+      ". Listeners who play through you see your IP address.";
+  } else {
+    stopRelay(false);
+    relayState.textContent = why || "";
+  }
+  const total = children.reduce((n, c) => n + (c.open ? 1 + c.reported : 0), 0);
+  if (nowChannel && nowChannel.readyState === "open" && (total !== reportedUp || Date.now() - reportAt > 30000)) {
+    reportedUp = total; reportAt = Date.now();
+    try { nowChannel.send(JSON.stringify({ type: "report", listeners: total })); } catch (_) {}
+  }
+}
+
+async function startRelay() {
+  if (relaySockets.length) return;
+  const mine = gen, infoHash = await infoHashOf(station.id), peerId = randomId(20);
+  if (gen !== mine || relaySockets.length) return;
+  const announce = (ws, event) => ws.readyState === 1 && ws.send(JSON.stringify({
+    action: "announce", info_hash: infoHash, peer_id: peerId, numwant: 0,
+    uploaded: 0, downloaded: 0, left: 0, offers: [], ...(event ? { event } : {}),
+  }));
+  for (const url of TRACKERS) {
+    let ws;
+    try { ws = new WebSocket(url); } catch (_) { continue; }
+    relaySockets.push(ws);
+    ws.onopen = () => announce(ws, "started");
+    ws.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+      if (m.info_hash !== infoHash) return;
+      if (m.offer && m.offer_id && m.peer_id) answerChild(m, ws, infoHash, peerId);
+    };
+    ws.again = setInterval(() => announce(ws), 60000);
+    // A tracker that drops the socket: the next tick joins again once none is left.
+    ws.onclose = () => { clearInterval(ws.again); relaySockets = relaySockets.filter((x) => x !== ws); };
+  }
+}
+function stopRelay(dropChildren) {
+  for (const ws of relaySockets) { clearInterval(ws.again); try { ws.close(); } catch (_) {} }
+  relaySockets = [];
+  if (dropChildren) for (const c of [...children]) dropChild(c);
+}
+function dropChild(c) {
+  children = children.filter((x) => x !== c);
+  try { c.pc.close(); } catch (_) {}
+}
+
+async function answerChild(m, ws, infoHash, peerId) {
+  if (children.length >= MAX_CHILDREN || typeof m.offer.sdp !== "string" || m.offer.sdp.length > 20000) return;
+  if (m.offer.sdp.includes(STATION_ONLY)) return;
+  // A listener sends several offers; one answer each is enough.
+  if (children.some((x) => x.peer === m.peer_id)) return;
+  const mine = gen;
+  const c = { pc: new RTCPeerConnection({ iceServers: ICE }), audio: null, now: null, reported: 0, open: false, peer: m.peer_id };
+  children.push(c);
+  c.pc.ondatachannel = (e) => {
+    const ch = e.channel;
+    ch.binaryType = "arraybuffer";
+    if (ch.label === "audio") { c.audio = ch; return; }
+    if (ch.label !== "now") return;
+    c.now = ch;
+    const greet = () => {
+      for (const text of [metaHello, metaHistory, ...metaThumbs.values(), ...metaNow]) if (text) sendTo(ch, text);
+    };
+    if (ch.readyState === "open") greet(); else ch.onopen = greet;
+    ch.onmessage = (ev) => {
+      if (typeof ev.data !== "string" || ev.data.length > 256) return;
+      try { const r = JSON.parse(ev.data); if (r.type === "report") c.reported = Math.max(0, Math.min(1000, r.listeners | 0)); } catch (_) {}
+    };
+  };
+  c.pc.onconnectionstatechange = () => {
+    const st = c.pc.connectionState;
+    c.open = st === "connected";
+    if (st === "failed" || st === "closed") dropChild(c);
+    if (st === "disconnected") setTimeout(() => { if (c.pc.connectionState !== "connected") dropChild(c); }, 5000);
+    relayTick();
+  };
+  // A listener that took another answer never connects here.
+  setTimeout(() => { if (c.pc.connectionState !== "connected") dropChild(c); }, 10000);
+  try {
+    await c.pc.setRemoteDescription(m.offer);
+    await c.pc.setLocalDescription(await c.pc.createAnswer());
+    await new Promise((done) => {
+      if (c.pc.iceGatheringState === "complete") return done();
+      c.pc.onicegatheringstatechange = () => c.pc.iceGatheringState === "complete" && done();
+      setTimeout(done, 2000);
+    });
+    if (gen !== mine || !children.includes(c)) return;
+    const sdp = c.pc.localDescription.sdp + RELAY_LINE + depth + ";" + (MAX_CHILDREN - children.length) + "\r\n";
+    ws.send(JSON.stringify({ action: "announce", info_hash: infoHash, peer_id: peerId, to_peer_id: m.peer_id, offer_id: m.offer_id, answer: { type: "answer", sdp } }));
+  } catch (_) { dropChild(c); }
+}
+
 function closeTrackers() { for (const s of sockets) { try { s.close(); } catch (_) {} } sockets = []; }
 
 // The listener wants to hear the station from Play until Stop. In between, a lost or
@@ -559,6 +740,13 @@ function teardown() {
   if (pc) pc.close();
   pc = null; resource = null;
   clearTimeout(fallbackTimer); fallbackTimer = null;
+  clearInterval(relayTimer); relayTimer = null;
+  for (const c of searching) c.me.close();
+  searching = [];
+  stopRelay(true);
+  relayAllowed = false; depth = 0; nowChannel = null; reportedUp = -1; parentPeer = null;
+  metaNow = []; metaHistory = null; metaHello = null; metaThumbs.clear();
+  relayRow.hidden = true;
   if (player) player.close();
   player = null; rtpStream = null;
   stopMeter();
@@ -616,27 +804,32 @@ async function stationKey(id) {
   catch (_) { throw lasting("this browser cannot check the station signature. Update it, or open the station address directly"); }
 }
 
-async function viaTrackers(id, key, offerSdp) {
-  const publicKey = b64url(id);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey));
-  const infoHash = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 20);
+// Each offer is its own connection: one peer answers it, so no other peer's checks get in.
+// Answers from listeners that pass the stream on count only with `relays`: their audio is
+// checked packet by packet, and they carry no station signature. The station's answer wins
+// at once (operator, 2026-11-23: station first until a listener has two sources). When only
+// relays answer, the closest of those in 1.5 s wins.
+// Gives the answer and the index of its offer.
+async function viaTrackers(id, key, sdps, relays) {
+  const infoHash = await infoHashOf(id);
   const peerId = randomId(20);
   return new Promise((resolve, reject) => {
-    const ids = new Set();
-    let done = false, open = 0;
-    const offers = () => Array.from({ length: 5 }, () => {
-      const offerId = randomId(20); ids.add(offerId);
-      return { offer: { type: "offer", sdp: offerSdp }, offer_id: offerId };
+    const ids = new Map(), answered = new Set(), answers = [];
+    let done = false, open = 0, choose = null;
+    // An offer goes out again only while no one has answered it.
+    const offers = () => sdps.map((sdp, i) => i).filter((i) => !answered.has(i)).map((i) => {
+      const offerId = randomId(20); ids.set(offerId, i);
+      return { offer: { type: "offer", sdp: relays ? sdps[i] : sdps[i] + STATION_ONLY }, offer_id: offerId };
     });
     const announce = (ws) => ws.readyState === 1 && ws.send(JSON.stringify({
-      action: "announce", info_hash: infoHash, peer_id: peerId, numwant: 5,
+      action: "announce", info_hash: infoHash, peer_id: peerId, numwant: sdps.length,
       uploaded: 0, downloaded: 0, left: 1, event: "started", offers: offers(),
     }));
-    const timer = setTimeout(() => finish(new Error("the station did not answer. It may be off air")), 20000);
+    const timer = setTimeout(() => finish(new Error("the station did not answer. It may be off air, or full")), 20000);
     const again = setInterval(() => sockets.forEach(announce), 5000);
     function finish(result) {
       if (done) return; done = true;
-      clearTimeout(timer); clearInterval(again); closeTrackers();
+      clearTimeout(timer); clearInterval(again); clearTimeout(choose); closeTrackers();
       result instanceof Error ? reject(result) : resolve(result);
     }
     for (const url of TRACKERS) {
@@ -647,14 +840,29 @@ async function viaTrackers(id, key, offerSdp) {
       ws.onerror = () => { if (!sockets.some((s) => s.readyState <= 1) && !open) finish(new Error("no tracker could be reached")); };
       ws.onmessage = async (e) => {
         let m; try { m = JSON.parse(e.data); } catch (_) { return; }
-        if (!m.answer || !ids.has(m.offer_id) || done) return;
+        const index = ids.get(m.offer_id);
+        if (!m.answer || index === undefined || answered.has(index) || done) return;
+        // Any answer uses up its offer: the peer that sent it already checks against it.
+        answered.add(index);
+        if (answered.size === sdps.length && !answers.length) setTimeout(() => {
+          if (!answers.length) finish(new Error("no usable answer came"));
+        }, 1500);
         const signed = m.answer.sdp || "";
-        const at = signed.lastIndexOf(SIG);
-        if (at < 0) return;
-        const sdp = signed.slice(0, at);
-        const sig = b64url(signed.slice(at + SIG.length).trim());
-        const ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, new TextEncoder().encode(m.offer_id + "\n" + sdp)).catch(() => false);
-        if (ok) finish(sdp);
+        const at = signed.lastIndexOf(SIG), rel = signed.lastIndexOf(RELAY_LINE);
+        if (at >= 0) {
+          const sdp = signed.slice(0, at);
+          const sig = b64url(signed.slice(at + SIG.length).trim());
+          const ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, new TextEncoder().encode(m.offer_id + "\n" + sdp)).catch(() => false);
+          if (!ok || done) return;
+          return finish({ sdp, hops: 0, free: 0, peer: null, index });
+        } else if (relays && rel >= 0 && !badPeers.has(m.peer_id)) {
+          const [hops, free] = signed.slice(rel + RELAY_LINE.length).trim().split(";").map((n) => parseInt(n, 10));
+          if (!(hops >= 1)) return;
+          answers.push({ sdp: signed.slice(0, rel), hops, free: free || 0, peer: m.peer_id, index });
+        } else return;
+        if (answers.length && !choose) choose = setTimeout(() => {
+          finish(answers.sort((x, y) => x.hops - y.hops || y.free - x.free)[0]);
+        }, 1500);
       };
     }
     if (!sockets.length) finish(new Error("no tracker could be reached"));
@@ -681,6 +889,106 @@ async function titleFromServer(url) {
   } catch (_) {}
 }
 
+// A connection that offers RTP audio (an older station sends only that) and, on the packet
+// path, the "audio" channel; with its offer made and its candidates gathered.
+async function connection(o) {
+  const me = new RTCPeerConnection({ iceServers: ICE });
+  me.addTransceiver("audio", { direction: "recvonly" });
+  // Created before "now": an older station takes the last channel as its "now".
+  const a = o ? me.createDataChannel("audio", { ordered: false, maxRetransmits: 0 }) : null;
+  if (a) a.binaryType = "arraybuffer";
+  const channel = me.createDataChannel("now");
+  channel.binaryType = "arraybuffer";
+  const offer = await me.createOffer();
+  // Ask for stereo: browsers decode Opus as mono unless the offer says stereo=1.
+  offer.sdp = offer.sdp.replace(/(a=fmtp:\d+ [^\r\n]*)/g, (l) => l.includes("stereo=") ? l : l + ";stereo=1");
+  await me.setLocalDescription(offer);
+  await new Promise((done) => {
+    if (me.iceGatheringState === "complete") return done();
+    me.onicegatheringstatechange = () => me.iceGatheringState === "complete" && done();
+    setTimeout(done, 2000);
+  });
+  return { me, a, channel };
+}
+
+// Plays through the connection that got the answer.
+function use({ me, a, channel }, o, key) {
+  pc = me;
+  // To the RTP track: closing the audio channel tells the station to send RTP again.
+  const fallBack = () => {
+    if (pc !== me || !player) return;
+    player.close(); player = null;
+    if (a) a.close();
+    if (rtpStream) playStream(rtpStream);
+  };
+  if (a) a.onmessage = (e) => {
+    if (typeof e.data === "string") return onMessage(e.data);
+    if (player) player.onAudio(e.data);
+    forwardAudio(e.data);
+  };
+  nowChannel = channel;
+  channel.onmessage = (e) => {
+    if (typeof e.data === "string") return fromParent(e.data);
+    if (player) player.onBlock(e.data);
+    forwardBlock(e.data);
+  };
+  me.ontrack = (e) => {
+    rtpStream = e.streams[0] || new MediaStream([e.track]);
+    if (!player && pc === me) playStream(rtpStream);
+  };
+  me.onconnectionstatechange = () => {
+    if (pc !== me) return;
+    const s = me.connectionState;
+    if (s === "connected") {
+      attempt = 0;
+      // Nothing decoded yet: an older station that sends no packets, or a browser that
+      // cannot decode them. Play the RTP track. A relay sends no RTP: one that sends
+      // nothing is left for another source.
+      clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(() => {
+        if (!player || player.played) return;
+        if (parentPeer) { badPeers.add(parentPeer); retry("The listener passing it on sent nothing."); }
+        else fallBack();
+      }, 4000);
+      clearInterval(relayTimer);
+      relayTimer = setInterval(() => {
+        if (pc !== me) return;
+        // The source stopped sending, though the connection stays up.
+        if (player && player.played && performance.now() - player.lastAt > 3000) {
+          if (parentPeer) badPeers.add(parentPeer);
+          return retry("The stream stopped.");
+        }
+        // A relay whose packets keep failing the check changes the audio.
+        if (player && parentPeer && player.bad > 25) {
+          badPeers.add(parentPeer);
+          return retry("The listener passing it on changed the audio.");
+        }
+        relayTick();
+      }, 2000);
+      clearTimeout(lostTimer); lostTimer = null;
+      onAir(true); say("Live");
+    }
+    if (s === "failed") { if (parentPeer) badPeers.add(parentPeer); retry("The connection failed."); }
+    if (s === "disconnected") {
+      // A short drop can heal on its own. Wait a moment before a new connection.
+      onAir(false); say("Connection lost, waiting…");
+      clearTimeout(lostTimer);
+      lostTimer = setTimeout(() => {
+        if (pc === me && me.connectionState !== "connected") { if (parentPeer) badPeers.add(parentPeer); retry("The connection was lost."); }
+      }, 5000);
+    }
+  };
+  if (o) {
+    player = makePlayer(o, key, station.kind === "id" ? new TextEncoder().encode(station.id) : null);
+    player.onFail = fallBack;
+    playStream(o.dest.stream);
+  }
+  // A relay this page cannot reach (both behind NAT) is not tried again.
+  if (parentPeer) setTimeout(() => {
+    if (pc === me && me.connectionState !== "connected") { badPeers.add(parentPeer); retry("Could not reach the listener passing it on."); }
+  }, 5000);
+}
+
 async function listen() {
   if (!station) { await stop("Paste a station link first"); $("tuner").open = true; input.focus(); return; }
   if (station.kind === "url" && blockedMixed(station.url)) {
@@ -693,71 +1001,22 @@ async function listen() {
   say(station.kind === "id" ? "Finding the station…" : "Connecting…");
   const o = forceRtp || !(await canDecode) ? null : await output();
   if (gen !== mine) return;
-  const me = new RTCPeerConnection({ iceServers: ICE });
-  pc = me;
-  // RTP audio stays in the offer: an older station sends only that.
-  me.addTransceiver("audio", { direction: "recvonly" });
-  let a = null;
-  // To the RTP track: closing the audio channel tells the station to send RTP again.
-  const fallBack = () => {
-    if (pc !== me || !player) return;
-    player.close(); player = null;
-    if (a) a.close();
-    if (rtpStream) playStream(rtpStream);
-  };
-  if (o) {
-    // Created before "now": an older station takes the last channel as its "now".
-    a = me.createDataChannel("audio", { ordered: false, maxRetransmits: 0 });
-    a.binaryType = "arraybuffer";
-    a.onmessage = (e) => (typeof e.data === "string" ? onMessage(e.data) : player && player.onAudio(e.data));
-  }
-  const channel = me.createDataChannel("now");
-  channel.binaryType = "arraybuffer";
-  channel.onmessage = (e) => (typeof e.data === "string" ? onMessage(e.data) : player && player.onBlock(e.data));
-  me.ontrack = (e) => {
-    rtpStream = e.streams[0] || new MediaStream([e.track]);
-    if (!player && pc === me) playStream(rtpStream);
-  };
-  me.onconnectionstatechange = () => {
-    if (pc !== me) return;
-    const s = me.connectionState;
-    if (s === "connected") {
-      attempt = 0;
-      // Nothing decoded yet: an older station that sends no packets, or a browser that
-      // cannot decode them. Play the RTP track.
-      clearTimeout(fallbackTimer);
-      fallbackTimer = setTimeout(() => { if (player && !player.played) fallBack(); }, 4000);
-      clearTimeout(lostTimer); lostTimer = null;
-      onAir(true); say("Live");
-    }
-    if (s === "failed") retry("The connection failed.");
-    if (s === "disconnected") {
-      // A short drop can heal on its own. Wait a moment before a new connection.
-      onAir(false); say("Connection lost, waiting…");
-      clearTimeout(lostTimer);
-      lostTimer = setTimeout(() => {
-        if (pc === me && me.connectionState !== "connected") retry("The connection was lost.");
-      }, 5000);
-    }
-  };
+  let conns = [];
   try {
-    const offer = await pc.createOffer();
-    // Ask for stereo: browsers decode Opus as mono unless the offer says stereo=1.
-    offer.sdp = offer.sdp.replace(/(a=fmtp:\d+ [^\r\n]*)/g, (l) => l.includes("stereo=") ? l : l + ";stereo=1");
-    await pc.setLocalDescription(offer);
-    await new Promise((done) => {
-      if (pc.iceGatheringState === "complete") return done();
-      pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && done();
-      setTimeout(done, 2000);
-    });
-    let answer, key = null;
+    // Five offers through the trackers, each its own connection; one to a station address.
+    conns = await Promise.all(Array.from({ length: station.kind === "id" ? 5 : 1 }, () => connection(o)));
+    searching = conns;
+    if (gen !== mine) { for (const c of conns) c.me.close(); return; }
+    let answer, key = null, chosen = conns[0];
     if (station.kind === "id") {
       key = await stationKey(station.id);
-      answer = await viaTrackers(station.id, key, pc.localDescription.sdp);
-      say("Connecting…");
+      // With the switch off, the page plays from the station only: no relay sees it.
+      const got = await viaTrackers(station.id, key, conns.map((c) => c.me.localDescription.sdp), !!o && shareWanted);
+      answer = got.sdp; parentPeer = got.peer; chosen = conns[got.index];
+      say(got.peer ? "Connecting through a listener…" : "Connecting…");
     } else {
       const res = await fetch(station.url + "/whep", {
-        method: "POST", headers: { "Content-Type": "application/sdp" }, body: pc.localDescription.sdp,
+        method: "POST", headers: { "Content-Type": "application/sdp" }, body: chosen.me.localDescription.sdp,
       });
       if (res.status !== 201) throw new Error(await res.text() || "HTTP " + res.status);
       const loc = res.headers.get("Location");
@@ -766,15 +1025,15 @@ async function listen() {
       titleFromServer(station.url);
       poll = setInterval(() => titleFromServer(station.url), 5000);
     }
-    if (gen !== mine) return;
-    if (o) {
-      player = makePlayer(o, key, station.kind === "id" ? new TextEncoder().encode(station.id) : null);
-      player.onFail = fallBack;
-      playStream(o.dest.stream);
-    }
-    await me.setRemoteDescription({ type: "answer", sdp: answer });
+    for (const c of conns) if (c !== chosen) c.me.close();
+    searching = [];
+    if (gen !== mine) { chosen.me.close(); return; }
+    use(chosen, o, key);
+    await chosen.me.setRemoteDescription({ type: "answer", sdp: answer });
   } catch (e) {
+    for (const c of conns) if (c.me !== pc) c.me.close();
     if (gen !== mine) return;
+    searching = [];
     if (e.lasting) await stop("Could not tune in: " + e.message);
     else retry("Could not tune in: " + e.message + ".");
   }
