@@ -194,6 +194,8 @@ pub struct RadioApp {
     decks: decks::State,
     /// The levels that the meters show, after the ballistics, and when they last moved.
     meter_shown: Vec<Ballistics>,
+    /// What each output meter strip shows, like `meter_shown`.
+    output_shown: Vec<Ballistics>,
     meter_at: Option<std::time::Instant>,
     /// Until when the meters ask for frames: a second after the last change.
     meter_active_until: Option<std::time::Instant>,
@@ -267,6 +269,7 @@ impl RadioApp {
             perf: None,
             decks: decks::State::default(),
             meter_shown: Vec::new(),
+            output_shown: Vec::new(),
             meter_at: None,
             meter_active_until: None,
             meter_block: (0, None),
@@ -316,9 +319,28 @@ impl RadioApp {
                 m.peak_db = shown.hold;
             }
         }
+        self.output_shown
+            .resize(frame.output_level_db.len(), Ballistics::default());
+        for (i, target) in frame.output_level_db.iter().enumerate() {
+            let shown = &mut self.output_shown[i];
+            changed |= shown.step(*target, *target, dt);
+            if let Some(m) = self.view.output_meters.get_mut(i) {
+                // A down output shows nothing, even while its bars still fall.
+                (m.level_db, m.peak_db) = if m.live {
+                    (shown.level, shown.hold)
+                } else {
+                    ([size::METER_MIN_DB; 2], [size::METER_MIN_DB; 2])
+                };
+            }
+        }
         let loud = |l: &[f32; 2]| l[0].max(l[1]) > crate::view::METER_SILENT_DB;
-        self.meters_moving = frame.moving() || self.meter_shown.iter().any(|b| loud(&b.level));
-        let out = self.view.meters.iter().position(|m| m.label == "Out");
+        self.meters_moving = frame.moving()
+            || self
+                .meter_shown
+                .iter()
+                .chain(&self.output_shown)
+                .any(|b| loud(&b.level));
+        let out = self.view.meters.iter().position(|m| m.is_program());
         self.out_moving = out.is_some_and(|i| {
             frame.level_db.get(i).is_some_and(loud)
                 || self.meter_shown.get(i).is_some_and(|b| loud(&b.level))
@@ -989,6 +1011,10 @@ fn status_line(
             let off = name == "WebRTC" && view.output.streaming == Some(false);
             let (dot, word, colour) = match status {
                 Status::NotConnected if off => (Icon::Circle, "off".to_owned(), t.text_muted),
+                // No Program device is a choice, not a fault.
+                Status::NotConnected if name == "Local" => {
+                    (Icon::Circle, "no device".to_owned(), t.text_muted)
+                }
                 Status::Connected => (
                     Icon::CircleDot,
                     connected.unwrap_or("connected").to_owned(),

@@ -535,8 +535,7 @@ impl MockSource {
                 match change {
                     StripChange::Gain(g) => st.gain_db = g,
                     StripChange::Mute(m) => st.mute = m,
-                    StripChange::Pfl(p) => st.pfl = p,
-                    StripChange::Route(r) => st.route = r,
+                    StripChange::Snd(p) => st.snd = p,
                 }
                 Ok(1)
             }
@@ -564,7 +563,7 @@ impl MockSource {
                 }
                 match role {
                     DeviceRole::Out => self.device_roles.out = device,
-                    DeviceRole::Pfl => self.device_roles.pfl = device,
+                    DeviceRole::Monitor => self.device_roles.monitor = device,
                     DeviceRole::Input => self.device_roles.input = device,
                 }
                 Ok(1)

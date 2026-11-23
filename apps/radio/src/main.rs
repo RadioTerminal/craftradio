@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
-use radio_playout::{OutputChoice, Playout, PlayoutConfig, SystemClock};
+use radio_playout::{Playout, PlayoutConfig, SystemClock};
 use radio_ui_egui::theme::size;
 use radio_ui_egui::{AppPrefs, MockSource, RadioApp, ToolWindow, ViewSource};
 use radio_ui_engine::{EngineSource, KEYCHAIN_SERVICE, KeyringStore, SourceOptions};
@@ -196,14 +196,9 @@ fn real(args: &Args) -> Result<(), String> {
     let device = engine
         .state()
         .settings(radio_ui_engine::AUDIO_PART)
-        .and_then(|s| s.get("out"))
-        .and_then(|v| v.as_str())
-        .map(str::to_owned);
-    let output = if args.null_output {
-        OutputChoice::Null
-    } else {
-        OutputChoice::Device { name: device }
-    };
+        .and_then(|s| s.get(radio_engine::OUT_KEY))
+        .and_then(|v| v.as_str());
+    let output = radio_ui_engine::output_choice(device, args.null_output);
     let mut cfg = PlayoutConfig::new(Arc::new(SystemClock), output);
     cfg.icecast = icecast;
     if let Some(hold) = radio_ui_engine::peak_hold(engine.state()) {

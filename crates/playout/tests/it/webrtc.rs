@@ -66,3 +66,41 @@ fn the_setting_turns_webrtc_listening_on_and_off_and_on_again() {
     switch(&p, true);
     until(&p, &clock, listening);
 }
+
+/// With the server on and nobody listening, nothing is sent, so the WebRTC meter reads
+/// silence even while Program plays.
+#[test]
+fn webrtc_meter_is_silent_with_no_listeners() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let song = file_item(
+        93,
+        "Meter test",
+        &wav("webrtc-meter", 10.0, Side::Left),
+        10.0,
+        10.0,
+        0.0,
+    );
+    let (p, clock) = offline(engine_with(vec![song]), |cfg| {
+        let mut w = WebRtcConfig::new(([127, 0, 0, 1], port).into());
+        w.stun.clear();
+        w.trackers.clear();
+        cfg.webrtc = Some(w);
+    });
+    switch(&p, true);
+    until(&p, &clock, listening);
+    let meters = p.output_meters();
+    let _ = meters.webrtc.take();
+    let audio = run(&p, &clock, 0.5);
+    assert!(audio.iter().any(|x| x.abs() > 0.1), "Program plays");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(meters.webrtc.take(), [radio_stream::LEVEL_FLOOR_DB; 2]);
+    assert_eq!(
+        meters.device.take(),
+        [radio_stream::LEVEL_FLOOR_DB; 2],
+        "no sound card"
+    );
+}

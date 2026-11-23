@@ -96,7 +96,7 @@ fn a_new_output_device_shows_as_picked_and_says_it_waits_for_the_next_start() {
     harness.get_by_label("Devices").click();
     harness.run_steps(FRAMES);
     let shown: Vec<String> = harness
-        .query_all_by_label("Output device (Out)")
+        .query_all_by_label("Program device")
         .filter_map(|n| n.accesskit_node().value())
         .collect();
     assert!(
@@ -173,5 +173,54 @@ fn the_password_hint_asks_again_once_the_server_changes() {
         password_hint(&harness),
         "type it again for this server",
         "the kept password belongs to the old server"
+    );
+}
+
+/// A real station (not the preview) with no sound card open and the system default picked.
+struct NoCardOpen(MockSource);
+
+impl radio_ui_egui::ViewSource for NoCardOpen {
+    fn snapshot(&mut self, now: Timestamp) -> radio_ui_egui::view::StationView {
+        let mut v = self.0.snapshot(now);
+        v.preview = false;
+        v.device_roles.out = String::new();
+        v.settings
+            .entry("audio".to_owned())
+            .or_default()
+            .insert("out".to_owned(), serde_json::json!(""));
+        v
+    }
+    fn edit(&mut self, edit: radio_ui_egui::view::Edit) -> Result<usize, String> {
+        self.0.edit(edit)
+    }
+    fn stream_title(&self, row: &radio_ui_egui::view::Row) -> String {
+        self.0.stream_title(row)
+    }
+}
+
+/// With no sound card open, a pick of the system default plays nothing until the next
+/// start, so the row says so.
+#[test]
+fn the_system_default_says_it_waits_for_the_next_start_when_no_card_is_open() {
+    let tz = TimeZone::get("Europe/Ljubljana").expect("tz database has Ljubljana");
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .build_eframe(move |_cc| {
+            RadioApp::new(
+                Box::new(NoCardOpen(MockSource::new(tz))),
+                Box::new(fixed_clock),
+            )
+        });
+    harness.run_steps(FRAMES);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    harness.run_steps(FRAMES);
+    harness.get_by_label("Devices").click();
+    harness.run_steps(FRAMES);
+    assert!(
+        harness
+            .query_by_label_contains(
+                "Opens at the next start. Until then the sound goes to no sound card."
+            )
+            .is_some()
     );
 }

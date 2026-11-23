@@ -1,4 +1,4 @@
-//! The mixer: four decks, carts, live input, PFL and Program out.
+//! The mixer: four decks, carts, live input, the SND monitor and Program out.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -175,7 +175,7 @@ enum Retired {
 /// Atomics that the render thread and the handle share.
 struct Shared {
     now: AtomicU64,
-    pfl: AtomicU8,
+    snd: AtomicU8,
     /// The number of commands that the mixer took out of its pending store.
     done: AtomicU64,
 }
@@ -304,7 +304,7 @@ enum DeckStep {
     Underrun,
 }
 
-/// The playout mixer with decks A–D, a cart bus, a live bus, a PFL bus and Program
+/// The playout mixer with decks A–D, a cart bus, a live bus, an SND (monitor) bus and Program
 /// out. Real-time invariant: [`Mixer::render`] runs on the audio thread. It does no heap
 /// allocation or deallocation, takes no locks, makes no system calls and writes no
 /// logs. The constructor allocates all buffers. The render thread talks to other
@@ -363,7 +363,7 @@ impl Mixer {
         let board = Arc::new(MeterBoard::new());
         let shared = Arc::new(Shared {
             now: AtomicU64::new(0),
-            pfl: AtomicU8::new(0),
+            snd: AtomicU8::new(0),
             done: AtomicU64::new(0),
         });
         let mixer = Mixer {
@@ -441,10 +441,10 @@ impl Mixer {
         self.sample
     }
 
-    /// Renders Program and PFL as stereo interleaved f32 at 48 kHz. The frame count is
-    /// `program.len() / 2`. PFL gets the same frames as far as it has room, then silence.
+    /// Renders Program and the SND monitor as stereo interleaved f32 at 48 kHz. The frame count is
+    /// `program.len() / 2`. The monitor gets the same frames as far as it has room, then silence.
     /// This method is real-time safe, see [`Mixer`].
-    pub fn render(&mut self, program: &mut [f32], pfl: &mut [f32]) {
+    pub fn render(&mut self, program: &mut [f32], monitor: &mut [f32]) {
         self.take_control();
         self.take_commands();
         if self.sample >= self.next_due {
@@ -462,10 +462,10 @@ impl Mixer {
                 }
             }
         }
-        let pfl_mask = self.shared.pfl.load(Ordering::Relaxed);
-        let (cue_frames, cue_rest) = pfl.as_chunks_mut::<CHANNELS>();
+        let snd_mask = self.shared.snd.load(Ordering::Relaxed);
+        let (mon_frames, mon_rest) = monitor.as_chunks_mut::<CHANNELS>();
         let (out_frames, out_rest) = program.as_chunks_mut::<CHANNELS>();
-        let mut cue_iter = cue_frames.iter_mut();
+        let mut mon_iter = mon_frames.iter_mut();
         if self.dynamics.is_some() || self.incoming.is_some() {
             let mut current = self.dynamics.take();
             let mut incoming = self.incoming.take();
@@ -481,10 +481,10 @@ impl Mixer {
                     if self.sample >= self.next_due {
                         self.apply_due();
                     }
-                    let (mix, cue) = self.frame(pfl_mask);
+                    let (mix, mon) = self.frame(snd_mask);
                     *y = mix;
-                    if let Some(c) = cue_iter.next() {
-                        *c = cue;
+                    if let Some(c) = mon_iter.next() {
+                        *c = mon;
                     }
                     self.sample += 1;
                 }
@@ -538,21 +538,34 @@ impl Mixer {
                 if self.sample >= self.next_due {
                     self.apply_due();
                 }
-                let (mix, cue) = self.frame(pfl_mask);
+                let (mix, mon) = self.frame(snd_mask);
                 let y = [limit(mix[0]), limit(mix[1])];
                 self.finish(self.sample, y);
                 self.sample += 1;
                 *out = y;
-                if let Some(c) = cue_iter.next() {
-                    *c = cue;
+                if let Some(c) = mon_iter.next() {
+                    *c = mon;
                 }
             }
         }
         out_rest.fill(0.0);
-        for c in cue_iter {
+        for c in mon_iter {
             *c = [0.0; CHANNELS];
         }
-        cue_rest.fill(0.0);
+        // Program is already limited, so alone it passes unchanged: Program SND is exactly
+        // what listeners hear. With a source SND too, the sum passes the soft limit.
+        let program_snd = snd_mask & (1 << Strip::Out.index()) != 0;
+        let source_snd = snd_mask & !(1 << Strip::Out.index()) != 0;
+        for (m, y) in mon_frames.iter_mut().zip(out_frames.iter()) {
+            for (c, p) in m.iter_mut().zip(y) {
+                *c = match (program_snd, source_snd) {
+                    (true, false) => *p,
+                    (true, true) => limit(*c + *p),
+                    (false, _) => limit(*c),
+                };
+            }
+        }
+        mon_rest.fill(0.0);
         self.board.publish(&self.meters.snapshot(self.sample));
         self.shared.now.store(self.sample, Ordering::Release);
     }
@@ -904,10 +917,10 @@ impl Mixer {
         DeckStep::Frame([l * gain, r * gain])
     }
 
-    /// Mixes one frame. It returns the Program frame before the limiter and the PFL frame.
-    fn frame(&mut self, pfl_mask: u8) -> ([f32; 2], [f32; 2]) {
+    /// Mixes one frame. It returns the Program frame before the limiter and the SND monitor frame.
+    fn frame(&mut self, snd_mask: u8) -> ([f32; 2], [f32; 2]) {
         let mut bus = [0.0f32; 2];
-        let mut cue = [0.0f32; 2];
+        let mut mon = [0.0f32; 2];
         let mut captured = [0.0; 2];
         for deck in DeckId::ALL {
             let i = deck.index();
@@ -928,7 +941,7 @@ impl Mixer {
                 captured[0] += pre[0];
                 captured[1] += pre[1];
             } else {
-                self.strip(i, pre, pfl_mask, &mut bus, &mut cue);
+                self.strip(i, pre, snd_mask, &mut bus, &mut mon);
             }
         }
 
@@ -943,9 +956,9 @@ impl Mixer {
         self.strip(
             Strip::Live.index(),
             [live[0] + captured[0], live[1] + captured[1]],
-            pfl_mask,
+            snd_mask,
             &mut bus,
-            &mut cue,
+            &mut mon,
         );
 
         let mut carts = [0.0f32; 2];
@@ -965,9 +978,9 @@ impl Mixer {
         self.strip(
             Strip::Cart.index(),
             carts,
-            pfl_mask,
+            snd_mask,
             &mut cart_bus,
-            &mut cue,
+            &mut mon,
         );
 
         let duck = self.duck.next();
@@ -976,7 +989,7 @@ impl Mixer {
             (bus[0] * duck + cart_bus[0]) * out_gain,
             (bus[1] * duck + cart_bus[1]) * out_gain,
         ];
-        (mix, cue)
+        (mix, mon)
     }
 
     /// Meters a Program frame and feeds it to the silence detector.
@@ -993,16 +1006,16 @@ impl Mixer {
         }
     }
 
-    /// Applies the fader of a strip, meters it, and adds it to a bus and to PFL.
-    fn strip(&mut self, i: usize, pre: [f32; 2], mask: u8, bus: &mut [f32; 2], cue: &mut [f32; 2]) {
+    /// Applies the fader of a strip, meters it, and adds it to a bus and to the SND monitor bus.
+    fn strip(&mut self, i: usize, pre: [f32; 2], mask: u8, bus: &mut [f32; 2], mon: &mut [f32; 2]) {
         let g = self.gains.get_mut(i).map_or(1.0, Ramp::next);
         let post = [pre[0] * g, pre[1] * g];
         self.meters.add(i, post);
         bus[0] += post[0];
         bus[1] += post[1];
         if mask & (1 << i) != 0 {
-            cue[0] += pre[0];
-            cue[1] += pre[1];
+            mon[0] += pre[0];
+            mon[1] += pre[1];
         }
     }
 }
@@ -1032,18 +1045,18 @@ pub fn drain_offline(mixer: &mut Mixer) -> Vec<f32> {
     render_offline(mixer, latency)
 }
 
-/// Renders Program and PFL offline, waiting for file feeders between blocks.
+/// Renders Program and the SND monitor offline, waiting for file feeders between blocks.
 pub fn render_offline_buses(mixer: &mut Mixer, frames: usize) -> (Vec<f32>, Vec<f32>) {
     let mut program = vec![0.0; frames * CHANNELS];
-    let mut pfl = vec![0.0; frames * CHANNELS];
-    for (out, cue) in program
+    let mut monitor = vec![0.0; frames * CHANNELS];
+    for (out, mon) in program
         .chunks_mut(256 * CHANNELS)
-        .zip(pfl.chunks_mut(256 * CHANNELS))
+        .zip(monitor.chunks_mut(256 * CHANNELS))
     {
         mixer.wait_for_decks(out.len(), Duration::from_secs(2));
-        mixer.render(out, cue);
+        mixer.render(out, mon);
     }
-    (program, pfl)
+    (program, monitor)
 }
 
 /// One load that the handle sent, with its decoder thread.
@@ -1196,16 +1209,14 @@ impl MixerHandle {
             .map_err(|_| AudioError::QueueFull)
     }
 
-    /// Routes a strip to PFL, or takes it off. Program out has no PFL.
-    pub fn set_pfl(&self, strip: Strip, on: bool) {
-        if strip == Strip::Out {
-            return;
-        }
+    /// Routes a strip to the SND monitor bus, or takes it off. A source strip is heard before its
+    /// fader and mute; Program out is heard as listeners hear it, after dynamics and mute.
+    pub fn set_snd(&self, strip: Strip, on: bool) {
         let bit = 1u8 << strip.index();
         if on {
-            self.shared.pfl.fetch_or(bit, Ordering::Relaxed);
+            self.shared.snd.fetch_or(bit, Ordering::Relaxed);
         } else {
-            self.shared.pfl.fetch_and(!bit, Ordering::Relaxed);
+            self.shared.snd.fetch_and(!bit, Ordering::Relaxed);
         }
     }
 

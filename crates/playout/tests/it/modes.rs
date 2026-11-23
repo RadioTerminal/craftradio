@@ -839,7 +839,7 @@ fn transport_waits_for_hard_target_and_manual_play_covers_it() {
 }
 
 #[test]
-fn cue_only_removes_strip_from_program_and_gain_edits_keep_it_off_air() {
+fn mute_removes_strip_from_program_and_gain_edits_keep_it_off_air() {
     let song = file_item(
         91,
         "Routing test",
@@ -857,17 +857,14 @@ fn cue_only_removes_strip_from_program_and_gain_edits_keep_it_off_air() {
         .position(|d| d.item == Some(radio_model::ItemId(91)))
         .unwrap();
     let strip = ["A", "B", "C", "D"][deck].to_owned();
-    for (route, gain_db) in [
-        (Some(radio_engine::Route::CueOnly), None),
-        (None, Some(3.0)),
-    ] {
+    for (mute, gain_db) in [(Some(true), None), (None, Some(3.0))] {
         let _ = p
             .send(Command::MixerSetStrip {
                 strip: strip.clone(),
                 gain_db,
-                mute: None,
-                pfl: None,
-                route,
+                mute,
+                snd: None,
+                route: None,
             })
             .unwrap();
         let audio = run(&p, &clock, 0.2);
@@ -877,9 +874,9 @@ fn cue_only_removes_strip_from_program_and_gain_edits_keep_it_off_air() {
         .send(Command::MixerSetStrip {
             strip,
             gain_db: None,
-            mute: None,
-            pfl: None,
-            route: Some(radio_engine::Route::Out),
+            mute: Some(false),
+            snd: None,
+            route: None,
         })
         .unwrap();
     assert!(first_audible(&run(&p, &clock, 0.2), 0, 0).is_some());

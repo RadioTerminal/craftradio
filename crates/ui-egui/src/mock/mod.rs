@@ -26,7 +26,7 @@ use crate::view::{
     CartChange, CartSlot, CartwallView, Constraint, ConstraintKind, DeckCommand, DeckState,
     DeckView, DeviceRole, DeviceRoles, DropTarget, Edit, FitView, FolderSource, FolderView,
     IcecastView, Imported, ItemMeta, LibraryItem, MetaTarget, MeterView, MoveTo, Origin,
-    OutputStatus, Pick, Place, Placement, PlaylistTab, PublishMode, Route, Row, RuleView, Settings,
+    OutputStatus, Pick, Place, Placement, PlaylistTab, PublishMode, Row, RuleView, Settings,
     StationView, Status, StreamFormat, StripChange, Timing, Trigger, ViewSource,
 };
 
@@ -44,8 +44,7 @@ use timeline::*;
 struct Strip {
     gain_db: f32,
     mute: bool,
-    pfl: bool,
-    route: Route,
+    snd: bool,
 }
 
 /// A folder in the library and the result of its last scan.
@@ -221,7 +220,7 @@ impl MockSource {
             loudness: radio_model::LoudnessSettings::default(),
             device_roles: DeviceRoles {
                 out: DEVICES[0].to_owned(),
-                pfl: DEVICES[3].to_owned(),
+                monitor: DEVICES[3].to_owned(),
                 input: DEVICES[1].to_owned(),
             },
             folders: Vec::new(),

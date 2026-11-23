@@ -169,7 +169,7 @@ mod tests {
             strip: "A".into(),
             gain_db: Some(db),
             mute: None,
-            pfl: None,
+            snd: None,
             route: None,
         }
     }

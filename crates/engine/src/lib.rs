@@ -10,8 +10,8 @@ mod one_off;
 mod store;
 
 pub use command::{
-    CartMode, Command, CommandSpec, CompressorPatch, DEFAULT_TOLERANCE, LimiterPatch, Mode, Route,
-    Tier, registry,
+    CartMode, Command, CommandSpec, CompressorPatch, DEFAULT_TOLERANCE, LimiterPatch, Mode, Tier,
+    registry,
 };
 pub use error::EngineError;
 pub use log::{AsPlayed, LogEntry, LogStatus, Report, RowId};
@@ -44,13 +44,63 @@ pub const STRIPS: [&str; 7] = ["A", "B", "C", "D", "Cart", "Live", "Out"];
 /// UI parts in `settings_by_part` start with this prefix, so they never meet the parts of the engine.
 pub(crate) const UI_PREFIX: &str = "ui:";
 
+/// The settings part of the audio devices.
+pub const AUDIO_PART: &str = "audio";
+/// The key of the Program device in [`AUDIO_PART`]. Absent or empty is the system default.
+pub const OUT_KEY: &str = "out";
+/// The key of the monitor device, which plays the SND bus.
+pub const MONITOR_KEY: &str = "monitor";
+/// The value of [`OUT_KEY`] for no Program device: a system-clock timer drives the mixer.
+pub const NO_DEVICE: &str = "none";
+/// The old key of the monitor device, from when it played PFL.
+pub(crate) const OLD_CUE_KEY: &str = "pfl";
+
 /// The settings of one mixer strip.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(from = "StripRow")]
 pub struct StripState {
     pub gain_db: f32,
     pub mute: bool,
-    pub pfl: bool,
-    pub route: Route,
+    /// The strip plays on the monitor device.
+    pub snd: bool,
+}
+
+/// A stored strip, in the current or an older form.
+#[derive(Deserialize)]
+struct StripRow {
+    #[serde(default)]
+    gain_db: f32,
+    #[serde(default)]
+    mute: bool,
+    #[serde(default)]
+    snd: bool,
+    #[serde(default)]
+    pfl: bool,
+    #[serde(default)]
+    route: Option<LegacyRoute>,
+}
+
+/// The routes that mute and SND replaced.
+#[derive(Deserialize)]
+enum LegacyRoute {
+    Out,
+    OutAndCue,
+    CueOnly,
+}
+
+impl From<StripRow> for StripState {
+    fn from(r: StripRow) -> Self {
+        let (mute, snd) = match r.route {
+            Some(LegacyRoute::CueOnly) => (true, true),
+            Some(LegacyRoute::OutAndCue) => (r.mute, true),
+            Some(LegacyRoute::Out) | None => (r.mute, r.snd || r.pfl),
+        };
+        Self {
+            gain_db: r.gain_db,
+            mute,
+            snd: snd || r.pfl,
+        }
+    }
 }
 
 /// The settings of one cart.
@@ -141,6 +191,30 @@ struct Saved {
 
 impl State {
     fn fresh() -> Self {
+        let mut state = Self::fresh_station();
+        // A new station plays nothing locally until someone picks a Program device.
+        state
+            .settings
+            .entry(AUDIO_PART.to_owned())
+            .or_default()
+            .insert(OUT_KEY.to_owned(), Value::from(NO_DEVICE));
+        state
+    }
+
+    /// Moves settings of older versions to their current place. It returns whether it
+    /// changed anything.
+    fn migrate(&mut self) -> bool {
+        let Some(audio) = self.settings.get_mut(AUDIO_PART) else {
+            return false;
+        };
+        let Some(old) = audio.remove(OLD_CUE_KEY) else {
+            return false;
+        };
+        audio.entry(MONITOR_KEY.to_owned()).or_insert(old);
+        true
+    }
+
+    fn fresh_station() -> Self {
         let main = Playlist {
             id: PlaylistId(1),
             name: "Main".into(),
@@ -389,7 +463,7 @@ pub enum AudioIntent {
         strip: String,
         gain_db: f32,
         mute: bool,
-        pfl: bool,
+        snd: bool,
     },
     /// The compressor and the limiter on Program.
     SetDynamics(DynamicsSettings),
@@ -493,15 +567,20 @@ impl Engine {
     }
 
     fn start(conn: rusqlite::Connection) -> Result<Self, EngineError> {
-        let state = store::load_state(&conn)?.unwrap_or_else(State::fresh);
-        Ok(Self {
+        let mut state = store::load_state(&conn)?.unwrap_or_else(State::fresh);
+        let migrated = state.migrate();
+        let engine = Self {
             state,
             store: store::Store::start(conn),
             subscribers: vec![],
             undo: Vec::new(),
             redo: Vec::new(),
             last_step: None,
-        })
+        };
+        if migrated {
+            engine.store.snapshot(engine.state.clone());
+        }
+        Ok(engine)
     }
 
     pub fn state(&self) -> &State {
@@ -1370,22 +1449,27 @@ impl Engine {
                 strip,
                 gain_db,
                 mute,
-                pfl,
+                snd,
                 route,
             } => {
                 if !STRIPS.contains(&strip.as_str()) {
                     return Err(EngineError::BadArgument(format!("no mixer strip {strip}")));
                 }
-                if (pfl == Some(true) || route == Some(Route::OutAndCue))
+                if route.is_some() {
+                    return Err(EngineError::BadArgument(
+                        "route is gone: use mute and snd".into(),
+                    ));
+                }
+                if snd == Some(true)
                     && self
                         .state
-                        .settings("audio")
-                        .and_then(|s| s.get("pfl"))
+                        .settings(AUDIO_PART)
+                        .and_then(|s| s.get(MONITOR_KEY))
                         .and_then(Value::as_str)
                         .is_none_or(str::is_empty)
                 {
                     return Err(EngineError::BadArgument(
-                        "Cue output is not available; choose a cue output device first".into(),
+                        "Monitor output is not available; choose a monitor device first".into(),
                     ));
                 }
                 // A fader all the way down is a mute; the stored gain stays finite.
@@ -1405,19 +1489,15 @@ impl Engine {
                 if let Some(m) = mute {
                     st.mute = m;
                 }
-                if let Some(p) = pfl {
-                    st.pfl = p;
+                if let Some(p) = snd {
+                    st.snd = p;
                 }
-                if let Some(r) = route {
-                    st.route = r;
-                }
-                let (gain_db, mute) = (st.gain_db, st.mute || st.route == Route::CueOnly);
-                let pfl = st.pfl || st.route != Route::Out;
+                let (gain_db, mute, snd) = (st.gain_db, st.mute, st.snd);
                 Ok(self.audio(AudioIntent::SetStrip {
                     strip,
                     gain_db,
                     mute,
-                    pfl,
+                    snd,
                 }))
             }
             C::MixerSetDynamics {

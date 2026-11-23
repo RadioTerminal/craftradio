@@ -18,12 +18,27 @@ pub use icecast::{
 };
 mod map;
 mod one_off;
+mod outputs;
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
 /// with: `None` when none is set, so the playout keeps its own.
 pub fn peak_hold(state: &State) -> Option<Duration> {
     let seconds = state.settings("mixer")?.get("peak_hold_s")?.as_f64()?;
     (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
+}
+
+/// The output that the Program device setting (`audio.out`) asks for. `"none"` or the
+/// `--null-output` flag mean no sound card; absent or empty is the system default.
+pub fn output_choice(out_setting: Option<&str>, null_flag: bool) -> radio_playout::OutputChoice {
+    use radio_playout::OutputChoice;
+    match out_setting {
+        _ if null_flag => OutputChoice::Null,
+        Some(radio_engine::NO_DEVICE) => OutputChoice::Null,
+        Some("") | None => OutputChoice::Device { name: None },
+        Some(name) => OutputChoice::Device {
+            name: Some(name.to_owned()),
+        },
+    }
 }
 
 /// The WebRTC stream settings that Preferences keeps, put onto `cfg`: the port (on the address
@@ -70,7 +85,7 @@ use radio_stream::{StreamStatus, WebRtcStatus};
 use radio_ui_egui::view::{
     AlarmSource, AlarmView, CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles,
     DropTarget, Edit, FitView, FolderSource, Imported, LibraryItem, MeterView, Origin,
-    OutputStatus, PlayMode, PlaylistTab, Route, Row, Severity, StationView, Status, StreamState,
+    OutputStatus, PlayMode, PlaylistTab, Row, Severity, StationView, Status, StreamState,
     ViewSource,
 };
 
@@ -110,6 +125,10 @@ pub struct EngineSource {
     replies: fader::Replies,
     /// The meter reader of the mixer, for the meters of every frame. A read never blocks.
     meter_reader: std::sync::Mutex<radio_audio::MeterReader>,
+    /// The level meters of the outputs, and the strips of the last snapshot that say which
+    /// of them send.
+    output_meters: radio_playout::OutputMeters,
+    output_views: Vec<radio_ui_egui::view::OutputMeterView>,
     playout: Playout,
     tz: TimeZone,
     station: String,
@@ -230,6 +249,8 @@ impl EngineSource {
             merger,
             replies,
             meter_reader,
+            output_meters: playout.output_meters(),
+            output_views: Vec::new(),
             playout,
             tz: opts.tz,
             station: opts.station_name,
@@ -749,13 +770,8 @@ impl EngineSource {
         (carts, wall)
     }
 
-    fn output(pv: &PlayoutView) -> OutputStatus {
-        let local = match &pv.outputs.local {
-            LocalOutput::Device { .. } => Status::Connected,
-            LocalOutput::Lost { name } => Status::Failed(format!("Output device lost: {name}")),
-            LocalOutput::Null => Status::Failed("No sound card: nothing plays the sound".into()),
-            LocalOutput::Offline => Status::Preview,
-        };
+    fn output(pv: &PlayoutView, card_wanted: bool) -> OutputStatus {
+        let local = outputs::local_status(&pv.outputs.local, card_wanted);
         let icecast = match &pv.outputs.icecast {
             None | Some(StreamStatus::Stopped) => Status::NotConnected,
             Some(StreamStatus::Connecting) => Status::Reconnecting { attempt: 0 },
@@ -819,17 +835,17 @@ impl EngineSource {
                 let label = strip_label(*s);
                 let st = strips.get(label).copied().unwrap_or_default();
                 MeterView {
-                    label: label.to_owned(),
+                    strip: label.to_owned(),
+                    label: if *s == Strip::Out {
+                        "Program".to_owned()
+                    } else {
+                        label.to_owned()
+                    },
                     level_db: m.rms_db,
                     peak_db: m.peak_hold_db,
                     gain_db: self.strip_gain.get(label).copied().unwrap_or(st.gain_db),
                     mute: st.mute,
-                    pfl: st.pfl,
-                    route: match st.route {
-                        radio_engine::Route::Out => Route::Out,
-                        radio_engine::Route::OutAndCue => Route::OutAndCue,
-                        radio_engine::Route::CueOnly => Route::CueOnly,
-                    },
+                    snd: st.snd,
                 }
             })
             .collect()
@@ -837,7 +853,12 @@ impl EngineSource {
 
     /// The current alarms and warnings, from playout, the plan, the outputs and the store.
     // Playout alarms that cleared are not in the list.
-    fn alarm_views(&mut self, pv: &PlayoutView, now: Timestamp) -> Vec<AlarmView> {
+    fn alarm_views(
+        &mut self,
+        pv: &PlayoutView,
+        card_wanted: bool,
+        now: Timestamp,
+    ) -> Vec<AlarmView> {
         let names = alarms::Names {
             station: &pv.state.station,
             tz: &self.tz,
@@ -870,12 +891,13 @@ impl EngineSource {
                 format!("Output device lost: {name}"),
                 here.clone(),
             )),
-            LocalOutput::Null => out.push(alarms::from_state(
+            // No Program device by choice is not a warning.
+            local if outputs::card_not_open(local, card_wanted) => out.push(alarms::from_state(
                 "no_device",
                 "",
                 Severity::Warning,
                 AlarmSource::Device,
-                "No sound card: nothing plays the sound here".to_owned(),
+                outputs::CARD_NOT_OPEN.to_owned(),
                 here.clone(),
             )),
             _ => {}
@@ -1044,7 +1066,15 @@ impl ViewSource for EngineSource {
         if let Some(reason) = self.playout.log().persistence_error() {
             label.push_str(&format!(" · NOT SAVED: {reason}"));
         }
-        let alarms = self.alarm_views(&pv, now);
+        // A Program device is wanted unless the setting says none.
+        let card_wanted = self
+            .state
+            .settings(AUDIO_PART)
+            .and_then(|s| s.get(radio_engine::OUT_KEY))
+            .and_then(|v| v.as_str())
+            != Some(radio_engine::NO_DEVICE);
+        let alarms = self.alarm_views(&pv, card_wanted, now);
+        self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted);
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {
@@ -1068,7 +1098,8 @@ impl ViewSource for EngineSource {
                 .cloned()
                 .chain(self.files.iter().map(|f| f.view.clone()))
                 .collect(),
-            cue_open: pv.cue_open,
+            monitor_open: pv.monitor_open,
+            output_meters: self.output_views.clone(),
             devices: self.devices.clone(),
             input_devices: self.input_devices.clone(),
             device_roles: DeviceRoles {
@@ -1076,10 +1107,10 @@ impl ViewSource for EngineSource {
                     LocalOutput::Device { name } => name.clone(),
                     _ => String::new(),
                 },
-                pfl: self
+                monitor: self
                     .state
                     .settings(AUDIO_PART)
-                    .and_then(|s| s.get("pfl"))
+                    .and_then(|s| s.get(radio_engine::MONITOR_KEY))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_owned(),
@@ -1096,7 +1127,7 @@ impl ViewSource for EngineSource {
             icecast: self.icecast(),
             dynamics: self.state.dynamics.unwrap_or_default(),
             loudness: self.state.loudness,
-            output: Self::output(&pv),
+            output: Self::output(&pv, card_wanted),
             folders: self.folder_views(),
             settings: self.settings(),
             alarms,
@@ -1157,6 +1188,14 @@ impl ViewSource for EngineSource {
                 .map(|s| snap.strip(*s).peak_hold_db)
                 .collect(),
             at_sample: snap.at_sample,
+            output_level_db: outputs::gated_levels(
+                &self.output_views,
+                &[
+                    self.output_meters.device.take(),
+                    self.output_meters.icecast.take(),
+                    self.output_meters.webrtc.take(),
+                ],
+            ),
         })
     }
 
@@ -1167,5 +1206,39 @@ impl ViewSource for EngineSource {
             .cloned()
             .unwrap_or_else(|| self.station.clone());
         radio_model::stream_title(&meta_item(row), &previous, &self.station)
+    }
+}
+
+#[cfg(test)]
+mod output_choice_tests {
+    use super::output_choice;
+    use radio_playout::OutputChoice;
+
+    #[test]
+    fn none_or_the_flag_means_no_sound_card() {
+        assert_eq!(output_choice(Some("none"), false), OutputChoice::Null);
+        assert_eq!(output_choice(Some("Studio out"), true), OutputChoice::Null);
+    }
+
+    #[test]
+    fn absent_or_empty_is_the_system_default() {
+        assert_eq!(
+            output_choice(None, false),
+            OutputChoice::Device { name: None }
+        );
+        assert_eq!(
+            output_choice(Some(""), false),
+            OutputChoice::Device { name: None }
+        );
+    }
+
+    #[test]
+    fn a_name_opens_that_device() {
+        assert_eq!(
+            output_choice(Some("Studio out"), false),
+            OutputChoice::Device {
+                name: Some("Studio out".into())
+            }
+        );
     }
 }

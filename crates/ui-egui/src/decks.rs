@@ -1026,7 +1026,7 @@ fn live_chip(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let out = view.meters.iter().find(|m| m.label == "Out");
+    let out = view.meters.iter().find(|m| m.is_program());
     let sound =
         out.is_some_and(|m| !m.mute && m.level_db[0].max(m.level_db[1]) > size::METER_MIN_DB);
     let on = view.output.streaming.unwrap_or(false);
@@ -1169,7 +1169,7 @@ fn out_meter(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
-    let Some(m) = view.meters.iter().find(|m| m.label == "Out") else {
+    let Some(m) = view.meters.iter().find(|m| m.is_program()) else {
         return;
     };
     let db = |v: f32| {
@@ -1199,25 +1199,34 @@ fn out_meter(
         (size::METER_AMBER_DB, size::METER_RED_DB, t.meter_mid),
         (size::METER_RED_DB, size::METER_MAX_DB, t.meter_high),
     ];
+    // LED bars, as on the mixer strips: an unlit LED shows its zone faintly, the held peak is
+    // one bright LED.
+    let step = size::METER_SEG_H + size::METER_SEG_GAP;
+    let count = (span / step).floor().max(1.0);
+    let db_span = size::METER_MAX_DB - size::METER_MIN_DB;
     for ch in 0..2 {
         let top = rect.top() + ch as f32 * (bar_h + size::VU_GAP);
-        let bar = egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(span, bar_h));
-        p.rect_filled(bar, t.radius_sm, t.canvas);
-        let level = m.level_db[ch];
-        for (lo, hi, colour) in zones {
-            if level > lo {
-                let seg =
-                    egui::Rect::from_x_y_ranges(x_of(lo)..=x_of(level.min(hi)), bar.y_range());
-                p.rect_filled(seg, 0.0, colour);
-            }
-        }
-        let held = m.peak_db[ch];
-        if held > size::METER_MIN_DB {
-            p.vline(
-                x_of(held),
-                bar.y_range(),
-                Stroke::new(size::HAIRLINE * 2.0, t.text),
-            );
+        let y = egui::Rangef::new(top, top + bar_h);
+        let peak_led = ((mixer::frac(m.peak_db[ch]) * count).ceil() - 1.0).max(-1.0);
+        let mut k = 0.0;
+        while k < count {
+            let low = size::METER_MIN_DB + db_span * k / count;
+            let zone = zones
+                .iter()
+                .rev()
+                .find(|(lo, ..)| low >= *lo)
+                .map_or(t.meter_low, |z| z.2);
+            let colour = if k == peak_led {
+                t.text
+            } else if m.level_db[ch] > low {
+                zone
+            } else {
+                zone.gamma_multiply(size::METER_UNLIT)
+            };
+            let x = left + k * step;
+            let led = egui::Rect::from_x_y_ranges(x..=(x + size::METER_SEG_H), y);
+            p.rect_filled(led, 0.0, colour);
+            k += 1.0;
         }
     }
     if full {
@@ -1232,10 +1241,11 @@ fn out_meter(
         }
         for tick in SCALE_DB {
             let x = x_of(tick);
+            // A short mark under the bars, so no line crosses the LEDs.
             p.vline(
                 x,
-                rect.top()..=bars_bottom,
-                Stroke::new(size::HAIRLINE, t.field_border),
+                bars_bottom..=(bars_bottom + size::HAIRLINE + zone_h + space::XXS),
+                Stroke::new(size::HAIRLINE, t.text_muted),
             );
             let label = if tick == 0.0 {
                 "0".to_owned()

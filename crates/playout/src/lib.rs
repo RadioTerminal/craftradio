@@ -8,11 +8,11 @@
 mod alarm;
 mod clock;
 mod core;
-mod cue;
 mod deadair;
 mod device;
 mod input;
 mod loudness;
+mod monitor;
 mod one_off;
 pub use input::{Capture, OpenInput, open_input};
 mod ops;
@@ -217,8 +217,20 @@ impl CommandSender {
 
 /// The running playout. A drop stops the control thread, ends the open log rows as
 /// interrupted and closes the outputs.
+/// The level meters of the outputs: each gets what that output really sends.
+#[derive(Clone, Debug, Default)]
+pub struct OutputMeters {
+    /// The Program sound card. It gets nothing under the null or offline output.
+    pub device: Arc<radio_stream::LevelMeter>,
+    /// The Icecast source, while it is connected.
+    pub icecast: Arc<radio_stream::LevelMeter>,
+    /// The WebRTC server, while somebody listens.
+    pub webrtc: Arc<radio_stream::LevelMeter>,
+}
+
 pub struct Playout {
     tx: Option<Sender<Request>>,
+    output_meters: OutputMeters,
     thread: Option<JoinHandle<()>>,
     view: Arc<Mutex<PlayoutView>>,
     meters: Mutex<MeterReader>,
@@ -241,7 +253,11 @@ impl Playout {
             .spawn(move || {
                 let core = match core::Core::new(engine, cfg) {
                     Ok(core) => {
-                        let _ = ready_tx.send(Ok((core.view(), core.meter_reader())));
+                        let _ = ready_tx.send(Ok((
+                            core.view(),
+                            core.meter_reader(),
+                            core.output_meters.clone(),
+                        )));
                         core
                     }
                     Err(e) => {
@@ -252,9 +268,11 @@ impl Playout {
                 run(core, &rx);
             })
             .map_err(PlayoutError::Thread)?;
-        let (view, meters) = ready_rx.recv().map_err(|_| PlayoutError::Stopped)??;
+        let (view, meters, output_meters) =
+            ready_rx.recv().map_err(|_| PlayoutError::Stopped)??;
         Ok(Playout {
             tx: Some(tx),
+            output_meters,
             thread: Some(thread),
             view,
             log,
@@ -288,6 +306,12 @@ impl Playout {
         let (tx, rx) = mpsc::channel();
         self.request(Request::Dispatch(cmd, tx))?;
         Ok(rx)
+    }
+
+    /// The level meters of the outputs. Each read takes the loudest sample since the last
+    /// one, so one reader (the UI) should take them.
+    pub fn output_meters(&self) -> OutputMeters {
+        self.output_meters.clone()
     }
 
     /// The latest snapshot, with fresh meters.

@@ -160,13 +160,13 @@ impl Core {
                 strip,
                 gain_db,
                 mute,
-                pfl,
+                snd,
             } => {
                 let Some(strip) = strip_of(&strip) else {
                     return Check::Now(false);
                 };
                 self.mixer
-                    .set_pfl(strip, pfl && !self.cue_device().is_empty());
+                    .set_snd(strip, snd && !self.monitor_device().is_empty());
                 let db = if mute { f32::NEG_INFINITY } else { gain_db };
                 let at = self.mixer.now();
                 let cmd = Cmd::new(at, CommandKind::SetGain { strip, db });
@@ -551,11 +551,11 @@ impl Core {
 
     /// Keeps the cartwall clips in the mixer in step with the engine's assignments.
     /// Sends the stored fader and mute of each mixer strip to the mixer.
-    pub(crate) fn cue_device(&self) -> &str {
+    pub(crate) fn monitor_device(&self) -> &str {
         self.engine
             .state()
-            .settings("audio")
-            .and_then(|s| s.get("pfl"))
+            .settings(radio_engine::AUDIO_PART)
+            .and_then(|s| s.get(radio_engine::MONITOR_KEY))
             .and_then(|v| v.as_str())
             .unwrap_or("")
     }
@@ -566,19 +566,12 @@ impl Core {
             .state()
             .strips
             .iter()
-            .map(|(k, s)| {
-                (
-                    k.clone(),
-                    s.gain_db,
-                    s.mute || s.route == radio_engine::Route::CueOnly,
-                    s.pfl || s.route != radio_engine::Route::Out,
-                )
-            })
+            .map(|(k, s)| (k.clone(), s.gain_db, s.mute, s.snd))
             .collect();
-        for (name, gain, mute, pfl) in strips {
+        for (name, gain, mute, snd) in strips {
             if let Some(strip) = strip_of(&name) {
                 self.mixer
-                    .set_pfl(strip, pfl && !self.cue_device().is_empty());
+                    .set_snd(strip, snd && !self.monitor_device().is_empty());
                 let db = if mute { f32::NEG_INFINITY } else { gain };
                 let cmd = Cmd::new(self.mixer.now(), CommandKind::SetGain { strip, db });
                 let _ = self.mixer.send(cmd);

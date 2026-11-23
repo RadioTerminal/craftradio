@@ -299,7 +299,7 @@ fn a_stored_mute_holds_after_a_restart() {
             strip: "Out".into(),
             gain_db: None,
             mute: Some(true),
-            pfl: None,
+            snd: None,
             route: None,
         })
         .unwrap();
@@ -326,7 +326,7 @@ fn a_fader_drag_causes_no_plans() {
                 strip: "Out".into(),
                 gain_db: Some(-(k as f32) / 4.0),
                 mute: None,
-                pfl: None,
+                snd: None,
                 route: None,
             })
             .unwrap();

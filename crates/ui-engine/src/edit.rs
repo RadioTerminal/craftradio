@@ -4,12 +4,12 @@ use std::path::Path;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use radio_engine::{CartMode as ECartMode, Command, Mode, Outcome, Route as ERoute};
+use radio_engine::{CartMode as ECartMode, Command, Mode, Outcome};
 use radio_model::{Item, ItemId, PickOrder, PlaylistId, Source};
 use radio_ui_egui::theme::PALETTE;
 use radio_ui_egui::view::{
     CartChange, CartMode, DeckCommand, DeckState, DeviceRole, DropTarget, Edit, Imported,
-    MetaTarget, MoveTo, Place, PlayMode, PlaylistTab, Route, StripChange,
+    MetaTarget, MoveTo, Place, PlayMode, PlaylistTab, StripChange,
 };
 
 use crate::map::{display_title, model_meta};
@@ -1124,7 +1124,7 @@ impl EngineSource {
             Edit::SetDevice { role, device } => {
                 let key = match role {
                     DeviceRole::Out => "out",
-                    DeviceRole::Pfl => "pfl",
+                    DeviceRole::Monitor => radio_engine::MONITOR_KEY,
                     DeviceRole::Input => "input",
                 };
                 self.run_edit(Command::SettingsSet {
@@ -1315,25 +1315,18 @@ impl EngineSource {
     }
 
     fn set_strip(&mut self, strip: String, change: StripChange) -> Result<usize, String> {
-        let (mut gain_db, mut mute, mut pfl, mut route) = (None, None, None, None);
+        let (mut gain_db, mut mute, mut snd) = (None, None, None);
         match change {
             StripChange::Gain(g) => gain_db = Some(g),
             StripChange::Mute(m) => mute = Some(m),
-            StripChange::Pfl(p) => pfl = Some(p),
-            StripChange::Route(r) => {
-                route = Some(match r {
-                    Route::Out => ERoute::Out,
-                    Route::OutAndCue => ERoute::OutAndCue,
-                    Route::CueOnly => ERoute::CueOnly,
-                });
-            }
+            StripChange::Snd(p) => snd = Some(p),
         }
         let cmd = Command::MixerSetStrip {
             strip,
             gain_db,
             mute,
-            pfl,
-            route,
+            snd,
+            route: None,
         };
         if gain_db.is_some() {
             return self.fader(cmd);

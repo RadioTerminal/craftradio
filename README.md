@@ -135,7 +135,8 @@ cargo install --path apps/radio-cli                   # the CLI, as `craftradio-
 ## Status
 
 > [!IMPORTANT]
-> **CraftRadio has not been released yet.** There are no published downloads.
+> **CraftRadio is in prerelease.** The [downloads](#downloads) for Windows and macOS are test
+> builds: not signed yet, and not for a station on air.
 >
 > - **Works today:** the desktop app, headless mode and the CLI; four decks with R128 loudness;
 >   the scheduler with fixed-time events and JavaScript rules; the library, cartwall, clock,
@@ -149,28 +150,35 @@ cargo install --path apps/radio-cli                   # the CLI, as `craftradio-
 
 ## Downloads
 
-There are no releases yet. When there are, the
-[latest release](https://github.com/RadioTerminal/craftradio/releases/latest) will have the
-builds below. `<ver>` in the file names is the version, and `SHA256SUMS.txt` lists a checksum for
-every file. How a release is made: [docs/releasing.md](docs/releasing.md).
+The newest build is the prerelease
+**[v0.1.1](https://github.com/RadioTerminal/craftradio/releases/tag/v0.1.1)**; every build is on the
+[releases page](https://github.com/RadioTerminal/craftradio/releases). Each release has a
+`SHA256SUMS.txt` with a checksum for every file. How a release is made:
+[docs/releasing.md](docs/releasing.md).
+
+> [!NOTE]
+> The builds are not signed yet. Windows SmartScreen asks before the first start: choose
+> **More info**, then **Run anyway**. On macOS, copy CraftRadio to Applications, then
+> Control-click it and choose **Open**, or run
+> `xattr -dr com.apple.quarantine /Applications/CraftRadio.app` once.
 
 ### Windows
 
 | Build | Installer | Portable |
 |---|---|---|
-| x64 (64-bit Intel/AMD) | `craftradio-<ver>-windows-x64.msi` | `craftradio-<ver>-windows-x64-portable.zip` |
-| arm64 (Snapdragon and other ARM PCs) | `craftradio-<ver>-windows-arm64.msi` | `craftradio-<ver>-windows-arm64-portable.zip` |
+| x64 (64-bit Intel/AMD) | [`craftradio-0.1.1-windows-x64.msi`](https://github.com/RadioTerminal/craftradio/releases/download/v0.1.1/craftradio-0.1.1-windows-x64.msi) | [`craftradio-0.1.1-windows-x64-portable.zip`](https://github.com/RadioTerminal/craftradio/releases/download/v0.1.1/craftradio-0.1.1-windows-x64-portable.zip) |
+| arm64 (Snapdragon and other ARM PCs) | [`craftradio-0.1.1-windows-arm64.msi`](https://github.com/RadioTerminal/craftradio/releases/download/v0.1.1/craftradio-0.1.1-windows-arm64.msi) | [`craftradio-0.1.1-windows-arm64-portable.zip`](https://github.com/RadioTerminal/craftradio/releases/download/v0.1.1/craftradio-0.1.1-windows-arm64-portable.zip) |
 
 ### macOS
 
-| Build | File | Notes |
-|---|---|---|
-| App, universal (Apple silicon + Intel) | `craftradio-<ver>-macos-universal.dmg` | Signed and notarized once signing is set up |
-| Command-line tool, universal | `craftradio-cli-<ver>-macos-universal.zip` | |
+| Build | File |
+|---|---|
+| App, universal (Apple silicon + Intel) | [`craftradio-0.1.1-macos-universal.dmg`](https://github.com/RadioTerminal/craftradio/releases/download/v0.1.1/craftradio-0.1.1-macos-universal.dmg) |
+| Command-line tool, universal | [`craftradio-cli-0.1.1-macos-universal.zip`](https://github.com/RadioTerminal/craftradio/releases/download/v0.1.1/craftradio-cli-0.1.1-macos-universal.zip) |
 
 ### Linux
 
-Not in releases yet; build from source (see [Get started](#get-started)). When releases
+Not in releases yet: build from source (see [Get started](#get-started)). When releases
 include Linux, they will have:
 
 | Format | x86_64 | aarch64 (ARM64) | Notes |
