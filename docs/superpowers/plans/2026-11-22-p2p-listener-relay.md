@@ -414,6 +414,28 @@ Preferences page from §7. Spec edit for §2 item 8.
 - Tests (Rust): with a mapped port, the station's candidate is the external address and
   nothing is sent to STUN; the tracker endpoint answers an announce for the station's swarm
   and ignores other swarms.
+- Item 1 built (2026-11-23). While the router maps the port (UPnP or NAT-PMP), the station
+  offers the router's address as its one outside candidate and sends no STUN requests; when
+  the mapping goes, STUN refreshes start again at once. The station still asks STUN once at
+  start, before the router has answered (a mapping takes up to about 11 s to fail), so a
+  station without a mapping is reachable as soon as before. Tests (unit, `webrtc.rs`): the
+  router address wins over the STUN address; no request reaches a STUN server while mapped,
+  and one does once the mapping is gone. Not checked against a real router here.
+- **Item 2 is blocked as written (2026-11-23).** A tracker on the station's TCP port can't
+  be reached by the pages that need it:
+  - pages from the listen link run on `https://radioterminal.github.io`, and browsers block
+    `ws://` from an `https://` page as mixed content (except `localhost`); `wss://` needs a
+    certificate a browser trusts for the station's address, which a home station doesn't
+    have;
+  - a page that the station serves itself, over `http://` on the local network, is not a
+    secure context, so it can't check the station's signatures (`crypto.subtle`), and such
+    pages play by address through WHEP anyway, with no trackers;
+  - UPnP maps only the UDP media port, so the TCP port isn't reachable from outside.
+
+  Ways on, for the operator to choose: (a) signalling through the mesh: a page that already
+  plays sends its repair offers through its sources' `now` channels, so repairs need no
+  tracker (only the first connection does); (b) item 3, a second route over `wss://` (Nostr
+  relays), so the link survives both public trackers failing; (c) drop item 2.
 
 Proposed roadmap row: **M5.5 P2P listening**, relaying of WebRTC listeners (this plan), with
 P1–P4 as above. Ends with: three browsers on one station slot all play, and the audio is
