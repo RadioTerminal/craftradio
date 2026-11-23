@@ -303,6 +303,10 @@ fn answer_offer(msg: &Value, shared: &Shared, info_hash: &str, peer_id: &str) ->
     if offer_id.len() > 64 || from.chars().count() != 20 {
         return None;
     }
+    // An offer the station would refuse costs nothing of the budget.
+    if !shared.gate.has_room(sdp, &Origin::Tracker) {
+        return None;
+    }
     // Over the budget, the offer gets no answer. The page posts it again after 5 s.
     if !shared.budget.lock().is_ok_and(|mut b| b.take()) {
         return None;

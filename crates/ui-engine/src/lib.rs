@@ -27,7 +27,8 @@ pub fn peak_hold(state: &State) -> Option<Duration> {
 }
 
 /// The WebRTC stream settings that Preferences keeps, put onto `cfg`: the port (on the address
-/// it has), the bitrate, the most listeners and whether listeners pass the audio on. Values
+/// it has), the bitrate, the most listeners, whether listeners pass the audio on and the slots
+/// kept for listeners who find no one to play through. Values
 /// out of range are left as they were.
 pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
     let Some(s) = state.settings(radio_playout::WEBRTC_PART) else {
@@ -48,6 +49,9 @@ pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
     }
     if let Some(relay) = s.get("relay").and_then(serde_json::Value::as_bool) {
         cfg.relay = relay;
+    }
+    if let Some(reserve) = get("direct_reserve").filter(|r| *r <= 1000) {
+        cfg.direct_reserve = reserve as usize;
     }
 }
 

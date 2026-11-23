@@ -68,6 +68,11 @@ pub struct WebRtcConfig {
     /// Listener pages may pass the audio on to other listeners. The station tells each page
     /// when it connects.
     pub relay: bool,
+    /// Slots of [`max_listeners`](Self::max_listeners) kept for listeners that cannot play
+    /// through another listener: their offer through a tracker carries [`NO_RELAY_LINE`] or
+    /// [`STATION_ONLY_LINE`]. Offers by address never wait for these. Without `relay`, no
+    /// slot is kept; with it, at least one slot stays for everyone.
+    pub direct_reserve: usize,
 }
 
 impl WebRtcConfig {
@@ -83,6 +88,7 @@ impl WebRtcConfig {
                 .map(|s| (*s).to_owned())
                 .collect(),
             relay: true,
+            direct_reserve: 10,
         }
     }
 }
@@ -295,6 +301,11 @@ impl WebRtcServer {
             candidates,
             status: status.clone(),
             max: cfg.max_listeners,
+            reserve: if cfg.relay {
+                cfg.direct_reserve.min(cfg.max_listeners.saturating_sub(1))
+            } else {
+                0
+            },
             taken,
             pending,
         };
@@ -362,6 +373,18 @@ struct Listener {
     greeted: bool,
     /// Listeners that the page says it passes the audio on to.
     reported: usize,
+}
+
+/// In an offer: this page found no listener to play through, so it may take a slot of the
+/// [`direct_reserve`](WebRtcConfig::direct_reserve).
+pub const NO_RELAY_LINE: &str = "a=x-radio-no-relay";
+/// In an offer: this page plays from the station only. Relays leave it alone, and it may take
+/// a slot of the reserve.
+pub const STATION_ONLY_LINE: &str = "a=x-radio-station-only";
+
+/// True when the SDP holds this attribute line.
+fn has_line(sdp: &str, line: &str) -> bool {
+    sdp.lines().any(|l| l.trim_end() == line)
 }
 
 /// Hops from the station, at most. A page this far away passes the audio on to no one.
@@ -973,6 +996,8 @@ pub(crate) struct Gate {
     candidates: Arc<Mutex<Vec<Candidate>>>,
     status: Arc<Mutex<WebRtcStatus>>,
     max: usize,
+    /// Of `max`, the slots kept for offers from trackers that cannot use a relay.
+    reserve: usize,
     /// Listeners that connect or play now. The media thread counts down when one leaves.
     taken: Arc<AtomicUsize>,
     pending: Pending,
@@ -1095,8 +1120,28 @@ impl Gate {
         is_running(&self.status)
     }
 
+    /// The listeners this offer may fill the station up to. Through a tracker, an offer that
+    /// could play through a relay leaves the reserve free.
+    fn limit(&self, sdp: &str, origin: &Origin) -> usize {
+        match origin {
+            Origin::Tracker
+                if !has_line(sdp, NO_RELAY_LINE) && !has_line(sdp, STATION_ONLY_LINE) =>
+            {
+                self.max - self.reserve
+            }
+            _ => self.max,
+        }
+    }
+
+    /// True when the station may answer this offer now. Callers check this before they spend
+    /// anything on the offer; [`admit`](Self::admit) checks again.
+    pub(crate) fn has_room(&self, sdp: &str, origin: &Origin) -> bool {
+        self.taken.load(Ordering::Acquire) < self.limit(sdp, origin)
+    }
+
     /// Answers an offer. Returns the listener token and the SDP answer.
     pub(crate) fn admit(&self, sdp: &str, origin: Origin) -> Result<(String, String), Response> {
+        let limit = self.limit(sdp, &origin);
         // Offers from trackers have no limit here: the media thread pushes out the oldest.
         let (peer, pending_limit, timeout) = match origin {
             Origin::Http(peer) => (peer, Some(PENDING_PER_ADDRESS), CONNECT_TIMEOUT),
@@ -1108,7 +1153,7 @@ impl Gate {
         ) {
             return Err(Response::text(503, "the station is not ready"));
         }
-        self.reserve(peer, pending_limit)?;
+        self.reserve(peer, pending_limit, limit)?;
         let added = self.add_listener(sdp, peer, timeout);
         if added.is_err() {
             self.unreserve(peer);
@@ -1118,7 +1163,12 @@ impl Gate {
 
     /// Takes both places for `peer` in one step.
     /// The media thread frees them when the listener leaves.
-    fn reserve(&self, peer: IpAddr, pending_limit: Option<usize>) -> Result<(), Response> {
+    fn reserve(
+        &self,
+        peer: IpAddr,
+        pending_limit: Option<usize>,
+        limit: usize,
+    ) -> Result<(), Response> {
         let Ok(mut map) = self.pending.lock() else {
             return Err(Response::text(503, "the station is not ready"));
         };
@@ -1129,11 +1179,15 @@ impl Gate {
             ));
         }
         // The count includes listeners that still connect, so parallel offers cannot pass the limit.
-        if self.taken.fetch_add(1, Ordering::AcqRel) >= self.max {
+        if self.taken.fetch_add(1, Ordering::AcqRel) >= limit {
             self.taken.fetch_sub(1, Ordering::AcqRel);
             return Err(Response::text(
                 503,
-                "the station has its maximum of listeners",
+                if limit < self.max {
+                    "the station keeps its last places for listeners that find no one to play through"
+                } else {
+                    "the station has its maximum of listeners"
+                },
             ));
         }
         // Only a reservation that passes both checks adds an entry, so refusals cannot grow the map.
