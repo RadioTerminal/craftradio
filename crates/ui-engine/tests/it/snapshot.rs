@@ -113,3 +113,29 @@ fn failed_checkpoints_show_a_persistent_warning() {
     assert!(view.mode.contains("NOT SAVED"));
     assert!(view.mode.contains("write denied"));
 }
+
+/// A row that hides its title shows the station name from Preferences, not the name the
+/// source started with.
+#[test]
+fn a_hidden_title_shows_the_branding_name_in_the_view() {
+    let d = dir();
+    let mut song = track(1, "Quiet", &wav(&d, "quiet", 3.0), 3.0);
+    song.meta = radio_model::ItemMeta {
+        title: "Quiet".into(),
+        publish: radio_model::PublishMode::Hide,
+        ..Default::default()
+    };
+    let (mut source, clock) = source(vec![song]);
+    wait_for(&mut source, &clock, |v| !v.rows.is_empty());
+    source
+        .playout()
+        .dispatch(radio_engine::Command::SettingsSet {
+            part: radio_model::BRANDING_PART.into(),
+            key: radio_model::BRANDING_NAME_KEY.into(),
+            value: "Radio Lipa".into(),
+        })
+        .unwrap();
+    let view = wait_for(&mut source, &clock, |v| v.station == "Radio Lipa");
+    let row = view.rows.first().expect("a row");
+    assert_eq!(source.stream_title(row), "Radio Lipa");
+}

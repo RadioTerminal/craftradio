@@ -532,13 +532,21 @@ impl EngineSource {
         rows
     }
 
+    /// The station name: the setting, else the name this source started with.
+    fn station_name(&self) -> String {
+        self.state
+            .station_name()
+            .unwrap_or_else(|| self.station.clone())
+    }
+
     /// The stream title before each row. The snapshot works it out once.
     fn title_chain(&self, rows: &[Row]) -> HashMap<u64, String> {
-        let mut previous = self.station.clone();
+        let name = self.station_name();
+        let mut previous = name.clone();
         let mut out = HashMap::with_capacity(rows.len());
         for r in rows {
             out.insert(r.id, previous.clone());
-            previous = radio_model::stream_title(&meta_item(r), &previous, &self.station);
+            previous = radio_model::stream_title(&meta_item(r), &previous, &name);
         }
         out
     }
@@ -1138,7 +1146,7 @@ impl ViewSource for EngineSource {
             tabs: self.tabs.clone(),
             main_playlist: main.name.clone(),
             main,
-            station: self.station.clone(),
+            station: self.station_name(),
             meters: self.meters(&pv),
             history,
             history_more: self.history_more,
@@ -1250,12 +1258,13 @@ impl ViewSource for EngineSource {
     }
 
     fn stream_title(&self, row: &Row) -> String {
+        let name = self.station_name();
         let previous = self
             .previous
             .get(&row.id)
             .cloned()
-            .unwrap_or_else(|| self.station.clone());
-        radio_model::stream_title(&meta_item(row), &previous, &self.station)
+            .unwrap_or_else(|| name.clone());
+        radio_model::stream_title(&meta_item(row), &previous, &name)
     }
 }
 

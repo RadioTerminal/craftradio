@@ -174,6 +174,14 @@ impl Core {
         Some((i, tag))
     }
 
+    /// The station name that hidden titles show: the setting, else the configured name.
+    fn station_name(&self) -> String {
+        self.engine
+            .state()
+            .station_name()
+            .unwrap_or_else(|| self.cfg.station_name.clone())
+    }
+
     /// Sends the stream title for an item that just started.
     pub(crate) fn send_title(&mut self, item: &Item) {
         if self.icecast.is_none() && self.cfg.webrtc.is_none() {
@@ -184,7 +192,8 @@ impl Core {
             shown.meta.title.clone_from(&item.title);
             shown.meta.artist = item.artist.clone().unwrap_or_default();
         }
-        let title = stream_title(&shown, &self.title, &self.cfg.station_name);
+        let name = self.station_name();
+        let title = stream_title(&shown, &self.title, &name);
         if let Some(ice) = &self.icecast {
             ice.set_title(title.clone());
         }
@@ -246,6 +255,7 @@ impl Core {
         let Ok(rows) = self.log.history(hour_ago, PLAYED_MAX as u32 * 4) else {
             return;
         };
+        let name = self.station_name();
         let station = &self.engine.state().station;
         for row in rows {
             // A row without an end did not finish, or it is the item that resumes now.
@@ -258,8 +268,7 @@ impl Core {
                 .filter(|p| p.name == row.entry.playlist)
                 .flat_map(|p| p.items.iter())
                 .find(|i| i.title == row.entry.title && i.artist == row.entry.artist);
-            let Some((title, artist)) = item.and_then(|i| listed_title(i, &self.cfg.station_name))
-            else {
+            let Some((title, artist)) = item.and_then(|i| listed_title(i, &name)) else {
                 continue;
             };
             // Only an item that shows its tags shows its cover.
