@@ -167,6 +167,16 @@ impl ServerHandle {
         self.local_addr
     }
 
+    /// The outputs of the station `slug`, for tests and diagnostics: a test holds an
+    /// output's mount through it, so that output fails for the next source.
+    #[doc(hidden)]
+    pub fn outputs(&self, slug: &str) -> Option<Arc<Outputs>> {
+        self.shared
+            .mounts
+            .get(slug)
+            .map(|mounts| Arc::clone(&mounts.outputs))
+    }
+
     /// Stops accepting, ends every source and listener, and waits (briefly) for their
     /// threads. Calling it again does nothing more.
     pub fn stop(&self) {
@@ -640,9 +650,9 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     }
     // Only a listener may name an output: no key is looked at for one.
     if method == "GET"
-        && let Some((mounts, output, mount)) = output_at(shared, &request.path)
+        && let Some((slug, mounts, output, mount)) = output_at(shared, &request.path)
     {
-        return listen_output(shared, stream, mounts, output, mount);
+        return listen_output(shared, stream, slug, mounts, output, mount);
     }
     refuse(stream, 404, "Not Found", &[CORS], b"not found")
 }
@@ -658,18 +668,19 @@ fn station_at<'a>(shared: &'a Shared, path: &str) -> Option<(&'a Station, &'a St
     Some((station, mounts))
 }
 
-/// The output at `path`, `/<slug>/<mount>`, with its station's mounts and its own mount.
-fn output_at<'a>(
+/// The output at `path`, `/<slug>/<mount>`: the slug, the station's mounts, the output and
+/// its own mount.
+fn output_at<'a, 'p>(
     shared: &'a Shared,
-    path: &str,
-) -> Option<(&'a StationMounts, &'a Output, &'a Arc<Mount>)> {
+    path: &'p str,
+) -> Option<(&'p str, &'a StationMounts, &'a Output, &'a Arc<Mount>)> {
     let (slug, name) = split_path(path)?;
     let mounts = shared.mounts.get(slug)?;
     let (output, mount) = mounts
         .outputs
         .each()
         .find(|(output, _)| output.mount == name)?;
-    Some((mounts, output, mount))
+    Some((slug, mounts, output, mount))
 }
 
 /// The slug and mount of `/<slug>/<mount>`, both one non-empty path segment.
@@ -706,10 +717,11 @@ fn source(
         .filter(|name| !name.is_empty())
         .unwrap_or(&station.name)
         .to_owned();
-    // Only a whole number: anything else gives no bitrate.
+    // Only a whole number above zero: anything else gives no bitrate.
     let kbps = request
         .header("Ice-Bitrate")
-        .and_then(|kbps| kbps.parse::<u32>().ok());
+        .and_then(|kbps| kbps.parse::<u32>().ok())
+        .filter(|kbps| *kbps > 0);
     // Taken before the reply, so a listener who comes the moment the source has its 200
     // finds the source live.
     let Some(guard) = mounts.pushed.begin(format, name, kbps) else {
@@ -840,7 +852,8 @@ fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request)
 /// `GET /status-json.xsl`: public and unkeyed, for the listener page's "now playing".
 /// Each station's pushed mount comes first, then its outputs in config order, so the page,
 /// which falls back to the first entry, finds the pushed stream. An output carries the
-/// pushed mount's title and artist; one whose source is refused is left out.
+/// pushed mount's title and artist; one whose source is refused, or that failed, is left
+/// out.
 fn stats(shared: &Shared, stream: &mut Conn) {
     let mut entries = Vec::new();
     for station in &shared.config.stations {
@@ -857,6 +870,7 @@ fn stats(shared: &Shared, stream: &mut Conn) {
             mounts
                 .outputs
                 .each()
+                .filter(|(output, _)| !mounts.outputs.failed(&output.mount))
                 .map(|(output, mount)| {
                     let mut stats = mount.stats();
                     if stats.name.is_empty() {
@@ -902,10 +916,12 @@ fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>) {
 
 /// A listener of one of a station's outputs. With the station on the air but the output
 /// not begun yet (its transcoder is still reading the source's first audio), it waits up
-/// to [`OUTPUT_START_WAIT`] for it. Outputs that can't run are refused with the reason.
+/// to [`OUTPUT_START_WAIT`] for it. Outputs that can't run, and an output that failed, are
+/// refused at once with the reason.
 fn listen_output(
     shared: &Shared,
     stream: &mut Conn,
+    slug: &str,
     mounts: &StationMounts,
     output: &Output,
     mount: &Arc<Mount>,
@@ -922,6 +938,16 @@ fn listen_output(
                 &[CORS],
                 refused(refusal).as_bytes(),
             );
+        }
+        // Checked before joining: a failed output's mount may still be held.
+        if mounts.outputs.failed(&output.mount) {
+            let body = format!(
+                "the {} output ({} kbit/s) failed for this broadcast and is off until the \
+                 source reconnects; the station's main stream still plays at /{slug}/stream",
+                output.format.name(),
+                output.kbps
+            );
+            return refuse(stream, 503, "Service Unavailable", &[CORS], body.as_bytes());
         }
         match mount.listen() {
             Ok(listener) => return play(shared, stream, &listener),

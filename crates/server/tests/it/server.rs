@@ -1981,3 +1981,114 @@ fn stop_returns_with_outputs_being_listened_to() {
         read_to_end_within(listener, Duration::from_secs(2));
     }
 }
+
+#[test]
+fn an_output_that_failed_says_so_at_once_and_the_rest_play() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    // Something else holds the MP3 output's mount, so it can't begin for the next source.
+    let held = server
+        .outputs("morning")
+        .unwrap()
+        .mount("mp3")
+        .unwrap()
+        .begin(Format::Mp3, "Morning Station".into(), None)
+        .unwrap();
+    let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    // The Opus output began, so the transcoder has been through every output.
+    let listed = wait_for_sources(addr, 2);
+    let urls: Vec<&str> = listed
+        .iter()
+        .map(|source| source["listenurl"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://radio.example.test/morning/stream",
+            "https://radio.example.test/morning/opus",
+        ],
+        "the failed output is not listed"
+    );
+
+    let started = Instant::now();
+    let (mut failed, head) = get_output(addr, "morning", "mp3");
+    assert_eq!(head.status, 503);
+    let body = String::from_utf8(read_to_end_within(&mut failed, PATIENCE)).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "a failed output was answered after {:?}",
+        started.elapsed()
+    );
+    assert!(body.contains("failed"), "{body}");
+    assert!(body.contains("/morning/stream"), "{body}");
+    assert!(!body.contains("starting"), "{body}");
+
+    let (opus, head) = get_output(addr, "morning", "opus");
+    assert_eq!(head.status, 200);
+    assert!(
+        hears(opus, Format::Ogg, EAR_PATIENCE),
+        "the other output plays"
+    );
+    let (pushed, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    assert!(
+        hears(pushed, Format::Ogg, EAR_PATIENCE),
+        "the pushed stream plays"
+    );
+    drop(held);
+}
+
+#[test]
+fn a_new_source_finds_the_old_outputs_ended() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    let old = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    wait_for_sources(addr, 3);
+
+    drop(old);
+    // The new source is taken the moment the mount is free, and sends nothing, so no output
+    // of its own begins.
+    let deadline = Instant::now() + PATIENCE;
+    let _new = loop {
+        let (stream, head) = push(addr, "morning", MORNING_KEY, "audio/ogg");
+        if head.status == 200 {
+            break stream;
+        }
+        assert_eq!(head.status, 403, "only a busy mount refuses this source");
+        assert!(Instant::now() < deadline, "the mount never became free");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let listed = sources(&stats(addr)).clone();
+    assert_eq!(
+        listed.len(),
+        1,
+        "the old source's outputs were still live when the new source came: {listed:?}"
+    );
+    assert_eq!(
+        listed[0]["listenurl"],
+        "https://radio.example.test/morning/stream"
+    );
+}
+
+#[test]
+fn an_ice_bitrate_that_is_not_a_positive_whole_number_is_not_listed() {
+    let server = start();
+    let addr = server.local_addr();
+    for bitrate in ["0", "96.5", "fast"] {
+        let mut source = client(addr);
+        write!(
+            source,
+            "PUT /morning/stream HTTP/1.0\r\n{}Content-Type: audio/mpeg\r\nIce-Bitrate: {bitrate}\r\n\r\n",
+            basic(MORNING_KEY)
+        )
+        .unwrap();
+        assert_eq!(read_head(&mut source).status, 200);
+        let entry = source_entry(&stats(addr), "morning").unwrap();
+        assert!(
+            entry.get("bitrate").is_none(),
+            "Ice-Bitrate {bitrate}: {entry}"
+        );
+        drop(source);
+        wait_for_entry(addr, "morning", |entry| entry.is_none());
+    }
+}
