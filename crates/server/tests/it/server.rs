@@ -776,28 +776,31 @@ fn wait_for_options_reply(addr: SocketAddr, status_line: &[u8], why: &str) {
 }
 
 #[test]
-fn connections_over_the_thread_cap_are_closed_at_once() {
+fn connections_over_the_thread_cap_cut_off_the_oldest_head() {
     // One station that takes no listeners: 32 public connection threads and 2 kept for
-    // its source. Idle heads never time out during the test, so only the clients it drops
-    // can free a thread.
+    // its source. Idle heads never time out during the test, so only the server cutting
+    // one off or the clients it drops can free a thread.
     let server = behind_proxy(0, Duration::from_secs(600));
     let addr = server.local_addr();
     // Connections are accepted, and given a thread, in the order they were made.
     let mut idle = idle_clients(addr, 34);
 
+    // A connection over the cap is let in, in place of the oldest head still coming; the
+    // public part is full, so it is refused with a status line.
+    assert!(options_reply(addr).starts_with(b"HTTP/1.0 503"));
     assert!(
-        options_reply(addr).is_empty(),
-        "a connection over the cap got a reply"
+        read_to_end_within(&mut idle[0], PATIENCE).is_empty(),
+        "the oldest head was answered"
+    );
+    idle[1].set_nonblocking(true).unwrap();
+    let mut byte = [0];
+    assert_eq!(
+        idle[1].read(&mut byte).map_err(|e| e.kind()).err(),
+        Some(ErrorKind::WouldBlock),
+        "a younger head was cut off too"
     );
 
-    // A freed thread is one of the source's two: anything else is refused there.
-    drop(idle.pop());
-    wait_for_options_reply(
-        addr,
-        b"HTTP/1.0 503",
-        "the freed thread was never given to a request",
-    );
-    // Once the source's places are free again, a freed thread serves anyone.
+    // With the cut-off head and two more gone, the public part has room again.
     drop(idle.pop());
     drop(idle.pop());
     wait_for_options_reply(addr, b"HTTP/1.0 204", "the freed thread was never reused");
@@ -811,11 +814,11 @@ fn connections_over_the_limit_are_closed_and_the_rest_are_served() {
     let (mut source, head) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
     assert_eq!(head.status, 200);
     source.write_all(&mp3_frames(4)).unwrap();
-    let _idle = idle_clients(addr, 40);
-    assert!(
-        options_reply(addr).is_empty(),
-        "a connection over the limit got a reply"
-    );
+    // More idle heads than the pool holds: the oldest are cut off to make room and the
+    // rest time out, none of them answered.
+    for mut stream in idle_clients(addr, 40) {
+        assert!(read_to_end_within(&mut stream, PATIENCE).is_empty());
+    }
 
     // The idle heads time out, and a real listener gets its place.
     let deadline = Instant::now() + PATIENCE;
@@ -866,6 +869,55 @@ fn a_source_still_gets_in_when_the_public_connections_are_full() {
     back.write_all(&mp3_frames(4)).unwrap();
     // And still nobody else does.
     assert_eq!(status_of(get(addr, "morning")), 503);
+}
+
+#[test]
+fn a_source_still_gets_in_when_idle_heads_fill_every_connection() {
+    // Through the trusted proxy, so no limit per address applies. "morning" takes 2
+    // listeners and "evening" none: 34 public connection threads, and 2 kept for each
+    // station's source.
+    let config = Config::parse(&format!(
+        "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\
+         trusted_proxy = \"127.0.0.1\"\n\n\
+         [[station]]\nslug = \"morning\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\nmax_stream_listeners = 2\n\n\
+         [[station]]\nslug = \"evening\"\nname = \"Evening Station\"\nkey_hash = \"{}\"\nmax_stream_listeners = 0\n",
+        hash_key(MORNING_KEY),
+        hash_key(EVENING_KEY),
+    ))
+    .unwrap();
+    let timeouts = Timeouts {
+        head: Duration::from_secs(600),
+        ..Timeouts::default()
+    };
+    let server = Server::start_with(config, timeouts).unwrap();
+    let addr = server.local_addr();
+    let (mut morning, head) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    assert_eq!(head.status, 200);
+    morning.write_all(&mp3_frames(4)).unwrap();
+    let (_listener, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    // 32 idle heads fill the public part, and 4 more held open fill the sources' places:
+    // every connection thread is taken, and no head in it shows a key.
+    let mut idle = idle_clients(addr, 36);
+
+    // A source with its key still gets in, in place of the oldest idle head.
+    let (mut evening, head) = push(addr, "evening", EVENING_KEY, "audio/mpeg");
+    assert_eq!(head.status, 200);
+    evening.write_all(&mp3_frames(4)).unwrap();
+    assert!(read_to_end_within(&mut idle[0], PATIENCE).is_empty());
+    // Anyone else who comes is refused, each in place of another idle head, and a source
+    // whose head is read is never cut off.
+    assert_eq!(status_of(get(addr, "morning")), 503);
+    for _ in 0..4 {
+        assert_eq!(status_of(request(addr, "OPTIONS", "/morning/stream")), 503);
+    }
+    evening.set_nonblocking(true).unwrap();
+    let mut byte = [0];
+    assert_eq!(
+        evening.read(&mut byte).map_err(|e| e.kind()).err(),
+        Some(ErrorKind::WouldBlock),
+        "the live source was cut off"
+    );
 }
 
 #[test]
