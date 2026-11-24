@@ -7,6 +7,7 @@ mod key;
 mod lockout;
 mod mount;
 mod server;
+mod stats;
 
 pub use config::{Config, Station};
 pub use framing::{Format, Framer};
@@ -15,6 +16,7 @@ pub use key::{hash_key, key_matches, new_key};
 pub use lockout::Lockout;
 pub use mount::{ListenError, Listener, Mount, MountStats, Received, SourceGuard};
 pub use server::{Server, ServerHandle, Timeouts};
+pub use stats::status_json;
 
 /// Why the server could not start or do what it was asked.
 #[derive(Debug, thiserror::Error)]
