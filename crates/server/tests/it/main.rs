@@ -8,3 +8,4 @@ mod lockout;
 mod mount;
 mod server;
 mod support;
+mod transcode;

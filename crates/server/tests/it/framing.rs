@@ -50,11 +50,20 @@ impl OggSource {
 
     /// Encodes `ms` milliseconds of a tone, one page per 20 ms packet.
     pub fn audio(&mut self, ms: usize) {
+        self.packets(ms, 0.2);
+    }
+
+    /// Encodes `ms` milliseconds of silence, one page per 20 ms packet.
+    pub fn silence(&mut self, ms: usize) {
+        self.packets(ms, 0.0);
+    }
+
+    fn packets(&mut self, ms: usize, level: f32) {
         for _ in 0..ms / 20 {
             let samples: Vec<f32> = (0..960)
                 .flat_map(|i| {
                     let t = (self.packets * 960 + i) as f32 / 48_000.0;
-                    let s = (t * 440.0 * std::f32::consts::TAU).sin() * 0.2;
+                    let s = (t * 440.0 * std::f32::consts::TAU).sin() * level;
                     [s, s]
                 })
                 .collect();

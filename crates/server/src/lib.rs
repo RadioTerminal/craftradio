@@ -12,6 +12,7 @@ mod lockout;
 mod mount;
 mod server;
 mod stats;
+mod transcode;
 
 pub use config::{Config, Output, OutputFormat, Station};
 pub use decode::{BLOCK, DecodeError, Decoded, RATE, SourceDecoder};
@@ -23,6 +24,7 @@ pub use lockout::Lockout;
 pub use mount::{ListenError, Listener, ListenerCap, Mount, MountStats, Received, SourceGuard};
 pub use server::{Server, ServerHandle, Timeouts};
 pub use stats::status_json;
+pub use transcode::{Outputs, Refusal, Transcoder, spawn};
 
 /// Why the server could not start or do what it was asked.
 #[derive(Debug, thiserror::Error)]
