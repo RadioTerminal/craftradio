@@ -138,12 +138,14 @@ impl Mount {
     }
 
     /// Sets the title of an MP3 source, whose stream carries none. An Ogg source's next
-    /// tags replace it.
-    pub fn set_title(&self, title: String) {
+    /// tags replace it. Returns whether a source was live to take it.
+    pub fn set_title(&self, title: String) -> bool {
         let mut state = self.state();
-        if state.live.is_some() {
+        let live = state.live.is_some();
+        if live {
             state.title = title;
         }
+        live
     }
 
     pub fn stats(&self) -> MountStats {

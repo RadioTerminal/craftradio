@@ -1,5 +1,6 @@
 use crate::framing::{OggSource, granule, pages};
 use base64::Engine;
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use radio_server::{Config, Server, ServerHandle, Timeouts, hash_key};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -57,14 +58,18 @@ fn client(addr: SocketAddr) -> TcpStream {
 }
 
 /// Reads a reply head one byte at a time, so no byte of the body is taken.
-fn read_head(stream: &mut TcpStream) -> Head {
+fn read_head_bytes(stream: &mut TcpStream) -> Vec<u8> {
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
         let mut byte = [0];
         stream.read_exact(&mut byte).expect("a reply head");
         head.push(byte[0]);
     }
-    let text = String::from_utf8(head).unwrap();
+    head
+}
+
+fn read_head(stream: &mut TcpStream) -> Head {
+    let text = String::from_utf8(read_head_bytes(stream)).unwrap();
     let mut lines = text.trim_end().split("\r\n");
     let status_line = lines.next().unwrap();
     let status = status_line.split(' ').nth(1).unwrap().parse().unwrap();
@@ -77,7 +82,35 @@ fn read_head(stream: &mut TcpStream) -> Head {
     Head { status, headers }
 }
 
-/// Starts a source push the way the app's `connect()` does and reads the reply head.
+/// The `Authorization` line the app sends with `key`.
+fn basic(key: &str) -> String {
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("source:{key}"));
+    format!("Authorization: Basic {auth}\r\n")
+}
+
+/// Sends a source push's head the way the app's `connect()` does; `None` sends no
+/// `Authorization` header.
+fn send_push(
+    addr: SocketAddr,
+    slug: &str,
+    key: Option<&str>,
+    content_type: &str,
+    extra: &str,
+) -> TcpStream {
+    let mut stream = client(addr);
+    let auth = key.map(basic).unwrap_or_default();
+    write!(
+        stream,
+        "PUT /{slug}/stream HTTP/1.0\r\nHost: radio.example.test\r\n{auth}\
+         Content-Type: {content_type}\r\nContent-Length: 9223372036854775807\r\n\
+         Ice-Name: Cloud Signal FM\r\nIce-Description: Invented test stream\r\nIce-Genre: Ambient\r\n\
+         Ice-Bitrate: 96\r\n{extra}\r\n"
+    )
+    .unwrap();
+    stream
+}
+
+/// Starts a source push and reads the reply head.
 fn push_with(
     addr: SocketAddr,
     slug: &str,
@@ -85,18 +118,33 @@ fn push_with(
     content_type: &str,
     extra: &str,
 ) -> (TcpStream, Head) {
+    let mut stream = send_push(addr, slug, Some(key), content_type, extra);
+    let head = read_head(&mut stream);
+    (stream, head)
+}
+
+/// Sends `GET /admin/metadata?<query>` the way the app's `update_mp3_title` does and
+/// reads the reply head; `None` sends no `Authorization` header.
+fn metadata_query(addr: SocketAddr, query: &str, key: Option<&str>) -> (TcpStream, Head) {
     let mut stream = client(addr);
-    let auth = base64::engine::general_purpose::STANDARD.encode(format!("source:{key}"));
+    let auth = key.map(basic).unwrap_or_default();
     write!(
         stream,
-        "PUT /{slug}/stream HTTP/1.0\r\nHost: radio.example.test\r\nAuthorization: Basic {auth}\r\n\
-         Content-Type: {content_type}\r\nContent-Length: 9223372036854775807\r\n\
-         Ice-Name: Cloud Signal FM\r\nIce-Description: Invented test stream\r\nIce-Genre: Ambient\r\n\
-         Ice-Bitrate: 96\r\n{extra}\r\n"
+        "GET /admin/metadata?{query} HTTP/1.0\r\nHost: radio.example.test\r\n{auth}Connection: close\r\n\r\n"
     )
     .unwrap();
     let head = read_head(&mut stream);
     (stream, head)
+}
+
+/// A title update for `/<slug>/stream`, encoded as the app encodes it.
+fn set_title(addr: SocketAddr, slug: &str, title: &str, key: Option<&str>) -> (TcpStream, Head) {
+    let query = format!(
+        "mount={}&mode=updinfo&song={}",
+        utf8_percent_encode(&format!("/{slug}/stream"), NON_ALPHANUMERIC),
+        utf8_percent_encode(title, NON_ALPHANUMERIC),
+    );
+    metadata_query(addr, &query, key)
 }
 
 fn push(addr: SocketAddr, slug: &str, key: &str, content_type: &str) -> (TcpStream, Head) {
@@ -173,11 +221,159 @@ fn the_right_key_gets_an_explicit_200_and_the_wrong_one_401() {
 
     let (_wrong, head) = push(addr, "morning", "invented-wrong-key", "audio/ogg");
     assert_eq!(head.status, 401);
-    let challenge = head.header("WWW-Authenticate").unwrap_or_default();
-    assert!(challenge.starts_with("Basic"), "{challenge}");
+    assert_eq!(
+        head.header("WWW-Authenticate"),
+        Some("Basic realm=\"craftradio\"")
+    );
 
-    let (_right, head) = push(addr, "morning", MORNING_KEY, "audio/ogg");
+    let mut right = send_push(addr, "morning", Some(MORNING_KEY), "audio/ogg", "");
+    assert_eq!(read_head_bytes(&mut right), b"HTTP/1.0 200 OK\r\n\r\n");
+}
+
+#[test]
+fn a_request_without_a_key_is_401_and_never_locks_the_address() {
+    let server = start();
+    let addr = server.local_addr();
+    let (_source, head) = push(addr, "evening", EVENING_KEY, "audio/mpeg");
     assert_eq!(head.status, 200);
+    for _ in 0..6 {
+        let mut keyless = send_push(addr, "morning", None, "audio/ogg", "");
+        let head = read_head(&mut keyless);
+        assert_eq!(head.status, 401);
+        assert_eq!(
+            head.header("WWW-Authenticate"),
+            Some("Basic realm=\"craftradio\"")
+        );
+        let (_keyless, head) = set_title(addr, "evening", "Cloud Signal", None);
+        assert_eq!(head.status, 401);
+    }
+    assert_eq!(
+        status_of(set_title(
+            addr,
+            "evening",
+            "Cloud Signal",
+            Some(EVENING_KEY)
+        )),
+        200
+    );
+    assert_eq!(
+        status_of(push(addr, "morning", MORNING_KEY, "audio/ogg")),
+        200
+    );
+}
+
+#[test]
+fn a_title_update_with_the_station_key_is_taken() {
+    let server = start();
+    let addr = server.local_addr();
+    let (_source, head) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    assert_eq!(head.status, 200);
+
+    let (mut taken, head) = set_title(addr, "morning", "Cloud Signal", Some(MORNING_KEY));
+    assert_eq!(head.status, 200);
+    assert_eq!(head.header("Content-Type"), Some("text/xml"));
+    assert_eq!(
+        read_to_end_within(&mut taken, PATIENCE),
+        b"<?xml version=\"1.0\"?><iceresponse><message>Metadata update successful</message><return>1</return></iceresponse>"
+    );
+
+    let mount = utf8_percent_encode("/morning/stream", NON_ALPHANUMERIC).to_string();
+    let refused = [
+        // An unknown station.
+        (
+            "mount=%2Fnoon%2Fstream&mode=updinfo&song=Echo".to_owned(),
+            404,
+        ),
+        // Not a stream path.
+        ("mount=%2Fmorning&mode=updinfo&song=Echo".to_owned(), 404),
+        (format!("mount={mount}&mode=updinfo"), 400),
+        (format!("mount={mount}&mode=updmeta&song=Echo"), 400),
+        (format!("mount={mount}&song=Echo"), 400),
+        ("mode=updinfo&song=Echo".to_owned(), 400),
+    ];
+    for (query, status) in refused {
+        assert_eq!(
+            status_of(metadata_query(addr, &query, Some(MORNING_KEY))),
+            status,
+            "{query}"
+        );
+    }
+    // A station with no source live.
+    assert_eq!(
+        status_of(set_title(addr, "evening", "Echo", Some(EVENING_KEY))),
+        400
+    );
+}
+
+#[test]
+fn a_title_update_needs_the_key_of_that_station() {
+    let server = start();
+    let addr = server.local_addr();
+    let (_source, _) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+
+    let (_other, head) = set_title(addr, "morning", "Cloud Signal", Some(EVENING_KEY));
+    assert_eq!(head.status, 401);
+    assert_eq!(
+        head.header("WWW-Authenticate"),
+        Some("Basic realm=\"craftradio\"")
+    );
+    assert_eq!(
+        status_of(set_title(
+            addr,
+            "morning",
+            "Cloud Signal",
+            Some("invented-wrong-key")
+        )),
+        401
+    );
+    assert_eq!(
+        status_of(set_title(
+            addr,
+            "morning",
+            "Cloud Signal",
+            Some(MORNING_KEY)
+        )),
+        200
+    );
+}
+
+#[test]
+fn five_wrong_keys_on_title_updates_lock_the_address() {
+    let server = start();
+    let addr = server.local_addr();
+    let (_source, _) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    // An unknown mount is not a wrong key.
+    for _ in 0..6 {
+        let query = "mount=%2Fnoon%2Fstream&mode=updinfo&song=Echo";
+        assert_eq!(
+            status_of(metadata_query(addr, query, Some("invented-wrong-key"))),
+            404
+        );
+    }
+    assert_eq!(
+        status_of(set_title(addr, "morning", "Echo", Some(MORNING_KEY))),
+        200
+    );
+
+    for _ in 0..5 {
+        assert_eq!(
+            status_of(set_title(
+                addr,
+                "morning",
+                "Echo",
+                Some("invented-wrong-key")
+            )),
+            401
+        );
+    }
+    let (_locked, head) = set_title(addr, "morning", "Echo", Some(MORNING_KEY));
+    assert_eq!(head.status, 429);
+    assert!(head.header("Retry-After").is_some());
+    // The lock covers the source route too.
+    assert_eq!(
+        status_of(push(addr, "evening", EVENING_KEY, "audio/ogg")),
+        429
+    );
 }
 
 #[test]
