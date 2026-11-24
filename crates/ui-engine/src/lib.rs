@@ -14,14 +14,14 @@ mod icecast;
 
 pub use icecast::{
     ICECAST_PART, KEYCHAIN_SERVICE, KeyringStore, MemoryStore, SecretStore, icecast_config,
-    icecast_view,
+    icecast_view, mount_entry,
 };
 mod map;
 mod one_off;
 mod outputs;
 mod pairing;
 
-pub use pairing::{check_address, is_paired};
+pub use pairing::{PairError, check_address, fetch as fetch_pairing, is_paired, paired_entry};
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
 /// with: `None` when none is set, so the playout keeps its own.

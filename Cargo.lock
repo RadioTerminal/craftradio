@@ -4843,6 +4843,8 @@ dependencies = [
  "radio-mcp",
  "radio-model",
  "radio-scheduler",
+ "radio-server",
+ "radio-ui-engine",
  "serde_json",
  "tempfile",
  "toml",

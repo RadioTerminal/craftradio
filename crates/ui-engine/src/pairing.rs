@@ -26,7 +26,7 @@ const MAX_DOCUMENT: u64 = 64 * 1024;
 
 /// Why a pairing try did not give a document.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PairError {
+pub enum PairError {
     /// The server answered 401: it does not know the key.
     KeyRefused,
     /// No answer, or not now (503, 429, a timeout); the reason in words.
@@ -141,7 +141,7 @@ pub(crate) fn read_document(body: &str) -> Result<PairingDocument, PairError> {
 
 /// Fetches `<address>/api/station` with `key` as the Basic password. `address` passed
 /// [`check_address`].
-pub(crate) fn fetch(address: &str, key: &str) -> Result<PairingDocument, PairError> {
+pub fn fetch(address: &str, key: &str) -> Result<PairingDocument, PairError> {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(FETCH_TIMEOUT))
         .timeout_connect(Some(CONNECT_TIMEOUT))
@@ -316,7 +316,7 @@ pub fn is_paired(state: &State) -> bool {
 /// The keychain entry of the paired push, from what the server's document named (the
 /// `server.push` setting), so hand edits of `icecast.*` do not move it. A pairing written
 /// before that setting existed falls back to the Icecast settings.
-fn paired_entry(state: &State) -> Option<String> {
+pub fn paired_entry(state: &State) -> Option<String> {
     paired_address(state)?;
     let push = state
         .settings(SERVER_PART)

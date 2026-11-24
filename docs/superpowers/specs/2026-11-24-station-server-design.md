@@ -1,7 +1,11 @@
 # Station server: design
 
-**Status (2026-11-24):** approved by the operator. Phases 1 (server core) and 1b (outputs)
-are built: `crates/server`, `apps/radio-server`, `packaging/server`. Phases 2–5 are not.
+**Status (2026-11-24):** approved by the operator. Phases 1 (server core), 1b (outputs) and
+2 (pairing) are built: `crates/server`, `apps/radio-server`, `packaging/server`; pairing in
+`GET /api/station`, the `server.pair` / `server.unpair` commands, Preferences › Server and
+`craftradio-cli pair`. Phases 3–5 are not. As built, `server.pair` carries the address and
+the fetched document (never the key), and the document has no signalling, feed or guest
+fields yet; those come with phases 3–5.
 
 **Open after phase 1:** the app's push through a reverse proxy is not checked (Caddy was not
 installed where it was built); the server's own TLS is the route checked with the app. The

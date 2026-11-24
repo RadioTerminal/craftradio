@@ -154,9 +154,38 @@ the origin, so the server can't live under a path prefix such as
 because the pairing document at `/api/station` (which a station's key fetches) derives the
 app's Icecast host, port and TLS from it.
 
+## Pair the app with the server
+
+Pairing is the main route: the app asks the server at `GET /api/station` with the station
+key, and the server names the push (host, port, TLS, mount, user) and the stream listeners
+open. Give the station's operator two things: the server's address (`public_url`, for
+example `https://radio.example.org`) and the key from `craftradio-server key`.
+
+- **In the app:** Preferences › Server, enter the address and the key, press Connect.
+- **Without the window** (close the app first; a running app keeps its own copy of the
+  station):
+
+  ```sh
+  craftradio-cli pair https://radio.example.org --data-dir /srv/morning < morning-key.txt
+  ```
+
+  The key is one line on standard input, or `CRAFTRADIO_SERVER_KEY`; it is never an
+  argument and never printed. A wrong key exits non-zero with `key refused`; a server that
+  does not answer, with `unreachable: …`.
+
+The address needs `https://`; `http://` is only for a server on the same computer. The key
+goes to the OS keychain, as the push password of the mount the server named. The app asks
+the server again at each start: a down server leaves the last paired settings and says
+`Paired — server unreachable`, and a key rotated on the server says `Paired — key refused`
+without retrying, so it does not walk the lockout. The headless app prints the same state
+as `radio: …`. `craftradio-cli unpair --data-dir <dir>` (or Unpair on the Server page)
+puts the settings back and removes the key.
+
 ## Set the app's Icecast output by hand
 
-In the app's Icecast output settings for the station:
+The fallback, for a source that cannot pair (another Icecast client, or an app older than
+pairing). Do not do both: a paired app overwrites these settings at each start. In the
+app's Icecast output settings for the station:
 
 | Field | Value |
 |---|---|

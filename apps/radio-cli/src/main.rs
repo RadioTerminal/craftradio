@@ -1,5 +1,7 @@
 //! `radio-cli`: command-line access to the radio station planner.
 
+mod pairing;
+
 use clap::{Parser, Subcommand};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -52,6 +54,30 @@ enum Command {
     },
     /// List the engine commands: id, tier and summary.
     Commands,
+    /// Pair the station in a folder with a station server: the server names the push, and
+    /// the station key goes to the keychain.
+    ///
+    /// The station key is read from standard input (one line, from a file or a pipe) or from
+    /// CRAFTRADIO_SERVER_KEY, never from an argument, and is never printed. Close the app
+    /// first: a running app keeps its own copy of the station. While it runs, pair on
+    /// Preferences › Server instead.
+    Pair {
+        /// The server's address: https://, or http:// for a server on this computer.
+        address: String,
+        /// The folder that holds station.db: the --data-dir of the app.
+        #[arg(long)]
+        data_dir: PathBuf,
+    },
+    /// Unpair the station in a folder: the settings pairing wrote go back to their
+    /// defaults, and the key leaves the keychain.
+    ///
+    /// Close the app first: a running app keeps its own copy of the station. While it runs,
+    /// unpair on Preferences › Server instead.
+    Unpair {
+        /// The folder that holds station.db: the --data-dir of the app.
+        #[arg(long)]
+        data_dir: PathBuf,
+    },
     /// Serve MCP on stdio: every engine command as a tool, run on the running station through
     /// its control channel (docs/control.md).
     Mcp {
@@ -80,8 +106,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs one engine command on `data_dir/station.db`. It never makes a new station.
-fn run_command(data_dir: &std::path::Path, json: &str) -> Result<u8, String> {
+/// `data_dir/station.db`, when there is one. The CLI never makes a new station.
+fn station_db(data_dir: &std::path::Path) -> Result<PathBuf, String> {
     let db = data_dir.join("station.db");
     if !db.is_file() {
         return Err(format!(
@@ -89,6 +115,12 @@ fn run_command(data_dir: &std::path::Path, json: &str) -> Result<u8, String> {
             db.display()
         ));
     }
+    Ok(db)
+}
+
+/// Runs one engine command on `data_dir/station.db`. It never makes a new station.
+fn run_command(data_dir: &std::path::Path, json: &str) -> Result<u8, String> {
+    let db = station_db(data_dir)?;
     let command: radio_engine::Command =
         serde_json::from_str(json).map_err(|e| format!("cannot read the command: {e}"))?;
     let mut engine = radio_engine::Engine::open(&db).map_err(|e| e.to_string())?;
@@ -111,6 +143,8 @@ fn run_command(data_dir: &std::path::Path, json: &str) -> Result<u8, String> {
 fn run(cli: Cli) -> Result<u8, String> {
     match cli.command {
         Command::Cmd { data_dir, command } => run_command(&data_dir, &command),
+        Command::Pair { address, data_dir } => pairing::pair(&station_db(&data_dir)?, &address),
+        Command::Unpair { data_dir } => pairing::unpair(&station_db(&data_dir)?),
         Command::Mcp { port } => {
             // The token comes from CRAFTRADIO_CONTROL_TOKEN or the station's token file, never
             // from the command line, where other users could read it.

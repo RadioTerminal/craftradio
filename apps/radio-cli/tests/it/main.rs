@@ -1,3 +1,5 @@
+mod pairing;
+
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 

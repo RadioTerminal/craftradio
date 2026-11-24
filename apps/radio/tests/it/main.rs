@@ -291,3 +291,19 @@ fn the_headless_status_line_says_off_air() {
     let off = run();
     assert!(off.contains("radio: off air"), "{off}");
 }
+
+/// The headless app prints the pairing with a station server at start, in the words of the
+/// Server page. A fresh station is not paired, and that is said, not left out.
+#[test]
+fn headless_prints_the_pairing_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = radio()
+        .args(["--headless", "--null-output", "--run-for", "300ms"])
+        .arg("--data-dir")
+        .arg(dir.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("radio: Not paired"), "{text}");
+}

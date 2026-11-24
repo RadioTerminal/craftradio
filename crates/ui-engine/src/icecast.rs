@@ -95,7 +95,7 @@ pub(crate) fn secret_key(ice: &IcecastView) -> String {
 }
 
 /// The keychain entry of the mount `user@host:port/mount`.
-pub(crate) fn mount_entry(user: &str, host: &str, port: u16, mount: &str) -> String {
+pub fn mount_entry(user: &str, host: &str, port: u16, mount: &str) -> String {
     format!("icecast:{user}@{host}:{port}{mount}")
 }
 
