@@ -722,52 +722,174 @@ fn stop_ends_live_sources_and_listeners_at_once() {
     drop(server);
 }
 
-#[test]
-fn connections_over_the_thread_cap_are_closed_at_once() {
-    // One station that takes no listeners: 0 + 2 × 1 + 32 connection threads.
+/// A server with one station, "morning", whose every request comes through the trusted
+/// proxy at 127.0.0.1, so no limit per address applies; heads wait `head`.
+fn behind_proxy(max_stream_listeners: usize, head: Duration) -> ServerHandle {
     let config = Config::parse(&format!(
-        "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\n\
-         [[station]]\nslug = \"morning\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\nmax_stream_listeners = 0\n",
+        "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\
+         trusted_proxy = \"127.0.0.1\"\n\n\
+         [[station]]\nslug = \"morning\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\nmax_stream_listeners = {max_stream_listeners}\n",
         hash_key(MORNING_KEY),
     ))
     .unwrap();
-    // Idle heads never time out during the test, so only the client it drops can free a
-    // thread.
-    let server = Server::start_with(
+    Server::start_with(
         config,
         Timeouts {
-            head: Duration::from_secs(600),
+            head,
             ..Timeouts::default()
         },
     )
-    .unwrap();
-    let addr = server.local_addr();
-    // Idle clients that never finish a head each hold a thread.
-    let mut idle: Vec<TcpStream> = (0..34).map(|_| client(addr)).collect();
-    for stream in &mut idle {
-        stream.write_all(b"GET /mor").unwrap();
-    }
-    // Connections are accepted, and given a thread, in the order they were made.
+    .unwrap()
+}
 
-    let mut over = client(addr);
-    let _ = over.write_all(b"OPTIONS /morning/stream HTTP/1.0\r\n\r\n");
-    let reply = read_to_end_within(&mut over, Duration::from_secs(2));
-    assert!(reply.is_empty(), "a connection over the cap got a reply");
+/// Clients that send part of a head and nothing more; each holds a connection thread.
+fn idle_clients(addr: SocketAddr, count: usize) -> Vec<TcpStream> {
+    (0..count)
+        .map(|_| {
+            let mut stream = client(addr);
+            stream.write_all(b"GET /mor").unwrap();
+            stream
+        })
+        .collect()
+}
 
-    drop(idle.pop());
+/// Everything the server answers an `OPTIONS` request, which is empty when it closed the
+/// connection unanswered.
+fn options_reply(addr: SocketAddr) -> Vec<u8> {
+    let mut stream = client(addr);
+    let _ = stream.write_all(b"OPTIONS /morning/stream HTTP/1.0\r\n\r\n");
+    read_to_end_within(&mut stream, PATIENCE)
+}
+
+/// Polls `OPTIONS` until its reply starts with `status_line`.
+fn wait_for_options_reply(addr: SocketAddr, status_line: &[u8], why: &str) {
     let deadline = Instant::now() + PATIENCE;
-    loop {
-        let mut stream = client(addr);
-        let _ = stream.write_all(b"OPTIONS /morning/stream HTTP/1.0\r\n\r\n");
-        if read_to_end_within(&mut stream, PATIENCE).starts_with(b"HTTP/1.0 204") {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the freed thread was never reused"
-        );
+    while !options_reply(addr).starts_with(status_line) {
+        assert!(Instant::now() < deadline, "{why}");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn connections_over_the_thread_cap_are_closed_at_once() {
+    // One station that takes no listeners: 32 public connection threads and 2 kept for
+    // its source. Idle heads never time out during the test, so only the clients it drops
+    // can free a thread.
+    let server = behind_proxy(0, Duration::from_secs(600));
+    let addr = server.local_addr();
+    // Connections are accepted, and given a thread, in the order they were made.
+    let mut idle = idle_clients(addr, 34);
+
+    assert!(
+        options_reply(addr).is_empty(),
+        "a connection over the cap got a reply"
+    );
+
+    // A freed thread is one of the source's two: anything else is refused there.
+    drop(idle.pop());
+    wait_for_options_reply(
+        addr,
+        b"HTTP/1.0 503",
+        "the freed thread was never given to a request",
+    );
+    // Once the source's places are free again, a freed thread serves anyone.
+    drop(idle.pop());
+    drop(idle.pop());
+    wait_for_options_reply(addr, b"HTTP/1.0 204", "the freed thread was never reused");
+}
+
+#[test]
+fn connections_over_the_limit_are_closed_and_the_rest_are_served() {
+    // A cap of 1 listener: 33 public connection threads and 2 for the source.
+    let server = behind_proxy(1, Duration::from_millis(300));
+    let addr = server.local_addr();
+    let (mut source, head) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    assert_eq!(head.status, 200);
+    source.write_all(&mp3_frames(4)).unwrap();
+    let _idle = idle_clients(addr, 40);
+    assert!(
+        options_reply(addr).is_empty(),
+        "a connection over the limit got a reply"
+    );
+
+    // The idle heads time out, and a real listener gets its place.
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let mut listener = client(addr);
+        let _ = listener.write_all(b"GET /morning/stream HTTP/1.0\r\n\r\n");
+        let mut status_line = [0; 12];
+        if listener.read_exact(&mut status_line).is_ok() && &status_line == b"HTTP/1.0 200" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the listener was never served");
+        source.write_all(&mp3_frames(4)).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_source_still_gets_in_when_the_public_connections_are_full() {
+    // A cap of 2 listeners: 34 public connection threads and 2 for the source.
+    let server = behind_proxy(2, Duration::from_secs(600));
+    let addr = server.local_addr();
+    // A listener needs a live source; this one comes back later.
+    let (mut first, head) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    assert_eq!(head.status, 200);
+    first.write_all(&mp3_frames(4)).unwrap();
+    let (_listener, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    // The source, the listener and 32 idle heads fill the public part.
+    let _idle = idle_clients(addr, 32);
+
+    // The station has room for a second listener, but the server has none.
+    let (mut refused, head) = get(addr, "morning");
+    assert_eq!(head.status, 503);
+    assert_eq!(
+        read_to_end_within(&mut refused, PATIENCE),
+        b"the server has as many connections as it allows; try again later"
+    );
+    assert_eq!(status_of(request(addr, "OPTIONS", "/morning/stream")), 503);
+    assert_eq!(status_of(request(addr, "GET", "/status-json.xsl")), 503);
+    // A push without the key is refused as ever.
+    let mut keyless = send_push(addr, "morning", None, "audio/mpeg", "");
+    assert_eq!(read_head(&mut keyless).status, 401);
+    drop(keyless);
+
+    // The source that drops and comes back gets in, by a place kept for it.
+    drop(first);
+    let mut back = push_when_free(addr, "morning", MORNING_KEY, "audio/mpeg");
+    back.write_all(&mp3_frames(4)).unwrap();
+    // And still nobody else does.
+    assert_eq!(status_of(get(addr, "morning")), 503);
+}
+
+#[test]
+fn heads_still_coming_are_limited_per_address() {
+    let server = start_with(Timeouts {
+        head: Duration::from_secs(600),
+        ..Timeouts::default()
+    });
+    let addr = server.local_addr();
+    let mut idle = idle_clients(addr, 8);
+    assert!(
+        options_reply(addr).is_empty(),
+        "a ninth head from one address got a reply"
+    );
+    // A head that closes frees its place.
+    drop(idle.pop());
+    wait_for_options_reply(addr, b"HTTP/1.0 204", "the freed head was never taken");
+    // A connection whose head is read no longer counts, though it stays open.
+    let (_source, head) = push(addr, "morning", MORNING_KEY, "audio/ogg");
+    assert_eq!(head.status, 200);
+    assert!(
+        options_reply(addr).starts_with(b"HTTP/1.0 204"),
+        "a finished head still counted against its address"
+    );
+    let _eighth = idle_clients(addr, 1);
+    assert!(
+        options_reply(addr).is_empty(),
+        "a ninth head from one address got a reply"
+    );
 }
 
 #[test]

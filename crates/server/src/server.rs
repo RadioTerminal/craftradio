@@ -24,9 +24,18 @@ use std::time::{Duration, Instant};
 const READ_BUFFER: usize = 4096;
 /// How often a listener waiting on a silent source checks whether the server is stopping.
 const LISTENER_POLL: Duration = Duration::from_millis(250);
-/// Connection threads beyond the listener caps and two per station (a source and a
-/// spare), for requests that are not streams.
+/// Connection threads beyond the listener caps, for requests that are not streams and for
+/// heads still arriving. Together with the caps they make the public part of the pool,
+/// which anyone may fill; [`RESERVED_PER_STATION`] more are kept for sources.
 const SPARE_CONNECTIONS: usize = 32;
+/// Connection threads each station keeps beyond the public part (its source and a spare,
+/// for a source that reconnects before its old connection is noticed gone). Only a request
+/// with that station's key on its source route or title update takes one, and only once
+/// the public part is full.
+const RESERVED_PER_STATION: usize = 2;
+/// How many connections from one address may be still sending their request head (or
+/// TLS handshake) at a time. Not applied to the trusted proxy, which every client shares.
+const HEADS_PER_ADDRESS: usize = 8;
 /// How long [`ServerHandle::stop`] waits for connection threads to finish.
 const STOP_WAIT: Duration = Duration::from_secs(2);
 /// After a refusal, how long the rest of the request is read and thrown away, so that
@@ -42,6 +51,8 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
 const LOCKED_FOR_SECS: &str = "300";
 const CHALLENGE: (&str, &str) = ("WWW-Authenticate", "Basic realm=\"craftradio\"");
+/// The body of a 503 for a request the full pool has no place for.
+const FULL: &[u8] = b"the server has as many connections as it allows; try again later";
 /// What Icecast answers a title update it took.
 const METADATA_OK: &[u8] = b"<?xml version=\"1.0\"?><iceresponse><message>Metadata update successful</message><return>1</return></iceresponse>";
 
@@ -90,13 +101,14 @@ impl Server {
                 )
             })
             .collect();
-        let max_connections = config
+        let public_connections = config
             .stations
             .iter()
             .fold(SPARE_CONNECTIONS, |sum, station| {
                 sum.saturating_add(station.max_stream_listeners)
-                    .saturating_add(2)
             });
+        let max_connections = public_connections
+            .saturating_add(config.stations.len().saturating_mul(RESERVED_PER_STATION));
         let shared = Arc::new(Shared {
             config,
             timeouts,
@@ -106,6 +118,7 @@ impl Server {
             connections: Mutex::default(),
             finished: Condvar::new(),
             max_connections,
+            public_connections,
         });
         let accept = {
             let shared = Arc::clone(&shared);
@@ -206,16 +219,46 @@ struct Shared {
     connections: Mutex<Connections>,
     /// Signalled whenever a connection thread finishes.
     finished: Condvar,
+    /// Every connection thread there may be.
     max_connections: usize,
+    /// How many of them may hold anything but a station's reserved place.
+    public_connections: usize,
 }
 
-/// The open connections, so `stop` can close them.
+/// The open connections, so `stop` can close them, and what limits them.
 #[derive(Default)]
 struct Connections {
     stopping: bool,
     next_id: u64,
     /// Each connection's socket, shared with its thread: one descriptor a connection.
     open: HashMap<u64, Arc<TcpStream>>,
+    /// Connections still sending their head, by peer address (the trusted proxy's left
+    /// out).
+    heads: HashMap<IpAddr, usize>,
+    /// The connections holding a station's reserved place: id to station slug.
+    reserved: HashMap<u64, String>,
+}
+
+impl Connections {
+    /// Whether connection `id`, its head read, fits in the public part of the pool.
+    fn public_room(&self, id: u64, public_connections: usize) -> bool {
+        let public = self
+            .open
+            .keys()
+            .filter(|open| **open != id && !self.reserved.contains_key(*open))
+            .count();
+        public < public_connections
+    }
+
+    /// Gives connection `id` one of `slug`'s reserved places, if one is free.
+    fn reserve(&mut self, id: u64, slug: &str) -> bool {
+        let taken = self.reserved.values().filter(|held| *held == slug).count();
+        if taken >= RESERVED_PER_STATION {
+            return false;
+        }
+        self.reserved.insert(id, slug.to_owned());
+        true
+    }
 }
 
 impl Shared {
@@ -231,16 +274,25 @@ impl Shared {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Gives an accepted connection its thread, or closes it when stopping or when every
-    /// connection thread is taken.
+    /// Gives an accepted connection its thread, or closes it when stopping, when every
+    /// connection thread is taken, or when its address already has as many heads coming
+    /// as it may.
     fn admit(self: &Arc<Self>, stream: TcpStream, peer: SocketAddr) {
         let stream = Arc::new(stream);
+        let head_from = (self.config.trusted_proxy != Some(peer.ip())).then_some(peer.ip());
         let id = {
             let mut connections = self.connections();
             // Checked under the same lock `stop` closes connections under, so none slips
             // in after it.
             if connections.stopping || connections.open.len() >= self.max_connections {
                 return;
+            }
+            if let Some(addr) = head_from {
+                let heads = connections.heads.entry(addr).or_default();
+                if *heads >= HEADS_PER_ADDRESS {
+                    return;
+                }
+                *heads += 1;
             }
             let id = connections.next_id;
             connections.next_id += 1;
@@ -250,12 +302,13 @@ impl Shared {
         let guard = ConnectionGuard {
             shared: Arc::clone(self),
             id,
+            head_from,
         };
         let spawned = std::thread::Builder::new()
             .name("server-connection".into())
             .spawn(move || {
-                let guard = guard;
-                serve(&guard.shared, peer, Conn::new(stream));
+                let mut guard = guard;
+                serve(&mut guard, peer, Conn::new(stream));
             });
         // A thread that could not start drops its closure, and with it the guard.
         drop(spawned);
@@ -267,11 +320,38 @@ impl Shared {
 struct ConnectionGuard {
     shared: Arc<Shared>,
     id: u64,
+    /// The address whose head count this connection is in, until its head is read.
+    head_from: Option<IpAddr>,
+}
+
+impl ConnectionGuard {
+    /// The head is read (or failed): the connection no longer counts as one coming.
+    fn end_head(&mut self) {
+        if let Some(addr) = self.head_from.take() {
+            end_head(&mut self.shared.connections(), addr);
+        }
+    }
+}
+
+fn end_head(connections: &mut Connections, addr: IpAddr) {
+    if let Some(heads) = connections.heads.get_mut(&addr) {
+        *heads = heads.saturating_sub(1);
+        if *heads == 0 {
+            connections.heads.remove(&addr);
+        }
+    }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        self.shared.connections().open.remove(&self.id);
+        {
+            let mut connections = self.shared.connections();
+            if let Some(addr) = self.head_from.take() {
+                end_head(&mut connections, addr);
+            }
+            connections.open.remove(&self.id);
+            connections.reserved.remove(&self.id);
+        }
         self.shared.finished.notify_all();
     }
 }
@@ -289,7 +369,9 @@ fn accept_loop(shared: &Arc<Shared>, listener: TcpListener) {
     }
 }
 
-fn serve(shared: &Shared, peer: SocketAddr, mut stream: Conn) {
+fn serve(guard: &mut ConnectionGuard, peer: SocketAddr, mut stream: Conn) {
+    let shared = Arc::clone(&guard.shared);
+    let shared = &*shared;
     let head = shared.timeouts.head.max(MIN_TIMEOUT);
     // `read_request` tries a read that times out again until its deadline; without a
     // timeout a read could block past it, and a non-blocking socket would spin.
@@ -303,7 +385,9 @@ fn serve(shared: &Shared, peer: SocketAddr, mut stream: Conn) {
     let deadline = Instant::now()
         .checked_add(head)
         .unwrap_or_else(Instant::now);
-    let request = match read_request(&mut stream, deadline) {
+    let read = read_request(&mut stream, deadline);
+    guard.end_head();
+    let request = match read {
         Ok(request) => request,
         Err(HttpError::Malformed) => {
             return refuse(&mut stream, 400, "Bad Request", &[], b"bad request");
@@ -320,7 +404,45 @@ fn serve(shared: &Shared, peer: SocketAddr, mut stream: Conn) {
         // Too slow, or gone: there is no one to answer.
         Err(HttpError::Timeout | HttpError::Io(_)) => return,
     };
-    route(shared, stream, peer.ip(), &request);
+    if gate(shared, guard.id, &mut stream, peer.ip(), &request) {
+        route(shared, stream, peer.ip(), &request);
+    }
+}
+
+/// Lets a request whose head is read go on: any request while the public part of the
+/// pool has room, else only one with a station's key, on its source route or title
+/// update, into one of that station's reserved places. Answers a request it stops.
+fn gate(shared: &Shared, id: u64, stream: &mut Conn, peer: IpAddr, request: &Request) -> bool {
+    if shared
+        .connections()
+        .public_room(id, shared.public_connections)
+    {
+        return true;
+    }
+    let Some(station) = keyed_station(shared, request) else {
+        refuse(stream, 503, "Service Unavailable", &[CORS], FULL);
+        return false;
+    };
+    // A wrong key is answered, and counted, as on any other keyed request.
+    if !authorized(shared, stream, peer, request, station) {
+        return false;
+    }
+    if !shared.connections().reserve(id, &station.slug) {
+        refuse(stream, 503, "Service Unavailable", &[], FULL);
+        return false;
+    }
+    true
+}
+
+/// The station a request would need the key of: a source push to its mount, or a title
+/// update for it.
+fn keyed_station<'a>(shared: &'a Shared, request: &Request) -> Option<&'a Station> {
+    match request.method.as_str() {
+        "PUT" | "SOURCE" => station_at(shared, &request.path),
+        "GET" if request.path == "/admin/metadata" => station_at(shared, request.param("mount")?),
+        _ => None,
+    }
+    .map(|(station, _)| station)
 }
 
 fn route(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) {
