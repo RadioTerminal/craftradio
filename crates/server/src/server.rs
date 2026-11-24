@@ -1,5 +1,6 @@
-//! The server: a TCP port, one thread per connection, and the two routes of a mount — a
-//! station's keyed source push in, and its public listeners out.
+//! The server: a TCP port, one thread per connection, and the routes of a mount — a
+//! station's keyed source push in, its public listeners out, and the keyed title update
+//! an MP3 source sends as it would to Icecast.
 
 use crate::ServerError;
 use crate::config::{Config, Station};
@@ -38,6 +39,12 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
 const LOCKED_FOR_SECS: &str = "300";
+const CHALLENGE: (&str, &str) = ("WWW-Authenticate", "Basic realm=\"craftradio\"");
+/// The longest title a source may set, in characters; the rest is cut off, so a key
+/// holder cannot bloat the public stats.
+const MAX_TITLE_CHARS: usize = 512;
+/// What Icecast answers a title update it took.
+const METADATA_OK: &[u8] = b"<?xml version=\"1.0\"?><iceresponse><message>Metadata update successful</message><return>1</return></iceresponse>";
 
 /// How long the server waits on its clients. Tests shorten them.
 #[doc(hidden)]
@@ -344,12 +351,10 @@ fn route(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Request
             );
         }
     }
-    let station = stream_slug(&request.path).and_then(|slug| {
-        let station = shared.config.station(slug)?;
-        let mount = shared.mounts.get(slug)?;
-        Some((station, mount))
-    });
-    let Some((station, mount)) = station else {
+    if method == "GET" && request.path == "/admin/metadata" {
+        return metadata(shared, stream, peer, request);
+    }
+    let Some((station, mount)) = station_at(shared, &request.path) else {
         return refuse(&mut stream, 404, "Not Found", &[CORS], b"not found");
     };
     if method == "GET" {
@@ -357,6 +362,14 @@ fn route(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Request
     } else {
         source(shared, stream, peer, request, station, mount);
     }
+}
+
+/// The station and mount whose stream is at `path`.
+fn station_at<'a>(shared: &'a Shared, path: &str) -> Option<(&'a Station, &'a Arc<Mount>)> {
+    let slug = stream_slug(path)?;
+    let station = shared.config.station(slug)?;
+    let mount = shared.mounts.get(slug)?;
+    Some((station, mount))
 }
 
 /// The slug of `/<slug>/stream`.
@@ -373,29 +386,8 @@ fn source(
     station: &Station,
     mount: &Arc<Mount>,
 ) {
-    let addr = client_addr(peer, request, shared.config.trusted_proxy);
-    let now = Instant::now();
-    if shared.lockout.blocked(addr, now) {
-        return refuse(
-            &mut stream,
-            429,
-            "Too Many Requests",
-            &[("Retry-After", LOCKED_FOR_SECS)],
-            b"too many wrong keys from this address; try again later",
-        );
-    }
-    let right_key = request
-        .basic_password()
-        .is_some_and(|key| key_matches(&key, &station.key_hash));
-    if !right_key {
-        shared.lockout.failed(addr, now);
-        return refuse(
-            &mut stream,
-            401,
-            "Unauthorized",
-            &[("WWW-Authenticate", "Basic")],
-            b"wrong key",
-        );
+    if !authorized(shared, &mut stream, peer, request, station) {
+        return;
     }
     let Some(format) = request
         .header("Content-Type")
@@ -445,6 +437,101 @@ fn source(
     }
     // Dropping the guard ends the stream for every listener and frees the mount.
     drop(guard);
+}
+
+/// Checks the station key of a keyed request, and answers the request itself when it is
+/// refused. A locked-out address is refused before its key is looked at. A request that
+/// presents no `Authorization` header at all is refused without counting toward the
+/// lockout, so stray requests from a shared address cannot lock a station out; any
+/// header that does not carry the right key (a wrong key, another scheme, or one that
+/// does not decode) counts as a wrong key.
+fn authorized(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    peer: IpAddr,
+    request: &Request,
+    station: &Station,
+) -> bool {
+    let addr = client_addr(peer, request, shared.config.trusted_proxy);
+    let now = Instant::now();
+    if shared.lockout.blocked(addr, now) {
+        refuse(
+            stream,
+            429,
+            "Too Many Requests",
+            &[("Retry-After", LOCKED_FOR_SECS)],
+            b"too many wrong keys from this address; try again later",
+        );
+        return false;
+    }
+    if request.header("Authorization").is_none() {
+        refuse(stream, 401, "Unauthorized", &[CHALLENGE], b"no key");
+        return false;
+    }
+    let right_key = request
+        .basic_password()
+        .is_some_and(|key| key_matches(&key, &station.key_hash));
+    if !right_key {
+        shared.lockout.failed(addr, now);
+        refuse(stream, 401, "Unauthorized", &[CHALLENGE], b"wrong key");
+        return false;
+    }
+    true
+}
+
+/// `GET /admin/metadata?mount=/<slug>/stream&mode=updinfo&song=<title>`: an MP3 source's
+/// title, which its stream does not carry.
+fn metadata(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Request) {
+    let Some(path) = request.param("mount") else {
+        return refuse(
+            &mut stream,
+            400,
+            "Bad Request",
+            &[],
+            b"the request names no mount",
+        );
+    };
+    let Some((station, mount)) = station_at(shared, path) else {
+        return refuse(&mut stream, 404, "Not Found", &[], b"not found");
+    };
+    if !authorized(shared, &mut stream, peer, request, station) {
+        return;
+    }
+    if request.param("mode") != Some("updinfo") {
+        return refuse(
+            &mut stream,
+            400,
+            "Bad Request",
+            &[],
+            b"only mode=updinfo is supported",
+        );
+    }
+    let Some(song) = request.param("song") else {
+        return refuse(
+            &mut stream,
+            400,
+            "Bad Request",
+            &[],
+            b"the request has no song",
+        );
+    };
+    let title = song.chars().take(MAX_TITLE_CHARS).collect();
+    if !mount.set_title(title) {
+        return refuse(
+            &mut stream,
+            400,
+            "Bad Request",
+            &[],
+            b"this station is not on the air",
+        );
+    }
+    let _ = respond(
+        &mut stream,
+        200,
+        "OK",
+        &[("Content-Type", "text/xml")],
+        METADATA_OK,
+    );
 }
 
 fn listen(shared: &Shared, mut stream: TcpStream, mount: &Arc<Mount>) {
