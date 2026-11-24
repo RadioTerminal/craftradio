@@ -144,6 +144,13 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             "Applied the mount {}:{}{}; it connects now while on air",
             ice.host, ice.port, ice.mount
         ),
+        Edit::Pair { address, .. } => {
+            format!(
+                "Asking {} to pair; the Server page says how it went",
+                address.trim()
+            )
+        }
+        Edit::Unpair => "Unpaired from the server; its key left the keychain".to_owned(),
         Edit::SetStreaming(true) => "Streaming to listeners starts".to_owned(),
         Edit::SetStreaming(false) => "Streaming to listeners stopped".to_owned(),
         Edit::SetDynamics(_) => "Changed the processing on Program".to_owned(),
@@ -234,6 +241,8 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
             "saved the mount {}:{}{} · Icecast stays not connected",
             ice.host, ice.port, ice.mount
         ),
+        Edit::Pair { .. } => "asked nothing · the preview reaches no server".to_owned(),
+        Edit::Unpair => "nothing to unpair · the preview is not paired".to_owned(),
         Edit::SetStreaming(on) => format!(
             "turned streaming {} · the preview sends no audio",
             if *on { "on" } else { "off" }

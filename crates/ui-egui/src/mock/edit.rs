@@ -32,6 +32,8 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::PlayNext { .. }
             | Edit::SetStrip { .. }
             | Edit::SetIcecast(_)
+            | Edit::Pair { .. }
+            | Edit::Unpair
             | Edit::SetStreaming(_)
             | Edit::SetDynamics(_)
             | Edit::SetLoudness(_)
@@ -544,6 +546,12 @@ impl MockSource {
                 self.icecast = ice;
                 Ok(1)
             }
+            // The preview reaches no server, so it never shows a pairing (rule 7).
+            Edit::Pair { address, .. } => Err(format!(
+                "preview — pairing needs the station; nothing was sent to {}",
+                address.trim()
+            )),
+            Edit::Unpair => Err("preview — the preview is not paired with a server".to_owned()),
             Edit::SetStreaming(on) => {
                 self.streaming = on;
                 Ok(1)

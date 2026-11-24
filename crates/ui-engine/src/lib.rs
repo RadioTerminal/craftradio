@@ -19,6 +19,9 @@ pub use icecast::{
 mod map;
 mod one_off;
 mod outputs;
+mod pairing;
+
+pub use pairing::check_address;
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
 /// with: `None` when none is set, so the playout keeps its own.
@@ -211,6 +214,8 @@ pub struct EngineSource {
     icecast_seen: (radio_ui_egui::view::IcecastView, String),
     /// The last request for Icecast settings on the background lane. Older answers are dropped.
     icecast_asked: u64,
+    /// Pairing with a station server.
+    pairing: pairing::Pairing,
     /// Fader values on their way to the engine, by strip.
     strip_gain: HashMap<String, f32>,
     /// Part settings on their way to the engine.
@@ -322,6 +327,7 @@ impl EngineSource {
             secret_known: None,
             icecast_seen,
             icecast_asked: 0,
+            pairing: pairing::Pairing::default(),
             strip_gain: HashMap::new(),
             pending_settings: HashMap::new(),
             alarms: Vec::new(),
@@ -1170,6 +1176,8 @@ impl ViewSource for EngineSource {
             self.rebuild(&pv.state);
             self.revision = Some(pv.revision);
         }
+        // After `with_secrets`, so the start asks with the keychain of the app.
+        self.refetch_at_start();
         self.take_done(now);
         self.poll_pending();
         self.poll_watches();
@@ -1253,6 +1261,7 @@ impl ViewSource for EngineSource {
             carts,
             cartwall,
             icecast: self.icecast(),
+            pairing: self.pairing_view(),
             dynamics: self.state.dynamics.unwrap_or_default(),
             loudness: self.state.loudness,
             output: Self::output(&pv, card_wanted),

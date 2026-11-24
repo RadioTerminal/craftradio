@@ -4,7 +4,7 @@ use radio_ui_egui::view::{Edit, IcecastView, Status, StreamFormat, ViewSource};
 use radio_ui_engine::{MemoryStore, SecretStore, icecast_config};
 
 /// Shares one memory store between the source and the test.
-struct Shared(std::sync::Arc<MemoryStore>);
+pub(crate) struct Shared(pub(crate) std::sync::Arc<MemoryStore>);
 
 impl SecretStore for Shared {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
@@ -13,10 +13,13 @@ impl SecretStore for Shared {
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
         self.0.set(key, secret)
     }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.0.delete(key)
+    }
 }
 
 /// A port on this computer where nobody listens, so a source that dials it never connects.
-fn refusing_port() -> u16 {
+pub(crate) fn refusing_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .expect("a free port")
@@ -263,7 +266,7 @@ fn local_mount(port: u16, password: &str) -> IcecastView {
     }
 }
 
-fn icecast_note(view: &radio_ui_egui::view::StationView) -> String {
+pub(crate) fn icecast_note(view: &radio_ui_egui::view::StationView) -> String {
     view.output_meters
         .iter()
         .find(|m| m.kind == radio_ui_egui::view::OutputKind::Icecast)

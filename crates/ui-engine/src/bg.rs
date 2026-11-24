@@ -35,6 +35,21 @@ pub(crate) enum Job {
         set: Option<String>,
         store: Arc<dyn SecretStore + Sync>,
     },
+    /// Remove the keychain entry `key`.
+    Forget {
+        key: String,
+        store: Arc<dyn SecretStore + Sync>,
+    },
+    /// Fetch the pairing document of the server at `address`, as try `seq`, with `key` or the
+    /// key stored under `paired_entry`. It runs on a thread of its own, so a slow server
+    /// never holds up the other jobs.
+    Pair {
+        seq: u64,
+        address: String,
+        key: Option<radio_ui_egui::view::Secret>,
+        paired_entry: Option<String>,
+        store: Arc<dyn SecretStore + Sync>,
+    },
     /// Build the Icecast settings for playout from `state` and the keychain, as request `seq`.
     Icecast {
         seq: u64,
@@ -102,6 +117,10 @@ pub(crate) enum Done {
         wrote: bool,
         result: Result<bool, String>,
     },
+    /// The keychain entry `key` is gone, or the keychain failed.
+    Forgot { result: Result<(), String> },
+    /// The answer of a pairing try.
+    Pair(crate::pairing::PairAnswer),
     /// The Icecast settings of request `seq`, or why there are none.
     Icecast {
         seq: u64,
@@ -147,6 +166,37 @@ impl Worker {
             .name("ui-background".into())
             .spawn(move || {
                 for job in rx {
+                    if let Job::Pair {
+                        seq,
+                        address,
+                        key,
+                        paired_entry,
+                        store,
+                    } = job
+                    {
+                        let reply = tx.clone();
+                        let asked = address.clone();
+                        let spawned = std::thread::Builder::new().name("ui-pairing".into()).spawn(
+                            move || {
+                                let answer =
+                                    crate::pairing::run(seq, address, key, paired_entry, &store);
+                                let _ = reply.send(Done::Pair(answer));
+                            },
+                        );
+                        if spawned.is_err() {
+                            let answer = crate::pairing::PairAnswer {
+                                seq,
+                                address: asked,
+                                result: Err(crate::pairing::PairError::Refused(
+                                    "the app could not start the request".into(),
+                                )),
+                            };
+                            if tx.send(Done::Pair(answer)).is_err() {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
                     if tx.send(run(job)).is_err() {
                         break;
                     }
@@ -227,6 +277,17 @@ fn run(job: Job) -> Done {
             };
             Done::Secret { key, wrote, result }
         }
+        Job::Forget { key, store } => Done::Forgot {
+            result: store.delete(&key),
+        },
+        // The lane runs a pairing try on a thread of its own before it gets here.
+        Job::Pair { seq, address, .. } => Done::Pair(crate::pairing::PairAnswer {
+            seq,
+            address,
+            result: Err(crate::pairing::PairError::Refused(
+                "the app could not start the request".into(),
+            )),
+        }),
         Job::Icecast {
             seq,
             state,

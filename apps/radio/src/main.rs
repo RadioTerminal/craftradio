@@ -374,8 +374,16 @@ fn headless(
     println!("radio: folder watches started");
     let until = run_for.map(|d| Instant::now() + d);
     let mut gains: [Option<(u64, radio_model::ItemGain)>; 4] = Default::default();
+    let mut pairing: Option<radio_ui_egui::view::PairingView> = None;
     loop {
-        let _ = source.snapshot(Timestamp::now());
+        let view = source.snapshot(Timestamp::now());
+        // The pairing with a station server, at start and when it changes.
+        if pairing.as_ref() != Some(&view.pairing) {
+            if let Some(line) = pairing_line(&view.pairing) {
+                println!("radio: {line}");
+            }
+            pairing = Some(view.pairing);
+        }
         for notice in source.take_notices() {
             println!("radio: {notice}");
         }
@@ -440,6 +448,24 @@ fn headless(
     );
     drop(source);
     Ok(())
+}
+
+/// The pairing state as the headless app prints it, or nothing while there is none to say.
+fn pairing_line(p: &radio_ui_egui::view::PairingView) -> Option<String> {
+    use radio_ui_egui::view::PairState;
+    let address = &p.address;
+    Some(match &p.state {
+        PairState::NotPaired => "not paired with a server".to_owned(),
+        // A paired station keeps its settings while it asks; the answer gets its own line.
+        PairState::Pairing => return None,
+        PairState::Paired => format!("paired with {address}"),
+        PairState::Unreachable(reason) if p.paired => {
+            format!("server unreachable: {reason}; the last paired settings stay")
+        }
+        PairState::Unreachable(reason) => format!("server unreachable: {reason}"),
+        PairState::KeyRefused => format!("key refused by {address}"),
+        PairState::Refused(reason) => format!("pairing with {address}: {reason}"),
+    })
 }
 
 /// The station key for the listen link. The first start makes it; later starts read it,

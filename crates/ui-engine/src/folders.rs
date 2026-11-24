@@ -156,6 +156,13 @@ impl EngineSource {
                     self.secret_answer(key, wrote, result);
                 }
                 crate::bg::Done::Icecast { seq, result } => self.icecast_answer(seq, result),
+                crate::bg::Done::Pair(answer) => self.pair_answer(answer),
+                crate::bg::Done::Forgot { result } => {
+                    if let Err(e) = result {
+                        self.notices
+                            .push(format!("The keychain kept the station key: {e}"));
+                    }
+                }
                 // An answer for a range that the person has left since is dropped.
                 crate::bg::Done::History(_, _, range) if range != self.history_range => {}
                 crate::bg::Done::History(rows, limit, _) => match rows {

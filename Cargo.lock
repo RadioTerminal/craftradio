@@ -5069,6 +5069,7 @@ dependencies = [
 name = "radio-ui-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "hound",
  "jiff",
  "keyring",
@@ -5080,10 +5081,12 @@ dependencies = [
  "radio-model",
  "radio-playout",
  "radio-scheduler",
+ "radio-server",
  "radio-stream",
  "radio-ui-egui",
  "rusqlite",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

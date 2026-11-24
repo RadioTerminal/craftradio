@@ -25,6 +25,8 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, String>;
     /// Stores `secret` under `key`.
     fn set(&self, key: &str, secret: &str) -> Result<(), String>;
+    /// Removes the secret under `key`. A store that has none there is fine.
+    fn delete(&self, key: &str) -> Result<(), String>;
 }
 
 /// The OS keychain, through the `keyring` crate.
@@ -54,6 +56,14 @@ impl SecretStore for KeyringStore {
         let entry = keyring::Entry::new(&self.service, key).map_err(|e| e.to_string())?;
         entry.set_password(secret).map_err(|e| e.to_string())
     }
+
+    fn delete(&self, key: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(&self.service, key).map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 /// Secrets in memory only, for tests and the preview.
@@ -72,14 +82,21 @@ impl SecretStore for MemoryStore {
             .insert(key.to_owned(), secret.to_owned());
         Ok(())
     }
+
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.0.lock().map_err(|e| e.to_string())?.remove(key);
+        Ok(())
+    }
 }
 
 /// The keychain entry of a mount.
-fn secret_key(ice: &IcecastView) -> String {
-    format!(
-        "icecast:{}@{}:{}{}",
-        ice.user, ice.host, ice.port, ice.mount
-    )
+pub(crate) fn secret_key(ice: &IcecastView) -> String {
+    mount_entry(&ice.user, &ice.host, ice.port, &ice.mount)
+}
+
+/// The keychain entry of the mount `user@host:port/mount`.
+pub(crate) fn mount_entry(user: &str, host: &str, port: u16, mount: &str) -> String {
+    format!("icecast:{user}@{host}:{port}{mount}")
 }
 
 /// The Icecast mount from the settings of the station, without the password.
@@ -243,6 +260,15 @@ impl EngineSource {
             return;
         }
         let cfg = match result {
+            // The paired server refused the key: the push waits for a new one.
+            Ok(Some(_)) if self.push_held() => {
+                self.notices.push(
+                    "Icecast stays off: the server refused the station key; pair again with \
+                     the new key"
+                        .into(),
+                );
+                None
+            }
             Ok(cfg) => cfg,
             Err(e) => {
                 self.notices.push(format!("Icecast stays off: {e}"));

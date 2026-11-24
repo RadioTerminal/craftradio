@@ -19,8 +19,14 @@ radio-stream.workspace = true
 jiff.workspace = true
 serde_json.workspace = true
 keyring.workspace = true
+# The pairing document from a station server, over HTTPS with the TLS settings of
+# radio-stream (rustls with the ring provider).
+ureq = { workspace = true, features = ["rustls-no-provider"] }
+base64.workspace = true
 
 [dev-dependencies]
+# A real station server on this computer for the pairing tests.
+radio-server.workspace = true
 rusqlite.workspace = true
 hound.workspace = true
 
