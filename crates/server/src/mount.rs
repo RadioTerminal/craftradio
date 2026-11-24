@@ -12,9 +12,9 @@ use std::time::Duration;
 
 /// Chunks (pages or frames) a listener may fall behind before it is dropped.
 const QUEUE: usize = 256;
-/// The longest title or artist a mount keeps, in characters, whether it came from a
-/// title update or from Ogg tags; the rest is cut off, so a key holder cannot bloat the
-/// public stats.
+/// The longest name, title or artist a mount keeps, in characters, whether it came from
+/// the source's `Ice-Name`, a title update or Ogg tags; the rest is cut off, so a key
+/// holder cannot bloat the public stats.
 const MAX_TITLE_CHARS: usize = 512;
 
 /// `text` cut to [`MAX_TITLE_CHARS`] characters.
@@ -105,7 +105,8 @@ impl Mount {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Starts a source. `None` while another source is live.
+    /// Starts a source, whose name is cut to 512 characters. `None` while another source
+    /// is live.
     pub fn begin(self: &Arc<Self>, format: Format, name: String) -> Option<SourceGuard> {
         let mut state = self.state();
         if state.live.is_some() {
@@ -116,7 +117,7 @@ impl Mount {
             headers: Vec::new(),
             listeners: Vec::new(),
         });
-        state.name = name;
+        state.name = capped(name);
         state.title.clear();
         state.artist.clear();
         let framer = Framer::new(format);

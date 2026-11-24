@@ -73,7 +73,7 @@ impl Config {
             check_slug(&station.slug)?;
             if !seen.insert(station.slug.as_str()) {
                 return Err(ServerError::Config(format!(
-                    "two stations use the slug \"{}\"",
+                    "two stations use the slug {:?}",
                     station.slug
                 )));
             }
@@ -81,14 +81,14 @@ impl Config {
             // the key itself, pasted in by mistake.
             let Some(hash) = parse_hash(&station.key_hash) else {
                 return Err(ServerError::Config(format!(
-                    "station \"{}\": key_hash must be sha256: and 64 hex digits, as \
+                    "station {:?}: key_hash must be sha256: and 64 hex digits, as \
                      `craftradio-server key` prints it",
                     station.slug
                 )));
             };
             if let Some(first) = hashes.insert(hash, station.slug.as_str()) {
                 return Err(ServerError::Config(format!(
-                    "stations \"{first}\" and \"{}\" have the same key_hash; each station \
+                    "stations {first:?} and {:?} have the same key_hash; each station \
                      needs a key of its own",
                     station.slug
                 )));
@@ -109,13 +109,13 @@ fn check_slug(slug: &str) -> Result<(), ServerError> {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     if !well_formed {
         return Err(ServerError::Config(format!(
-            "station slug \"{slug}\" must be 1–{MAX_SLUG_LEN} characters of a-z, 0-9 and -, \
+            "station slug {slug:?} must be 1–{MAX_SLUG_LEN} characters of a-z, 0-9 and -, \
              not starting with -"
         )));
     }
     if RESERVED_SLUGS.contains(&slug) {
         return Err(ServerError::Config(format!(
-            "station slug \"{slug}\" is reserved by the server"
+            "station slug {slug:?} is reserved by the server"
         )));
     }
     Ok(())
