@@ -312,11 +312,32 @@ fn wait_off_air(
 ) -> bool {
     loop {
         while frames.pop().is_ok() {}
+        let mut on_air = false;
         match rx.recv_timeout(OFF_AIR_DRAIN) {
             Ok(Control::Title(t)) => *title = t,
-            Ok(Control::OnAir(true)) => return true,
-            Ok(Control::OnAir(false)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(Control::OnAir(on)) => on_air = on,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Ok(Control::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+        }
+        // Only the last switch already sent counts, so an on air taken back never dials.
+        if !settle(rx, &mut on_air, title) {
+            return false;
+        }
+        if on_air {
+            return true;
+        }
+    }
+}
+
+/// Applies every control message already sent: titles, and the last switch in `on_air`.
+/// False when the source is to stop.
+fn settle(rx: &mpsc::Receiver<Control>, on_air: &mut bool, title: &mut String) -> bool {
+    loop {
+        match rx.try_recv() {
+            Ok(Control::Title(t)) => *title = t,
+            Ok(Control::OnAir(on)) => *on_air = on,
+            Err(mpsc::TryRecvError::Empty) => return true,
+            Ok(Control::Stop) | Err(mpsc::TryRecvError::Disconnected) => return false,
         }
     }
 }
@@ -605,6 +626,14 @@ fn send(
     delay: &mut u64,
     meter: &crate::LevelMeter,
 ) -> Result<Left, StreamError> {
+    // An off air sent before the dial keeps the source from dialling at all.
+    let mut on_air = true;
+    if !settle(rx, &mut on_air, title) {
+        return Ok(Left::Stop);
+    }
+    if !on_air {
+        return Ok(Left::OffAir);
+    }
     // Discard audio collected during the outage before opening the source.
     let stale = frames.slots();
     for _ in 0..stale {

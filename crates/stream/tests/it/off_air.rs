@@ -106,6 +106,25 @@ fn starting_off_air_never_dials() {
 }
 
 #[test]
+fn on_then_off_at_once_never_dials() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+    let handle = IcecastClient::start_metered_off_air(config(port), consumer, Arc::default());
+    handle.set_on_air(true);
+    handle.set_on_air(false);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        listener.accept().map(|_| ()).map_err(|e| e.kind()),
+        Err(ErrorKind::WouldBlock),
+        "a switch that ended off air dialled the server"
+    );
+    assert_eq!(handle.status(), StreamStatus::OffAir);
+    handle.stop();
+}
+
+#[test]
 fn off_air_while_retrying_stops_retrying() {
     // A port that refuses: bind, take the port, close.
     let port = TcpListener::bind("127.0.0.1:0")
