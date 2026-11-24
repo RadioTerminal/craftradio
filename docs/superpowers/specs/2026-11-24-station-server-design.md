@@ -373,7 +373,8 @@ Each phase is its own branch and PR, and ends usable.
    locked out.
    **1b. Outputs.** §5.6, as its own change after the core. Done: with a 320 kbps Opus
    source, a configured 192 kbps MP3 output plays in a browser with titles, and an output
-   with no listeners uses no encoder.
+   with no listeners uses no CPU for decoding or encoding (apart from a short decode of
+   the stream when the source connects).
 2. **Pairing.** `/api/station`, the commands, the Preferences page. Done: on a fresh
    station, address plus key gives a working Icecast output with no other field touched.
 3. **Meeting point.** Signalling, the page served by the server, the listen link. Done: with

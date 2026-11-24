@@ -172,7 +172,10 @@ kbps = 192
   `/<slug>/stream` still plays.
 - **Cost:** while someone listens to an output, the server decodes the station's stream
   once and encodes once per output in use, however many listen to it. An output nobody
-  listens to costs nothing. A listener of an idle output waits a moment for it to start.
+  listens to uses no CPU for encoding, and while no output has a listener nothing is
+  decoded either. What remains is a short decode of the stream each time the app
+  connects, to check its format, and a look for listeners 20 times a second. A listener
+  of an idle output waits a moment for it to start.
 - **Listener limit:** `max_stream_listeners` counts `/<slug>/stream` and all the station's
   outputs together.
 - **Titles:** every output carries the titles the app sends. MP3 players that ask for
