@@ -1,6 +1,7 @@
 //! File decoding with symphonia, and conversion to the engine format with rubato.
 
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +12,7 @@ use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymError;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase};
 
@@ -92,19 +93,57 @@ struct Source {
     duration: Option<symphonia::core::units::Duration>,
 }
 
+/// A reader as a symphonia source. Its length is taken once, when it opens.
+struct Reader<R> {
+    inner: R,
+    len: Option<u64>,
+}
+
+impl<R: Read> Read for Reader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R: Seek> Seek for Reader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+impl<R: Read + Seek + Send + Sync> MediaSource for Reader<R> {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        self.len
+    }
+}
+
 impl Source {
     fn open(path: &Path) -> Result<Self, AudioError> {
-        let unsupported = |reason: String| AudioError::Unsupported {
-            path: path.to_path_buf(),
-            reason,
-        };
         let file = File::open(path).map_err(|source| AudioError::Open {
             path: path.to_path_buf(),
             source,
         })?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let extension = path.extension().and_then(|e| e.to_str());
+        Self::from_media(Box::new(file), extension, path)
+    }
+
+    /// Opens `media`. `extension` hints at its container; `path` names it in errors.
+    fn from_media(
+        media: Box<dyn MediaSource>,
+        extension: Option<&str>,
+        path: &Path,
+    ) -> Result<Self, AudioError> {
+        let unsupported = |reason: String| AudioError::Unsupported {
+            path: path.to_path_buf(),
+            reason,
+        };
+        let mss = MediaSourceStream::new(media, Default::default());
         let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(ext) = extension {
             hint.with_extension(ext);
         }
         let format = symphonia::default::get_probe()
@@ -219,6 +258,28 @@ impl Decoder {
     pub fn open_at(path: impl AsRef<Path>, cue_in: Duration) -> Result<Self, AudioError> {
         let path = path.as_ref();
         let source = Source::open(path)?;
+        Self::from_source(path, source, cue_in, true)
+    }
+
+    /// Opens audio from any reader that can seek, like [`Decoder::open_at`] does for a
+    /// file. `extension` hints at the container, for example `"wav"`.
+    pub fn from_reader(
+        mut reader: impl Read + Seek + Send + Sync + 'static,
+        extension: Option<&str>,
+        cue_in: Duration,
+    ) -> Result<Self, AudioError> {
+        let path = Path::new("");
+        let open = |source| AudioError::Open {
+            path: path.to_path_buf(),
+            source,
+        };
+        let len = reader.seek(SeekFrom::End(0)).map_err(open)?;
+        reader.seek(SeekFrom::Start(0)).map_err(open)?;
+        let media = Reader {
+            inner: reader,
+            len: Some(len),
+        };
+        let source = Source::from_media(Box::new(media), extension, path)?;
         Self::from_source(path, source, cue_in, true)
     }
 

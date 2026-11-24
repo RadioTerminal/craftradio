@@ -497,3 +497,47 @@ fn a_second_fade_out_does_not_raise_the_level() {
         "the level rose from {before} to {after} dBFS at the second fade"
     );
 }
+
+/// A file that stops decoding in the middle ends its deck with `DecodeFailed` before
+/// `DeckEnded`, so the end does not look like the end of the file.
+#[test]
+fn a_decode_failure_in_the_middle_of_a_file_is_reported() {
+    let path = tone_wav("decode-fails", 48_000, 2.0, 1_000.0, -6.0);
+    let half = std::fs::metadata(&path).expect("fixture").len() / 2;
+    let reader = crate::fixtures::FailingFile::new(&path, half);
+    let decoder =
+        radio_audio::Decoder::from_reader(reader, Some("wav"), Duration::ZERO).expect("open");
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    let options = LoadOptions {
+        item_tag: Some(3),
+        ..LoadOptions::default()
+    };
+    handle
+        .load_decoder(DeckId::A, decoder, options)
+        .expect("load");
+    wait_ready(&handle, DeckId::A);
+    handle.send(play(0, DeckId::A)).expect("send");
+
+    let mut events = Vec::new();
+    let begun = std::time::Instant::now();
+    while !events.contains(&AudioEvent::DeckEnded(DeckId::A)) {
+        assert!(
+            begun.elapsed() < Duration::from_secs(10),
+            "the deck never ended"
+        );
+        render_offline(&mut mixer, SR / 10);
+        events.extend(handle.events());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let failed = events.iter().position(|e| {
+        *e == AudioEvent::DecodeFailed {
+            deck: DeckId::A,
+            item_tag: Some(3),
+        }
+    });
+    let ended = events
+        .iter()
+        .position(|e| *e == AudioEvent::DeckEnded(DeckId::A));
+    assert!(failed.is_some(), "no failure in {events:?}");
+    assert!(failed < ended, "the failure came after the end");
+}

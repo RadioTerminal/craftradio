@@ -301,6 +301,8 @@ enum DeckStep {
     Frame([f32; 2]),
     Silent,
     Ended,
+    /// The decoder failed, and the audio it gave before that has played.
+    Failed,
     Underrun,
 }
 
@@ -896,6 +898,9 @@ impl Mixer {
         }
         if src.consumer.slots() < CHANNELS {
             if src.shared.eof.load(Ordering::Acquire) && src.consumer.slots() < CHANNELS {
+                if src.shared.failed.load(Ordering::Acquire) {
+                    return DeckStep::Failed;
+                }
                 return DeckStep::Ended;
             }
             // A fade counts time, so it also ends a deck that has no audio to fade.
@@ -945,6 +950,12 @@ impl Mixer {
                 DeckStep::Frame(f) => f,
                 DeckStep::Silent => [0.0; 2],
                 DeckStep::Ended => {
+                    self.end(deck);
+                    [0.0; 2]
+                }
+                DeckStep::Failed => {
+                    let item_tag = self.decks[i].source.as_ref().and_then(|s| s.item_tag);
+                    self.emit(AudioEvent::DecodeFailed { deck, item_tag });
                     self.end(deck);
                     [0.0; 2]
                 }

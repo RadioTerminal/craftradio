@@ -199,6 +199,13 @@ pub enum AudioEvent {
         /// The tag of the item that fades.
         item_tag: Option<u64>,
     },
+    /// The file on the deck stopped decoding before its end. `DeckEnded` follows.
+    DecodeFailed {
+        /// The deck.
+        deck: DeckId,
+        /// The tag of the item that failed.
+        item_tag: Option<u64>,
+    },
     /// The item on the deck came to its end, or its fade-out finished. The deck is empty.
     DeckEnded(DeckId),
     /// The ring of a playing deck became empty before the end of the file. The deck plays
