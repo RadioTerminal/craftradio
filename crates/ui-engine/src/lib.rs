@@ -1184,7 +1184,6 @@ impl ViewSource for EngineSource {
             .and_then(|v| v.as_str())
             != Some(radio_engine::NO_DEVICE);
         let alarms = self.alarm_views(&pv, card_wanted, now);
-        self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted);
         let on_air = pv.outputs.on_air;
         if !on_air {
             self.on_air_since = None;
@@ -1193,6 +1192,7 @@ impl ViewSource for EngineSource {
         }
         self.air_seen = Some(on_air);
         let going_on_air = outputs::going_on_air(&pv.outputs, self.on_air_since, now);
+        self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted, going_on_air);
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {
