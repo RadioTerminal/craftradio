@@ -42,6 +42,26 @@ Files here:
    The log says `listening on <address>, <n> station(s)`. A config it can't use stops it
    with a message naming the file.
 
+## Container
+
+Each `server-vX.Y.Z` tag publishes `ghcr.io/radioterminal/craftradio-server:X.Y.Z` (and
+`X.Y`, and `latest` for a version without a suffix) for linux/amd64 and linux/arm64. It
+runs as an unprivileged user and reads `/etc/craftradio-server/config.toml`; in that
+config, `listen` must be `"0.0.0.0:8080"` (or another port you publish), not loopback.
+
+```sh
+docker run --rm ghcr.io/radioterminal/craftradio-server key
+docker run -d --name craftradio-server --restart unless-stopped -p 8080:8080 \
+  -v /etc/craftradio-server/config.toml:/etc/craftradio-server/config.toml:ro \
+  ghcr.io/radioterminal/craftradio-server
+```
+
+Behind a proxy on the same host, publish the port on loopback only (`-p 127.0.0.1:8080:8080`)
+and set `trusted_proxy` to the address the proxy's requests come from as the container
+sees them (the Docker bridge's gateway, often `172.17.0.1`), not `127.0.0.1`. For the
+server's own TLS, mount the certificate and key read-only and point `tls_cert`/`tls_key`
+at them inside the container. `packaging/server/Dockerfile` builds the same image locally.
+
 ## Make a station key
 
 ```sh
