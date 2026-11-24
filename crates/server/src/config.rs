@@ -1,8 +1,9 @@
 //! The server's config file: where it listens and which stations may push to it.
 
 use crate::ServerError;
+use crate::key::parse_hash;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
@@ -66,11 +67,29 @@ impl Config {
             ));
         }
         let mut seen = HashSet::new();
+        // The hash each station's key has, to the first station with it.
+        let mut hashes = HashMap::new();
         for station in &self.stations {
             check_slug(&station.slug)?;
             if !seen.insert(station.slug.as_str()) {
                 return Err(ServerError::Config(format!(
                     "two stations use the slug \"{}\"",
+                    station.slug
+                )));
+            }
+            // A message about a key hash names the station, never the value: it may be
+            // the key itself, pasted in by mistake.
+            let Some(hash) = parse_hash(&station.key_hash) else {
+                return Err(ServerError::Config(format!(
+                    "station \"{}\": key_hash must be sha256: and 64 hex digits, as \
+                     `craftradio-server key` prints it",
+                    station.slug
+                )));
+            };
+            if let Some(first) = hashes.insert(hash, station.slug.as_str()) {
+                return Err(ServerError::Config(format!(
+                    "stations \"{first}\" and \"{}\" have the same key_hash; each station \
+                     needs a key of its own",
                     station.slug
                 )));
             }

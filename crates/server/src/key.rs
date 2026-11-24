@@ -43,7 +43,8 @@ pub fn key_matches(key: &str, key_hash: &str) -> bool {
     difference == 0
 }
 
-fn parse_hash(key_hash: &str) -> Option<[u8; SHA256_OUTPUT_LEN]> {
+/// The SHA-256 a `key_hash` holds: `sha256:` and 64 hex digits, upper or lower case.
+pub(crate) fn parse_hash(key_hash: &str) -> Option<[u8; SHA256_OUTPUT_LEN]> {
     let hex = key_hash.strip_prefix(HASH_PREFIX)?.as_bytes();
     if hex.len() != SHA256_OUTPUT_LEN * 2 {
         return None;

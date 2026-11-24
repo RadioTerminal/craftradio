@@ -29,13 +29,27 @@ fn write_config(dir: &Path, text: &str) -> std::path::PathBuf {
     path
 }
 
+/// Runs the server with `config` and waits for it to exit, failing the test (and killing
+/// the server) if it is still running after [`PATIENCE`]: it took the config.
 fn run_to_exit(config: &Path) -> Output {
-    Command::new(BIN)
+    let mut child = Command::new(BIN)
         .arg("run")
         .arg("--config")
         .arg(config)
-        .output()
-        .unwrap()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the server is still running: it took the config");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
 }
 
 #[test]
@@ -108,6 +122,30 @@ fn a_key_pasted_into_the_config_is_not_echoed_in_the_error() {
         !stderr.contains(MORNING_KEY),
         "stderr shows the key: {stderr:?}"
     );
+}
+
+#[test]
+fn a_key_pasted_as_the_key_hash_stops_the_server_and_is_not_echoed() {
+    // Valid TOML, so no source line is quoted: the check of the value itself must say
+    // what is wrong without showing it.
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(
+        dir.path(),
+        &format!(
+            "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\n\
+             [[station]]\nslug = \"morning\"\nname = \"Morning Station\"\nkey_hash = \"{MORNING_KEY}\"\n"
+        ),
+    );
+    let out = run_to_exit(&config);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("morning"), "stderr: {stderr:?}");
+    assert!(stderr.contains("key_hash"), "stderr: {stderr:?}");
+    assert!(
+        !stderr.contains(MORNING_KEY),
+        "stderr shows the key: {stderr:?}"
+    );
+    assert!(!stderr.contains("listening on"), "stderr: {stderr:?}");
 }
 
 #[test]
