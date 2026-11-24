@@ -118,6 +118,7 @@ pub fn icecast_view(state: &State) -> IcecastView {
         kbps: num("kbps")
             .and_then(|k| u32::try_from(k).ok())
             .unwrap_or(DEFAULT_KBPS),
+        public_url: text("public_url"),
     }
 }
 
@@ -207,10 +208,16 @@ impl EngineSource {
         if ice.port == 0 {
             return Err("The port must be over 0".into());
         }
+        let public_url = ice.public_url.trim();
+        if !public_url.is_empty() {
+            radio_ui_egui::view::check_stream_url(public_url)
+                .map_err(|e| format!("The public address: {e}"))?;
+        }
         let clean = IcecastView {
             host: host.to_owned(),
             mount: mount.to_owned(),
             user: ice.user.trim().to_owned(),
+            public_url: public_url.to_owned(),
             ..ice
         };
         let key = secret_key(&clean);
@@ -246,6 +253,7 @@ impl EngineSource {
             set("format", format.into()),
             set("kbps", clean.kbps.into()),
             set("tls", clean.tls.into()),
+            set("public_url", clean.public_url.clone().into()),
         ])?;
         Ok(1)
     }

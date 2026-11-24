@@ -33,6 +33,7 @@ fn the_icecast_password_stays_out_of_the_settings_and_the_snapshot() {
         tls: true,
         format: StreamFormat::Opus,
         kbps: 96,
+        public_url: String::new(),
     };
     assert_eq!(source.edit(Edit::SetIcecast(mount)), Ok(1));
     // The keychain answers on the background lane.
@@ -76,6 +77,7 @@ fn a_changed_host_gets_no_password_of_the_old_mount() {
         tls: true,
         format: StreamFormat::Opus,
         kbps: 96,
+        public_url: String::new(),
     };
     assert_eq!(source.edit(Edit::SetIcecast(mount.clone())), Ok(1));
     let _ = wait_for(&mut source, &clock, |v| v.icecast.password_set);
@@ -144,4 +146,50 @@ fn tls_defaults_on_for_a_remote_host_and_the_start_honours_the_choice() {
         .unwrap()
         .expect("a mount");
     assert!(!cfg.tls, "the start honours the choice");
+}
+
+/// The public address listeners open reaches the WebRTC station, so the web player can fall
+/// back to it. An address that is not one is refused and changes nothing.
+#[test]
+fn the_public_icecast_address_reaches_the_webrtc_station_and_a_bad_one_is_refused() {
+    let (mut source, clock) = source(Vec::new());
+    let mut mount = source.snapshot(jiff::Timestamp::UNIX_EPOCH).icecast;
+    mount.host = "stream.example.org".into();
+    mount.mount = "/live".into();
+    mount.public_url = "  https://listen.example.org/live  ".into();
+    assert_eq!(source.edit(Edit::SetIcecast(mount.clone())), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| !v.icecast.public_url.is_empty());
+    assert_eq!(view.icecast.public_url, "https://listen.example.org/live");
+    let state = source.playout().snapshot().state;
+    let mut cfg = radio_stream::WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    radio_ui_engine::webrtc_settings(&state, &mut cfg);
+    assert_eq!(
+        cfg.public_stream.as_deref(),
+        Some("https://listen.example.org/live")
+    );
+
+    for bad in [
+        "listen.example.org/live",
+        "https://user:pw@listen.example.org/live",
+    ] {
+        mount.public_url = bad.into();
+        assert!(
+            source.edit(Edit::SetIcecast(mount.clone())).is_err(),
+            "{bad}"
+        );
+    }
+    let state = source.playout().snapshot().state;
+    radio_ui_engine::webrtc_settings(&state, &mut cfg);
+    assert_eq!(
+        cfg.public_stream.as_deref(),
+        Some("https://listen.example.org/live"),
+        "a refused address leaves the old one"
+    );
+
+    mount.public_url = String::new();
+    assert_eq!(source.edit(Edit::SetIcecast(mount)), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| v.icecast.public_url.is_empty());
+    let state = source.playout().snapshot().state;
+    radio_ui_engine::webrtc_settings(&state, &mut cfg);
+    assert_eq!(cfg.public_stream, None, "an empty address shares no stream");
 }

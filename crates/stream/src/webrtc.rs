@@ -74,6 +74,10 @@ pub struct WebRtcConfig {
     /// [`STATION_ONLY_LINE`]. Offers by address never wait for these. Without `relay`, no
     /// slot is kept; with it, at least one slot stays for everyone.
     pub direct_reserve: usize,
+    /// The address listeners open for the station's Icecast stream. The station gives it to
+    /// the pages it serves and connects, and adds it to its link, so a page that cannot
+    /// connect over WebRTC plays this stream instead.
+    pub public_stream: Option<String>,
 }
 
 impl WebRtcConfig {
@@ -90,6 +94,7 @@ impl WebRtcConfig {
                 .collect(),
             relay: true,
             direct_reserve: 10,
+            public_stream: None,
         }
     }
 }
@@ -99,10 +104,29 @@ pub const LISTEN_SITE: &str = "https://radioterminal.github.io/craftradio/";
 
 /// The link that plays the station with this identity from anywhere.
 pub fn listen_link(identity: &[u8]) -> Option<String> {
-    Some(format!(
-        "{LISTEN_SITE}#{}",
-        crate::relay::Identity::new(identity)?.id()
-    ))
+    Some(link_for(&crate::relay::Identity::new(identity)?.id(), None))
+}
+
+/// The link for station `id`. With a public stream, the link carries it, so the page can
+/// play it when WebRTC does not connect.
+pub fn link_for(id: &str, public_stream: Option<&str>) -> String {
+    match public_stream {
+        Some(url) => format!("{LISTEN_SITE}?stream={}#{id}", query_escape(url)),
+        None => format!("{LISTEN_SITE}#{id}"),
+    }
+}
+
+/// Escapes `value` for a URL query: everything but unreserved characters.
+fn query_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,11 +314,11 @@ impl WebRtcServer {
                     .as_deref()
                     .and_then(crate::relay::Identity::new),
             ),
-            hello: hello(cfg.relay),
+            hello: hello(cfg.relay, cfg.public_stream.as_deref()),
             relay: cfg.relay,
             link: identity
                 .as_ref()
-                .map(|i| format!("{LISTEN_SITE}#{}", i.id())),
+                .map(|i| link_for(&i.id(), cfg.public_stream.as_deref())),
             url: format!("http://{}/", SocketAddr::new(url_ip, http.port())),
             meter,
         };
@@ -327,6 +351,7 @@ impl WebRtcServer {
         let http_state = Http {
             gate,
             title,
+            public_stream: cfg.public_stream.clone(),
             busy: Arc::new(AtomicUsize::new(0)),
         };
         match thread::Builder::new()
@@ -406,9 +431,11 @@ const MAX_REPORTED: usize = 1000;
 /// The longest report the station reads.
 const MAX_REPORT_LEN: usize = 256;
 
-/// The first message on the "now" channel: whether the page may pass the audio on.
-fn hello(relay: bool) -> String {
-    serde_json::json!({ "type": "relay", "allowed": relay, "max_hops": MAX_HOPS }).to_string()
+/// The first message on the "now" channel: whether the page may pass the audio on, and the
+/// public Icecast stream to fall back to. A page takes the stream only from the station.
+fn hello(relay: bool, public_stream: Option<&str>) -> String {
+    serde_json::json!({ "type": "relay", "allowed": relay, "max_hops": MAX_HOPS, "stream": public_stream })
+        .to_string()
 }
 
 /// The listeners in a page's `report` message, capped. Other messages give `None`.
@@ -1030,6 +1057,7 @@ pub(crate) struct Gate {
 struct Http {
     gate: Gate,
     title: SharedNow,
+    public_stream: Option<String>,
     /// HTTP requests in progress.
     busy: Arc<AtomicUsize>,
 }
@@ -1108,6 +1136,11 @@ impl Http {
                     .unwrap_or_default();
                 Response::text(200, &title)
             }
+            // The public Icecast stream, for the page this station serves.
+            ("GET", "/stream") => match &self.public_stream {
+                Some(url) => Response::text(200, url),
+                None => Response::text(404, "no public stream"),
+            },
             ("POST", "/whep") => self.whep(&req.body, peer),
             ("DELETE", p) if p.starts_with("/whep/") => {
                 let token = &p["/whep/".len()..];
@@ -1117,7 +1150,7 @@ impl Http {
                 let _ = self.gate.control.send(Control::Remove(token.to_owned()));
                 Response::text(200, "")
             }
-            (_, "/" | "/now" | "/whep") => Response::text(405, "method not allowed"),
+            (_, "/" | "/now" | "/stream" | "/whep") => Response::text(405, "method not allowed"),
             _ => Response::text(404, "not found"),
         }
     }
