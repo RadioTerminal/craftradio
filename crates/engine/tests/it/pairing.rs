@@ -6,6 +6,8 @@ use radio_model::{PairingDocument, SERVER_PART};
 use radio_server::pairing::{Document, IcecastTarget, OutputEntry};
 use serde_json::{Value, json};
 
+use super::temp_db;
+
 const ADDRESS: &str = "https://radio.example.invalid";
 
 /// The document a server writes for an invented station.
@@ -210,4 +212,22 @@ fn the_commands_are_listed_for_the_cli_and_mcp() {
         !props.to_string().to_lowercase().contains("key\""),
         "the key is never an argument"
     );
+}
+
+#[test]
+fn an_unpaired_station_stays_unpaired_after_a_restart() {
+    let path = temp_db("unpair-restart");
+    {
+        let mut e = Engine::open(&path).unwrap();
+        set(&mut e, "icecast", "format", json!("mp3"));
+        pair(&mut e, document()).unwrap();
+        e.flush().unwrap();
+        e.dispatch(Command::ServerUnpair).unwrap();
+        e.flush().unwrap();
+    }
+    let e = Engine::open(&path).unwrap();
+    for (part, key) in PAIRED {
+        assert_eq!(setting(&e, part, key), None, "{part}.{key} stays removed");
+    }
+    assert_eq!(setting(&e, "icecast", "format"), Some(json!("mp3")));
 }
