@@ -395,8 +395,8 @@ pub(crate) fn selectable_value<'a, V: PartialEq>(
 }
 
 /// A picture path with "Browse…" and "Clear", and under it why a path that is not a picture
-/// is refused when `check` is set. `label` is the id of the row's label, which names the field. Returns true when
-/// the person changed the path.
+/// is refused when `check` is set. `label` is the id of the row's label, which names the
+/// field. Returns true when the person changed the path.
 pub(crate) fn picture_field(
     ui: &mut egui::Ui,
     path: &mut String,

@@ -82,6 +82,8 @@ pub(crate) struct OneOffDialog {
     pub(crate) repeat: OneOffRepeat,
     /// The one-off's own picture file, or empty.
     pub(crate) picture: String,
+    /// The picture that the last library pick filled in.
+    filled: String,
     /// True after the first press of Add. Errors show from then on.
     tried: bool,
     /// The first field takes the keyboard focus once.
@@ -124,6 +126,7 @@ impl OneOffDialog {
             tolerance_s: DEFAULT_TOLERANCE_S,
             repeat: OneOffRepeat::Once,
             picture: String::new(),
+            filled: String::new(),
             tried: false,
             focus: true,
         }
@@ -176,6 +179,18 @@ impl OneOffDialog {
             }
         }
         d
+    }
+
+    /// Picks a library item. The picture follows the pick while nobody set one by hand.
+    fn pick_library(&mut self, id: u64, title: String, picture: &str) {
+        if self.library.as_ref().is_some_and(|(now, _)| *now == id) {
+            return;
+        }
+        self.library = Some((id, title));
+        if self.picture.is_empty() || self.picture == self.filled {
+            self.picture = picture.to_owned();
+            self.filled = picture.to_owned();
+        }
     }
 
     fn len(&self) -> Duration {
@@ -367,8 +382,7 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
                                     Some(a) => format!("{a} – {}", item.title),
                                     None => item.title.clone(),
                                 };
-                                d.library = Some((item.id, title));
-                                d.picture.clone_from(&item.meta.picture);
+                                d.pick_library(item.id, title, &item.meta.picture);
                             }
                         }
                     })
@@ -678,6 +692,23 @@ mod tests {
         let back = OneOffDialog::edit(&o, &view).check(&view).unwrap().0;
         assert_eq!(back, o);
         assert_eq!(back.picture, "/art/show.png", "the picture comes back");
+    }
+
+    #[test]
+    fn a_library_pick_fills_the_picture_until_it_is_set_by_hand() {
+        let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
+        let mut d = OneOffDialog::new(&view);
+        d.pick_library(1, "One".into(), "/art/one.png");
+        assert_eq!(d.picture, "/art/one.png");
+        d.pick_library(2, "Two".into(), "");
+        assert_eq!(d.picture, "", "it follows an item without a picture");
+        d.pick_library(1, "One".into(), "/art/one.png");
+        d.pick_library(1, "One".into(), "/art/other.png");
+        assert_eq!(d.picture, "/art/one.png", "the same item changes nothing");
+        d.picture = "/mine.webp".into();
+        d.pick_library(3, "Three".into(), "/art/three.png");
+        assert_eq!(d.picture, "/mine.webp", "a picture set by hand stays");
+        assert_eq!(d.library.as_ref().map(|l| l.0), Some(3));
     }
 
     #[test]
