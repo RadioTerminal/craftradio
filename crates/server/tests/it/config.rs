@@ -98,3 +98,22 @@ fn a_key_matches_only_its_own_hash() {
     assert!(!key_matches(&b, &hash_key(&a)));
     assert!(!key_matches(&a, "not a hash"));
 }
+
+/// The example config shipped in `packaging/server` parses, so it can't drift from what the
+/// server accepts; with its commented-out TLS lines turned on it still parses.
+#[test]
+fn the_packaged_example_config_loads() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packaging/server/craftradio-server.example.toml");
+    let config = Config::load(&path).unwrap();
+    assert!(
+        config.stations.len() >= 2,
+        "the example shows more than one station"
+    );
+    assert_eq!(config.tls_cert, None);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let with_tls = text.replace("# tls_", "tls_");
+    let config = Config::parse(&with_tls).unwrap();
+    assert!(config.tls_cert.is_some() && config.tls_key.is_some());
+}
