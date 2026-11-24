@@ -173,3 +173,63 @@ fn run_serves_the_configured_stations() {
     assert!(reply.contains("icestats"), "reply: {reply:?}");
     assert!(!reply.contains(&hash), "reply shows a key hash");
 }
+
+/// A pipe whose read end is already gone, so every write to it fails at once.
+fn closed_pipe() -> std::io::PipeWriter {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    writer
+}
+
+/// Rust exits with 101 when the main thread panics.
+const PANICKED: i32 = 101;
+
+#[test]
+fn key_with_a_closed_stdout_fails_without_a_panic() {
+    let out = Command::new(BIN)
+        .arg("key")
+        .stdout(closed_pipe())
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(PANICKED), "{out:?}");
+    assert!(!out.status.success(), "a key nobody saw is not a success");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(!stderr.contains("panicked"), "stderr: {stderr:?}");
+
+    // With stderr closed too, the report of the failure can't be written either.
+    let out = Command::new(BIN)
+        .arg("key")
+        .stdout(closed_pipe())
+        .stderr(closed_pipe())
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(PANICKED), "{out:?}");
+    assert!(!out.status.success(), "a key nobody saw is not a success");
+}
+
+#[test]
+fn key_with_a_closed_stderr_still_prints_the_key() {
+    let out = Command::new(BIN)
+        .arg("key")
+        .stderr(closed_pipe())
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(PANICKED), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.contains("panicked"), "stdout: {stdout:?}");
+    assert!(stdout.starts_with("key: "), "stdout: {stdout:?}");
+}
+
+#[test]
+fn run_with_a_closed_stderr_still_exits_2_on_a_broken_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config(dir.path(), "listen = \"not an address\"\n");
+    let out = Command::new(BIN)
+        .arg("run")
+        .arg("--config")
+        .arg(&config)
+        .stderr(closed_pipe())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+}
