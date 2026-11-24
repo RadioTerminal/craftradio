@@ -731,6 +731,23 @@ impl Drop for Scratch {
 }
 
 #[test]
+fn the_served_page_knows_the_brand() {
+    let (server, running, feed) = relay_station(false);
+    let (code, _, page) = http(server.local_addr().unwrap(), "GET", "/", "");
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert_eq!(code, 200);
+    assert!(
+        page.contains("\"/brand\""),
+        "the page asks the station for /brand"
+    );
+    assert!(
+        page.contains("type === \"brand\""),
+        "the page reads brand messages"
+    );
+}
+
+#[test]
 fn brand_is_served_before_anything_plays() {
     let (server, running, feed) = relay_station(false);
     let addr = server.local_addr().unwrap();
