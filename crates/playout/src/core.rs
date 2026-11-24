@@ -441,6 +441,10 @@ pub(crate) struct Core {
         Option<std::path::PathBuf>,
         Option<std::time::SystemTime>,
     )>,
+    /// Reads the modified time of the logo off this thread.
+    pub(crate) logo_watch: Option<crate::streams::LogoWatch>,
+    /// The logo the server had when it stopped.
+    pub(crate) logo_before: Option<std::path::PathBuf>,
     /// The thread that stops the last server and frees its ports.
     pub(crate) webrtc_stopping: Option<std::thread::JoinHandle<()>>,
     /// What plays now, for a server that starts later.
@@ -586,6 +590,8 @@ impl Core {
             output_meters: meters,
             webrtc_bind: None,
             brand_sent: None,
+            logo_watch: None,
+            logo_before: None,
             webrtc_stopping: None,
             webrtc_now: None,
             webrtc_played: std::collections::VecDeque::new(),

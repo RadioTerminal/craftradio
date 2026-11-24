@@ -338,6 +338,10 @@ fn a_logo_file_that_changes_on_disk_is_sent_again() {
     tick_until(&p, &clock, "a logo after the file changed", || {
         http_get(port, "/brand").contains("data:image/")
     });
+    // The alarm of the half-written or broken file does not stay open on a logo that works.
+    tick_until(&p, &clock, "no open alarm for the working logo", || {
+        open_picture_alarms(&p, &logo) == 0
+    });
 }
 
 /// The same broken picture on air twice leaves one open alarm.
