@@ -198,3 +198,33 @@ fn the_same_settings_again_keep_the_connection() {
     );
     handle.stop();
 }
+
+#[test]
+fn new_settings_while_retrying_dial_at_once() {
+    // A port that refuses: bind, take the port, close.
+    let refused = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (port, seen) = server();
+    let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+    let handle = IcecastClient::start_metered(config(refused), consumer, Arc::default());
+    wait_for(&handle, "retrying", |s| {
+        matches!(s, StreamStatus::Retrying { .. })
+    });
+    // Let the back-off grow past what the test waits for the new server.
+    std::thread::sleep(Duration::from_millis(3500));
+    let asked = Instant::now();
+    handle.reconfigure(Some(config(port)));
+    assert!(matches!(
+        seen.recv_timeout(PATIENCE).unwrap(),
+        Seen::Arrived(_)
+    ));
+    assert!(
+        asked.elapsed() < Duration::from_millis(1500),
+        "new settings waited for the retry delay: {:?}",
+        asked.elapsed()
+    );
+    handle.stop();
+}
