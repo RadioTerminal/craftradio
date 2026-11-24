@@ -122,6 +122,19 @@ fn rejects_two_stations_with_the_same_key() {
 }
 
 #[test]
+fn a_slug_in_an_error_is_escaped() {
+    // A slug with a line break and a quote in it (written as TOML escapes) cannot start a
+    // line of its own in the error, or pass for the end of the quoted slug.
+    match Config::parse(&one_station(r#"morning\nnight\""#)) {
+        Err(ServerError::Config(message)) => {
+            assert!(!message.contains('\n'), "{message}");
+            assert!(message.contains(r#""morning\nnight\"""#), "{message}");
+        }
+        other => panic!("the slug was accepted: {other:?}"),
+    }
+}
+
+#[test]
 fn rejects_unknown_field() {
     let on_station = TWO.replacen(
         "name = \"Morning Station\"",

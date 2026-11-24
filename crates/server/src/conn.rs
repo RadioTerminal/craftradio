@@ -184,8 +184,12 @@ impl Conn {
     /// `close_notify`, so a TLS client sees a clean end, not a cut connection).
     pub(crate) fn shutdown_write(&mut self) -> std::io::Result<()> {
         if let Conn::Tls(tls) = self {
+            // Bounded in all, not per write; cleared so it does not govern what follows.
+            tls.sock.deadline = Some(close_notify_deadline());
             tls.conn.send_close_notify();
-            tls.flush()?;
+            let flushed = tls.flush();
+            tls.sock.deadline = None;
+            flushed?;
         }
         let socket = self.socket_mut();
         socket.tcp.shutdown(Shutdown::Write)?;
@@ -199,21 +203,21 @@ impl Conn {
     }
 }
 
+/// When sending TLS `close_notify` (and what is still buffered before it) must be done.
+fn close_notify_deadline() -> Instant {
+    Instant::now()
+        .checked_add(CLOSE_NOTIFY_WAIT)
+        .unwrap_or_else(Instant::now)
+}
+
 impl Drop for Conn {
-    /// Ends a TLS connection cleanly, waiting only briefly; once `stop` has shut the
-    /// socket the write fails at once.
+    /// Ends a TLS connection cleanly, waiting only briefly in all, however slowly the client
+    /// reads; once `stop` has shut the socket the write fails at once.
     fn drop(&mut self) {
         if let Conn::Tls(tls) = self {
-            tls.sock.deadline = None;
-            if tls
-                .sock
-                .tcp
-                .set_write_timeout(Some(CLOSE_NOTIFY_WAIT))
-                .is_ok()
-            {
-                tls.conn.send_close_notify();
-                let _ = tls.flush();
-            }
+            tls.sock.deadline = Some(close_notify_deadline());
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
         }
     }
 }

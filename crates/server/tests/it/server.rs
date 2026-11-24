@@ -1147,6 +1147,26 @@ fn a_title_is_cut_to_512_characters() {
 }
 
 #[test]
+fn a_source_name_is_cut_to_512_characters() {
+    let server = start();
+    let addr = server.local_addr();
+    // Two-byte characters, so a cut counted in bytes shows.
+    let long: String = "Wölkenlied ".repeat(60);
+    let mut source = client(addr);
+    write!(
+        source,
+        "PUT /morning/stream HTTP/1.0\r\n{}Content-Type: audio/mpeg\r\nIce-Name: {long}\r\n\r\n",
+        basic(MORNING_KEY)
+    )
+    .unwrap();
+    assert_eq!(read_head(&mut source).status, 200);
+    let entry = source_entry(&stats(addr), "morning").unwrap();
+    let name = entry["server_name"].as_str().unwrap();
+    assert_eq!(name.chars().count(), 512);
+    assert!(long.starts_with(name), "the name is cut, not changed");
+}
+
+#[test]
 fn stats_built_for_a_mount_with_no_source_leave_it_out() {
     let idle = MountStats {
         live: false,
