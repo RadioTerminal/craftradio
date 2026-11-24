@@ -26,6 +26,8 @@ pub(crate) const FADE: &str = "deck.fade_out";
 /// Space plays the focused deck, or pauses it when it is on air.
 pub(crate) const PLAY_PAUSE: &str = "deck.play_pause";
 pub(crate) const STOP_CARTS: &str = "cart.stop_all";
+/// The On air switch: it arms first, and a second press within the arm time switches.
+pub(crate) const AIR_TOGGLE: &str = "air.toggle";
 /// Preferences, as in every Craft app.
 pub(crate) const PREFERENCES: &str = "app.preferences";
 /// The search field of Preferences takes the focus.
@@ -81,6 +83,7 @@ pub(crate) fn catalog() -> Vec<Bindable> {
         entry(FADE.into(), "Fade Out", "Playout", &["Cmd+Shift+F"]),
         entry(PLAY_PAUSE.into(), "Play or Pause", "Playout", &["Space"]),
         entry(STOP_CARTS.into(), "Stop All Carts", "Playout", &["Escape"]),
+        entry(AIR_TOGGLE.into(), "On Air", "Playout", &["Cmd+Shift+O"]),
         entry(UP.into(), "Previous Row", "Lists", &["Up"]),
         entry(DOWN.into(), "Next Row", "Lists", &["Down"]),
     ];
@@ -174,6 +177,8 @@ pub(crate) struct Pressed {
     pub fade: bool,
     pub play_pause: bool,
     pub stop_carts: bool,
+    /// The On air switch: one press arms it.
+    pub air: bool,
     pub focus_deck: Option<usize>,
     /// The cart key, as a number from 0 on the page on show.
     pub cart: Option<usize>,
@@ -199,6 +204,7 @@ impl Pressed {
             fade: self.fade | other.fade,
             play_pause: self.play_pause | other.play_pause,
             stop_carts: self.stop_carts | other.stop_carts,
+            air: self.air | other.air,
             focus_deck: self.focus_deck.or(other.focus_deck),
             cart: self.cart.or(other.cart),
             step: if self.step == 0 {
@@ -256,6 +262,7 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.preferences = take(i, &PREFERENCES.into());
         p.find = take(i, &FIND.into());
         p.fade = take(i, &FADE.into());
+        p.air = take(i, &AIR_TOGGLE.into());
         p.duplicate = take(i, &DUPLICATE.into());
         p.delete = take(i, &DELETE.into());
         p.select_all = take(i, &SELECT_ALL.into());
@@ -295,6 +302,7 @@ mod tests {
             (FIND, "Cmd+F"),
             (PLAY_PAUSE, "Space"),
             (STOP_CARTS, "Escape"),
+            (AIR_TOGGLE, "Cmd+Shift+O"),
             (SELECT_ALL, "Cmd+A"),
         ] {
             let want = craft_keymap::Chord::parse(text)

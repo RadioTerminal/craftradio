@@ -153,6 +153,8 @@ pub struct RadioApp {
     open: windows::Open,
     carts: cartwall::State,
     mixer: mixer::State,
+    /// The On air switch while it waits for its second press.
+    air: crate::on_air::State,
     preferences: crate::preferences::State,
     /// This computer's preferences: in memory until the app gives a store.
     prefs: crate::app_prefs::AppPrefs,
@@ -244,6 +246,7 @@ impl RadioApp {
             open: windows::Open::default(),
             carts,
             mixer: mixer::State::default(),
+            air: crate::on_air::State::default(),
             preferences: crate::preferences::State::default(),
             prefs: crate::app_prefs::AppPrefs::memory(),
             layout: None,
@@ -410,7 +413,12 @@ impl RadioApp {
     #[cfg(target_os = "macos")]
     pub fn install_native_menu(&mut self, ctx: &egui::Context) -> bool {
         let bar = craft_menu::mac_layout(
-            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx), self.updates.is_some()),
+            &crate::menus::bar(
+                &self.open,
+                &shortcuts::keymap(ctx),
+                self.updates.is_some(),
+                self.view.on_air,
+            ),
             &crate::menus::options(),
         )
         .bar;
@@ -497,7 +505,12 @@ impl RadioApp {
             return;
         }
         let layout = craft_menu::mac_layout(
-            &crate::menus::bar(&self.open, &shortcuts::keymap(ctx), self.updates.is_some()),
+            &crate::menus::bar(
+                &self.open,
+                &shortcuts::keymap(ctx),
+                self.updates.is_some(),
+                self.view.on_air,
+            ),
             &crate::menus::options(),
         );
         if let Some(menu) = self.native_menu.as_mut() {
@@ -510,7 +523,12 @@ impl RadioApp {
         let ctx = ui.ctx().clone();
         let options = crate::menus::options();
         let bar = craft_menu::layout(
-            &crate::menus::bar(&self.open, &shortcuts::keymap(&ctx), self.updates.is_some()),
+            &crate::menus::bar(
+                &self.open,
+                &shortcuts::keymap(&ctx),
+                self.updates.is_some(),
+                self.view.on_air,
+            ),
             craft_menu::Target::current(),
             &options,
         )
@@ -655,7 +673,15 @@ impl RadioApp {
         note(
             w,
             windows::show(ctx, w, open, saved(w), t, |ui| {
-                mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
+                mixer::show(
+                    ui,
+                    view,
+                    &mut self.mixer,
+                    &mut self.air,
+                    &streaming,
+                    actions,
+                    t,
+                );
             }),
         );
         let w = ToolWindow::Clock;
@@ -1031,6 +1057,14 @@ fn status_line(
             .output
             .webrtc_listeners_text()
             .map(|n| format!("listening, {n}"));
+        // Off air on purpose, in words first: nothing goes to listeners.
+        if !view.on_air {
+            let text = RichText::new(icons::lead(Icon::Circle, "Off air"))
+                .font(theme::text(theme::LABEL))
+                .color(t.warn);
+            ui.label(text)
+                .on_hover_text("Off air: Icecast and WebRTC send nothing. The decks play on here.");
+        }
         for (name, status, connected) in [
             ("Local", &view.output.local, None),
             ("Icecast", &view.output.icecast, None),
@@ -1051,6 +1085,12 @@ fn status_line(
                 Status::Preview => (Icon::Circle, "preview (no audio)".to_owned(), t.text_muted),
                 // Off air on purpose: in words, neither the success colour nor a fault.
                 Status::OffAir => (Icon::Circle, "off air".to_owned(), t.text_muted),
+                // Going on air, an Icecast mount that still connects is not a fault yet.
+                Status::Failed(_) | Status::Reconnecting { .. }
+                    if name == "Icecast" && view.going_on_air =>
+                {
+                    (Icon::RefreshCw, "going on air…".to_owned(), t.warn)
+                }
                 Status::NotConnected => (Icon::Circle, "not connected".to_owned(), t.text_muted),
                 Status::Reconnecting { attempt } => (
                     Icon::RefreshCw,

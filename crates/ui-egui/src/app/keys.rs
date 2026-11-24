@@ -56,6 +56,14 @@ impl RadioApp {
         {
             actions.push(a);
         }
+        // The On air switch: the first press arms and says so, as the button does.
+        if p.air {
+            let on_air = self.view.on_air;
+            match self.air.press(on_air, now) {
+                Some(a) => actions.push(a),
+                None => actions.push(Action::Toast(crate::on_air::arm_note(on_air).to_owned())),
+            }
+        }
         let deck = self.decks.focused();
         let Some(dv) = self.view.decks.get(deck) else {
             return;

@@ -47,9 +47,15 @@ pub(crate) fn options() -> LayoutOptions<'static> {
     }
 }
 
-/// The menus as the app is now: which tool windows are open, and whether the app checks
-/// for updates. A build without the updater shows no Check for Updates.
-pub(crate) fn bar(open: &Open, keymap: &craft_keymap::Keymap, updates: bool) -> MenuBar {
+/// The menus as the app is now: which tool windows are open, whether the app checks
+/// for updates (a build without the updater shows no Check for Updates) and whether the
+/// station is on air (the check mark of On Air).
+pub(crate) fn bar(
+    open: &Open,
+    keymap: &craft_keymap::Keymap,
+    updates: bool,
+    on_air: bool,
+) -> MenuBar {
     let edit = Menu::new(
         "Edit",
         vec![
@@ -73,6 +79,8 @@ pub(crate) fn bar(open: &Open, keymap: &craft_keymap::Keymap, updates: bool) -> 
         item(shortcuts::FADE, "Fade Out"),
         item(shortcuts::PLAY_PAUSE, "Play or Pause the Focused Deck"),
         item(shortcuts::STOP_CARTS, "Stop All Carts"),
+        Node::Separator,
+        Node::Item(Item::new(shortcuts::AIR_TOGGLE, "On Air").check(on_air)),
         Node::Separator,
     ];
     for (i, name) in ['A', 'B', 'C', 'D'].iter().enumerate() {
@@ -138,6 +146,7 @@ pub(crate) fn run(command: &CommandRef) -> Run {
         shortcuts::FADE => p.fade = true,
         shortcuts::PLAY_PAUSE => p.play_pause = true,
         shortcuts::STOP_CARTS => p.stop_carts = true,
+        shortcuts::AIR_TOGGLE => p.air = true,
         shortcuts::FOCUS_DECK => p.focus_deck = param("deck"),
         shortcuts::FIRE_CART => p.cart = param("cart"),
         SHORTCUTS => return Run::Shortcuts,
@@ -164,7 +173,7 @@ mod tests {
     #[test]
     fn every_menu_item_does_what_its_shortcut_does_and_shows_it() {
         let open = Open::default();
-        let bar = bar(&open, &shortcuts::default_keymap(), true);
+        let bar = bar(&open, &shortcuts::default_keymap(), true, true);
         for item in bar.items() {
             assert!(
                 !matches!(run(&item.command), Run::Nothing),

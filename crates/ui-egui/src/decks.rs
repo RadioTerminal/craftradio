@@ -1097,10 +1097,16 @@ fn live_chip(
             "OFF AIR",
             t.text_muted,
             t.field,
-            "not streaming to listeners".to_owned(),
+            if view.on_air {
+                "not streaming to listeners"
+            } else {
+                "the station is off air: nothing goes to listeners"
+            }
+            .to_owned(),
         ),
     };
     let icecast = match &view.output.icecast {
+        Status::Failed(_) | Status::Reconnecting { .. } if view.going_on_air => "going on air",
         Status::Connected => "connected",
         Status::Reconnecting { .. } => "reconnecting",
         Status::Failed(_) => "failed",

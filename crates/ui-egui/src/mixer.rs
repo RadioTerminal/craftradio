@@ -93,6 +93,7 @@ pub(crate) fn show(
     ui: &mut egui::Ui,
     view: &StationView,
     state: &mut State,
+    air: &mut crate::on_air::State,
     streaming: &str,
     actions: &mut Vec<Action>,
     t: &Tokens,
@@ -129,11 +130,20 @@ pub(crate) fn show(
         }
         // A wider gap sets the outputs apart from the strips that mix.
         ui.add_space(space::L);
-        for out in &view.output_meters {
-            if let Some(p) = output_strip(ui, out, t) {
-                page = Some(p);
-            }
-        }
+        ui.vertical(|ui| {
+            // The On air switch spans the output strips it turns on and off.
+            let n = view.output_meters.len() as f32;
+            let strip = size::STRIP_W + pad::TIGHT.sum().x + size::HAIRLINE * 2.0;
+            let gaps = (n - 1.0).max(0.0) * ui.spacing().item_spacing.x;
+            crate::on_air::button(ui, view, air, n * strip + gaps, actions, t);
+            ui.horizontal_top(|ui| {
+                for out in &view.output_meters {
+                    if let Some(p) = output_strip(ui, out, t) {
+                        page = Some(p);
+                    }
+                }
+            });
+        });
     });
     if let Some(tab) = wanted {
         actions.push(Action::OpenPreferences(Page::from(tab)));
@@ -1018,6 +1028,10 @@ fn icecast_status(view: &StationView, t: &Tokens) -> IceStatus {
             false,
         ),
         Status::Connected => s(Icon::CircleDot, "Icecast connected", t.ok, true),
+        // Going on air, a mount that still connects is not a fault yet.
+        Status::Failed(_) | Status::Reconnecting { .. } if view.going_on_air => {
+            s(Icon::RefreshCw, "Icecast going on air…", t.warn, false)
+        }
         Status::Reconnecting { attempt } => s(
             Icon::RefreshCw,
             &format!("Icecast connecting, try {attempt}"),
