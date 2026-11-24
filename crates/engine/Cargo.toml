@@ -21,3 +21,5 @@ workspace = true
 
 [dev-dependencies]
 rusqlite.workspace = true
+# The server's pairing document, to prove the engine reads the shape the server writes.
+radio-server.workspace = true

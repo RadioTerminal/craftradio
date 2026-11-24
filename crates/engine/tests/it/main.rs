@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 mod dynamics;
 mod loudness;
 mod one_off;
+mod pairing;
 
 const MAIN: PlaylistId = PlaylistId(1);
 
@@ -860,6 +861,13 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
     values["db"] = serde_json::json!(-1.5);
     values["start"] = serde_json::json!("2026-11-22T09:00:00");
     values["one_off"] = serde_json::to_value(item(9, "One-off")).unwrap();
+    values["address"] = serde_json::json!("https://radio.example.invalid");
+    values["document"] = serde_json::json!({
+        "version": 1, "slug": "test", "name": "Test", "public_url": "https://radio.example.invalid",
+        "icecast": {"host": "radio.example.invalid", "port": 443, "tls": true,
+                    "mount": "/test/stream", "user": "source"},
+        "stream_url": "https://radio.example.invalid/test/stream", "outputs": []
+    });
     let specs = registry();
     let command_schema = schemars::schema_for!(Command).to_value();
     assert_eq!(

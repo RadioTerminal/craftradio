@@ -342,6 +342,21 @@ pub enum Command {
         key: String,
         value: Value,
     },
+    /// Pairs the station with a station server: writes the Icecast push, the WebRTC public
+    /// stream and the `server` settings from the server's pairing document. Settings typed by
+    /// hand since the last pairing are overwritten. The station key is never an argument;
+    /// the app keeps it in the keychain.
+    #[serde(rename = "server.pair")]
+    ServerPair {
+        /// The server's address, as the person typed it.
+        address: String,
+        /// What the server answered at `GET /api/station`.
+        document: radio_model::PairingDocument,
+    },
+    /// Unpairs the station: removes every setting `server.pair` wrote, so each is back to its
+    /// default. A station that is not paired keeps its settings.
+    #[serde(rename = "server.unpair")]
+    ServerUnpair,
     #[serde(rename = "playlist.set_color")]
     PlaylistSetColor {
         playlist: PlaylistId,
@@ -492,6 +507,8 @@ impl Command {
             Self::StationSystem { .. } => "station.system",
             Self::StationImport { .. } => "station.import",
             Self::SettingsSet { .. } => "settings.set",
+            Self::ServerPair { .. } => "server.pair",
+            Self::ServerUnpair => "server.unpair",
             Self::PlaylistSetColor { .. } => "playlist.set_color",
             Self::PlaylistSetPick { .. } => "playlist.set_pick",
             Self::PlaylistDuplicate { .. } => "playlist.duplicate",
@@ -560,6 +577,8 @@ impl Command {
             | Self::StationSystem { .. }
             | Self::StationImport { .. }
             | Self::SettingsSet { .. }
+            | Self::ServerPair { .. }
+            | Self::ServerUnpair
             | Self::PlaylistSetColor { .. }
             | Self::PlaylistSetPick { .. }
             | Self::PlaylistDuplicate { .. }
@@ -887,6 +906,18 @@ pub fn registry() -> Vec<CommandSpec> {
             "Store one setting of one part of the UI",
             A,
             &[("part", "string"), ("key", "string"), ("value", "object")],
+        ),
+        spec(
+            "server.pair",
+            "Pair with a station server: its pairing document sets the Icecast push and links",
+            A,
+            &[("address", "string"), ("document", "object")],
+        ),
+        spec(
+            "server.unpair",
+            "Unpair from the station server: the settings pairing wrote go back to defaults",
+            A,
+            &[],
         ),
         spec(
             "playlist.set_color",

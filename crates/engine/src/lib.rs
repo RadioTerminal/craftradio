@@ -7,6 +7,7 @@ mod command;
 mod error;
 mod log;
 mod one_off;
+mod pairing;
 mod store;
 
 pub use command::{
@@ -1385,6 +1386,10 @@ impl Engine {
                     .insert(key, value);
                 Ok(Outcome::default())
             }
+            C::ServerPair { address, document } => {
+                pairing::pair(&mut self.state.settings, address, document)
+            }
+            C::ServerUnpair => Ok(pairing::unpair(&mut self.state.settings)),
             C::PlaylistSetColor { playlist, color } => {
                 self.edit_station(|s| {
                     playlist_mut(s, playlist)?.color = color;
