@@ -69,7 +69,7 @@ fn set(e: &mut Engine, part: &str, key: &str, value: Value) {
 }
 
 /// The settings pairing writes, by part and key.
-const PAIRED: [(&str, &str); 12] = [
+const PAIRED: [(&str, &str); 13] = [
     ("icecast", "host"),
     ("icecast", "port"),
     ("icecast", "mount"),
@@ -82,6 +82,7 @@ const PAIRED: [(&str, &str); 12] = [
     (SERVER_PART, "name"),
     (SERVER_PART, "stream_url"),
     (SERVER_PART, "outputs"),
+    (SERVER_PART, "push"),
 ];
 
 #[test]
@@ -118,6 +119,17 @@ fn pairing_writes_icecast_webrtc_and_server_settings() {
             SERVER_PART,
             "outputs",
             serde_json::to_value(&doc.outputs).unwrap(),
+        ),
+        // The paired push, which names the keychain entry of the key.
+        (
+            SERVER_PART,
+            "push",
+            json!({
+                "host": doc.icecast.host,
+                "port": doc.icecast.port,
+                "mount": doc.icecast.mount,
+                "user": doc.icecast.user,
+            }),
         ),
     ];
     assert_eq!(expected.len(), PAIRED.len());

@@ -6,6 +6,10 @@
 pub const SERVER_PART: &str = "server";
 /// The key of the server's address in [`SERVER_PART`]. A station is paired while it is set.
 pub const SERVER_ADDRESS_KEY: &str = "address";
+/// The key of the paired push in [`SERVER_PART`]: the document's Icecast host, port, mount
+/// and user, which name the keychain entry of the station key. Hand edits of `icecast.*`
+/// do not move it.
+pub const SERVER_PUSH_KEY: &str = "push";
 /// The version of the pairing document's shape that this app reads.
 pub const PAIRING_VERSION: u32 = 1;
 

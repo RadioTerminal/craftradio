@@ -3,7 +3,7 @@
 //! keychain.
 
 use crate::{EngineError, Outcome};
-use radio_model::{PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART};
+use radio_model::{PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_KEY};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -15,7 +15,7 @@ const ICECAST_PART: &str = "icecast";
 const WEBRTC_PART: &str = "webrtc";
 
 /// Every setting pairing writes, by part and key. Unpairing removes exactly these.
-const PAIRED: [(&str, &str); 12] = [
+const PAIRED: [(&str, &str); 13] = [
     (ICECAST_PART, "host"),
     (ICECAST_PART, "port"),
     (ICECAST_PART, "mount"),
@@ -28,6 +28,7 @@ const PAIRED: [(&str, &str); 12] = [
     (SERVER_PART, "name"),
     (SERVER_PART, "stream_url"),
     (SERVER_PART, "outputs"),
+    (SERVER_PART, SERVER_PUSH_KEY),
 ];
 
 /// Writes the settings `document` offers. A document of another version changes nothing.
@@ -46,6 +47,7 @@ pub(crate) fn pair(
     let outputs = serde_json::to_value(&document.outputs)
         .map_err(|e| EngineError::BadArgument(format!("the outputs cannot be stored: {e}")))?;
     let ice = document.icecast;
+    let push = json!({"host": ice.host, "port": ice.port, "mount": ice.mount, "user": ice.user});
     let values = [
         json!(ice.host),
         json!(ice.port),
@@ -60,6 +62,7 @@ pub(crate) fn pair(
         json!(document.name),
         json!(document.stream_url),
         outputs,
+        push,
     ];
     for ((part, key), value) in PAIRED.into_iter().zip(values) {
         settings
