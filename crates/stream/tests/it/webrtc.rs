@@ -655,3 +655,44 @@ fn the_station_answers_an_offer_that_asks_for_the_station_only() {
     let (code, _, answer) = http(server.local_addr().unwrap(), "POST", "/whep", &marked);
     assert_eq!(code, 201, "{answer}");
 }
+
+#[test]
+fn the_station_serves_its_public_stream_only_when_it_has_one() {
+    let mut cfg = WebRtcConfig::new("127.0.0.1:0".parse().unwrap());
+    cfg.stun.clear();
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg.clone(), consumer);
+    wait(&server, |l| l == Some(0));
+    let (code, _, _) = http(server.local_addr().unwrap(), "GET", "/stream", "");
+    assert_eq!(code, 404, "no public stream is set");
+
+    cfg.public_stream = Some("https://stream.example.org/live".into());
+    let (_p, consumer) = rtrb::RingBuffer::new(4096);
+    let server = WebRtcServer::start(cfg, consumer);
+    wait(&server, |l| l == Some(0));
+    let (code, _, body) = http(server.local_addr().unwrap(), "GET", "/stream", "");
+    assert_eq!(code, 200);
+    assert_eq!(body, "https://stream.example.org/live");
+}
+
+#[test]
+fn a_station_link_carries_the_public_stream_the_page_falls_back_to() {
+    let id = "A".repeat(43);
+    let plain = link_for(&id, None);
+    assert!(plain.ends_with(&format!("#{id}")));
+    assert!(!plain.contains("stream="));
+    let url = "https://stream.example.org/live?x=1&y=2#z";
+    let link = link_for(&id, Some(url));
+    assert!(
+        link.ends_with(&format!("#{id}")),
+        "the station ID stays last: {link}"
+    );
+    let (_, query) = link
+        .split_once("?stream=")
+        .expect("the link has the stream");
+    let value = query.split('#').next().unwrap();
+    assert!(
+        !value.contains(['&', '#', '?', '/', ':']),
+        "the stream address is escaped as one value: {value}"
+    );
+}

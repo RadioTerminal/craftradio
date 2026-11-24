@@ -46,6 +46,11 @@ pub fn output_choice(out_setting: Option<&str>, null_flag: bool) -> radio_playou
 /// kept for listeners who find no one to play through. Values
 /// out of range are left as they were.
 pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
+    // The public Icecast address lives with Icecast; the web player falls back to it.
+    let public = icecast_view(state).public_url;
+    cfg.public_stream = radio_ui_egui::view::check_stream_url(&public)
+        .is_ok()
+        .then(|| public.trim().to_owned());
     let Some(s) = state.settings(radio_playout::WEBRTC_PART) else {
         return;
     };

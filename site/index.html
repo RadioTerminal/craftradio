@@ -50,6 +50,7 @@
           background: rgba(20,22,27,.5); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
           box-shadow: inset 0 0 0 1px var(--edge); color: var(--text); }
   .chip.left { left: 14px; }
+  .chip[hidden] { display: none; }
   .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
   .chip.on i { background: var(--live); box-shadow: 0 0 10px var(--live); }
   button.chip { right: 14px; border: 0; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
@@ -236,7 +237,7 @@
             <input id="station" type="text" placeholder="Station link or address" autocomplete="off" spellcheck="false" aria-label="Station link or address" aria-describedby="station-hint">
             <button id="tune" type="button">Tune in</button>
           </div>
-          <p class="hint" id="station-hint">Paste the link a station shares, an address such as <code>http://192.168.1.20:8000</code>, or a TinyIce mount such as <code>https://radio.example.com/live</code>.</p>
+          <p class="hint" id="station-hint">Paste the link a station shares, an address such as <code>http://192.168.1.20:8000</code>, or an Icecast or TinyIce stream such as <code>https://radio.example.com/live</code>.</p>
         </div>
         <div class="group" id="relay" hidden>
           <h2>Sharing</h2>
@@ -852,6 +853,8 @@ function teardown() {
   player = null; rtpStream = null;
   stopMeter();
   audio.srcObject = null;
+  if (audio.getAttribute("src")) { audio.onerror = null; audio.pause(); audio.removeAttribute("src"); audio.load(); }
+  onIcecast = false;
   onAir(false);
 }
 
@@ -865,14 +868,29 @@ async function stop(message) {
 
 function start() {
   primeOutput();
-  wanted = true; attempt = 0;
+  wanted = true; attempt = 0; icecastTried = false;
   clearTimeout(retryTimer); retryTimer = null;
   listen();
 }
 
 // Tries again after 2, 4, 8, 16, then every 30 seconds, while the listener wants to listen.
+// The first time, a station with a public Icecast stream plays that instead.
 function retry(reason) {
   if (!wanted) return;
+  if (!icecastTried) {
+    icecastTried = true;
+    const mine = gen;
+    teardown();
+    say("Connecting…");
+    publicStream().then((url) => {
+      if (gen !== mine + 1 || !wanted) return;
+      if (url) playIcecast(url, reason); else retryLater(reason);
+    });
+    return;
+  }
+  retryLater(reason);
+}
+function retryLater(reason) {
   teardown();
   attempt = Math.min(attempt + 1, 5);
   const delay = Math.min(30, 2 ** attempt);
@@ -880,6 +898,61 @@ function retry(reason) {
   say(reason + " Trying again in " + delay + " s…");
   clearTimeout(retryTimer);
   retryTimer = setTimeout(() => { retryTimer = null; if (wanted) listen(); }, delay * 1000);
+}
+
+// The station's public Icecast stream, for when WebRTC does not connect: what the station
+// said when it last connected (kept per station), the link's ?stream=, or for an address,
+// what it serves at /stream, else the address itself (a plain Icecast mount).
+let streamFromStation = null, onIcecast = false, icecastTried = false;
+function cleanStream(u) {
+  try { const x = new URL(u); return /^https?:$/.test(x.protocol) && !x.username && !x.password ? x.href : null; }
+  catch (_) { return null; }
+}
+const streamParam = cleanStream(new URLSearchParams(location.search).get("stream") || "");
+// Only the station, never a relay, says where its stream is.
+function fromStation(text) {
+  let m = null; try { m = JSON.parse(text); } catch (_) {}
+  if (!m || m.type !== "relay" || !station) return;
+  streamFromStation = cleanStream(m.stream || "");
+  if (station.kind === "id") try {
+    if (streamFromStation) localStorage.setItem("stream:" + station.id, streamFromStation);
+    else localStorage.removeItem("stream:" + station.id);
+  } catch (_) {}
+}
+async function publicStream() {
+  if (!station) return null;
+  if (streamFromStation) return streamFromStation;
+  if (station.kind === "id") {
+    try { const kept = cleanStream(localStorage.getItem("stream:" + station.id) || ""); if (kept) return kept; } catch (_) {}
+    return fromLink && fromLink.id === station.id ? streamParam : null;
+  }
+  try {
+    const r = await fetch(station.url + "/stream");
+    if (r.ok) { const url = cleanStream((await r.text()).trim()); if (url) return url; }
+  } catch (_) {}
+  return station.url;
+}
+// Plays an Icecast stream in the audio element. It plays until Stop or until it ends; an
+// error goes back to WebRTC.
+async function playIcecast(url, reason) {
+  teardown();
+  const mine = gen;
+  console.debug("radio: WebRTC did not connect (" + reason.slice(0, 200) + "); trying the Icecast stream " + url);
+  if (blockedMixed(url)) return retryLater(reason);
+  onIcecast = true; gotMeta = false;
+  setIcon(true); say("Connecting…");
+  audio.onerror = () => { if (gen === mine && onIcecast) { onIcecast = false; retryLater("The stream stopped."); } };
+  audio.src = url;
+  try { await audio.play(); }
+  catch (e) {
+    if (gen !== mine) return;
+    onIcecast = false;
+    return retryLater(reason);
+  }
+  if (gen !== mine) return;
+  onAir(true); say(liveText());
+  titleFromServer(url);
+  poll = setInterval(() => titleFromServer(url), 10000);
 }
 
 // An error that a retry cannot fix.
@@ -1038,7 +1111,10 @@ function addSource({ me, a, channel }, peer, hops) {
     if (player && player.onAudio(e.data, src)) { setDepth(); forwardAudio(new Uint8Array(e.data)); }
   };
   channel.onmessage = async (e) => {
-    if (typeof e.data === "string") return src === primary() && fromParent(e.data);
+    if (typeof e.data === "string") {
+      if (!src.peer) fromStation(e.data);
+      return src === primary() && fromParent(e.data);
+    }
     if (player && await player.onBlock(e.data, src)) forwardBlock(e.data);
   };
   me.ontrack = (e) => {
@@ -1050,7 +1126,7 @@ function addSource({ me, a, channel }, peer, hops) {
     const st = me.connectionState;
     if (st === "connected") {
       if (!src.up) src.up = performance.now();
-      src.lost = 0; attempt = 0;
+      src.lost = 0; attempt = 0; icecastTried = false;
       onAir(true); say(liveText());
     }
     if (st === "failed") dropSource(src, "The connection failed.");
@@ -1066,7 +1142,7 @@ function addSource({ me, a, channel }, peer, hops) {
 // Where the sound comes from is for the console only; the player says "Live".
 function liveText() {
   const n = sources.filter((x) => x.peer && x.up).length;
-  console.debug("radio: playing from", n ? n + " relay(s), depth " + depth : "the station");
+  console.debug("radio: playing from", onIcecast ? "the Icecast stream" : n ? n + " relay(s), depth " + depth : "the station");
   return "Live";
 }
 
@@ -1215,7 +1291,11 @@ async function listen() {
     for (const c of conns) if (!sources.some((x) => x.me === c.me)) c.me.close();
     if (gen !== mine) return;
     searching = [];
-    if (e.lasting) await stop("Could not tune in: " + e.message);
+    if (e.lasting) {
+      const url = !icecastTried && await publicStream();
+      if (url && gen === mine && wanted) { icecastTried = true; return playIcecast(url, e.message); }
+      await stop("Could not tune in: " + e.message);
+    }
     else retry("Could not tune in: " + e.message + ".");
   }
 }

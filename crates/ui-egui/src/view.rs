@@ -868,6 +868,9 @@ pub struct IcecastView {
     pub tls: bool,
     pub format: StreamFormat,
     pub kbps: u32,
+    /// The address listeners open for the stream, such as `https://stream.example.org/live`.
+    /// Empty when the station does not share it. The web player falls back to it.
+    pub public_url: String,
 }
 
 // The password never shows in a debug print.
@@ -900,6 +903,7 @@ impl std::fmt::Debug for IcecastView {
             .field("tls", &self.tls)
             .field("format", &self.format)
             .field("kbps", &self.kbps)
+            .field("public_url", &self.public_url)
             .finish()
     }
 }

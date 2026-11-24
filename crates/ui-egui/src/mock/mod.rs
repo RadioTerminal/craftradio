@@ -215,6 +215,7 @@ impl MockSource {
                 tls: true,
                 format: StreamFormat::Opus,
                 kbps: ICECAST_KBPS,
+                public_url: String::new(),
             },
             dynamics: radio_model::DynamicsSettings::default(),
             loudness: radio_model::LoudnessSettings::default(),

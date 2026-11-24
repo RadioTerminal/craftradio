@@ -125,7 +125,7 @@ impl Page {
             Self::WebRtc => "webrtc listeners browser link stream port bitrate kbps",
             Self::Icecast => {
                 "status now streaming server host port tls encrypt mount user password format \
-                 opus mp3 bitrate"
+                 opus mp3 bitrate public address listeners fallback"
             }
             Self::Clock => {
                 "face 24-hour time show the date seconds ring countdowns next fixed event \

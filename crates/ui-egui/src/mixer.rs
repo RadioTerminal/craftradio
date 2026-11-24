@@ -1131,6 +1131,23 @@ fn icecast_tab(
                 })
                 .response
         });
+        settings::form_row(ui, "Public address", t, |ui| {
+            let edit = egui::TextEdit::singleline(&mut ice.public_url)
+                .hint_text("https://stream.example.org/live")
+                .desired_width(ui.available_width())
+                .min_size(egui::vec2(0.0, size::CONTROL_SM))
+                .align(egui::Align2::LEFT_CENTER);
+            ui.add(edit)
+        });
+        settings::form_note(
+            ui,
+            RichText::new(
+                "The address listeners open. The web player plays it when WebRTC cannot \
+                 connect, and the station's link carries it. Leave it empty to keep it private.",
+            )
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+        );
         // The edited form decides: a typed password counts as a password.
         let typed = IcecastView {
             password_set: view.icecast.password_set || !ice.password.is_empty(),
