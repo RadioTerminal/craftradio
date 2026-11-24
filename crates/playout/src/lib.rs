@@ -195,6 +195,7 @@ pub(crate) enum Request {
     Render(usize, Sender<Result<Vec<f32>, PlayoutError>>),
     Drain(Sender<Result<Vec<f32>, PlayoutError>>),
     Alarms(mpsc::SyncSender<RaisedAlarm>),
+    Icecast(Option<IcecastConfig>),
 }
 
 /// Sends commands to a playout from another thread. It ignores the answers.
@@ -216,6 +217,13 @@ impl CommandSender {
             .send(Request::Dispatch(cmd, tx))
             .map_err(|_| PlayoutError::Stopped)?;
         Ok(rx)
+    }
+
+    /// Hands the Icecast source new settings, as [`Playout::set_icecast`] does.
+    pub fn set_icecast(&self, cfg: Option<IcecastConfig>) -> Result<(), PlayoutError> {
+        self.0
+            .send(Request::Icecast(cfg))
+            .map_err(|_| PlayoutError::Stopped)
     }
 }
 
@@ -310,6 +318,15 @@ impl Playout {
         let (tx, rx) = mpsc::channel();
         self.request(Request::Dispatch(cmd, tx))?;
         Ok(rx)
+    }
+
+    /// Hands the Icecast source new settings while playout runs, for example after a person
+    /// changed them or the keychain password. Other settings close the connection and dial
+    /// the new ones (only while on air); the same settings again change nothing; `None`
+    /// closes it, and the view says Icecast is not set up. It is no engine command because
+    /// the settings carry the password.
+    pub fn set_icecast(&self, cfg: Option<IcecastConfig>) -> Result<(), PlayoutError> {
+        self.request(Request::Icecast(cfg))
     }
 
     /// The level meters of the outputs. Each read takes the loudest sample since the last
@@ -426,6 +443,7 @@ fn run(mut core: core::Core, rx: &Receiver<Request>) {
                 let _ = reply.send(core.drain());
             }
             Ok(Request::Alarms(tx)) => core.subscribe(tx),
+            Ok(Request::Icecast(cfg)) => core.set_icecast(cfg),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }

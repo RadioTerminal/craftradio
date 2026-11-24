@@ -649,6 +649,8 @@ pub struct StationView {
     /// Pages and settings of the carts in `carts`.
     pub cartwall: CartwallView,
     pub icecast: IcecastView,
+    /// Pairing with a station server.
+    pub pairing: PairingView,
     /// The compressor and the limiter on Program.
     pub dynamics: radio_model::DynamicsSettings,
     /// Loudness normalisation on the decks.
@@ -977,6 +979,75 @@ impl std::fmt::Debug for IcecastView {
     }
 }
 
+/// A secret a person typed, such as a station key, on its way to the keychain. It never
+/// shows in a debug print.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(secret: impl Into<String>) -> Self {
+        Self(secret.into())
+    }
+
+    /// The secret itself, for the keychain and the request that sends it.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
+}
+
+/// Pairing with a station server: the address, whether the settings hold a pairing, and
+/// what the last try said. The station key is never part of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PairingView {
+    /// The paired server, or the one a pairing is trying. Empty when neither.
+    pub address: String,
+    /// True while the settings hold a pairing (the station pushes to the server).
+    pub paired: bool,
+    pub state: PairState,
+}
+
+/// What the last pairing try said.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PairState {
+    /// Nothing tried yet, or unpaired.
+    #[default]
+    NotPaired,
+    /// The app is asking the server.
+    Pairing,
+    /// The server answered and took the key: the only success state.
+    Paired,
+    /// The server did not answer, or not now; the reason in words.
+    Unreachable(String),
+    /// The server refused the key. The app does not try it again by itself.
+    KeyRefused,
+    /// The server answered with something the app cannot pair with, such as a newer
+    /// document, or the keychain failed; the reason in words.
+    Refused(String),
+}
+
+impl PairingView {
+    /// The state in words, as the Server page and the headless app say it.
+    pub fn label(&self) -> String {
+        let head = if self.paired { "Paired" } else { "Not paired" };
+        match &self.state {
+            PairState::NotPaired => "Not paired".to_owned(),
+            PairState::Pairing if self.paired => format!("Paired — asking {}…", self.address),
+            PairState::Pairing => format!("Pairing with {}…", self.address),
+            PairState::Paired => format!("Paired with {}", self.address),
+            PairState::Unreachable(reason) => format!("{head} — server unreachable: {reason}"),
+            PairState::KeyRefused if self.paired => "Paired — key refused".to_owned(),
+            PairState::KeyRefused => "Not paired — the server refused the key".to_owned(),
+            PairState::Refused(reason) => format!("{head} — {reason}"),
+        }
+    }
+}
+
 /// The state of an output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -1222,6 +1293,15 @@ pub enum Edit {
         change: StripChange,
     },
     SetIcecast(IcecastView),
+    /// Pair with the station server at `address` (`https://…`, or `http://` to this
+    /// computer). The key goes to the keychain only; an empty key uses the one stored for
+    /// the paired mount.
+    Pair {
+        address: String,
+        key: Secret,
+    },
+    /// Unpair from the station server: the settings pairing wrote go, and so does the key.
+    Unpair,
     /// Turns streaming to listeners (WebRTC, with the listen link) on or off.
     SetStreaming(bool),
     /// The compressor and the limiter on Program, whole.

@@ -132,6 +132,25 @@ That line edits the station file, so close the app first (a running app keeps it
 For a running station use the `settings_set` MCP tool or `station.run` on the control channel
 ([docs/control.md](docs/control.md)) with the same `id` and `args`.
 
+## Pairing with a station server
+
+A station server (`craftradio-server`, [packaging/server/README.md](packaging/server/README.md))
+takes the app's push and serves listeners. Pairing sets the app up for it from two things the
+server's admin hands out: the server's address and the station's key. In the window, open
+Preferences › Server, enter both and press Connect. Without the window, close the app and run:
+
+```sh
+craftradio-cli pair https://radio.example.org --data-dir ./station < station-key.txt
+```
+
+The key comes from standard input or `CRAFTRADIO_SERVER_KEY`, never from an argument, and
+goes to the OS keychain; the settings never hold it. Pairing fills in the Icecast push and the
+public stream address. The app asks the server again at each start, so settings changed by
+hand after pairing are overwritten. The Server page and the headless app (`radio: …`) say
+`Paired`, `Paired — server unreachable: …` or `Paired — key refused`; only `Paired` means
+the push works. `craftradio-cli unpair --data-dir ./station` puts those settings back and
+removes the key.
+
 ## Under the hood
 
 A Rust workspace in layers: plain data (`model`), DST-safe time (`timing`), scheduling and the

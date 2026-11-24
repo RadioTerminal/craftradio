@@ -6,6 +6,7 @@ mod icecast;
 mod meters;
 mod off_air;
 mod one_off;
+mod pairing;
 mod pick_orders;
 mod snapshot;
 mod transport;

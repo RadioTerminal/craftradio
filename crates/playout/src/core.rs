@@ -428,7 +428,10 @@ pub(crate) struct Core {
     plans: u64,
     pub(crate) dead_air: DeadAir,
     pub(crate) next_bed: usize,
+    /// The Icecast source. It waits without settings while none are set up.
     pub(crate) icecast: Option<IcecastHandle>,
+    /// Icecast has settings, so the view shows the status of the source.
+    pub(crate) icecast_set_up: bool,
     /// The On air setting as Icecast and WebRTC last followed it.
     pub(crate) on_air: bool,
     pub(crate) webrtc: Option<WebRtcHandle>,
@@ -498,7 +501,8 @@ impl Core {
         let log = engine.log_handle()?;
         let carts = Carts::new(cfg.mixer.cart_slots);
         let meters = crate::OutputMeters::default();
-        let tap = usize::from(cfg.icecast.is_some()) + usize::from(cfg.webrtc.is_some());
+        // Icecast always has a tap, so settings that come while playout runs can use it.
+        let tap = 1 + usize::from(cfg.webrtc.is_some());
         // The setting that a person stored wins over the default of the config. A stored
         // setting that the processors refuse falls back to that default.
         let stored = engine.state().dynamics.map(|d| ProgramDynamics::from(&d));
@@ -513,13 +517,14 @@ impl Core {
         let mut taps = std::mem::take(&mut opened.taps).into_iter();
         // A station saved off air does not dial Icecast until it goes on air.
         let on_air = crate::streams::on_air(engine.state());
-        let icecast = cfg.icecast.clone().and_then(|ice| {
-            let start = if on_air {
-                IcecastClient::start_metered
-            } else {
-                IcecastClient::start_metered_off_air
-            };
-            Some(start(ice, taps.next()?, meters.icecast.clone()))
+        let icecast_set_up = cfg.icecast.is_some();
+        let icecast = taps.next().map(|tap| {
+            IcecastClient::start_metered_with(
+                cfg.icecast.clone(),
+                on_air,
+                tap,
+                meters.icecast.clone(),
+            )
         });
         let webrtc_tap = cfg
             .webrtc
@@ -591,6 +596,7 @@ impl Core {
             dead_air: DeadAir::default(),
             next_bed: 0,
             icecast,
+            icecast_set_up,
             on_air,
             webrtc: None,
             webrtc_tap,
@@ -1807,7 +1813,13 @@ impl Core {
         view.alarms = self.alarms.recent.iter().cloned().collect();
         view.alarms_dropped = self.alarms.dropped;
         view.stream_states = self.stream_states();
-        view.outputs.icecast = self.icecast.as_ref().map(IcecastHandle::status);
+        // Without settings the strip says Icecast is not set up, not what the waiting
+        // source reports.
+        view.outputs.icecast = self
+            .icecast
+            .as_ref()
+            .filter(|_| self.icecast_set_up)
+            .map(IcecastHandle::status);
         view.outputs.on_air = self.on_air;
         view.outputs.webrtc = self.webrtc.as_ref().map(WebRtcHandle::status);
         if self.timeline_changed {

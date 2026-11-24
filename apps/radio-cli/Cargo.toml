@@ -14,6 +14,8 @@ radio-engine.workspace = true
 radio-mcp.workspace = true
 radio-model.workspace = true
 radio-scheduler.workspace = true
+# Pairing with a station server: the address rule, the fetch and the keychain of the app.
+radio-ui-engine.workspace = true
 clap.workspace = true
 jiff.workspace = true
 serde_json.workspace = true
@@ -21,6 +23,8 @@ toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# A real station server on this computer for the pairing tests.
+radio-server.workspace = true
 
 [lints]
 workspace = true

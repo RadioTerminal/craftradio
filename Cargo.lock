@@ -4843,6 +4843,8 @@ dependencies = [
  "radio-mcp",
  "radio-model",
  "radio-scheduler",
+ "radio-server",
+ "radio-ui-engine",
  "serde_json",
  "tempfile",
  "toml",
@@ -4879,6 +4881,7 @@ dependencies = [
  "jiff",
  "radio-model",
  "radio-script",
+ "radio-server",
  "radio-timing",
  "rusqlite",
  "schemars",
@@ -5068,6 +5071,7 @@ dependencies = [
 name = "radio-ui-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "hound",
  "jiff",
  "keyring",
@@ -5079,10 +5083,12 @@ dependencies = [
  "radio-model",
  "radio-playout",
  "radio-scheduler",
+ "radio-server",
  "radio-stream",
  "radio-ui-egui",
  "rusqlite",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

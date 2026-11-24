@@ -200,6 +200,8 @@ fn real(args: &Args) -> Result<(), String> {
     }
     let tz = TimeZone::get(&engine.state().station.tz).unwrap_or(TimeZone::UTC);
     let secrets = KeyringStore::new(KEYCHAIN_SERVICE);
+    // A paired station asks its server first; the source starts the push after the answer,
+    // so a rotated key costs one request and not pushes that walk the server's lockout.
     let icecast = match radio_ui_engine::icecast_config(
         engine.state(),
         &secrets,
@@ -208,6 +210,7 @@ fn real(args: &Args) -> Result<(), String> {
             .station_name()
             .unwrap_or_else(|| radio_model::DEFAULT_STATION_NAME.to_owned()),
     ) {
+        Ok(_) if radio_ui_engine::is_paired(engine.state()) => None,
         Ok(c) => c,
         Err(e) => {
             eprintln!("radio: Icecast stays off: {e}");
@@ -246,7 +249,7 @@ fn real(args: &Args) -> Result<(), String> {
     println!("radio: station at {}", dir.join("station.db").display());
     let control = control_channel(args, &playout);
     if args.headless {
-        return headless(playout, control, args.run_for, tz);
+        return headless(playout, control, args.run_for, tz, Arc::new(secrets));
     }
     let mut source = EngineSource::new(
         playout,
@@ -351,6 +354,7 @@ fn headless(
     control: Option<radio_control::Control>,
     run_for: Option<Duration>,
     tz: jiff::tz::TimeZone,
+    secrets: Arc<dyn radio_ui_engine::SecretStore + Sync>,
 ) -> Result<(), String> {
     let alarms = playout.alarms().map_err(|e| e.to_string())?;
     let view = playout.snapshot();
@@ -363,7 +367,9 @@ fn headless(
             tz,
             station_name: radio_model::DEFAULT_STATION_NAME.to_owned(),
         },
-    );
+    )
+    // The keychain, so Icecast settings that the CLI or MCP change apply while it runs.
+    .with_secrets(secrets);
     if let Some(control) = control {
         source = source.with_companion(Box::new(control));
     }
@@ -371,8 +377,14 @@ fn headless(
     println!("radio: folder watches started");
     let until = run_for.map(|d| Instant::now() + d);
     let mut gains: [Option<(u64, radio_model::ItemGain)>; 4] = Default::default();
+    let mut pairing: Option<radio_ui_egui::view::PairingView> = None;
     loop {
-        let _ = source.snapshot(Timestamp::now());
+        let view = source.snapshot(Timestamp::now());
+        // The pairing with a station server, at start and when it changes.
+        if pairing.as_ref() != Some(&view.pairing) {
+            println!("radio: {}", view.pairing.label());
+            pairing = Some(view.pairing);
+        }
         for notice in source.take_notices() {
             println!("radio: {notice}");
         }

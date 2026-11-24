@@ -2,6 +2,7 @@
 
 use crate::ServerError;
 use crate::key::parse_hash;
+use crate::pairing::PublicUrl;
 use radio_codecs::encode::{Mp3Encoder, OpusEncoder};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -100,6 +101,7 @@ impl Config {
                 "tls_cert and tls_key must be given together".into(),
             ));
         }
+        PublicUrl::parse(&self.public_url).map_err(ServerError::Config)?;
         let mut seen = HashSet::new();
         // The hash each station's key has, to the first station with it.
         let mut hashes = HashMap::new();

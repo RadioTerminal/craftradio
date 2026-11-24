@@ -384,7 +384,7 @@ fn the_app_reports_a_wrong_key_as_refused() {
             !matches!(status, StreamStatus::Connected { .. }),
             "a wrong key must never look connected"
         );
-        if let StreamStatus::Retrying { last_error, .. } = status {
+        if let StreamStatus::Refused { last_error } = status {
             break last_error;
         }
         assert!(

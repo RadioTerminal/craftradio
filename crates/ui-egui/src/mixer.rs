@@ -1063,7 +1063,7 @@ fn icecast_tab(
         });
         let note = view.say(
             "The stream would carry this text. The preview sends nothing.",
-            "Applied changes take effect at the next start of the app.",
+            "Applied changes take effect at once: Icecast reconnects while on air.",
         );
         settings::form_note(
             ui,

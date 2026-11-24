@@ -73,6 +73,7 @@ pub(crate) fn output_meter_views(
         }
         Some(StreamStatus::Connecting) => (false, "Connecting"),
         Some(StreamStatus::Retrying { .. }) => (false, "Not connected"),
+        Some(StreamStatus::Refused { .. }) => (false, "Password refused"),
         Some(StreamStatus::Stopped) => (false, "Off"),
         Some(StreamStatus::OffAir) => (false, "Off air"),
     };

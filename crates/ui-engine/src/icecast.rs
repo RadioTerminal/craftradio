@@ -25,6 +25,8 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, String>;
     /// Stores `secret` under `key`.
     fn set(&self, key: &str, secret: &str) -> Result<(), String>;
+    /// Removes the secret under `key`. A store that has none there is fine.
+    fn delete(&self, key: &str) -> Result<(), String>;
 }
 
 /// The OS keychain, through the `keyring` crate.
@@ -54,6 +56,14 @@ impl SecretStore for KeyringStore {
         let entry = keyring::Entry::new(&self.service, key).map_err(|e| e.to_string())?;
         entry.set_password(secret).map_err(|e| e.to_string())
     }
+
+    fn delete(&self, key: &str) -> Result<(), String> {
+        let entry = keyring::Entry::new(&self.service, key).map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 /// Secrets in memory only, for tests and the preview.
@@ -72,14 +82,21 @@ impl SecretStore for MemoryStore {
             .insert(key.to_owned(), secret.to_owned());
         Ok(())
     }
+
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.0.lock().map_err(|e| e.to_string())?.remove(key);
+        Ok(())
+    }
 }
 
 /// The keychain entry of a mount.
-fn secret_key(ice: &IcecastView) -> String {
-    format!(
-        "icecast:{}@{}:{}{}",
-        ice.user, ice.host, ice.port, ice.mount
-    )
+pub(crate) fn secret_key(ice: &IcecastView) -> String {
+    mount_entry(&ice.user, &ice.host, ice.port, &ice.mount)
+}
+
+/// The keychain entry of the mount `user@host:port/mount`.
+pub fn mount_entry(user: &str, host: &str, port: u16, mount: &str) -> String {
+    format!("icecast:{user}@{host}:{port}{mount}")
 }
 
 /// The Icecast mount from the settings of the station, without the password.
@@ -156,6 +173,16 @@ pub fn icecast_config(
     }))
 }
 
+/// The stream name Icecast gets: the station name setting, else `fallback`, as at start.
+fn station_name(state: &State, fallback: &str) -> String {
+    state.station_name().unwrap_or_else(|| fallback.to_owned())
+}
+
+/// What the Icecast settings of playout are built from, without the password.
+pub(crate) fn icecast_seen(state: &State, fallback: &str) -> (IcecastView, String) {
+    (icecast_view(state), station_name(state, fallback))
+}
+
 impl EngineSource {
     /// The Icecast mount for the snapshot. The background lane asks the keychain once per
     /// mount; until it answers, the password shows as not set.
@@ -184,12 +211,72 @@ impl EngineSource {
 
     /// An answer of the keychain from the background lane.
     pub(crate) fn secret_answer(&mut self, key: String, wrote: bool, result: Result<bool, String>) {
+        if wrote {
+            self.stored(&key, &result);
+        }
         if wrote && let Err(e) = &result {
             self.notices
                 .push(format!("The keychain did not take the password: {e}"));
         }
+        // A new password applies at once, as new settings do.
+        let stored = wrote && result.is_ok();
         if self.secret_known.as_ref().is_some_and(|(k, _)| *k == key) {
             self.secret_known = Some((key, Some(result)));
+        }
+        if stored {
+            self.sync_icecast(true);
+        }
+    }
+
+    /// Asks the background lane for the Icecast settings of playout when the settings or the
+    /// station name changed since playout last got them, or always with `force` (after a
+    /// keychain write). The keychain read stays off the UI thread.
+    pub(crate) fn sync_icecast(&mut self, force: bool) {
+        let seen = icecast_seen(&self.state, &self.station);
+        if !force && seen == self.icecast_seen {
+            return;
+        }
+        self.icecast_seen = seen;
+        let Some(w) = &self.worker else {
+            self.notices.push(
+                "The background lane has stopped; Icecast settings apply at the next start".into(),
+            );
+            return;
+        };
+        self.icecast_asked += 1;
+        let _ = w.jobs.send(crate::bg::Job::Icecast {
+            seq: self.icecast_asked,
+            state: std::sync::Arc::clone(&self.state),
+            store: std::sync::Arc::clone(&self.secrets),
+            station_name: station_name(&self.state, &self.station),
+        });
+    }
+
+    /// The Icecast settings from the background lane go to playout. Without a password the
+    /// source closes, so a changed host never keeps the connection of the old mount.
+    pub(crate) fn icecast_answer(
+        &mut self,
+        seq: u64,
+        result: Result<Option<IcecastConfig>, String>,
+    ) {
+        if seq != self.icecast_asked {
+            return;
+        }
+        let cfg = match result {
+            // The paired server refused the key: the push waits for a new one.
+            // The strip, the status bar and the alarm say why.
+            Ok(Some(_)) if self.key_refused() => None,
+            // The start asks the paired server first; the push follows its answer.
+            Ok(Some(_)) if self.push_held() => None,
+            Ok(cfg) => cfg,
+            Err(e) => {
+                self.notices.push(format!("Icecast stays off: {e}"));
+                None
+            }
+        };
+        if self.playout.set_icecast(cfg).is_err() {
+            self.notices
+                .push("The playout has stopped; the Icecast settings were not applied".into());
         }
     }
 

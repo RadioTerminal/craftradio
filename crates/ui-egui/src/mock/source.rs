@@ -138,6 +138,7 @@ impl ViewSource for MockSource {
             carts: self.carts.clone(),
             cartwall: self.cartwall.clone(),
             icecast: self.icecast.clone(),
+            pairing: crate::view::PairingView::default(),
             dynamics: self.dynamics,
             loudness: self.loudness,
             output: OutputStatus {

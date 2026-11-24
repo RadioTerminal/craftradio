@@ -14,6 +14,7 @@ use crate::icy::{IcyWriter, METAINT};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
 use crate::mount::{ListenError, Listener, ListenerCap, Mount, Received, SourceGuard};
+use crate::pairing::{Document, PublicUrl};
 use crate::stats::{StatsEntry, status_json};
 use crate::transcode::{Outputs, Refusal, Transcoder, spawn};
 use rustls::ServerConfig;
@@ -114,6 +115,7 @@ impl Server {
                 ));
             }
         };
+        let public_url = PublicUrl::parse(&config.public_url).map_err(ServerError::Config)?;
         let listener = TcpListener::bind(config.listen)?;
         let local_addr = listener.local_addr()?;
         let mounts = config
@@ -131,6 +133,7 @@ impl Server {
             .saturating_add(config.stations.len().saturating_mul(RESERVED_PER_STATION));
         let shared = Arc::new(Shared {
             config,
+            public_url,
             timeouts,
             tls,
             mounts,
@@ -243,6 +246,8 @@ fn wake_addr(local: SocketAddr) -> SocketAddr {
 
 struct Shared {
     config: Config,
+    /// The config's `public_url`, taken apart for the pairing document.
+    public_url: PublicUrl,
     timeouts: Timeouts,
     /// Set when the config names a certificate: every connection is then TLS.
     tls: Option<Arc<ServerConfig>>,
@@ -639,6 +644,9 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     if method == "GET" && request.path == "/admin/metadata" {
         return metadata(shared, stream, peer, request);
     }
+    if method == "GET" && request.path == "/api/station" {
+        return pairing(shared, stream, peer, request);
+    }
     if method == "GET" && request.path == "/status-json.xsl" {
         return stats(shared, stream);
     }
@@ -766,12 +774,8 @@ fn source(
     on_air.end();
 }
 
-/// Checks the station key of a keyed request, and answers the request itself when it is
-/// refused. A locked-out address is refused before its key is looked at. A request that
-/// presents no `Authorization` header at all is refused without counting toward the
-/// lockout, so stray requests from a shared address cannot lock a station out; any
-/// header that does not carry the right key (a wrong key, another scheme, or one that
-/// does not decode) counts as a wrong key.
+/// Checks the station key of a keyed request for `station`, and answers the request
+/// itself when it is refused (see [`keyed`]).
 fn authorized(
     shared: &Shared,
     stream: &mut Conn,
@@ -779,6 +783,25 @@ fn authorized(
     request: &Request,
     station: &Station,
 ) -> bool {
+    keyed(shared, stream, peer, request, |key| {
+        key_matches(key, &station.key_hash).then_some(())
+    })
+    .is_some()
+}
+
+/// Checks the key of a keyed request with `find`, which gives what the key opens, and
+/// answers the request itself when it is refused. A locked-out address is refused before
+/// its key is looked at. A request that presents no `Authorization` header at all is
+/// refused without counting toward the lockout, so stray requests from a shared address
+/// cannot lock a station out; any header that does not carry a right key (a wrong key,
+/// another scheme, or one that does not decode) counts as a wrong key.
+fn keyed<T>(
+    shared: &Shared,
+    stream: &mut Conn,
+    peer: IpAddr,
+    request: &Request,
+    find: impl FnOnce(&str) -> Option<T>,
+) -> Option<T> {
     let addr = client_addr(peer, request, shared.config.trusted_proxy);
     let now = Instant::now();
     if shared.lockout.blocked(addr, now) {
@@ -789,21 +812,61 @@ fn authorized(
             &[("Retry-After", LOCKED_FOR_SECS)],
             b"too many wrong keys from this address; try again later",
         );
-        return false;
+        return None;
     }
     if request.header("Authorization").is_none() {
         refuse(stream, 401, "Unauthorized", &[CHALLENGE], b"no key");
-        return false;
+        return None;
     }
-    let right_key = request
-        .basic_password()
-        .is_some_and(|key| key_matches(&key, &station.key_hash));
-    if !right_key {
+    let found = request.basic_password().and_then(|key| find(&key));
+    if found.is_none() {
         shared.lockout.failed(addr, now);
         refuse(stream, 401, "Unauthorized", &[CHALLENGE], b"wrong key");
-        return false;
     }
-    true
+    found
+}
+
+/// The station whose key is `key`. Every station's hash is checked, with no early exit,
+/// so how long the answer takes does not tell which slug the key belongs to. The config
+/// gives each station a hash of its own, so at most one matches.
+fn station_with_key<'a>(shared: &'a Shared, key: &str) -> Option<&'a Station> {
+    let mut found = None;
+    for station in &shared.config.stations {
+        if key_matches(key, &station.key_hash) {
+            found = Some(station);
+        }
+    }
+    found
+}
+
+/// `GET /api/station`: the pairing document of the station whose key the request carries,
+/// as its Basic password with any user name.
+fn pairing(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
+    let Some(station) = keyed(shared, stream, peer, request, |key| {
+        station_with_key(shared, key)
+    }) else {
+        return;
+    };
+    let document = Document::for_station(&shared.public_url, station);
+    let Ok(body) = serde_json::to_vec(&document) else {
+        return refuse(
+            stream,
+            500,
+            "Internal Server Error",
+            &[],
+            b"the pairing document could not be written",
+        );
+    };
+    let _ = respond(
+        stream,
+        200,
+        "OK",
+        &[
+            ("Content-Type", "application/json"),
+            ("Cache-Control", "no-store"),
+        ],
+        &body,
+    );
 }
 
 /// `GET /admin/metadata?mount=/<slug>/stream&mode=updinfo&song=<title>`: an MP3 source's

@@ -324,3 +324,51 @@ fn the_decks_keep_playing_off_air() {
         "Program went silent off air"
     );
 }
+
+/// A station started without Icecast says it has none; settings handed over while it runs
+/// connect it, and taking them away closes it and says it has none again.
+#[test]
+fn icecast_settings_handed_over_while_running_connect_and_close_it() {
+    let (ice, seen) = icecast_server();
+    let (p, clock) = offline(engine_with(Vec::new()), |_| {});
+    run(&p, &clock, 0.2);
+    assert_eq!(p.snapshot().outputs.icecast, None, "no Icecast set up");
+
+    p.set_icecast(Some(ice)).unwrap();
+    until_view(&p, &clock, "connected", |v| {
+        matches!(v.outputs.icecast, Some(StreamStatus::Connected { .. }))
+    });
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Connected);
+
+    p.command_sender().unwrap().set_icecast(None).unwrap();
+    until_view(&p, &clock, "not set up", |v| v.outputs.icecast.is_none());
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Left);
+}
+
+/// Settings handed to a station that is off air wait for it to go on air.
+#[test]
+fn icecast_settings_handed_over_off_air_wait_for_on_air() {
+    let (ice, seen) = icecast_server();
+    let mut engine = engine_with(Vec::new());
+    engine
+        .dispatch(Command::SettingsSet {
+            part: radio_model::AIR_PART.into(),
+            key: radio_model::ON_AIR_KEY.into(),
+            value: false.into(),
+        })
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    p.set_icecast(Some(ice)).unwrap();
+    until_view(&p, &clock, "off air", |v| {
+        v.outputs.icecast == Some(StreamStatus::OffAir)
+    });
+    assert!(
+        seen.recv_timeout(Duration::from_secs(1)).is_err(),
+        "a source reached the server off air"
+    );
+    set_on_air(&p, true);
+    until_view(&p, &clock, "connected", |v| {
+        matches!(v.outputs.icecast, Some(StreamStatus::Connected { .. }))
+    });
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Connected);
+}

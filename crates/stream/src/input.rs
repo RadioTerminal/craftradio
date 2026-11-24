@@ -220,6 +220,12 @@ fn tls_config(extra: &[Vec<u8>]) -> Result<ureq::tls::TlsConfig, String> {
         .build())
 }
 
+/// The TLS settings for an HTTPS request of the app, as its inputs use: the ring provider
+/// and the system trust roots, with certificate checks always on.
+pub fn https_tls() -> Result<ureq::tls::TlsConfig, String> {
+    tls_config(&[])
+}
+
 struct IcyReader {
     reader: Box<dyn Read + Send + Sync>,
     metaint: usize,

@@ -10,6 +10,7 @@ mod item;
 mod loudness;
 mod playlist;
 mod rule;
+mod server;
 mod station;
 
 pub use air::{AIR_PART, ON_AIR_KEY, on_air};
@@ -27,6 +28,10 @@ pub use loudness::{
 };
 pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist, PlaylistRole};
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
+pub use server::{
+    PAIRING_VERSION, PairingDocument, PairingIcecast, PairingOutput, SERVER_ADDRESS_KEY,
+    SERVER_PART, SERVER_PUSH_KEY, check_server_address, is_loopback_host,
+};
 pub use station::Station;
 
 /// Supported audio file extensions for imports and playback.

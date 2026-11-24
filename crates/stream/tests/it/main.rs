@@ -476,6 +476,51 @@ fn a_refusal_after_the_first_audio_is_reported_as_a_refusal() {
     server.join().unwrap();
 }
 
+/// A refused password (401) is said as such, and the source does not dial again with it:
+/// each try would count toward the server's lockout. New settings dial at once.
+#[test]
+fn a_refused_password_is_not_tried_again_until_new_settings() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (seen, tries) = mpsc::channel();
+    std::thread::spawn(move || {
+        for mut socket in listener.incoming().flatten() {
+            let header = request_header(&mut socket);
+            let _ = socket.write_all(b"HTTP/1.0 401 Unauthorized\r\n\r\n");
+            if seen.send(header).is_err() {
+                return;
+            }
+        }
+    });
+    let (_producer, consumer) = rtrb::RingBuffer::new(4096);
+    let handle = IcecastClient::start(config(port), consumer);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !matches!(handle.status(), StreamStatus::Refused { .. }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            handle.status()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let StreamStatus::Refused { last_error } = handle.status() else {
+        unreachable!()
+    };
+    assert!(last_error.contains("401"), "{last_error}");
+    assert!(!last_error.contains("test-only"));
+    tries.recv_timeout(Duration::from_secs(2)).unwrap();
+    // Longer than the first two retry delays: no second try comes.
+    assert!(tries.recv_timeout(Duration::from_secs(4)).is_err());
+    // The same settings again change nothing; a new password dials.
+    handle.reconfigure(Some(config(port)));
+    assert!(tries.recv_timeout(Duration::from_millis(500)).is_err());
+    let mut renewed = config(port);
+    renewed.password = "test-only-new".into();
+    handle.reconfigure(Some(renewed));
+    tries.recv_timeout(Duration::from_secs(3)).unwrap();
+    handle.stop();
+}
+
 #[test]
 fn invalid_source_settings_report_clear_errors() {
     for (field, value, expected) in [
@@ -574,6 +619,7 @@ fn short_source_connections_keep_increasing_backoff() {
 }
 
 mod off_air;
+mod reconfigure;
 mod relay;
 mod tls;
 mod webrtc;

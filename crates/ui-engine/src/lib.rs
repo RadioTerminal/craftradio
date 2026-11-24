@@ -14,11 +14,16 @@ mod icecast;
 
 pub use icecast::{
     ICECAST_PART, KEYCHAIN_SERVICE, KeyringStore, MemoryStore, SecretStore, icecast_config,
-    icecast_view,
+    icecast_view, mount_entry,
 };
 mod map;
 mod one_off;
 mod outputs;
+mod pairing;
+
+pub use pairing::{
+    PairError, check_address, fetch as fetch_pairing, is_paired, paired_entry, server_entry,
+};
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
 /// with: `None` when none is set, so the playout keeps its own.
@@ -206,6 +211,13 @@ pub struct EngineSource {
     secrets: Arc<dyn SecretStore + Sync>,
     /// The keychain entry of the mount and whether it holds a password.
     secret_known: Option<(String, Option<Result<bool, String>>)>,
+    /// The Icecast settings and station name that playout last got settings for: at start,
+    /// the ones the app built its config from.
+    icecast_seen: (radio_ui_egui::view::IcecastView, String),
+    /// The last request for Icecast settings on the background lane. Older answers are dropped.
+    icecast_asked: u64,
+    /// Pairing with a station server.
+    pairing: pairing::Pairing,
     /// Fader values on their way to the engine, by strip.
     strip_gain: HashMap<String, f32>,
     /// Part settings on their way to the engine.
@@ -263,6 +275,7 @@ impl EngineSource {
         });
         let meter_reader = std::sync::Mutex::new(playout.meters());
         let mode = playout.snapshot().mode;
+        let icecast_seen = icecast::icecast_seen(&state, &opts.station_name);
         let mut source = Self {
             companions: Vec::new(),
             merger,
@@ -314,6 +327,9 @@ impl EngineSource {
             watch_errors: Vec::new(),
             secrets: Arc::new(MemoryStore::default()),
             secret_known: None,
+            icecast_seen,
+            icecast_asked: 0,
+            pairing: pairing::Pairing::default(),
             strip_gain: HashMap::new(),
             pending_settings: HashMap::new(),
             alarms: Vec::new(),
@@ -382,6 +398,7 @@ impl EngineSource {
             .collect();
         self.sync_folders();
         self.sync_watches();
+        self.sync_icecast(false);
     }
 
     /// The media library: each file and stream of each playlist, once per source.
@@ -867,7 +884,9 @@ impl EngineSource {
             Some(StreamStatus::OffAir) => Status::OffAir,
             Some(StreamStatus::Connecting) => Status::Reconnecting { attempt: 0 },
             Some(StreamStatus::Connected { .. }) => Status::Connected,
-            Some(StreamStatus::Retrying { last_error, .. }) => Status::Failed(last_error.clone()),
+            Some(
+                StreamStatus::Retrying { last_error, .. } | StreamStatus::Refused { last_error },
+            ) => Status::Failed(last_error.clone()),
         };
         let listen_link = match &pv.outputs.webrtc {
             Some(WebRtcStatus::Listening { link, relays, .. }) if *relays > 0 => link.clone(),
@@ -1002,6 +1021,28 @@ impl EngineSource {
                 Severity::Alarm,
                 AlarmSource::Icecast,
                 format!("Icecast is not connected and tries again: {last_error}"),
+                here.clone(),
+            ));
+        }
+        // Off air nothing is pushed, so nothing is refused either.
+        if self.key_refused() && pv.outputs.on_air {
+            out.push(alarms::from_state(
+                "icecast_key_refused",
+                "",
+                Severity::Alarm,
+                AlarmSource::Icecast,
+                format!("Icecast is off: {}", pairing::KEY_REFUSED),
+                here.clone(),
+            ));
+        } else if let Some(StreamStatus::Refused { last_error }) = &pv.outputs.icecast
+            && pv.outputs.on_air
+        {
+            out.push(alarms::from_state(
+                "icecast_refused",
+                "",
+                Severity::Alarm,
+                AlarmSource::Icecast,
+                format!("Icecast waits for a new password: {last_error}"),
                 here.clone(),
             ));
         }
@@ -1161,7 +1202,10 @@ impl ViewSource for EngineSource {
             self.rebuild(&pv.state);
             self.revision = Some(pv.revision);
         }
+        // After `with_secrets`, so the start asks with the keychain of the app.
+        self.watch_pairing();
         self.take_done(now);
+        self.watch_push(pv.outputs.icecast.as_ref());
         self.poll_pending();
         self.poll_watches();
         let _ = self.fader_errors();
@@ -1193,6 +1237,18 @@ impl ViewSource for EngineSource {
         self.air_seen = Some(on_air);
         let going_on_air = outputs::going_on_air(&pv.outputs, self.on_air_since, now);
         self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted, going_on_air);
+        let mut output = Self::output(&pv, card_wanted);
+        // The paired server refused the key, found at start or while pushing: the strip, the
+        // status bar and the alarm say so in the same words.
+        if self.key_refused() && on_air {
+            output.icecast = Status::Failed(pairing::KEY_REFUSED.to_owned());
+            for v in &mut self.output_views {
+                if v.kind == radio_ui_egui::view::OutputKind::Icecast {
+                    v.live = false;
+                    "Key refused".clone_into(&mut v.note);
+                }
+            }
+        }
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {
@@ -1244,9 +1300,10 @@ impl ViewSource for EngineSource {
             carts,
             cartwall,
             icecast: self.icecast(),
+            pairing: self.pairing_view(),
             dynamics: self.state.dynamics.unwrap_or_default(),
             loudness: self.state.loudness,
-            output: Self::output(&pv, card_wanted),
+            output,
             on_air,
             going_on_air,
             folders: self.folder_views(),

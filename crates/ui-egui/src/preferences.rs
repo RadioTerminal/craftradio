@@ -10,7 +10,7 @@ use crate::mixer::SettingsTab;
 use crate::settings::{self, Tab};
 use crate::theme::Tokens;
 use crate::view::StationView;
-use crate::{alarms, cartwall, clock_window, decks, history, library, mixer};
+use crate::{alarms, cartwall, clock_window, decks, history, library, mixer, server_page};
 
 /// One page of Preferences, in the order of the rail.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub(crate) enum Page {
     Meters,
     Icecast,
     WebRtc,
+    Server,
     Branding,
     Clock,
     History,
@@ -33,7 +34,7 @@ pub(crate) enum Page {
 
 impl Page {
     /// The pages in rail order: each group's pages together.
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Decks,
         Self::Cartwall,
         Self::Devices,
@@ -41,6 +42,7 @@ impl Page {
         Self::Meters,
         Self::Icecast,
         Self::WebRtc,
+        Self::Server,
         Self::Branding,
         Self::Clock,
         Self::History,
@@ -53,6 +55,7 @@ impl Page {
         match self {
             Self::Decks => "Decks",
             Self::WebRtc => "WebRTC",
+            Self::Server => "Server",
             Self::Branding => "Branding",
             Self::Cartwall => "Cartwall",
             Self::Clock => "Clock",
@@ -72,6 +75,7 @@ impl Page {
             Self::Meters => Icon::Gauge,
             Self::Icecast => Icon::RadioTower,
             Self::WebRtc => Icon::Podcast,
+            Self::Server => Icon::Link,
             Self::Branding => Icon::Image,
             Self::Cartwall => Icon::LayoutGrid,
             Self::Clock => Icon::Clock,
@@ -86,7 +90,7 @@ impl Page {
         match self {
             Self::Decks | Self::Cartwall => "Playout",
             Self::Devices | Self::Processing | Self::Meters => "Audio",
-            Self::Icecast | Self::WebRtc | Self::Branding => "Streaming",
+            Self::Icecast | Self::WebRtc | Self::Server | Self::Branding => "Streaming",
             Self::Clock | Self::History | Self::Library | Self::Alarms => "Windows",
             Self::Shortcuts => "Input",
         }
@@ -104,6 +108,9 @@ impl Page {
             Self::Meters => "How long the meters hold a peak.",
             Self::Icecast => "The Icecast server that the station streams to.",
             Self::WebRtc => "The stream that listeners open in a browser, with no server between.",
+            Self::Server => {
+                "The station server that this station pairs with by its address and key."
+            }
             Self::Branding => "The name and logo that listeners see when no song shows.",
             Self::Clock => "What the clock window shows.",
             Self::History => "The columns of the as-played log and how far back it goes.",
@@ -128,6 +135,7 @@ impl Page {
             }
             Self::Meters => "peak hold",
             Self::WebRtc => "webrtc listeners browser link stream port bitrate kbps",
+            Self::Server => "station server address key pair pairing connect disconnect unpair",
             Self::Branding => "station name logo picture brand listeners player",
             Self::Icecast => {
                 "status now streaming server host port tls encrypt mount user password format \
@@ -161,6 +169,7 @@ impl Page {
             Self::Devices => Err("The devices of this computer have no defaults to go back to."),
             Self::Icecast => Err("The Icecast server has no default; change it field by field."),
             Self::Cartwall => Err("The cart pages are the station's own and have no defaults."),
+            Self::Server => Err("Disconnect unpairs the station and sets back what pairing wrote."),
             Self::Shortcuts => {
                 Err("Set shortcuts back to their defaults in the Keyboard Shortcuts dialog.")
             }
@@ -202,6 +211,7 @@ pub(crate) struct State {
     /// The Search Preferences shortcut was pressed this frame.
     pub(crate) find: bool,
     branding: BrandingDraft,
+    server: server_page::Draft,
 }
 
 impl State {
@@ -216,6 +226,8 @@ impl State {
     /// drawn and so never sees itself lose the focus.
     pub(crate) fn flush_drafts(&mut self, view: &StationView, actions: &mut Vec<Action>) {
         use crate::parts;
+        // A typed station key is never kept past the page.
+        self.server.forget();
         let draft = &mut self.branding;
         let Some(key) = draft.editing.take() else {
             return;
@@ -278,6 +290,7 @@ pub(crate) fn show(
         // does not take the focus from the search field.
         |ui, i, searching| {
             let branding = &mut state.branding;
+            let server = &mut state.server;
             let page = Page::ALL.get(i).copied().unwrap_or_default();
             if let Some(tab) = page.mixer() {
                 mixer::preferences(ui, view, mixer_state, tab, streaming, actions, t);
@@ -292,6 +305,7 @@ pub(crate) fn show(
                 Page::Alarms => alarms::preferences(ui, view, actions, t),
                 Page::Shortcuts => shortcuts_page(ui, actions, t),
                 Page::WebRtc => webrtc_page(ui, view, actions, t),
+                Page::Server => server_page::show(ui, view, server, !searching, actions, t),
                 Page::Branding => branding_page(ui, view, branding, !searching, actions, t),
                 _ => {}
             }
@@ -345,7 +359,7 @@ fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Ve
             }
         }
         // Pages without defaults show the button disabled with the reason.
-        Page::Devices | Page::Icecast | Page::Cartwall | Page::Shortcuts => {}
+        Page::Devices | Page::Icecast | Page::Server | Page::Cartwall | Page::Shortcuts => {}
     }
 }
 
@@ -580,8 +594,7 @@ fn branding_page(
             ui,
             caption(view.say(
                 "Preview: saved, and taken up by a station.",
-                "Listeners see the name at the next item. Icecast takes it at the next start of \
-                 the app.",
+                "Listeners see the name at the next item. Icecast reconnects with the new name.",
             )),
         );
         settings::form_row(ui, "Logo", t, |ui| {
