@@ -172,6 +172,8 @@ pub struct SourceGuard {
 impl SourceGuard {
     /// Passes the source's bytes on, a whole page or frame at a time. Never waits for a
     /// listener: one whose queue is full is dropped.
+    /// Pass a source's reads in small pieces (4 KiB or less): one call that frames more
+    /// chunks than a listener's queue holds (256) drops every listener.
     pub fn write(&mut self, bytes: &[u8]) {
         self.chunks.clear();
         self.framer.push(bytes, &mut self.chunks);
