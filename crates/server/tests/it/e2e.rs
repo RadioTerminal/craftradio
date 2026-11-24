@@ -4,7 +4,8 @@
 use crate::support::{PATIENCE, request, source_entry, stats, tls_files};
 use radio_server::{Config, Server, ServerHandle, hash_key};
 use radio_stream::{
-    IcecastClient, IcecastConfig, IcecastHandle, StreamFormat, StreamInput, StreamStatus,
+    IcecastClient, IcecastConfig, IcecastHandle, StreamFormat, StreamInput, StreamInputHandle,
+    StreamStatus,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,10 +20,28 @@ const AUDIO_PATIENCE: Duration = Duration::from_secs(10);
 /// Samples in one 20 ms block of 48 kHz stereo, what the app's output encodes at a time.
 const BLOCK: usize = 1920;
 
+/// The station's outputs in [`config_with_outputs`]: an MP3 one and an Opus one below the
+/// app's Opus push.
+const MP3_MOUNT: &str = "stream.mp3";
+const LOW_MOUNT: &str = "low";
+
 fn config() -> Config {
+    station_config("")
+}
+
+fn config_with_outputs() -> Config {
+    station_config(&format!(
+        "[[station.output]]\nmount = \"{MP3_MOUNT}\"\nformat = \"mp3\"\nkbps = 192\n\n\
+         [[station.output]]\nmount = \"{LOW_MOUNT}\"\nformat = \"opus\"\nkbps = 64\n"
+    ))
+}
+
+/// One station, with `outputs` (TOML `[[station.output]]` tables) after it.
+fn station_config(outputs: &str) -> Config {
     Config::parse(&format!(
         "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\n\
-         [[station]]\nslug = \"{SLUG}\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\n",
+         [[station]]\nslug = \"{SLUG}\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\n\n\
+         {outputs}",
         hash_key(KEY)
     ))
     .unwrap()
@@ -146,11 +165,9 @@ fn hears_audio(consumer: &mut rtrb::Consumer<f32>) -> bool {
     false
 }
 
-/// Listens to the station with the app's own stream input and checks the tone comes out.
-/// The input decodes with Symphonia's codecs alone, which have no Opus, so this hears an
-/// MP3 mount only; [`assert_opus_heard`] listens to an Ogg/Opus one.
-fn assert_heard(url: String, extra_roots: Vec<Vec<u8>>) {
-    let (producer, mut consumer) = rtrb::RingBuffer::new(48_000);
+/// The app's own stream input, listening to `url`, and the ring it plays into.
+fn app_input(url: String, extra_roots: Vec<Vec<u8>>) -> (StreamInputHandle, rtrb::Consumer<f32>) {
+    let (producer, consumer) = rtrb::RingBuffer::new(48_000);
     let input = StreamInput::open_with_extra_roots(
         url,
         producer,
@@ -159,16 +176,24 @@ fn assert_heard(url: String, extra_roots: Vec<Vec<u8>>) {
         extra_roots,
     )
     .unwrap();
+    (input, consumer)
+}
+
+/// Listens to the station with the app's own stream input and checks the tone comes out.
+/// The input decodes with Symphonia's codecs alone, which have no Opus, so this hears an
+/// MP3 mount only; [`assert_opus_heard`] listens to an Ogg/Opus one.
+fn assert_heard(url: String, extra_roots: Vec<Vec<u8>>) {
+    let (input, mut consumer) = app_input(url, extra_roots);
     let heard = hears_audio(&mut consumer);
     let error = input.last_error();
     input.stop();
     assert!(heard, "no audio came through the server: {error:?}");
 }
 
-/// Listens to the station's Ogg/Opus mount over plain HTTP and decodes it with the
-/// station's own codecs (`radio-codecs`, which the app's player uses), as the app's stream
-/// input decodes a stream, and checks the tone comes out.
-fn assert_opus_heard(addr: SocketAddr) {
+/// Listens to the station's Ogg/Opus mount `/<slug>/<mount>` over plain HTTP and decodes it
+/// with the station's own codecs (`radio-codecs`, which the app's player uses), as the
+/// app's stream input decodes a stream, and checks the tone comes out.
+fn assert_opus_heard(addr: SocketAddr, mount: &str) {
     use symphonia::core::codecs::audio::AudioDecoderOptions;
     use symphonia::core::formats::probe::Hint;
     use symphonia::core::formats::{FormatOptions, TrackType};
@@ -177,8 +202,8 @@ fn assert_opus_heard(addr: SocketAddr) {
 
     let deadline = Instant::now() + AUDIO_PATIENCE;
     // The client's read timeout fails a stream that stops, instead of hanging the test.
-    let (stream, head) = request(addr, "GET", &format!("/{SLUG}/stream"));
-    assert_eq!(head.status, 200);
+    let (stream, head) = request(addr, "GET", &format!("/{SLUG}/{mount}"));
+    assert_eq!(head.status, 200, "/{SLUG}/{mount} plays");
     assert_eq!(head.header("Content-Type"), Some("audio/ogg"));
 
     let source = MediaSourceStream::new(Box::new(ReadOnlySource::new(stream)), Default::default());
@@ -236,9 +261,26 @@ fn wait_for_title(addr: SocketAddr, title: &str) {
     }
 }
 
-fn stream_url(scheme: &str, server: &ServerHandle) -> String {
+/// Waits until the app's stream input has read `title` from the stream's ICY metadata.
+fn wait_for_icy_title(input: &StreamInputHandle, title: &str) {
+    let deadline = Instant::now() + AUDIO_PATIENCE;
+    loop {
+        let found = input.icy_title();
+        if found.as_deref() == Some(title) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the app's stream input never read the title {title:?}: {found:?}, {:?}",
+            input.last_error()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn mount_url(scheme: &str, server: &ServerHandle, mount: &str) -> String {
     format!(
-        "{scheme}://127.0.0.1:{}/{SLUG}/stream",
+        "{scheme}://127.0.0.1:{}/{SLUG}/{mount}",
         server.local_addr().port()
     )
 }
@@ -256,7 +298,7 @@ fn the_apps_opus_output_is_heard_through_the_server() {
         Vec::new(),
     );
     wait_connected(&out);
-    assert_opus_heard(server.local_addr());
+    assert_opus_heard(server.local_addr(), "stream");
     drop(out);
     server.stop();
 }
@@ -304,7 +346,7 @@ fn the_apps_mp3_output_is_heard_through_the_server() {
         Vec::new(),
     );
     wait_connected(&out);
-    assert_heard(stream_url("http", &server), Vec::new());
+    assert_heard(mount_url("http", &server, "stream"), Vec::new());
     drop(out);
     server.stop();
 }
@@ -369,7 +411,69 @@ fn the_apps_tls_output_is_heard_through_the_servers_own_tls() {
         vec![root.clone()],
     );
     wait_connected(&out);
-    assert_heard(stream_url("https", &server), vec![root]);
+    assert_heard(mount_url("https", &server, "stream"), vec![root]);
+    drop(out);
+    server.stop();
+}
+
+/// The app pushes Opus; its stream input, which plays no Opus, hears the station on the MP3
+/// output, titles included: they reach it from the Ogg tags of the push, through ICY.
+#[test]
+fn the_apps_opus_push_is_heard_as_mp3_by_the_apps_stream_input() {
+    let server = Server::start(config_with_outputs()).unwrap();
+    let out = output(
+        icecast(
+            server.local_addr(),
+            KEY,
+            StreamFormat::Opus { kbps: 96 },
+            false,
+        ),
+        Vec::new(),
+    );
+    wait_connected(&out);
+    out.handle.set_title("Cloud Signal".into());
+    let (input, mut consumer) = app_input(mount_url("http", &server, MP3_MOUNT), Vec::new());
+    let heard = hears_audio(&mut consumer);
+    assert!(
+        heard,
+        "no audio came through the MP3 output: {:?}",
+        input.last_error()
+    );
+    wait_for_icy_title(&input, "Cloud Signal");
+    // A second track: the output's title follows it, not only the first one.
+    out.handle.set_title("Paper Harbour".into());
+    wait_for_icy_title(&input, "Paper Harbour");
+    input.stop();
+    drop(out);
+    server.stop();
+}
+
+/// The app pushes Opus at 96 kbit/s; a listener hears it on the station's 64 kbit/s Opus
+/// output.
+#[test]
+fn the_apps_opus_push_is_heard_on_a_lower_opus_output() {
+    let server = Server::start(config_with_outputs()).unwrap();
+    let addr = server.local_addr();
+    let out = output(
+        icecast(addr, KEY, StreamFormat::Opus { kbps: 96 }, false),
+        Vec::new(),
+    );
+    wait_connected(&out);
+    assert_opus_heard(addr, LOW_MOUNT);
+    drop(out);
+    server.stop();
+}
+
+#[test]
+fn the_apps_mp3_push_is_heard_on_an_opus_output() {
+    let server = Server::start(config_with_outputs()).unwrap();
+    let addr = server.local_addr();
+    let out = output(
+        icecast(addr, KEY, StreamFormat::Mp3 { kbps: 128 }, false),
+        Vec::new(),
+    );
+    wait_connected(&out);
+    assert_opus_heard(addr, LOW_MOUNT);
     drop(out);
     server.stop();
 }
