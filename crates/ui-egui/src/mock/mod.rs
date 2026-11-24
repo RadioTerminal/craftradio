@@ -74,6 +74,8 @@ pub struct MockSource {
     last_decks: Option<([DeckView; 4], std::time::Instant)>,
     /// History and timeline of the last snapshot, in time order.
     last_all: Vec<Row>,
+    /// The range of the log that History asked for. `None` is the last hours.
+    history_range: Option<(Timestamp, Timestamp)>,
     /// Tags that a person changed, by row id.
     row_meta: HashMap<u64, ItemMeta>,
     /// Timings that a person set, by row id.
@@ -198,6 +200,7 @@ impl MockSource {
             last_now: Timestamp::UNIX_EPOCH,
             last_decks: None,
             last_all: Vec::new(),
+            history_range: None,
             row_meta: HashMap::new(),
             row_timing: HashMap::new(),
             paused_at: None,

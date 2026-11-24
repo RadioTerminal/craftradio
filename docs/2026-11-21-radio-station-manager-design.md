@@ -549,8 +549,13 @@ panes.
   the Program device, Icecast and WebRTC.
 - **Clock:** a large clock that scales with the window, plus countdowns to the next fixed
   event and to the end of the current item.
-- **History:** the as-played log (aired at, playlist, title, length, origin), newest first,
-  filterable by text and playlist.
+- **History:** the as-played log, newest first, filterable by text and playlist, for the last
+  hours, one day or the last seven days. Columns: aired at, ended at, playlist, artist, title,
+  length, origin, rule and status (on air, aired, cut off, unfinished). A line counts the
+  items and the air time on show. Export writes the range on show to a CSV file: the whole
+  log (`history.export_csv`), a royalty report with plays and air time per artist and title
+  (`history.plays_csv`), or a proof of airing with every real start and end in station time
+  (`history.airings_csv`). The two reports keep to the playlist on show, or take all.
 - **Library:** a folder/category tree plus a searchable table. Items are dragged onto the Main
   pane, onto a playlist or onto a cart; files dropped in from the OS file manager are imported.
 

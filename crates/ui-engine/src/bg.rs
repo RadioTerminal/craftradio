@@ -9,6 +9,7 @@ use jiff::Timestamp;
 use radio_engine::{AsPlayed, LogHandle};
 use radio_library::{Limits, Listing};
 use radio_model::Item;
+use radio_ui_egui::view::HistoryReport;
 
 use crate::SecretStore;
 use crate::edit::file_item;
@@ -38,7 +39,21 @@ pub(crate) enum Job {
     History {
         log: LogHandle,
         since: Timestamp,
+        until: Timestamp,
         limit: u32,
+        /// The range that a person picked, which the answer carries back.
+        range: Option<(Timestamp, Timestamp)>,
+    },
+    /// Write a report of the as-played log as CSV to the file at `path`.
+    ExportHistory {
+        log: LogHandle,
+        path: String,
+        report: HistoryReport,
+        since: Timestamp,
+        until: Timestamp,
+        playlist: Option<String>,
+        /// The time zone of the station, for the local times of a report.
+        zone: String,
     },
     /// Read the cover in the tags of the file at `path`.
     Cover {
@@ -75,15 +90,21 @@ pub(crate) enum Done {
         wrote: bool,
         result: Result<bool, String>,
     },
-    History(Result<Vec<AsPlayed>, String>),
+    /// The rows, the row limit of the read, and the picked range that the read was for.
+    History(
+        Result<Vec<AsPlayed>, String>,
+        u32,
+        Option<(Timestamp, Timestamp)>,
+    ),
     /// The cover of the file at `path`, or `None` when it has none.
     Cover {
         path: String,
         bytes: Option<Arc<[u8]>>,
     },
-    /// The alarm export wrote `count` rows to `path`, or failed.
+    /// The export wrote `count` rows of `what` to `path`, or failed.
     Exported {
         path: String,
+        what: &'static str,
         count: usize,
         result: Result<(), String>,
     },
@@ -183,8 +204,48 @@ fn run(job: Job) -> Done {
             };
             Done::Secret { key, wrote, result }
         }
-        Job::History { log, since, limit } => {
-            Done::History(log.history(since, limit).map_err(|e| e.to_string()))
+        Job::History {
+            log,
+            since,
+            until,
+            limit,
+            range,
+        } => Done::History(
+            log.history_between(since, until, limit)
+                .map_err(|e| e.to_string()),
+            limit,
+            range,
+        ),
+        Job::ExportHistory {
+            log,
+            path,
+            report,
+            since,
+            until,
+            playlist,
+            zone,
+        } => {
+            let csv = match report {
+                HistoryReport::Log => log.export_csv(since, until),
+                HistoryReport::Plays => log.plays_csv(since, until, playlist.as_deref()),
+                HistoryReport::Airings => log.airings_csv(since, until, playlist.as_deref(), &zone),
+            };
+            let count = csv
+                .as_ref()
+                .map_or(0, |c| c.lines().count().saturating_sub(1));
+            let result = csv
+                .map_err(|e| e.to_string())
+                .and_then(|c| std::fs::write(&path, c).map_err(|e| e.to_string()));
+            Done::Exported {
+                path,
+                what: match report {
+                    HistoryReport::Log => "as-played rows",
+                    HistoryReport::Plays => "titles of the royalty report",
+                    HistoryReport::Airings => "airings",
+                },
+                count,
+                result,
+            }
         }
         Job::Cover { path } => {
             let bytes = radio_library::cover(&path).map(|c| Arc::from(c.bytes));
@@ -195,6 +256,7 @@ fn run(job: Job) -> Done {
                 std::fs::write(&path, crate::alarms::csv(&rows)).map_err(|e| e.to_string());
             Done::Exported {
                 path,
+                what: "alarms",
                 count: rows.len(),
                 result,
             }

@@ -3,6 +3,10 @@
 use super::*;
 
 impl ViewSource for MockSource {
+    fn history_range(&mut self, range: Option<(Timestamp, Timestamp)>) {
+        self.history_range = range;
+    }
+
     fn snapshot(&mut self, now: Timestamp) -> StationView {
         let local = now.to_zoned(self.tz.clone());
         let top = local
@@ -36,10 +40,28 @@ impl ViewSource for MockSource {
         let since = now
             .checked_sub(SignedDuration::from_hours(PAST_HOURS))
             .unwrap_or(now);
-        let history = all
+        // The sample log reaches back only these hours, so an older range is empty.
+        let (from, to) = self.history_range.unwrap_or((since, now));
+        let history: Vec<Row> = all
             .iter()
-            .filter(|r| r.start.timestamp() >= since && r.start.timestamp() <= now)
+            .filter(|r| {
+                let at = r.start.timestamp();
+                at >= since.max(from) && at <= now && at < to.max(from)
+            })
             .cloned()
+            .map(|mut r| {
+                let end = end_of(&r);
+                r.aired = Some(crate::view::Aired {
+                    end: (end <= now).then(|| end.to_zoned(self.tz.clone())),
+                    status: if end <= now {
+                        crate::view::AirStatus::Aired
+                    } else {
+                        crate::view::AirStatus::OnAir
+                    },
+                    rule: None,
+                });
+                r
+            })
             .collect();
         let mut rows: Vec<Row> = all.into_iter().filter(|r| r.start >= top).collect();
 
@@ -96,7 +118,8 @@ impl ViewSource for MockSource {
             main_playlist: self.main.name.clone(),
             station: STATION.to_owned(),
             meters,
-            history,
+            history: std::sync::Arc::new(history),
+            history_more: false,
             library: self.library.clone(),
             input_devices: Vec::new(),
             devices: DEVICES.iter().map(|d| (*d).to_owned()).collect(),

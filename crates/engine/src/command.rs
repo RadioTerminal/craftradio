@@ -298,6 +298,24 @@ pub enum Command {
     HistoryList { since: Timestamp, limit: u32 },
     #[serde(rename = "history.export_csv")]
     HistoryExportCsv { since: Timestamp, until: Timestamp },
+    /// The plays per artist and title in a range, for music royalty reporting. With a playlist
+    /// name, only the plays of that playlist, so ads and jingles stay out.
+    #[serde(rename = "history.plays_csv")]
+    HistoryPlaysCsv {
+        since: Timestamp,
+        until: Timestamp,
+        #[serde(default)]
+        playlist: Option<String>,
+    },
+    /// Every airing in a range with its real start and end, for proof of airing. With a
+    /// playlist name, only the airings of that playlist.
+    #[serde(rename = "history.airings_csv")]
+    HistoryAiringsCsv {
+        since: Timestamp,
+        until: Timestamp,
+        #[serde(default)]
+        playlist: Option<String>,
+    },
     /// Takes back the last playlist or cart edit.
     #[serde(rename = "history.undo")]
     HistoryUndo,
@@ -465,6 +483,8 @@ impl Command {
             Self::StationGet => "station.get",
             Self::HistoryList { .. } => "history.list",
             Self::HistoryExportCsv { .. } => "history.export_csv",
+            Self::HistoryPlaysCsv { .. } => "history.plays_csv",
+            Self::HistoryAiringsCsv { .. } => "history.airings_csv",
             Self::HistoryUndo => "history.undo",
             Self::HistoryRedo => "history.redo",
             Self::StationBatch { .. } => "station.batch",
@@ -491,9 +511,11 @@ impl Command {
     /// Queries are read-only; everything that changes the station is on-air.
     pub fn tier(&self) -> Tier {
         match self {
-            Self::StationGet | Self::HistoryList { .. } | Self::HistoryExportCsv { .. } => {
-                Tier::ReadOnly
-            }
+            Self::StationGet
+            | Self::HistoryList { .. }
+            | Self::HistoryExportCsv { .. }
+            | Self::HistoryPlaysCsv { .. }
+            | Self::HistoryAiringsCsv { .. } => Tier::ReadOnly,
             Self::PlaylistCreate { .. }
             | Self::PlaylistRename { .. }
             | Self::PlaylistDelete { .. }
@@ -986,6 +1008,26 @@ pub fn registry() -> Vec<CommandSpec> {
             "Export as-played rows as CSV",
             R,
             &[("since", "string"), ("until", "string")],
+        ),
+        with_optional_prop(
+            spec(
+                "history.plays_csv",
+                "Plays and air time per artist and title as CSV, for royalty reporting",
+                R,
+                &[("since", "string"), ("until", "string")],
+            ),
+            "playlist",
+            json!({ "type": ["string", "null"] }),
+        ),
+        with_optional_prop(
+            spec(
+                "history.airings_csv",
+                "Every airing with its real start and end as CSV, for proof of airing",
+                R,
+                &[("since", "string"), ("until", "string")],
+            ),
+            "playlist",
+            json!({ "type": ["string", "null"] }),
         ),
     ];
     let schema = schemars::schema_for!(Command).to_value();

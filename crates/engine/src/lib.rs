@@ -1555,6 +1555,31 @@ impl Engine {
                 data: Some(Value::String(self.export_csv(since, until)?)),
                 ..Outcome::default()
             }),
+            C::HistoryPlaysCsv {
+                since,
+                until,
+                playlist,
+            } => Ok(Outcome {
+                data: Some(Value::String(self.log_handle()?.plays_csv(
+                    since,
+                    until,
+                    playlist.as_deref(),
+                )?)),
+                ..Outcome::default()
+            }),
+            C::HistoryAiringsCsv {
+                since,
+                until,
+                playlist,
+            } => Ok(Outcome {
+                data: Some(Value::String(self.log_handle()?.airings_csv(
+                    since,
+                    until,
+                    playlist.as_deref(),
+                    &self.state.station.tz,
+                )?)),
+                ..Outcome::default()
+            }),
         }
     }
 
@@ -1857,6 +1882,90 @@ impl LogHandle {
     /// Rows starting at or after `since`, oldest first, at most `limit`.
     pub fn history(&self, since: Timestamp, limit: u32) -> Result<Vec<AsPlayed>, EngineError> {
         self.rows(since, Timestamp::MAX, Some(limit))
+    }
+
+    /// Rows that started in `[since, until)`, oldest first, at most `limit`.
+    pub fn history_between(
+        &self,
+        since: Timestamp,
+        until: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<AsPlayed>, EngineError> {
+        self.rows(since, until, Some(limit))
+    }
+
+    /// The plays of the rows that started in `[since, until)`, one line per artist and title:
+    /// `artist,title,plays,air_seconds`. A play counts once it started; the air time is what
+    /// really aired, so a play that was cut off adds only its part. With `playlist`, only the
+    /// plays of that playlist. For royalty reporting.
+    pub fn plays_csv(
+        &self,
+        since: Timestamp,
+        until: Timestamp,
+        playlist: Option<&str>,
+    ) -> Result<String, EngineError> {
+        let mut plays: std::collections::BTreeMap<(String, String), (u32, i64)> =
+            std::collections::BTreeMap::new();
+        for r in self.rows(since, until, None)? {
+            if playlist.is_some_and(|p| p != r.entry.playlist) {
+                continue;
+            }
+            let aired = r
+                .end
+                .map_or(0, |end| end.duration_since(r.entry.start).as_secs().max(0));
+            let key = (r.entry.artist.unwrap_or_default(), r.entry.title);
+            let sum = plays.entry(key).or_default();
+            sum.0 += 1;
+            sum.1 += aired;
+        }
+        let mut out = String::from("artist,title,plays,air_seconds\n");
+        for ((artist, title), (count, secs)) in plays {
+            let fields = [artist, title, count.to_string(), secs.to_string()];
+            let line: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
+            out.push_str(&line.join(","));
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    /// Every airing that started in `[since, until)`, with its real start and end in the time
+    /// zone `zone`: `date,start,end,seconds,playlist,title,artist,rule,status`. With `playlist`,
+    /// only the airings of that playlist. For proof of airing.
+    pub fn airings_csv(
+        &self,
+        since: Timestamp,
+        until: Timestamp,
+        playlist: Option<&str>,
+        zone: &str,
+    ) -> Result<String, EngineError> {
+        let tz =
+            jiff::tz::TimeZone::get(zone).map_err(|e| EngineError::BadArgument(e.to_string()))?;
+        let clock = |t: Timestamp| t.to_zoned(tz.clone()).strftime("%H:%M:%S").to_string();
+        let mut out = String::from("date,start,end,seconds,playlist,title,artist,rule,status\n");
+        for r in self.rows(since, until, None)? {
+            if playlist.is_some_and(|p| p != r.entry.playlist) {
+                continue;
+            }
+            let start = r.entry.start;
+            let secs = r
+                .end
+                .map(|end| end.duration_since(start).as_secs().max(0).to_string());
+            let fields = [
+                start.to_zoned(tz.clone()).date().to_string(),
+                clock(start),
+                r.end.map(clock).unwrap_or_default(),
+                secs.unwrap_or_default(),
+                r.entry.playlist,
+                r.entry.title,
+                r.entry.artist.unwrap_or_default(),
+                r.entry.rule.unwrap_or_default(),
+                r.status.map_or("onair", LogStatus::as_str).to_string(),
+            ];
+            let line: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
+            out.push_str(&line.join(","));
+            out.push('\n');
+        }
+        Ok(out)
     }
 
     /// Counts through the store handle. Call from a worker thread.

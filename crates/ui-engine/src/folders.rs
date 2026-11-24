@@ -155,9 +155,14 @@ impl EngineSource {
                 crate::bg::Done::Secret { key, wrote, result } => {
                     self.secret_answer(key, wrote, result);
                 }
-                crate::bg::Done::History(rows) => match rows {
+                // An answer for a range that the person has left since is dropped.
+                crate::bg::Done::History(_, _, range) if range != self.history_range => {}
+                crate::bg::Done::History(rows, limit, _) => match rows {
                     Ok(rows) => {
-                        self.history = rows.iter().map(|r| self.history_row(r, now)).collect();
+                        self.history_loaded = true;
+                        self.history_more = rows.len() >= limit as usize;
+                        let rows = rows.iter().map(|r| self.history_row(r, now)).collect();
+                        self.history = std::sync::Arc::new(rows);
                     }
                     Err(e) => self
                         .notices
@@ -168,11 +173,12 @@ impl EngineSource {
                 }
                 crate::bg::Done::Exported {
                     path,
+                    what,
                     count,
                     result,
                 } => self.notices.push(match result {
-                    Ok(()) => format!("Wrote {count} alarms to {path}"),
-                    Err(e) => format!("The alarms were not written to {path}: {e}"),
+                    Ok(()) => format!("Wrote {count} {what} to {path}"),
+                    Err(e) => format!("The {what} were not written to {path}: {e}"),
                 }),
             }
         }

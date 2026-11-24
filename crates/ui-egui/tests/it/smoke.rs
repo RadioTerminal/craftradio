@@ -679,3 +679,31 @@ fn the_shortcuts_page_opens_the_keyboard_shortcuts_dialog() {
         "the dialog lists the commands, Play Next among them"
     );
 }
+
+/// The sample log holds only today, so another day is empty; the day steps lead back.
+#[test]
+fn the_history_range_picker_shows_another_day_and_steps_back_to_today() {
+    let mut harness = harness();
+    click(&mut harness, "History");
+    assert!(shows(&harness, " on air"), "the totals count the airings");
+    assert!(
+        !shows(&harness, "Previous day"),
+        "the last hours have no day"
+    );
+
+    let picker = harness
+        .query_all_by_role(egui::accesskit::Role::ComboBox)
+        .find(|n| {
+            let node = n.accesskit_node();
+            let text = [node.value(), node.label()];
+            text.into_iter().flatten().any(|t| t == "Last 3 hours")
+        })
+        .expect("the range picker names the range on show");
+    picker.click();
+    harness.run_steps(FRAMES);
+    click(&mut harness, "Yesterday");
+    assert!(shows(&harness, "No airings match."), "yesterday is empty");
+    click(&mut harness, "Next day");
+    assert!(shows(&harness, " on air"), "today has the airings again");
+    assert!(!shows(&harness, "No airings match."));
+}

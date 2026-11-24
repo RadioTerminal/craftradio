@@ -49,6 +49,7 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::AckAlarm(_)
             | Edit::AckAlarms(_)
             | Edit::ExportAlarms { .. }
+            | Edit::ExportHistory { .. }
     )
 }
 
@@ -703,6 +704,10 @@ impl MockSource {
             Edit::AckAlarms(ids) => self.ack_alarms(&ids),
             Edit::ExportAlarms { .. } => Err(
                 "preview — Export CSV needs the station; Copy puts the rows on the clipboard"
+                    .to_owned(),
+            ),
+            Edit::ExportHistory { .. } => Err(
+                "preview — an export needs the station; Copy as CSV puts rows on the clipboard"
                     .to_owned(),
             ),
             Edit::SetPartSetting { part, key, value } => {

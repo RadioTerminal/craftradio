@@ -1,6 +1,7 @@
 mod edits;
 mod fixtures;
 mod folders;
+mod history;
 mod icecast;
 mod meters;
 mod one_off;

@@ -80,6 +80,62 @@ pub struct Row {
     pub deck: Option<usize>,
     /// The one-off of Upcoming that this row airs. `None` for other rows.
     pub one_off: Option<OneOffView>,
+    /// For a row of the as-played log: how the airing went. `None` for other rows.
+    pub aired: Option<Aired>,
+}
+
+/// How one airing of the as-played log went.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Aired {
+    /// When the airing ended. `None` while the item is on air.
+    pub end: Option<jiff::Zoned>,
+    pub status: AirStatus,
+    /// The rule that placed the item, if a rule did.
+    pub rule: Option<String>,
+}
+
+/// How an airing ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AirStatus {
+    /// The item is on air now.
+    OnAir,
+    Aired,
+    /// The airing was cut off before its end.
+    CutOff,
+    /// The station stopped while the item was on air, so the log has no end for it.
+    Unfinished,
+}
+
+impl AirStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OnAir => "On air",
+            Self::Aired => "Aired",
+            Self::CutOff => "Cut off",
+            Self::Unfinished => "Unfinished",
+        }
+    }
+}
+
+/// A report of the as-played log that History writes to a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryReport {
+    /// Every row of the log.
+    Log,
+    /// Plays and air time per artist and title, for royalty reporting.
+    Plays,
+    /// Every airing with its real start and end, for proof of airing.
+    Airings,
+}
+
+impl HistoryReport {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Log => "as-played log",
+            Self::Plays => "royalty report",
+            Self::Airings => "proof of airing",
+        }
+    }
 }
 
 /// A one-off item of Upcoming: a source at a local time of the station.
@@ -570,8 +626,10 @@ pub struct StationView {
     pub station: String,
     /// Level meters: one per deck, then the cart bus, the live input and the output.
     pub meters: Vec<MeterView>,
-    /// The as-played log, oldest first.
-    pub history: Vec<Row>,
+    /// The as-played log, oldest first: the range that [`ViewSource::history_range`] set.
+    pub history: std::sync::Arc<Vec<Row>>,
+    /// True when the range holds more rows than `history` shows.
+    pub history_more: bool,
     /// The media library.
     pub library: Vec<LibraryItem>,
     /// Audio devices that the mixer can pick.
@@ -1257,6 +1315,15 @@ pub enum Edit {
         path: String,
         ids: Vec<u64>,
     },
+    /// Write a report of the as-played rows that started in `[since, until)` as CSV to the
+    /// file at `path`. With a playlist, the two reports hold only that playlist.
+    ExportHistory {
+        path: String,
+        report: HistoryReport,
+        since: jiff::Timestamp,
+        until: jiff::Timestamp,
+        playlist: Option<String>,
+    },
     /// Add a one-off to Upcoming. With an id other than 0, change that one-off.
     ScheduleOneOff(OneOffView),
     /// Remove the one-off with this id from Upcoming.
@@ -1315,6 +1382,12 @@ pub trait ViewSource {
     fn playlist_from_folder(&mut self, folder: FolderSource) -> Result<String, String> {
         let _ = folder;
         Err(NOT_SUPPORTED.to_owned())
+    }
+
+    /// The range of the as-played log that later snapshots show: the rows that started in
+    /// `[since, until)`, or the last hours for `None`.
+    fn history_range(&mut self, range: Option<(jiff::Timestamp, jiff::Timestamp)>) {
+        let _ = range;
     }
 
     /// Apply one edit. It returns the number of items that changed, or why the edit failed.
