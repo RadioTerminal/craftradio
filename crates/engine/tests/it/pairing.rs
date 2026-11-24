@@ -129,6 +129,8 @@ fn pairing_writes_icecast_webrtc_and_server_settings() {
                 "port": doc.icecast.port,
                 "mount": doc.icecast.mount,
                 "user": doc.icecast.user,
+                // The key goes only to the address it was stored for.
+                "address": ADDRESS,
             }),
         ),
     ];
@@ -242,4 +244,39 @@ fn an_unpaired_station_stays_unpaired_after_a_restart() {
         assert_eq!(setting(&e, part, key), None, "{part}.{key} stays removed");
     }
     assert_eq!(setting(&e, "icecast", "format"), Some(json!("mp3")));
+}
+
+/// The address follows the Server page's rule in the engine too, whoever sends the command:
+/// a scheme; http only to this computer; the server only. A refusal changes nothing.
+#[test]
+fn an_address_in_clear_to_another_computer_or_with_a_path_is_refused() {
+    let mut e = Engine::open_in_memory().unwrap();
+    for bad in [
+        "radio.example.invalid",
+        "http://radio.example.invalid",
+        "https://radio.example.invalid/station",
+        "https://someone@radio.example.invalid",
+    ] {
+        let refused = e.dispatch(Command::ServerPair {
+            address: bad.into(),
+            document: document(),
+        });
+        assert!(refused.is_err(), "{bad}");
+        assert_eq!(setting(&e, SERVER_PART, "address"), None, "{bad}");
+    }
+    e.dispatch(Command::ServerPair {
+        address: "https://Radio.Example.invalid/".into(),
+        document: document(),
+    })
+    .unwrap();
+    assert_eq!(
+        setting(&e, SERVER_PART, "address"),
+        Some(json!("https://radio.example.invalid")),
+        "the address is kept in its one shape"
+    );
+    e.dispatch(Command::ServerPair {
+        address: "http://127.0.0.1:8000".into(),
+        document: document(),
+    })
+    .unwrap();
 }

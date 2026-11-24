@@ -3,7 +3,9 @@
 //! keychain.
 
 use crate::{EngineError, Outcome};
-use radio_model::{PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_KEY};
+use radio_model::{
+    PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_ADDRESS, SERVER_PUSH_KEY,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -38,16 +40,20 @@ pub(crate) fn pair(
     document: PairingDocument,
 ) -> Result<Outcome, EngineError> {
     document.check_version().map_err(EngineError::BadArgument)?;
-    let address = address.trim().to_owned();
-    if address.is_empty() {
-        return Err(EngineError::BadArgument(
-            "the server address is empty".into(),
-        ));
-    }
+    // The same rule as the Server page: the stored key goes only to this address, so a
+    // command from any client cannot point it at a host reached in clear.
+    let address = radio_model::check_server_address(&address).map_err(EngineError::BadArgument)?;
     let outputs = serde_json::to_value(&document.outputs)
         .map_err(|e| EngineError::BadArgument(format!("the outputs cannot be stored: {e}")))?;
     let ice = document.icecast;
-    let push = json!({"host": ice.host, "port": ice.port, "mount": ice.mount, "user": ice.user});
+    // The push the key is stored for, and the address it was paired through.
+    let push = json!({
+        "host": ice.host,
+        "port": ice.port,
+        "mount": ice.mount,
+        "user": ice.user,
+        SERVER_PUSH_ADDRESS: address,
+    });
     let values = [
         json!(ice.host),
         json!(ice.port),

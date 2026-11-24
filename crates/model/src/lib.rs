@@ -30,7 +30,7 @@ pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist, PlaylistRole}
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
 pub use server::{
     PAIRING_VERSION, PairingDocument, PairingIcecast, PairingOutput, SERVER_ADDRESS_KEY,
-    SERVER_PART, SERVER_PUSH_KEY,
+    SERVER_PART, SERVER_PUSH_ADDRESS, SERVER_PUSH_KEY, check_server_address,
 };
 pub use station::Station;
 

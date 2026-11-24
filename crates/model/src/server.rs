@@ -10,8 +10,86 @@ pub const SERVER_ADDRESS_KEY: &str = "address";
 /// and user, which name the keychain entry of the station key. Hand edits of `icecast.*`
 /// do not move it.
 pub const SERVER_PUSH_KEY: &str = "push";
+/// The key in the [`SERVER_PUSH_KEY`] object of the address the push was paired through.
+/// The stored key goes only to that address.
+pub const SERVER_PUSH_ADDRESS: &str = "address";
 /// The version of the pairing document's shape that this app reads.
 pub const PAIRING_VERSION: u32 = 1;
+
+/// The server address in its one accepted shape, or why it is not one, in words.
+///
+/// The rule: a scheme is required; `https://` to any host, `http://` only to this computer
+/// (`localhost`, 127.0.0.0/8, `::1`), so the key never crosses a network in clear; the server
+/// only, with no user, path or query. A trailing slash is dropped.
+pub fn check_server_address(address: &str) -> Result<String, String> {
+    let typed = address.trim().trim_end_matches('/');
+    if typed.is_empty() {
+        return Err("Enter the server's address, such as https://radio.example.org".into());
+    }
+    let lower = typed.to_ascii_lowercase();
+    let (scheme, rest) = if let Some(rest) = lower.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = lower.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        return Err("The address starts with https://, such as https://radio.example.org".into());
+    };
+    if rest.contains('@') {
+        return Err("The address holds no user name or key; the key has a field of its own".into());
+    }
+    if rest.contains(['/', '?', '#']) {
+        return Err(
+            "The address is the server only, with no path, such as https://radio.example.org"
+                .into(),
+        );
+    }
+    if rest.chars().any(char::is_whitespace) {
+        return Err("The address has a space in it".into());
+    }
+    let host = host_of(rest).ok_or_else(|| {
+        "The address names no host, or its port is not a number from 1 to 65535".to_owned()
+    })?;
+    if scheme == "http" && !is_loopback_host(host) {
+        return Err(
+            "http:// is only for a server on this computer; use https:// so the key is \
+             encrypted"
+                .into(),
+        );
+    }
+    Ok(format!("{scheme}://{rest}"))
+}
+
+/// The host of `host`, `host:port`, `[v6]` or `[v6]:port`, when the port is 1–65535.
+fn host_of(authority: &str) -> Option<&str> {
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, after) = bracketed.split_once(']')?;
+        let port = match after {
+            "" => None,
+            _ => Some(after.strip_prefix(':')?),
+        };
+        (host, port)
+    } else {
+        match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        return None;
+    }
+    if let Some(port) = port {
+        port.parse::<u16>().ok().filter(|p| *p > 0)?;
+    }
+    Some(host)
+}
+
+/// True for `localhost` or a loopback address (127.0.0.0/8, `::1`), without brackets.
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
 
 /// The pairing document, field for field as the server writes it. Unknown fields are read
 /// past, so a server that offers more in a later phase still pairs.
