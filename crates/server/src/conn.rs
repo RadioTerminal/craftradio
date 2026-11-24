@@ -55,8 +55,9 @@ fn pem_error(path: &Path, what: &str, error: &pem::Error) -> ServerError {
     })
 }
 
-/// The socket under a connection. Until its head is read, every read and write is held to
-/// the head's deadline, the TLS handshake's included, however slowly the bytes come.
+/// The socket under a connection. While it has a deadline (until its head is read, the TLS
+/// handshake's included, and then for each chunk a listener is sent), every read and write
+/// is held to it, however slowly the bytes come.
 pub(crate) struct Socket {
     tcp: Arc<TcpStream>,
     deadline: Option<Instant>,
@@ -72,10 +73,7 @@ impl Socket {
         };
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(std::io::Error::new(
-                ErrorKind::TimedOut,
-                "request head deadline",
-            ));
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "deadline passed"));
         }
         Ok(Some(left))
     }
@@ -160,6 +158,22 @@ impl Conn {
         socket.deadline = None;
         socket.tcp.set_read_timeout(Some(read))?;
         socket.tcp.set_write_timeout(Some(write))
+    }
+
+    /// Writes all of `bytes` and flushes them (over TLS, out of the TLS buffer too) within
+    /// `limit` in all, however slowly the client takes them.
+    pub(crate) fn write_all_within(
+        &mut self,
+        bytes: &[u8],
+        limit: Duration,
+    ) -> std::io::Result<()> {
+        let deadline = Instant::now()
+            .checked_add(limit)
+            .unwrap_or_else(Instant::now);
+        self.socket_mut().deadline = Some(deadline);
+        let written = self.write_all(bytes).and_then(|()| self.flush());
+        self.socket_mut().deadline = None;
+        written
     }
 
     pub(crate) fn set_read_timeout(&self, timeout: Duration) -> std::io::Result<()> {

@@ -126,6 +126,24 @@ fn a_listener_who_stops_reading_is_dropped_and_others_keep_up() {
 }
 
 #[test]
+fn a_listener_dropped_for_falling_behind_ends_at_once() {
+    let mount = Mount::new(10);
+    let mut guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    let stalled = mount.listen().unwrap();
+    // Far more frames than its queue holds, a few at a time, as a source sends them.
+    for _ in 0..200 {
+        guard.write(&mp3_frames(4));
+    }
+    assert_eq!(
+        mount.stats().listeners,
+        0,
+        "the stalled listener was dropped"
+    );
+    // Its queue is full, but none of it is handed out: a slow client is not sent it.
+    assert_eq!(stalled.recv(Duration::ZERO), Received::Ended);
+}
+
+#[test]
 fn the_cap_refuses_one_listener_too_many() {
     let mount = Mount::new(2);
     assert!(matches!(mount.listen(), Err(ListenError::NoSource)));

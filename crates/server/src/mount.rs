@@ -2,9 +2,10 @@
 //!
 //! One source thread writes through a [`SourceGuard`]; each listener thread reads its own
 //! bounded queue through a [`Listener`]. Writing never waits for a listener: a listener whose
-//! queue is full is dropped.
+//! queue is full is dropped, and hears nothing more, not even what is already queued.
 
 use crate::framing::{Format, Framer};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -40,7 +41,8 @@ pub enum Received {
     Chunk(Arc<[u8]>),
     /// Nothing arrived in time; the source is still live.
     Timeout,
-    /// The source ended, or this listener fell too far behind and was dropped.
+    /// The source ended (once what was queued has been received), or this listener fell
+    /// too far behind and was dropped (at once).
     Ended,
 }
 
@@ -84,6 +86,8 @@ struct Live {
 struct Slot {
     id: u64,
     queue: SyncSender<Arc<[u8]>>,
+    /// Set when the listener is dropped for falling behind; shared with its [`Listener`].
+    dropped: Arc<AtomicBool>,
 }
 
 impl Mount {
@@ -140,12 +144,18 @@ impl Mount {
         for page in &live.headers {
             let _ = queue.try_send(Arc::clone(page));
         }
-        live.listeners.push(Slot { id, queue });
+        let dropped = Arc::new(AtomicBool::new(false));
+        live.listeners.push(Slot {
+            id,
+            queue,
+            dropped: Arc::clone(&dropped),
+        });
         Ok(Listener {
             mount: Arc::clone(self),
             id,
             format: live.format,
             queue: receiver,
+            dropped,
         })
     }
 
@@ -208,9 +218,13 @@ impl SourceGuard {
         };
         let chunks = &self.chunks;
         live.listeners.retain(|slot| {
-            chunks
+            let kept = chunks
                 .iter()
-                .all(|chunk| slot.queue.try_send(Arc::clone(chunk)).is_ok())
+                .all(|chunk| slot.queue.try_send(Arc::clone(chunk)).is_ok());
+            if !kept {
+                slot.dropped.store(true, Ordering::Release);
+            }
+            kept
         });
         // Under the same lock as the sends, so a listener joining now gets either these
         // chunks or the headers they set, never neither.
@@ -242,6 +256,8 @@ pub struct Listener {
     id: u64,
     format: Format,
     queue: Receiver<Arc<[u8]>>,
+    /// Set by the mount when it drops this listener for falling behind.
+    dropped: Arc<AtomicBool>,
 }
 
 impl Listener {
@@ -250,8 +266,13 @@ impl Listener {
         self.format
     }
 
-    /// The next page or frame, waiting at most `timeout`.
+    /// The next page or frame, waiting at most `timeout`. Once the mount has dropped this
+    /// listener for falling behind, [`Received::Ended`] at once: what is still queued is
+    /// not worth a slow client's time.
     pub fn recv(&self, timeout: Duration) -> Received {
+        if self.dropped.load(Ordering::Acquire) {
+            return Received::Ended;
+        }
         match self.queue.recv_timeout(timeout) {
             Ok(chunk) => Received::Chunk(chunk),
             Err(RecvTimeoutError::Timeout) => Received::Timeout,

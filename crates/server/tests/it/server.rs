@@ -849,6 +849,75 @@ fn refusals_that_linger_make_room_for_a_source_and_a_listener() {
     drop(lingering);
 }
 
+/// Ogg pages of about 60 KB each, the largest a page holds, after the stream's header
+/// pages: big chunks, so a slow reader takes long over each.
+fn big_ogg_pages(count: usize) -> Vec<u8> {
+    let sink = crate::framing::Sink::default();
+    let mut muxer = radio_stream::OggMuxer::new(sink.clone());
+    muxer.start("Cloud Signal", None, 312).unwrap();
+    for n in 0..count {
+        muxer.packet(vec![(n % 251) as u8; 60_000], false).unwrap();
+    }
+    sink.take()
+}
+
+#[test]
+fn a_listener_that_falls_behind_frees_its_connection_thread() {
+    // A cap of 2 listeners: 34 public connection threads and 2 for the source.
+    let server = behind_proxy_with(
+        2,
+        Timeouts {
+            head: Duration::from_secs(600),
+            listener_write: Duration::from_millis(500),
+            ..Timeouts::default()
+        },
+    );
+    let addr = server.local_addr();
+    let (mut source, head) = push(addr, "morning", MORNING_KEY, "audio/ogg");
+    assert_eq!(head.status, 200);
+    source.write_all(&big_ogg_pages(4)).unwrap();
+
+    // A listener that keeps reading, but more slowly than the source sends: every read
+    // comes well inside the write timeout, so only falling behind can end it.
+    let (mut slow, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut buf = vec![0; 32 << 10];
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if matches!(slow.read(&mut buf), Ok(0) | Err(_)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+    };
+    // The source, the slow listener and 32 idle heads fill the public part.
+    let _idle = idle_clients(addr, 32);
+    assert_eq!(status_of(get(addr, "morning")), 503);
+
+    // The source sends far faster than the listener reads. Once its queue is full the
+    // listener is dropped, and its thread ends: a new listener gets its place.
+    let pages = big_ogg_pages(8);
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        source.write_all(&pages).unwrap();
+        let (_listener, head) = get(addr, "morning");
+        if head.status == 200 {
+            break;
+        }
+        assert_eq!(head.status, 503);
+        assert!(
+            Instant::now() < deadline,
+            "the slow listener still holds its connection thread"
+        );
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    reader.join().unwrap();
+}
+
 #[test]
 fn heads_still_coming_are_limited_per_address() {
     let server = start_with(Timeouts {
