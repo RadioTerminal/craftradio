@@ -238,7 +238,9 @@ pub(crate) fn show(
                     } else {
                         "path to a PNG, JPEG or WebP picture"
                     };
-                    if widgets::picture_field(ui, &mut ed.draft.picture, hint, label.id, t) {
+                    // A picture that nobody edited is not judged, so it never blocks Apply.
+                    let judge = ed.picture_touched;
+                    if widgets::picture_field(ui, &mut ed.draft.picture, hint, label.id, judge, t) {
                         ed.picture_touched = true;
                     }
                 });

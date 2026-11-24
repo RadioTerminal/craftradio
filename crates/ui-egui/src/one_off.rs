@@ -368,6 +368,7 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
                                     None => item.title.clone(),
                                 };
                                 d.library = Some((item.id, title));
+                                d.picture.clone_from(&item.meta.picture);
                             }
                         }
                     })
@@ -546,6 +547,7 @@ pub(crate) fn show(
                                 &mut d.picture,
                                 "optional, shown to listeners",
                                 l.id,
+                                true,
                                 t,
                             );
                             ui.end_row();
@@ -683,7 +685,10 @@ mod tests {
         let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
         let mut d = url_dialog(&view);
         d.picture = "/art/show.mp3".to_owned();
-        assert!(d.check(&view).is_err());
+        assert_eq!(
+            d.check(&view).unwrap_err(),
+            check_picture("/art/show.mp3").unwrap_err()
+        );
         d.picture.clear();
         assert!(d.check(&view).is_ok());
     }

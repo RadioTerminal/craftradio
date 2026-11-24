@@ -395,13 +395,14 @@ pub(crate) fn selectable_value<'a, V: PartialEq>(
 }
 
 /// A picture path with "Browse…" and "Clear", and under it why a path that is not a picture
-/// is refused. `label` is the id of the row's label, which names the field. Returns true when
+/// is refused when `check` is set. `label` is the id of the row's label, which names the field. Returns true when
 /// the person changed the path.
 pub(crate) fn picture_field(
     ui: &mut egui::Ui,
     path: &mut String,
     hint: &str,
     label: egui::Id,
+    check: bool,
     t: &Tokens,
 ) -> bool {
     let mut changed = false;
@@ -435,7 +436,7 @@ pub(crate) fn picture_field(
                 changed = true;
             }
         });
-        if let Err(why) = crate::view::check_picture(path) {
+        if check && let Err(why) = crate::view::check_picture(path) {
             ui.label(
                 egui::RichText::new(icons::lead(Icon::TriangleAlert, why))
                     .font(theme::text(theme::CAPTION))
