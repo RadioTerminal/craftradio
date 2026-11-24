@@ -137,7 +137,7 @@ impl MockSource {
         };
         rows.iter()
             .skip(i)
-            .take(DECKS)
+            .take(self.deck_count())
             .enumerate()
             .map(|(k, r)| {
                 let why = if k == 0 {

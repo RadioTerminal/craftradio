@@ -115,7 +115,12 @@ pub(crate) fn show(
     }
     let mut page = None;
     ui.horizontal_top(|ui| {
-        for meter in &view.meters {
+        // A deck that is not in use has no strip, as it has no card in the deck strip.
+        let strips = view
+            .meters
+            .iter()
+            .filter(|m| crate::decks::strip_in_use(view, &m.strip));
+        for meter in strips {
             let is_out = meter.is_program();
             let cue = monitor_ready(view);
             if let Some(tab) = strip_ui(ui, meter, is_out, cue, actions, t) {

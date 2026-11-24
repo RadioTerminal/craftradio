@@ -1,6 +1,7 @@
 //! Integration tests for the egui UI (one binary per crate).
 
 mod alarms;
+mod decks;
 mod editing;
 mod folders;
 mod guards;

@@ -1,5 +1,6 @@
 //! Pure serde data model for the radio station: items, playlists, rules and constraints.
 
+mod decks;
 mod dynamics;
 mod error;
 mod ids;
@@ -9,6 +10,7 @@ mod playlist;
 mod rule;
 mod station;
 
+pub use decks::{DECK_COUNT_KEY, DECKS_PART, DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, deck_count};
 pub use dynamics::{
     CompressorSettings, DynamicsSettings, LimiterSettings, range as dynamics_range,
 };

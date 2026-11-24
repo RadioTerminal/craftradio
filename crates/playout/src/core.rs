@@ -1382,8 +1382,30 @@ impl Core {
         self.history = kept;
     }
 
+    /// The next empty deck in the rotation, among the decks the station uses. A deck
+    /// past that number takes no new item; what it holds plays out.
     pub(crate) fn free_deck(&self) -> Option<usize> {
-        (0..4).map(|k| (self.next_deck + k) % 4).find(|&i| {
+        let n = self.engine.state().deck_count();
+        (0..n).map(|k| (self.next_deck + k) % n).find(|&i| {
+            self.slots[i].is_none() && self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Empty
+        })
+    }
+
+    /// A deck for a bed or a fallback file. These play under or in place of the plan, so
+    /// they may take a deck past the number in use when the others are full.
+    pub(crate) fn spare_deck(&self) -> Option<usize> {
+        self.free_deck().or_else(|| self.empty_deck_from(0))
+    }
+
+    /// A deck for a hard event. It waits for its time, so it takes a deck past the number
+    /// in use first, and the decks in use stay with the rotation.
+    fn timed_deck(&self) -> Option<usize> {
+        self.empty_deck_from(self.engine.state().deck_count())
+            .or_else(|| self.free_deck())
+    }
+
+    fn empty_deck_from(&self, first: usize) -> Option<usize> {
+        (first..4).find(|&i| {
             self.slots[i].is_none() && self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Empty
         })
     }
@@ -1400,6 +1422,10 @@ impl Core {
         let queued = plan_slots()
             .filter(|s| s.not_started() && !s.is_hard())
             .count();
+        // One deck in use stays for the item on air, so a start never waits for a free deck.
+        let in_use = MAX_QUEUED.min(self.engine.state().deck_count() - 1);
+        let soft_waits =
+            plan_slots().any(|s| s.not_started() && !s.is_hard() && s.entry.fixed.is_some());
         let assigned = self.assigned();
         // An item that waits on a deck already never loads on a second deck. Its next
         // airing waits for that deck, and so does everything after it: loading past it
@@ -1432,7 +1458,20 @@ impl Core {
             .take(MAX_QUEUED.saturating_sub(queued))
             .cloned()
             .collect();
+        // A soft event leaves the plan when its time passes and it is on no deck, and the
+        // plan needs the loaded items to be the next ones, in order. So while a soft event
+        // is near or waits on a deck, the station loads ahead as it does with four decks,
+        // on the decks past the number in use too.
+        let soon = add(now, self.cfg.preload);
+        let soft_due = next
+            .iter()
+            .any(|e| e.fixed.as_ref().is_some_and(|f| f.target <= soon));
+        let spare = soft_waits || soft_due;
+        let mut queued = queued;
         for entry in next {
+            if queued >= in_use && !spare {
+                break;
+            }
             let Some(item) = self.items.get(&entry.item).cloned() else {
                 continue;
             };
@@ -1441,13 +1480,19 @@ impl Core {
             {
                 break;
             }
-            let Some(i) = self.free_deck() else {
+            let deck = if spare {
+                self.spare_deck()
+            } else {
+                self.free_deck()
+            };
+            let Some(i) = deck else {
                 break;
             };
             if let Err(reason) = self.load(i, entry, item.clone(), DeckRole::Plan, Duration::ZERO) {
                 self.skip_broken(&item, reason, now);
                 break;
             }
+            queued += 1;
         }
     }
 
@@ -1557,7 +1602,7 @@ impl Core {
             gain,
             tagged: None,
         });
-        self.next_deck = (i + 1) % 4;
+        self.next_deck = (i + 1) % self.engine.state().deck_count();
         Ok(tag)
     }
 
@@ -2248,7 +2293,7 @@ impl Core {
             if self.cancelled.iter().any(|c| same_event(c, &entry)) {
                 continue;
             }
-            let Some(i) = self.free_deck() else {
+            let Some(i) = self.timed_deck() else {
                 if !self.evict_for_hard(entry.start, now) {
                     self.alarms
                         .raise_once(now, Alarm::HardEventNotLoaded { item: item.id });

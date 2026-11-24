@@ -15,7 +15,10 @@ fn harness() -> Harness<'static, RadioApp> {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1440.0, 900.0))
         .build_eframe(move |_cc| {
-            RadioApp::new(Box::new(MockSource::new(tz)), Box::new(fixed_clock))
+            RadioApp::new(
+                Box::new(MockSource::new(tz).with_decks(4)),
+                Box::new(fixed_clock),
+            )
         });
     harness.run_steps(FRAMES);
     harness

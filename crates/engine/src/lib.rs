@@ -341,6 +341,15 @@ impl State {
         self.settings.get(part)
     }
 
+    /// The number of decks the station uses. The other decks take no new item.
+    pub fn deck_count(&self) -> usize {
+        let stored = self
+            .settings(radio_model::DECKS_PART)
+            .and_then(|s| s.get(radio_model::DECK_COUNT_KEY))
+            .and_then(Value::as_u64);
+        radio_model::deck_count(stored)
+    }
+
     /// The settings of all parts of the UI.
     pub fn ui_settings(&self) -> &BTreeMap<String, BTreeMap<String, Value>> {
         &self.settings
@@ -1196,6 +1205,14 @@ impl Engine {
             }
             C::DeckLoad { deck, item } => {
                 let d = self.deck(deck)?;
+                // A deck past the number in use takes a new item only in place of the
+                // one it holds.
+                if d >= self.state.deck_count() && self.state.decks[d].is_none() {
+                    return Err(EngineError::BadArgument(format!(
+                        "deck {deck} is not in use (the station uses {} decks)",
+                        self.state.deck_count()
+                    )));
+                }
                 if !self.state.has_item(item) {
                     return Err(EngineError::UnknownItem(item));
                 }

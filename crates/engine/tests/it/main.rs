@@ -971,3 +971,29 @@ fn acknowledged_alarms_survive_a_reopen_and_cannot_be_undone() {
     assert!(!e.state().is_acked(8), "other alarms stay new");
     assert_eq!(e.state().acked_alarms.len(), 3, "each id is kept once");
 }
+
+/// A deck past the number in use takes no item: the UI does not show it. The deck is there
+/// again once the station uses it.
+#[test]
+fn a_deck_past_the_number_in_use_takes_no_item() {
+    let mut e = Engine::open_in_memory().unwrap();
+    e.dispatch(Command::PlaylistAddItems {
+        playlist: MAIN,
+        items: vec![item(1, "One")],
+        at: None,
+        lock: true,
+    })
+    .unwrap();
+    let load = Command::DeckLoad {
+        deck: 2,
+        item: ItemId(1),
+    };
+    assert!(e.dispatch(load.clone()).is_err(), "two decks by default");
+    e.dispatch(Command::SettingsSet {
+        part: radio_model::DECKS_PART.into(),
+        key: radio_model::DECK_COUNT_KEY.into(),
+        value: 3.into(),
+    })
+    .unwrap();
+    e.dispatch(load).unwrap();
+}

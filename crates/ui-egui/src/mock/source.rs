@@ -83,6 +83,9 @@ impl ViewSource for MockSource {
             Some(p) => on_air.map_or(elapsed, |i| remaining(rows[i].start.timestamp(), p)),
             None => elapsed,
         };
+        // A deck past the number in use stays empty, as on the station.
+        let count = self.deck_count();
+        let at = |k: usize| at(k).filter(|_| k < count);
         let mut decks = [
             deck('A', at(0), a_state, elapsed),
             deck('B', at(1), DeckState::Ready, Duration::ZERO),
@@ -94,9 +97,9 @@ impl ViewSource for MockSource {
                 d.gain = Some(super::decks::sample_gain(i, &self.loudness));
             }
         }
-        // The deck of each row: A holds the row on air, B to D the next three.
+        // The deck of each row: A holds the row on air, the other decks the next rows.
         if let Some(i) = on_air {
-            for (k, r) in rows.iter_mut().skip(i).take(4).enumerate() {
+            for (k, r) in rows.iter_mut().skip(i).take(count).enumerate() {
                 r.deck = Some(k);
             }
         }

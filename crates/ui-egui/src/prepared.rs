@@ -29,10 +29,9 @@ pub(crate) struct Prepared {
     pub upcoming: Vec<usize>,
     pub on_air: Option<usize>,
     pub main_count: usize,
+    /// The number of decks in use. The row on air and the next rows sit on them.
+    decks: usize,
 }
-
-/// The number of decks. The row on air and the next rows sit on them.
-const DECKS: usize = 4;
 
 /// The divider text. The length goes in the LENGTH column, like a track's.
 fn divider_text(r: &Row) -> String {
@@ -61,7 +60,7 @@ impl Prepared {
         if i == on_air {
             return Some("this row is on air; use Play next instead".to_owned());
         }
-        let k = i.checked_sub(on_air).filter(|k| *k < DECKS)?;
+        let k = i.checked_sub(on_air).filter(|k| *k < self.decks)?;
         let deck = u8::try_from(k).map_or('?', |k| char::from(b'A' + k));
         Some(format!("this row is loaded on deck {deck}"))
     }
@@ -94,6 +93,7 @@ impl Prepared {
                 .collect(),
             on_air: rows.iter().position(|r| is_on_air(r, now)),
             main_count: rows.iter().filter(|r| r.is_main).count(),
+            decks: crate::parts::deck_count(view),
         }
     }
 }

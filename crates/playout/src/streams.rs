@@ -155,7 +155,7 @@ impl Core {
         }
         let item = beds[self.next_bed % beds.len()].clone();
         self.next_bed += 1;
-        let i = self.free_deck()?;
+        let i = self.spare_deck()?;
         let entry = Entry {
             playlist: radio_model::PlaylistId(0),
             item: item.id,

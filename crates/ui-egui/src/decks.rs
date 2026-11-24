@@ -48,6 +48,8 @@ pub(crate) struct State {
     armed: Option<(usize, Guarded, f64)>,
     /// The deck that Space acts on.
     focused: usize,
+    /// The decks the strip shows: the decks in use, and a deck past them that holds an item.
+    shown: [bool; 4],
     /// The place of each deck in the queue, for this frame: 1 plays next.
     next: Vec<Option<usize>>,
     /// The view is the UI preview: nothing plays, so no gain applies.
@@ -63,6 +65,7 @@ impl Default for State {
             confirm: true,
             armed: None,
             focused: 0,
+            shown: [true; 4],
             next: Vec::new(),
             preview: false,
         }
@@ -111,9 +114,9 @@ impl State {
             .unwrap_or(DEFAULT_FADE_IN_S)
     }
 
-    /// Focus deck `deck` for the keys. A number past the last deck is ignored.
+    /// Focus deck `deck` for the keys. A deck that is not shown is ignored.
     pub(crate) fn focus(&mut self, deck: usize) {
-        if deck < self.fade_s.len() {
+        if self.shown.get(deck) == Some(&true) {
             self.focused = deck;
         }
     }
@@ -159,6 +162,22 @@ pub(crate) fn on_air_deck(decks: &[DeckView]) -> Option<usize> {
         .iter()
         .position(|d| d.state == DeckState::Playing)
         .or_else(|| decks.iter().position(|d| d.state == DeckState::Paused))
+}
+
+/// The decks the station shows: the decks in use, and a deck past them while it still
+/// holds an item.
+pub(crate) fn in_use(view: &StationView) -> [bool; 4] {
+    let count = parts::deck_count(view);
+    std::array::from_fn(|i| i < count || view.decks[i].state != DeckState::Empty)
+}
+
+/// True unless `strip` is the mixer strip of a deck that is not shown.
+pub(crate) fn strip_in_use(view: &StationView, strip: &str) -> bool {
+    let shown = in_use(view);
+    view.decks
+        .iter()
+        .position(|d| strip.chars().eq([d.label]))
+        .is_none_or(|i| shown[i])
 }
 
 pub(crate) fn show(
@@ -212,9 +231,14 @@ pub(crate) fn show(
     } else {
         size::DECK_TINY_W
     };
+    state.shown = in_use(view);
+    let shown: Vec<usize> = (0..view.decks.len()).filter(|&i| state.shown[i]).collect();
+    if !state.shown[state.focused] {
+        state.focused = 0;
+    }
     // The cards share the width that is there: a narrow window makes narrow cards, and
     // nothing scrolls.
-    let fit = (avail - clock_width) / view.decks.len() as f32 - space::M;
+    let fit = (avail - clock_width) / shown.len() as f32 - space::M;
     let deck_min = deck_min.min(fit.max(0.0));
     ui.spacing_mut().item_spacing.x = space::M;
     egui_extras::StripBuilder::new(ui)
@@ -224,11 +248,12 @@ pub(crate) fn show(
                 builder
                     .sizes(
                         egui_extras::Size::remainder().at_least(deck_min),
-                        view.decks.len(),
+                        shown.len(),
                     )
                     .size(egui_extras::Size::exact(clock_width))
                     .horizontal(|mut strip| {
-                        for (i, deck) in view.decks.iter().enumerate() {
+                        for &i in &shown {
+                            let deck = &view.decks[i];
                             strip.cell(|ui| {
                                 let card = deck_card(
                                     ui,
@@ -1337,6 +1362,11 @@ fn start_lines(deck: &DeckView, now: Option<jiff::Timestamp>) -> Vec<String> {
 /// Restore page defaults on the Decks page: confirm a cut, and the default fades of every deck.
 pub(crate) fn restore_defaults(actions: &mut Vec<Action>) {
     actions.push(parts::set(parts::DECKS, CONFIRM_KEY, true));
+    actions.push(parts::set(
+        parts::DECKS,
+        radio_model::DECK_COUNT_KEY,
+        radio_model::DEFAULT_DECKS as u64,
+    ));
     for label in ['A', 'B', 'C', 'D'] {
         actions.push(parts::set(
             parts::DECKS,
@@ -1357,6 +1387,8 @@ pub(crate) fn preferences(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    let old_count = parts::deck_count(view);
+    let mut count = old_count;
     settings::section(ui, "On air", t, |ui| {
         let old_confirm = parts::bool(view, parts::DECKS, CONFIRM_KEY, true);
         let mut confirm = old_confirm;
@@ -1367,8 +1399,26 @@ pub(crate) fn preferences(
         if confirm != old_confirm {
             actions.push(parts::set(parts::DECKS, CONFIRM_KEY, confirm));
         }
+        settings::form_row(ui, "Number of decks", t, |ui| {
+            let field = numbers::field(
+                ui,
+                DragValue::new(&mut count).range(radio_model::MIN_DECKS..=radio_model::MAX_DECKS),
+            );
+            ui.add(field).on_hover_text(
+                "The station loads items on this many decks. A deck past this number plays \
+                 out what it holds and then goes away. A hard event, a bed or a fallback \
+                 file may still take one.",
+            )
+        });
     });
-    for label in ['A', 'B', 'C', 'D'] {
+    if count != old_count {
+        actions.push(parts::set(
+            parts::DECKS,
+            radio_model::DECK_COUNT_KEY,
+            count as u64,
+        ));
+    }
+    for label in ['A', 'B', 'C', 'D'].into_iter().take(old_count) {
         settings::section(ui, &format!("Deck {label}"), t, |ui| {
             deck_fades(ui, view, label, actions, t);
         });

@@ -13,7 +13,7 @@ pub(crate) const ALARMS: &str = "alarms";
 pub(crate) const LIBRARY: &str = "library";
 pub(crate) const CARTWALL: &str = "cartwall";
 pub(crate) const MIXER: &str = "mixer";
-pub(crate) const DECKS: &str = "decks";
+pub(crate) const DECKS: &str = radio_model::DECKS_PART;
 /// The WebRTC listener stream: the same part the playout reads.
 pub(crate) const WEBRTC: &str = "webrtc";
 pub(crate) const PREFERENCES: &str = "preferences";
@@ -51,6 +51,12 @@ pub(crate) fn strings(view: &StationView, part: &str, key: &str, default: &[&str
             .collect(),
         None => default.iter().map(|s| (*s).to_owned()).collect(),
     }
+}
+
+/// The number of decks the station uses: the same setting the playout reads.
+pub(crate) fn deck_count(view: &StationView) -> usize {
+    let stored = get(view, DECKS, radio_model::DECK_COUNT_KEY).and_then(Value::as_u64);
+    radio_model::deck_count(stored)
 }
 
 /// The action that stores one setting. It shows a message only when it fails.

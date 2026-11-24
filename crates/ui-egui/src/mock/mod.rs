@@ -116,6 +116,19 @@ impl MockSource {
         }
     }
 
+    /// The same mock with `count` decks in use, as the Decks page of Preferences sets it.
+    #[must_use]
+    pub fn with_decks(mut self, count: usize) -> Self {
+        self.settings
+            .entry(radio_model::DECKS_PART.to_owned())
+            .or_default()
+            .insert(
+                radio_model::DECK_COUNT_KEY.to_owned(),
+                (count as u64).into(),
+            );
+        self
+    }
+
     pub fn new(tz: TimeZone) -> Self {
         let mut tracks = Vec::with_capacity(TRACKS);
         let mut library = Vec::new();
@@ -329,6 +342,13 @@ impl MockSource {
             }),
         }
         n
+    }
+
+    /// The number of decks in use, from the Decks settings.
+    fn deck_count(&self) -> usize {
+        radio_model::deck_count(
+            self.setting_u64(radio_model::DECKS_PART, radio_model::DECK_COUNT_KEY),
+        )
     }
 
     /// Read a part setting as an unsigned number.

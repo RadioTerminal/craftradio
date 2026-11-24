@@ -139,7 +139,16 @@ fn play_next_plays_the_next_1_deck() {
 #[test]
 fn play_this_deck_on_next_2_goes_on_air_and_skips_next_1() {
     let (mut source, clock) = six_songs(20.0);
-    let view = source.snapshot(clock.now());
+    // NEXT 2 needs a third deck: the station uses all four here, set as Preferences sets it.
+    let four = Edit::SetPartSetting {
+        part: radio_model::DECKS_PART.into(),
+        key: radio_model::DECK_COUNT_KEY.into(),
+        value: 4.into(),
+    };
+    assert_eq!(source.edit(four), Ok(1));
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        next(v, 2).is_some()
+    });
     let old = on_air(&view).expect("a deck is on air");
     let one = next(&view, 1).and_then(|k| view.decks[k].item);
     let two = next(&view, 2).expect("a deck waits as NEXT 2");

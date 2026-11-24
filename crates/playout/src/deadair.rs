@@ -324,7 +324,7 @@ impl Core {
         if busy || d.files.is_empty() || d.failures >= d.files.len() {
             return;
         }
-        let Some(i) = self.free_deck() else { return };
+        let Some(i) = self.spare_deck() else { return };
         let path = d.files[d.next % d.files.len()].clone();
         self.dead_air.next += 1;
         let n = self.dead_air.next as u64;

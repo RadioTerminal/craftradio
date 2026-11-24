@@ -46,7 +46,8 @@ pub struct StressSource {
 impl StressSource {
     pub fn new(tz: TimeZone) -> Self {
         Self {
-            inner: MockSource::with_hours(tz, STRESS_HOURS),
+            // All four decks: the most cards the strip has to fit.
+            inner: MockSource::with_hours(tz, STRESS_HOURS).with_decks(4),
         }
     }
 }

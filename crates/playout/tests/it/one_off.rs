@@ -444,9 +444,22 @@ fn a_soft_one_off_in_dead_air_never_starts_before_its_tolerance() {
 
 #[test]
 fn music_added_while_a_soft_one_off_waits_on_a_deck_plays_before_it() {
+    music_plays_before_a_waiting_soft_one_off(None);
+}
+
+/// With two decks the waiting one-off does not hold the deck that the next song needs.
+#[test]
+fn music_plays_before_a_waiting_soft_one_off_with_two_decks() {
+    music_plays_before_a_waiting_soft_one_off(Some(2));
+}
+
+fn music_plays_before_a_waiting_soft_one_off(decks: Option<u64>) {
     // The one-off loads at once on a quiet station. Then a person adds songs and locks the
     // first three, so they stay before the one-off and keep their starts.
     let mut engine = Engine::open_in_memory().unwrap();
+    if let Some(n) = decks {
+        set_decks(&mut engine, n);
+    }
     engine
         .dispatch(soft(promo("oo11-promo", "Soft promo"), at(13, 0, 20)))
         .unwrap();
@@ -525,5 +538,52 @@ fn a_soft_one_off_waiting_on_a_deck_waits_for_locked_songs_added_in_its_way() {
     assert!(
         start + SR / 100 >= handover(&p, 107),
         "it starts after the last locked song in its way: {start}"
+    );
+}
+
+/// With two decks the soft one-off is the third item in line when its time passes. It still
+/// airs after the locked songs in its way, as it does with four decks.
+#[test]
+fn a_soft_one_off_behind_locked_songs_still_airs_with_two_decks() {
+    let mut engine = fixed_songs("oo12", &[1, 2, 3]);
+    set_decks(&mut engine, 2);
+    let cmd = soft(promo("oo12-promo", "Soft promo"), at(13, 0, 5));
+    let id = engine
+        .dispatch(cmd)
+        .unwrap()
+        .data
+        .and_then(|d| d.as_u64())
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let alarms = p.alarms().unwrap();
+    let program = run(&p, &clock, 16.0);
+    let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
+    assert_aired_late(&p, &program, &raised, id, 5 * SR);
+    assert_back_to_back(&p, &[1, 2, 3]);
+}
+
+/// The same for a soft event of a rule: it airs late with its alarm, and never just leaves
+/// the plan.
+#[test]
+fn a_soft_rule_event_behind_locked_songs_still_airs_with_two_decks() {
+    let mut engine = fixed_songs("oo13", &[1, 2, 3]);
+    set_decks(&mut engine, 2);
+    let script = r#"rule({at: {date: "2026-11-21", time: "13:00:05", repeat: "once"},
+                place: {fixed: "soft", tolerance: 1}, take: 1, constraints: []});"#;
+    let promo = promo("oo13-promo", "Soft promo");
+    add_playlist(&mut engine, "Promos", vec![promo], script);
+    let (p, clock) = offline(engine, |_| {});
+    let alarms = p.alarms().unwrap();
+    let program = run(&p, &clock, 16.0);
+    let raised: Vec<_> = alarms.try_iter().map(|a| a.alarm).collect();
+
+    let start = first_audible(&program, 1, 0).expect("the soft event airs");
+    assert!(
+        start + SR / 100 >= handover(&p, 3),
+        "it starts after the last locked song in its way: {start}"
+    );
+    assert!(
+        raised.iter().any(|a| matches!(a, Alarm::FixedLate { .. })),
+        "a late soft event raises the alarm: {raised:?}"
     );
 }

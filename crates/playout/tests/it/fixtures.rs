@@ -93,8 +93,30 @@ pub fn engine_with(items: Vec<Item>) -> Engine {
     engine
 }
 
-/// An offline playout on a manual clock at [`t0`].
-pub fn offline(engine: Engine, tune: impl FnOnce(&mut PlayoutConfig)) -> (Playout, ManualClock) {
+/// Sets the number of decks the station uses.
+pub fn set_decks(engine: &mut Engine, count: u64) {
+    engine
+        .dispatch(Command::SettingsSet {
+            part: radio_model::DECKS_PART.into(),
+            key: radio_model::DECK_COUNT_KEY.into(),
+            value: count.into(),
+        })
+        .unwrap();
+}
+
+/// An offline playout on a manual clock at [`t0`]. The station uses all four decks, unless
+/// the test chose a number with [`set_decks`].
+pub fn offline(
+    mut engine: Engine,
+    tune: impl FnOnce(&mut PlayoutConfig),
+) -> (Playout, ManualClock) {
+    let chosen = engine
+        .state()
+        .settings(radio_model::DECKS_PART)
+        .is_some_and(|s| s.contains_key(radio_model::DECK_COUNT_KEY));
+    if !chosen {
+        set_decks(&mut engine, 4);
+    }
     let clock = ManualClock::new(t0());
     let mut cfg = PlayoutConfig::new(Arc::new(clock.clone()), OutputChoice::Offline);
     // Fixture tracks last seconds, so a short horizon keeps each plan small.
