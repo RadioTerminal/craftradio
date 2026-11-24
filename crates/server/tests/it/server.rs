@@ -956,3 +956,71 @@ fn stats_built_for_a_mount_with_no_source_leave_it_out() {
     .unwrap();
     assert!(sources(&built).is_empty());
 }
+
+/// Set in the child process [`a_connection_holds_one_file_descriptor`] runs itself in.
+#[cfg(unix)]
+const FD_CHILD: &str = "RADIO_SERVER_TEST_FD_CHILD";
+
+/// The process's open file descriptors.
+#[cfg(unix)]
+fn open_descriptors() -> usize {
+    std::fs::read_dir("/dev/fd").unwrap().count()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_connection_holds_one_file_descriptor() {
+    // Other tests open sockets while this one counts, so it counts in a process of its own.
+    if std::env::var_os(FD_CHILD).is_none() {
+        let name = "server::a_connection_holds_one_file_descriptor";
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--test-threads=1"])
+            .env(FD_CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test: {stdout}"
+        );
+        return;
+    }
+    let server = start();
+    let addr = server.local_addr();
+    let (mut source, head) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    assert_eq!(head.status, 200);
+    source.write_all(&mp3_frames(4)).unwrap();
+    let before = open_descriptors();
+
+    const LISTENERS: usize = 40;
+    let listeners: Vec<TcpStream> = (0..LISTENERS)
+        .map(|_| {
+            let (stream, head) = get(addr, "morning");
+            assert_eq!(head.status, 200);
+            stream
+        })
+        .collect();
+    wait_for_entry(addr, "morning", |entry| {
+        entry.is_some_and(|entry| entry["listeners"] == LISTENERS)
+    });
+    // The test's own client sockets are in this process too: one each.
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let server_side = open_descriptors().saturating_sub(before + listeners.len());
+        // One descriptor each, with room for a stats request still closing; two each
+        // would be twice as many.
+        if server_side <= LISTENERS + LISTENERS / 4 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{server_side} descriptors for {LISTENERS} listeners"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
