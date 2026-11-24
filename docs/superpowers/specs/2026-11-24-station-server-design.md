@@ -1,6 +1,14 @@
 # Station server: design
 
-**Status (2026-11-24):** design, not built. Awaiting operator approval.
+**Status (2026-11-24):** approved by the operator. Phase 1 (server core) is built:
+`crates/server`, `apps/radio-server`, `packaging/server`. Phases 1b–5 are not.
+
+**Open after phase 1:** the app's push through a reverse proxy is not checked (Caddy was not
+installed where it was built); the server's own TLS is the route checked with the app. The
+server logs nothing after "listening", so an operator can't tell a wrong key from a proxy
+problem; logging of source connects, refusals and lockouts is a follow-up. A client that
+opens connections fast enough can still keep cutting off a source that is mid-connect;
+closing that needs a rate limit, which is a new decision.
 
 **Related:** `docs/superpowers/plans/2026-11-22-p2p-listener-relay.md` (the signed listener
 relay this builds on; its §6 item 2, "the station as its own tracker", was dropped because a
@@ -304,6 +312,10 @@ Per-connection and per-address limits on offers follow the ones in `relay.rs`
   `https://server/<slug>/live#<guest key>`, with a Copy button, and whether a guest is
   connected (`GET /<slug>/live/state` with the station key). The link is shown on that page
   only; it is not part of the station view that the CLI and MCP print.
+- **Found in phase 1 (2026-11-24):** `StreamInput` can't decode Ogg/Opus today. It uses
+  Symphonia's default codecs, which have no Opus decoder, and fails with "unsupported audio
+  codec". The guest feed is Ogg/Opus, so phase 4 first makes `StreamInput` use the decoders
+  of `crates/codecs` (`radio_codecs::registry()`), as its own change with its own test.
 - An empty feed (no guest connected) behaves as a stream that is down does today, including
   keep-alive.
 
