@@ -363,8 +363,10 @@ impl Core {
         };
         let brand = (state.station_name().unwrap_or_default(), logo, modified);
         if self.brand_sent.as_ref() != Some(&brand) {
-            // The alarms of the logo that goes out of use go with it.
+            // The alarms of the logo that goes out of use go with it. A new name alone leaves
+            // them: the same file is still the logo, and still does not load.
             let before = match self.brand_sent.take() {
+                Some((_, logo, at)) if logo == brand.1 && at == brand.2 => None,
                 Some((_, logo, _)) => logo,
                 None => self.logo_before.take(),
             };

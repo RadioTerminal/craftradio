@@ -14,9 +14,7 @@ use jiff::{RoundMode, ToSpan, Unit};
 use crate::add_menu::{self, DEFAULT_PLANNED_MIN, KEEP_ALIVE_LABEL};
 use crate::app::Action;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{
-    Edit, OneOffRepeat, OneOffSource, OneOffView, StationView, check_picture, check_stream_url,
-};
+use crate::view::{Edit, OneOffRepeat, OneOffSource, OneOffView, StationView, check_stream_url};
 
 /// The tolerance of a soft one-off that nobody set, in seconds (spec 6.3).
 pub(crate) const DEFAULT_TOLERANCE_S: f32 = 1.0;
@@ -84,6 +82,9 @@ pub(crate) struct OneOffDialog {
     pub(crate) picture: String,
     /// The picture that the last library pick filled in.
     filled: String,
+    /// The picture that the edited one-off came with.
+    opened_picture: String,
+    picture_check: crate::view::PictureCheck,
     /// True after the first press of Add. Errors show from then on.
     tried: bool,
     /// The first field takes the keyboard focus once.
@@ -127,6 +128,8 @@ impl OneOffDialog {
             repeat: OneOffRepeat::Once,
             picture: String::new(),
             filled: String::new(),
+            opened_picture: String::new(),
+            picture_check: crate::view::PictureCheck::default(),
             tried: false,
             focus: true,
         }
@@ -142,6 +145,7 @@ impl OneOffDialog {
         d.tolerance_s = o.tolerance_s;
         d.repeat = o.repeat;
         d.picture.clone_from(&o.picture);
+        d.opened_picture.clone_from(&o.picture);
         let split = |len: Duration| {
             let s = u32::try_from(len.as_secs()).unwrap_or(u32::MAX);
             (s / 60, s % 60)
@@ -245,10 +249,21 @@ impl OneOffDialog {
         }
     }
 
+    /// Why the picture is refused. The picture the one-off came with, or one a library pick
+    /// filled in, is not judged: a file that moved since must not stop a change of the time.
+    fn picture_problem(&self) -> Option<&'static str> {
+        if self.picture == self.opened_picture || self.picture == self.filled {
+            return None;
+        }
+        self.picture_check.of(&self.picture).err()
+    }
+
     /// The one-off that the fields describe, and a note for a time that happens twice.
     pub(crate) fn check(&self, view: &StationView) -> Result<(OneOffView, Option<String>), String> {
         let source = self.source(view)?;
-        check_picture(&self.picture).map_err(str::to_owned)?;
+        if let Some(why) = self.picture_problem() {
+            return Err(why.to_owned());
+        }
         let date: civil::Date = self
             .date
             .trim()
@@ -556,12 +571,14 @@ pub(crate) fn show(
                                 });
                             ui.end_row();
                             let l = label(ui, "Picture", t);
+                            let problem = d.picture_problem();
                             widgets::picture_field(
                                 ui,
                                 &mut d.picture,
                                 "optional, shown to listeners",
                                 l.id,
-                                true,
+                                problem,
+                                false,
                                 t,
                             );
                             ui.end_row();
@@ -723,9 +740,23 @@ mod tests {
         d.picture = "/art/show.mp3".to_owned();
         assert_eq!(
             d.check(&view).unwrap_err(),
-            check_picture("/art/show.mp3").unwrap_err()
+            crate::view::check_picture("/art/show.mp3").unwrap_err()
         );
         d.picture.clear();
         assert!(d.check(&view).is_ok());
+    }
+
+    #[test]
+    fn a_one_off_whose_picture_file_is_gone_can_still_be_changed() {
+        let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
+        let mut o = url_dialog(&view).check(&view).unwrap().0;
+        o.id = 9;
+        o.picture = "/art/moved-away.png".to_owned();
+        let mut d = OneOffDialog::edit(&o, &view);
+        d.hard = false;
+        let changed = d.check(&view).expect("the old picture is not judged").0;
+        assert_eq!(changed.picture, o.picture, "and it stays");
+        d.picture = "/art/also-missing.png".to_owned();
+        assert!(d.check(&view).is_err(), "a new picture is judged");
     }
 }

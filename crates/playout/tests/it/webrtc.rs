@@ -344,6 +344,38 @@ fn a_logo_file_that_changes_on_disk_is_sent_again() {
     });
 }
 
+/// A new station name leaves the alarm of a logo that does not load as it is.
+#[test]
+fn a_name_change_does_not_raise_the_logo_alarm_again() {
+    let (port, p, clock) = branded_station();
+    let file = Temp::new("logo-name", "png", b"this is text, not a picture");
+    let logo = file.text();
+    set_branding(&p, radio_model::BRANDING_LOGO_KEY, &logo);
+    tick_until(&p, &clock, "the alarm for the text file", || {
+        open_picture_alarms(&p, &logo) > 0
+    });
+    let raised = || {
+        p.snapshot()
+            .alarms
+            .iter()
+            .filter(|a| matches!(&a.alarm, radio_playout::Alarm::PictureFailed { path, .. } if *path == logo))
+            .count()
+    };
+    let before = raised();
+    set_branding(&p, radio_model::BRANDING_NAME_KEY, "Radio Kresnica");
+    tick_until(&p, &clock, "the new name", || {
+        http_get(port, "/brand").contains("Radio Kresnica")
+    });
+    // Long enough for the logo to be read again and to fail again.
+    let ticks = std::cell::Cell::new(0);
+    tick_until(&p, &clock, "a few more ticks", || {
+        ticks.set(ticks.get() + 1);
+        ticks.get() > 20
+    });
+    assert_eq!(raised(), before, "the same alarm, not a new one");
+    assert_eq!(open_picture_alarms(&p, &logo), 1, "and it is still open");
+}
+
 /// The same broken picture on air twice leaves one open alarm.
 #[test]
 fn the_same_broken_picture_airing_twice_raises_one_alarm() {

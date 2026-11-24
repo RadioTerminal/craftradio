@@ -1389,6 +1389,32 @@ pub fn check_picture(path: &str) -> Result<(), &'static str> {
     }
 }
 
+/// The verdict on one picture path, kept for a moment. A row that shows every frame then
+/// asks the disk about once a second, however many places ask.
+#[derive(Default)]
+pub(crate) struct PictureCheck(std::cell::RefCell<Option<KeptVerdict>>);
+
+/// A path, when it was checked, and what the check said.
+type KeptVerdict = (String, std::time::Instant, Result<(), &'static str>);
+
+impl PictureCheck {
+    const KEEP: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// [`check_picture`] of `path`, from the kept verdict while it is fresh.
+    pub(crate) fn of(&self, path: &str) -> Result<(), &'static str> {
+        let mut kept = self.0.borrow_mut();
+        if let Some((p, at, verdict)) = kept.as_ref()
+            && p == path
+            && at.elapsed() < Self::KEEP
+        {
+            return *verdict;
+        }
+        let verdict = check_picture(path);
+        *kept = Some((path.to_owned(), std::time::Instant::now(), verdict));
+        verdict
+    }
+}
+
 /// Something that can describe the station at a given instant.
 pub trait ViewSource {
     fn snapshot(&mut self, now: jiff::Timestamp) -> StationView;
