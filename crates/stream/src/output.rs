@@ -10,21 +10,32 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Why an encoder or the Ogg muxer failed.
+#[derive(Debug, thiserror::Error)]
+pub enum EncodeError {
+    #[error("{0}")]
+    Invalid(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Opus(#[from] opus::Error),
+}
+
 /// Encodes exactly 20 ms of 48 kHz stereo audio per packet.
 pub struct OpusEncoder(opus::Encoder);
 impl OpusEncoder {
-    pub fn new(kbps: u32) -> Result<Self, StreamError> {
+    pub fn new(kbps: u32) -> Result<Self, EncodeError> {
         if !(6..=510).contains(&kbps) {
-            return Err(StreamError::Invalid("bitrate must be 6..510 kbps".into()));
+            return Err(EncodeError::Invalid("bitrate must be 6..510 kbps".into()));
         }
         let mut encoder =
             opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::Audio)?;
         encoder.set_bitrate(opus::Bitrate::Bits((kbps * 1000) as i32))?;
         Ok(Self(encoder))
     }
-    pub fn encode(&mut self, samples: &[f32]) -> Result<Vec<u8>, StreamError> {
+    pub fn encode(&mut self, samples: &[f32]) -> Result<Vec<u8>, EncodeError> {
         if samples.len() != 1920 {
-            return Err(StreamError::Invalid(
+            return Err(EncodeError::Invalid(
                 "expected 1920 interleaved samples".into(),
             ));
         }
@@ -33,7 +44,7 @@ impl OpusEncoder {
         packet.truncate(len);
         Ok(packet)
     }
-    pub fn pre_skip(&mut self) -> Result<u16, StreamError> {
+    pub fn pre_skip(&mut self) -> Result<u16, EncodeError> {
         Ok(self.0.get_lookahead()? as u16)
     }
 }
@@ -52,12 +63,16 @@ impl<W: Write> OggMuxer<W> {
             granule: 0,
         }
     }
+    /// The writer the pages go to.
+    pub fn get_mut(&mut self) -> &mut W {
+        self.writer.inner_mut()
+    }
     pub fn start(
         &mut self,
         title: &str,
         artist: Option<&str>,
         pre_skip: u16,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), EncodeError> {
         self.serial = self.serial.wrapping_add(1);
         self.granule = 0;
         let mut head = b"OpusHead\x01\x02".to_vec();
@@ -80,7 +95,7 @@ impl<W: Write> OggMuxer<W> {
             .write_packet(tags, self.serial, PacketWriteEndInfo::EndPage, 0)?;
         Ok(())
     }
-    pub fn packet(&mut self, packet: Vec<u8>, end: bool) -> Result<(), StreamError> {
+    pub fn packet(&mut self, packet: Vec<u8>, end: bool) -> Result<(), EncodeError> {
         self.granule += 960;
         self.writer.write_packet(
             packet,
@@ -743,14 +758,14 @@ impl SourceOutput {
     }
     fn socket(&mut self) -> &mut dyn Transport {
         match self {
-            Self::Opus { muxer, .. } => muxer.writer.inner_mut().as_mut(),
+            Self::Opus { muxer, .. } => muxer.get_mut().as_mut(),
             #[cfg(feature = "mp3")]
             Self::Mp3 { socket, .. } => socket.as_mut(),
         }
     }
     fn packet(&mut self, samples: &[f32]) -> Result<(), StreamError> {
         match self {
-            Self::Opus { encoder, muxer } => muxer.packet(encoder.encode(samples)?, false),
+            Self::Opus { encoder, muxer } => Ok(muxer.packet(encoder.encode(samples)?, false)?),
             #[cfg(feature = "mp3")]
             Self::Mp3 { encoder, socket } => {
                 socket.write_all(&encoder.encode(samples)?)?;
@@ -771,7 +786,7 @@ impl SourceOutput {
                 muxer.packet(encoder.encode(samples)?, true)?;
                 samples.clear();
                 *encoder = OpusEncoder::new(cfg.format.kbps())?;
-                muxer.start(title, None, encoder.pre_skip()?)
+                Ok(muxer.start(title, None, encoder.pre_skip()?)?)
             }
             #[cfg(feature = "mp3")]
             Self::Mp3 { .. } => {

@@ -35,3 +35,13 @@ pub enum StreamError {
     #[error(transparent)]
     Opus(#[from] opus::Error),
 }
+
+impl From<EncodeError> for StreamError {
+    fn from(error: EncodeError) -> Self {
+        match error {
+            EncodeError::Invalid(message) => Self::Invalid(message),
+            EncodeError::Io(error) => Self::Io(error),
+            EncodeError::Opus(error) => Self::Opus(error),
+        }
+    }
+}

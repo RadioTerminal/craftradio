@@ -1,25 +1,25 @@
 //! MP3 encoding for the Icecast output, with craft-audio's native encoder.
-use crate::StreamError;
+use crate::EncodeError;
 use craft_audio::mp3::{Config, Encoder, bitrates};
 
 /// The stream's sample rate; the output thread feeds interleaved stereo at 48 kHz.
 const SAMPLE_RATE: u32 = 48_000;
 
-pub(crate) struct Mp3Encoder {
+pub struct Mp3Encoder {
     /// Boxed: the encoder's state is large and the output enum holds it inline.
     encoder: Box<Encoder>,
     left: Vec<f32>,
     right: Vec<f32>,
 }
 
-fn error(value: impl std::fmt::Display) -> StreamError {
-    StreamError::Invalid(format!("MP3 encoder: {value}"))
+fn error(value: impl std::fmt::Display) -> EncodeError {
+    EncodeError::Invalid(format!("MP3 encoder: {value}"))
 }
 
 impl Mp3Encoder {
     /// A constant-bitrate, joint-stereo encoder. At 48 kHz MPEG-1 Layer III carries 32 to 320
     /// kbit/s; any other value is refused rather than rounded.
-    pub(crate) fn new(kbps: u32) -> Result<Self, StreamError> {
+    pub fn new(kbps: u32) -> Result<Self, EncodeError> {
         if !bitrates(SAMPLE_RATE).contains(&kbps) {
             return Err(error(format!(
                 "{kbps} kbit/s is not an MP3 bitrate at 48 kHz (32 to 320)"
@@ -34,7 +34,7 @@ impl Mp3Encoder {
     }
 
     /// Encodes interleaved stereo samples and returns the frames that are complete.
-    pub(crate) fn encode(&mut self, samples: &[f32]) -> Result<Vec<u8>, StreamError> {
+    pub fn encode(&mut self, samples: &[f32]) -> Result<Vec<u8>, EncodeError> {
         self.left.clear();
         self.right.clear();
         for pair in samples.as_chunks::<2>().0 {
