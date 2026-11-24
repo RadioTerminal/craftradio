@@ -696,3 +696,341 @@ fn a_station_link_carries_the_public_stream_the_page_falls_back_to() {
         "the stream address is escaped as one value: {value}"
     );
 }
+
+fn brands(texts: &[String]) -> Vec<serde_json::Value> {
+    texts
+        .iter()
+        .filter_map(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .filter(|v| v["type"] == "brand")
+        .collect()
+}
+
+/// A file in a folder of its own that goes away with the test.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(test: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("radio-stream-it-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn file(&self, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = self.0.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn the_served_page_knows_the_brand() {
+    let (server, running, feed) = relay_station(false);
+    let (code, _, page) = http(server.local_addr().unwrap(), "GET", "/", "");
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert_eq!(code, 200);
+    assert!(
+        page.contains("\"/brand\""),
+        "the page asks the station for /brand"
+    );
+    assert!(
+        page.contains("type === \"brand\""),
+        "the page reads brand messages"
+    );
+}
+
+#[test]
+fn brand_is_served_before_anything_plays() {
+    let (server, running, feed) = relay_station(false);
+    let addr = server.local_addr().unwrap();
+    let (code, _, _) = http(addr, "GET", "/brand", "");
+    assert_eq!(code, 404, "no brand before set_brand");
+    server.set_brand("Radio Lipa".into(), None);
+    let (code, head, body) = http(addr, "GET", "/brand", "");
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(head.to_ascii_lowercase().contains("application/json"));
+    let brand: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(brand["name"], "Radio Lipa");
+    assert!(brand["logo"].is_null());
+    let (code, _, _) = http(addr, "POST", "/brand", "");
+    assert_eq!(code, 405);
+}
+
+#[test]
+fn a_listener_of_an_idle_station_gets_the_brand() {
+    let (server, running, feed) = relay_station(false);
+    server.set_brand("Radio Lipa".into(), None);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    let texts = page.until("the brand", |_, texts| !brands(texts).is_empty());
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let brand = &brands(&texts)[0];
+    assert_eq!(brand["name"], "Radio Lipa");
+    assert!(brand["logo"].is_null());
+}
+
+#[test]
+fn a_changed_brand_reaches_a_connected_listener_once() {
+    let (server, running, feed) = relay_station(false);
+    server.set_brand("Radio Lipa".into(), None);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    page.until("the first brand", |_, texts| !brands(texts).is_empty());
+    server.set_brand("Radio Hrast".into(), None);
+    let until = Instant::now() + Duration::from_millis(600);
+    let texts = page.until("the changed brand", |_, texts| {
+        !brands(texts).is_empty() && Instant::now() >= until
+    });
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let got = brands(&texts);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["name"], "Radio Hrast");
+}
+
+/// The logo of the last `brand` message of `texts`, as bytes, once all its parts are there.
+fn whole_logo(texts: &[String]) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let brand = brands(texts).into_iter().last()?;
+    let id = brand["logo"]["id"].as_u64()?;
+    let parts = brand["logo"]["parts"].as_u64()? as usize;
+    let mut got: Vec<(u64, String)> = messages_of(texts, "logo")
+        .into_iter()
+        .filter(|c| c["id"].as_u64() == Some(id))
+        .map(|c| {
+            (
+                c["part"].as_u64().unwrap(),
+                c["data"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    got.sort();
+    got.dedup();
+    if got.len() != parts {
+        return None;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD;
+    Some(
+        got.iter()
+            .flat_map(|(_, d)| b64.decode(d).unwrap())
+            .collect(),
+    )
+}
+
+#[test]
+fn a_good_logo_reaches_a_listener_and_the_brand_address() {
+    use base64::Engine;
+    let dir = Scratch::new("good-logo");
+    let path = dir.file("logo.png", &png(120));
+    let (server, running, feed) = relay_station(false);
+    let addr = server.local_addr().unwrap();
+    server.set_brand("Radio Lipa".into(), Some(path));
+    // The logo loads on a thread: the address has it once it is read.
+    let until = Instant::now() + Duration::from_secs(10);
+    let body = loop {
+        let (code, _, body) = http(addr, "GET", "/brand", "");
+        assert_eq!(code, 200, "{body}");
+        let brand: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if !brand["logo"].is_null() {
+            break brand;
+        }
+        assert!(Instant::now() < until, "the logo was never read");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let url = body["logo"].as_str().unwrap();
+    let data = url
+        .split_once(";base64,")
+        .map(|(_, d)| d)
+        .expect("a data URL");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .unwrap();
+    assert!(
+        image::load_from_memory(&bytes).is_ok(),
+        "the address gives a picture"
+    );
+    let mut page = Page::connect(addr);
+    let texts = page.until("the logo", |_, texts| whole_logo(texts).is_some());
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let brand = brands(&texts).into_iter().last().unwrap();
+    assert!(!brand["logo"].is_null(), "the brand message has a logo");
+    let bytes = whole_logo(&texts).unwrap();
+    assert!(
+        image::load_from_memory(&bytes).is_ok(),
+        "the parts join to a picture"
+    );
+}
+
+#[test]
+fn a_bad_logo_sends_the_name_and_reports_why() {
+    let dir = Scratch::new("bad-logo");
+    let path = dir.file("logo.png", b"this is not a picture");
+    let (server, running, feed) = relay_station(false);
+    server.set_brand("Radio Lipa".into(), Some(path.clone()));
+    let mut page = Page::connect(server.local_addr().unwrap());
+    let texts = page.until("the brand", |_, texts| !brands(texts).is_empty());
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let brand = &brands(&texts)[0];
+    assert_eq!(brand["name"], "Radio Lipa");
+    assert!(brand["logo"].is_null(), "a bad logo is not sent");
+    let errors = server.take_picture_errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].path, path);
+    assert!(!errors[0].reason.is_empty());
+    assert!(
+        server.take_picture_errors().is_empty(),
+        "taking drains the list"
+    );
+}
+
+#[test]
+fn a_bad_item_picture_is_reported_once_for_one_set() {
+    let dir = Scratch::new("bad-cover");
+    let path = dir.file("cover.png", b"this is not a picture");
+    let (server, running, feed) = relay_station(false);
+    // The picture is on air and in the history too, which also asks for its thumbnail.
+    let played = Played {
+        title: "Paper Boats".into(),
+        artist: "The Quiet Few".into(),
+        at: jiff::Timestamp::now(),
+        file: Some(path.clone()),
+    };
+    server.set_now(
+        "Paper Boats".into(),
+        "The Quiet Few".into(),
+        Some(path.clone()),
+        &[played],
+    );
+    let mut errors = Vec::new();
+    let until = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < until {
+        errors.extend(server.take_picture_errors());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].path, path);
+}
+
+fn messages_of(texts: &[String], kind: &str) -> Vec<serde_json::Value> {
+    texts
+        .iter()
+        .filter_map(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .filter(|v| v["type"] == kind)
+        .collect()
+}
+
+/// A small PNG made here, with a colour of its own.
+fn png(shade: u8) -> Vec<u8> {
+    let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        64,
+        48,
+        image::Rgb([shade, 90, 160]),
+    ));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// The cover of the last `now` message of `texts`, as bytes, once all its parts are there.
+fn whole_cover(texts: &[String]) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let now = messages_of(texts, "now").into_iter().last()?;
+    let id = now["cover"]["id"].as_u64()?;
+    let parts = now["cover"]["parts"].as_u64()? as usize;
+    let mut got: Vec<(u64, String)> = messages_of(texts, "cover")
+        .into_iter()
+        .filter(|c| c["id"].as_u64() == Some(id))
+        .map(|c| {
+            (
+                c["part"].as_u64().unwrap(),
+                c["data"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    got.sort();
+    got.dedup();
+    if got.len() != parts {
+        return None;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD;
+    Some(
+        got.iter()
+            .flat_map(|(_, d)| b64.decode(d).unwrap())
+            .collect(),
+    )
+}
+
+#[test]
+fn an_image_file_is_the_cover() {
+    let dir = Scratch::new("image-cover");
+    let path = dir.file("show.png", &png(200));
+    let (server, running, feed) = relay_station(false);
+    server.set_now("Our Show".into(), "".into(), Some(path), &[]);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    let texts = page.until("the cover", |_, texts| whole_cover(texts).is_some());
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let now = messages_of(&texts, "now").into_iter().last().unwrap();
+    assert_eq!(now["title"], "Our Show");
+    assert!(!now["cover"].is_null());
+    let bytes = whole_cover(&texts).unwrap();
+    assert!(
+        image::load_from_memory(&bytes).is_ok(),
+        "the parts join to a picture"
+    );
+}
+
+#[test]
+fn an_item_without_a_picture_has_no_cover() {
+    let (server, running, feed) = relay_station(false);
+    server.set_now("Our Show".into(), "".into(), None, &[]);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    let texts = page.until("the now message", |_, texts| {
+        !messages_of(texts, "now").is_empty()
+    });
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let now = &messages_of(&texts, "now")[0];
+    assert!(now["cover"].is_null());
+}
+
+#[test]
+fn a_history_row_with_an_image_file_gets_a_thumbnail() {
+    let dir = Scratch::new("image-thumb");
+    let path = dir.file("before.png", &png(30));
+    let (server, running, feed) = relay_station(false);
+    let played = Played {
+        title: "Before".into(),
+        artist: String::new(),
+        at: jiff::Timestamp::now(),
+        file: Some(path),
+    };
+    server.set_now("Our Show".into(), "".into(), None, &[played]);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    let texts = page.until("the thumbnail", |_, texts| {
+        let key = messages_of(texts, "history")
+            .last()
+            .and_then(|h| h["items"][0]["thumb"].as_str().map(str::to_owned));
+        key.is_some_and(|k| {
+            messages_of(texts, "thumb")
+                .iter()
+                .any(|t| t["key"] == k.as_str())
+        })
+    });
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert!(!messages_of(&texts, "thumb").is_empty());
+}

@@ -393,3 +393,56 @@ pub(crate) fn selectable_value<'a, V: PartialEq>(
     }
     r
 }
+
+/// A picture path with "Browse…" and "Clear", and under it why a path that is not a picture
+/// is refused when `check` is set. `label` is the id of the row's label, which names the
+/// field. Returns true when the person changed the path.
+pub(crate) fn picture_field(
+    ui: &mut egui::Ui,
+    path: &mut String,
+    hint: &str,
+    label: egui::Id,
+    check: bool,
+    t: &Tokens,
+) -> bool {
+    let mut changed = false;
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            let edit = egui::TextEdit::singleline(path).hint_text(hint);
+            let width = size::FIELD_W * 2.0 - 2.0 * size::DIALOG_BUTTON_W;
+            changed |= ui
+                .add_sized([width, size::CONTROL_SM], edit)
+                .labelled_by(label)
+                .changed();
+            let button = |ui: &mut egui::Ui, text: &str, on: bool| {
+                ui.add_enabled_ui(on, |ui| {
+                    ui.add_sized(
+                        [size::DIALOG_BUTTON_W, size::CONTROL_SM],
+                        egui::Button::new(text),
+                    )
+                })
+                .inner
+            };
+            if button(ui, "Browse…", true).clicked()
+                && let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Pictures", &crate::view::PICTURE_EXTENSIONS)
+                    .pick_file()
+            {
+                *path = file.display().to_string();
+                changed = true;
+            }
+            if button(ui, "Clear", !path.is_empty()).clicked() {
+                path.clear();
+                changed = true;
+            }
+        });
+        if check && let Err(why) = crate::view::check_picture(path) {
+            ui.label(
+                egui::RichText::new(icons::lead(Icon::TriangleAlert, why))
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.danger),
+            );
+        }
+    });
+    changed
+}

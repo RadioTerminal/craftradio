@@ -174,6 +174,14 @@ impl Core {
         Some((i, tag))
     }
 
+    /// The station name that hidden titles show: the setting, else the configured name.
+    fn station_name(&self) -> String {
+        self.engine
+            .state()
+            .station_name()
+            .unwrap_or_else(|| self.cfg.station_name.clone())
+    }
+
     /// Sends the stream title for an item that just started.
     pub(crate) fn send_title(&mut self, item: &Item) {
         if self.icecast.is_none() && self.cfg.webrtc.is_none() {
@@ -184,7 +192,8 @@ impl Core {
             shown.meta.title.clone_from(&item.title);
             shown.meta.artist = item.artist.clone().unwrap_or_default();
         }
-        let title = stream_title(&shown, &self.title, &self.cfg.station_name);
+        let name = self.station_name();
+        let title = stream_title(&shown, &self.title, &name);
         if let Some(ice) = &self.icecast {
             ice.set_title(title.clone());
         }
@@ -196,17 +205,14 @@ impl Core {
             PublishMode::FromTags => Some(NowPlaying {
                 title: shown.meta.title.clone(),
                 artist: shown.meta.artist.clone(),
-                file: match &item.source {
-                    Source::File { path } => Some(std::path::PathBuf::from(path)),
-                    _ => None,
-                },
+                file: cover_file(item),
                 at,
                 listed: true,
             }),
             PublishMode::Custom | PublishMode::Hide => Some(NowPlaying {
                 title: title.clone(),
                 artist: String::new(),
-                file: None,
+                file: cover_file(item),
                 at,
                 listed: shown.meta.publish == PublishMode::Custom,
             }),
@@ -246,6 +252,7 @@ impl Core {
         let Ok(rows) = self.log.history(hour_ago, PLAYED_MAX as u32 * 4) else {
             return;
         };
+        let name = self.station_name();
         let station = &self.engine.state().station;
         for row in rows {
             // A row without an end did not finish, or it is the item that resumes now.
@@ -258,17 +265,10 @@ impl Core {
                 .filter(|p| p.name == row.entry.playlist)
                 .flat_map(|p| p.items.iter())
                 .find(|i| i.title == row.entry.title && i.artist == row.entry.artist);
-            let Some((title, artist)) = item.and_then(|i| listed_title(i, &self.cfg.station_name))
-            else {
+            let Some((title, artist)) = item.and_then(|i| listed_title(i, &name)) else {
                 continue;
             };
-            // Only an item that shows its tags shows its cover.
-            let file = item
-                .filter(|i| i.meta.publish == PublishMode::FromTags)
-                .and_then(|i| match &i.source {
-                    Source::File { path } => Some(std::path::PathBuf::from(path)),
-                    _ => None,
-                });
+            let file = item.and_then(cover_file);
             self.webrtc_played.push_front(Played {
                 title,
                 artist,
@@ -328,6 +328,145 @@ impl Core {
         self.webrtc = Some(server);
         self.webrtc_bind = Some(bind);
     }
+
+    /// Gives the running WebRTC server the station name and logo when they change, and
+    /// raises an alarm for each picture it could not load.
+    pub(crate) fn sync_brand(&mut self, now: Timestamp) {
+        let Some(server) = &self.webrtc else {
+            // The logo it had stays known, so a logo fixed while the server was off still
+            // clears its alarm.
+            if let Some((_, logo, _)) = self.brand_sent.take() {
+                self.logo_before = logo;
+            }
+            return;
+        };
+        // Errors of earlier loads go out first, so a change below clears them in the same tick.
+        for error in server.take_picture_errors() {
+            self.alarms.raise_once(
+                now,
+                Alarm::PictureFailed {
+                    path: error.path.to_string_lossy().into_owned(),
+                    reason: error.reason,
+                },
+            );
+        }
+        let state = self.engine.state();
+        let logo = state.station_logo();
+        // The modified time makes a logo file that changes at the same path count as new. A
+        // thread reads it; this one never touches the file system.
+        let Some(modified) = self
+            .logo_watch
+            .get_or_insert_with(LogoWatch::start)
+            .modified(logo.as_deref())
+        else {
+            return;
+        };
+        let brand = (state.station_name().unwrap_or_default(), logo, modified);
+        if self.brand_sent.as_ref() != Some(&brand) {
+            // The alarms of the logo that goes out of use go with it.
+            let before = match self.brand_sent.take() {
+                Some((_, logo, _)) => logo,
+                None => self.logo_before.take(),
+            };
+            if let Some(before) = before {
+                let before = before.to_string_lossy().into_owned();
+                self.alarms.clear(
+                    now,
+                    |a| matches!(a, Alarm::PictureFailed { path, .. } if *path == before),
+                );
+            }
+            server.set_brand(brand.0.clone(), brand.1.clone());
+            self.brand_sent = Some(brand);
+        }
+    }
+}
+
+/// What the logo watch has been asked about and what it saw.
+#[derive(Default)]
+struct Watched {
+    path: Option<std::path::PathBuf>,
+    /// The modified time of `path`, once it was read for the path asked about.
+    seen: Option<Option<std::time::SystemTime>>,
+}
+
+/// Reads the modified time of the station logo on a thread of its own, about once a second,
+/// so that a slow disk or share never stops the control thread.
+pub(crate) struct LogoWatch {
+    shared: std::sync::Arc<std::sync::Mutex<Watched>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// False when the thread did not start: the logo then goes out without its modified
+    /// time, and a file changed in place is not sent again.
+    watching: bool,
+}
+
+impl LogoWatch {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+    const STEP: std::time::Duration = std::time::Duration::from_millis(50);
+
+    fn start() -> Self {
+        use std::sync::atomic::Ordering;
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(Watched::default()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (theirs, stopped) = (shared.clone(), stop.clone());
+        let watching = std::thread::Builder::new()
+            .name("brand-watch".into())
+            .spawn(move || {
+                let mut last = (None, std::time::Instant::now());
+                while !stopped.load(Ordering::Acquire) {
+                    std::thread::sleep(Self::STEP);
+                    let Ok(asked) = theirs.lock().map(|w| w.path.clone()) else {
+                        return;
+                    };
+                    let Some(path) = asked else {
+                        last.0 = None;
+                        continue;
+                    };
+                    // A new path is read at once; the same one again after a second.
+                    if last.0.as_ref() == Some(&path) && last.1.elapsed() < Self::EVERY {
+                        continue;
+                    }
+                    let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                    last = (Some(path.clone()), std::time::Instant::now());
+                    if let Ok(mut w) = theirs.lock()
+                        && w.path.as_ref() == Some(&path)
+                    {
+                        w.seen = Some(modified);
+                    }
+                }
+            })
+            .is_ok();
+        Self {
+            shared,
+            stop,
+            watching,
+        }
+    }
+
+    /// The modified time of `path` as last seen: `None` while it is not known yet, `Some(None)`
+    /// for no logo or a file that cannot be read.
+    fn modified(&self, path: Option<&std::path::Path>) -> Option<Option<std::time::SystemTime>> {
+        let Some(path) = path else {
+            if let Ok(mut w) = self.shared.lock() {
+                *w = Watched::default();
+            }
+            return Some(None);
+        };
+        if !self.watching {
+            return Some(None);
+        }
+        let mut w = self.shared.lock().ok()?;
+        if w.path.as_deref() != Some(path) {
+            w.path = Some(path.to_path_buf());
+            w.seen = None;
+        }
+        w.seen
+    }
+}
+
+impl Drop for LogoWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// What plays now, as WebRTC listeners see it.
@@ -359,6 +498,23 @@ fn listed_title(item: &Item, station_name: &str) -> Option<(String, String)> {
     .filter(|(title, _)| !title.trim().is_empty())
 }
 
+/// The file that gives listeners the cover of `item`. An item that shows its tags or its own
+/// text shows its own picture. Without one, only an item that shows its tags falls back to
+/// the cover in the tags of its audio file. A hidden item has no cover.
+fn cover_file(item: &Item) -> Option<std::path::PathBuf> {
+    let own = item.meta.picture.trim();
+    match item.meta.publish {
+        PublishMode::FromTags | PublishMode::Custom if !own.is_empty() => {
+            Some(std::path::PathBuf::from(own))
+        }
+        PublishMode::FromTags => match &item.source {
+            Source::File { path } => Some(std::path::PathBuf::from(path)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl NowPlaying {
     fn send(&self, server: &WebRtcHandle, played: &std::collections::VecDeque<Played>) {
         let history: Vec<Played> = played.iter().cloned().collect();
@@ -388,5 +544,55 @@ impl Core {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(publish: PublishMode, picture: &str, source: Source) -> Item {
+        let mut item = radio_testkit::track(1, "Show", "Host", 1);
+        item.source = source;
+        item.meta.publish = publish;
+        item.meta.picture = picture.to_owned();
+        item
+    }
+
+    fn file() -> Source {
+        Source::File {
+            path: "/music/show.mp3".into(),
+        }
+    }
+
+    #[test]
+    fn an_item_picture_beats_the_tag_cover_and_a_hidden_item_has_none() {
+        use PublishMode::{FromTags, Hide, KeepPrevious};
+        let own = std::path::PathBuf::from("/art/show.png");
+        for mode in [FromTags, PublishMode::Custom] {
+            assert_eq!(
+                cover_file(&item(mode, "/art/show.png", file())),
+                Some(own.clone())
+            );
+        }
+        for mode in [Hide, KeepPrevious] {
+            assert_eq!(
+                cover_file(&item(mode, "/art/show.png", file())),
+                None,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_picture_only_tags_mode_reads_the_audio_file() {
+        let audio = Some(std::path::PathBuf::from("/music/show.mp3"));
+        assert_eq!(cover_file(&item(PublishMode::FromTags, "", file())), audio);
+        assert_eq!(cover_file(&item(PublishMode::Custom, "  ", file())), None);
+        let stream = Source::Stream {
+            url: "https://relay.example.org/live".into(),
+            keep_alive: true,
+        };
+        assert_eq!(cover_file(&item(PublishMode::FromTags, "", stream)), None);
     }
 }

@@ -407,6 +407,7 @@ mod tests {
             hard: true,
             tolerance_s: 1.0,
             repeat: OneOffRepeat::Once,
+            picture: String::new(),
         }));
         assert_eq!(added, Ok(1));
         let view = source.snapshot(now);

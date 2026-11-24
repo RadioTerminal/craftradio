@@ -59,6 +59,11 @@ pub(crate) enum Job {
     Cover {
         path: String,
     },
+    /// Read the station logo at `path`. `modified` is the file's time when it was asked for.
+    Logo {
+        path: std::path::PathBuf,
+        modified: Option<std::time::SystemTime>,
+    },
     /// Write alarms as CSV to the file at `path`.
     ExportAlarms {
         path: String,
@@ -100,6 +105,12 @@ pub(crate) enum Done {
     Cover {
         path: String,
         bytes: Option<Arc<[u8]>>,
+    },
+    /// The station logo at `path`, as it was when its time was `modified`.
+    Logo {
+        path: std::path::PathBuf,
+        modified: Option<std::time::SystemTime>,
+        result: Result<radio_ui_egui::view::Cover, String>,
     },
     /// The export wrote `count` rows of `what` to `path`, or failed.
     Exported {
@@ -250,6 +261,20 @@ fn run(job: Job) -> Done {
         Job::Cover { path } => {
             let bytes = radio_library::cover(&path).map(|c| Arc::from(c.bytes));
             Done::Cover { path, bytes }
+        }
+        Job::Logo { path, modified } => {
+            let stamp = modified
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            let result = radio_stream::load_picture(&path).map(|p| radio_ui_egui::view::Cover {
+                uri: format!("bytes://branding-logo/{}?{stamp}", path.display()),
+                bytes: p.data.into(),
+            });
+            Done::Logo {
+                path,
+                modified,
+                result,
+            }
         }
         Job::ExportAlarms { path, rows } => {
             let result =

@@ -4,7 +4,7 @@
 use egui::accesskit::Toggled;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use radio_ui_egui::{MockSource, RadioApp};
+use radio_ui_egui::{MockSource, RadioApp, ToolWindow};
 
 const FRAMES: usize = 6;
 
@@ -176,4 +176,64 @@ fn the_webrtc_page_keeps_its_port_and_restores_it() {
         !restore.accesskit_node().is_disabled(),
         "WebRTC has defaults"
     );
+}
+
+/// True when a control called `label` has the keyboard focus.
+fn focused(h: &Harness<'_, RadioApp>, label: &str) -> bool {
+    h.query_all_by_label(label)
+        .any(|n| n.accesskit_node().is_focused())
+}
+
+#[test]
+fn opening_branding_focuses_the_name_but_a_search_that_selects_it_does_not() {
+    let mut h = preferences();
+    click(&mut h, "Branding");
+    assert!(
+        focused(&h, "Station name"),
+        "a click on the rail focuses it"
+    );
+    let mut h = preferences();
+    search(&mut h, "logo");
+    assert!(shows(&h, "Station name"), "the search selected Branding");
+    assert!(!focused(&h, "Station name"), "the name did not take focus");
+    assert!(
+        focused(&h, "Search preferences"),
+        "the search keeps the focus while it is typed in"
+    );
+}
+
+#[test]
+fn the_branding_page_says_that_no_logo_means_the_app_icon() {
+    let mut h = preferences();
+    click(&mut h, "Branding");
+    assert!(shows(&h, "Station name") && shows(&h, "Logo"));
+    assert!(shows(&h, "No logo: listeners see the app icon."));
+    assert!(
+        h.get_by_label("Clear").accesskit_node().is_disabled(),
+        "there is no logo to clear"
+    );
+}
+
+/// What the Station name field holds.
+fn name_field(h: &Harness<'_, RadioApp>) -> String {
+    h.query_all_by_label("Station name")
+        .filter_map(|n| n.accesskit_node().value())
+        .next_back()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_name_typed_in_branding_is_saved_when_preferences_closes_with_the_field_still_focused() {
+    let mut h = preferences();
+    click(&mut h, "Branding");
+    h.get_by_label("Station name").type_text("Radio Lipa");
+    h.run_steps(FRAMES);
+    assert!(focused(&h, "Station name"), "the person is still typing");
+    h.state_mut().set_window(ToolWindow::Preferences, false);
+    h.run_steps(FRAMES);
+    assert!(!shows(&h, "Station name"), "Preferences closed");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    h.run_steps(FRAMES);
+    click(&mut h, "Branding");
+    assert_eq!(name_field(&h), "Radio Lipa", "the name was saved");
 }

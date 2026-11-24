@@ -178,6 +178,8 @@ pub struct EngineSource {
     /// Covers of the files on the decks, by path. `None` while the background lane reads
     /// the file, and for a file without a cover.
     covers: HashMap<String, Option<Arc<[u8]>>>,
+    /// The station logo as last read: its file, when the file changed, and what it gave.
+    logo: Option<LogoRead>,
     /// The next item id that the source gives out, or 0 to start after the largest id.
     next_id: u64,
     /// Library files that no playlist holds.
@@ -291,6 +293,7 @@ impl EngineSource {
             history_loaded: false,
             history_at: None,
             covers: HashMap::new(),
+            logo: None,
             next_id: 0,
             files: Vec::new(),
             next_file: 0,
@@ -532,13 +535,21 @@ impl EngineSource {
         rows
     }
 
+    /// The station name: the setting, else the name this source started with.
+    fn station_name(&self) -> String {
+        self.state
+            .station_name()
+            .unwrap_or_else(|| self.station.clone())
+    }
+
     /// The stream title before each row. The snapshot works it out once.
     fn title_chain(&self, rows: &[Row]) -> HashMap<u64, String> {
-        let mut previous = self.station.clone();
+        let name = self.station_name();
+        let mut previous = name.clone();
         let mut out = HashMap::with_capacity(rows.len());
         for r in rows {
             out.insert(r.id, previous.clone());
-            previous = radio_model::stream_title(&meta_item(r), &previous, &self.station);
+            previous = radio_model::stream_title(&meta_item(r), &previous, &name);
         }
         out
     }
@@ -626,6 +637,37 @@ impl EngineSource {
                 cover: self.deck_cover(d.item),
             }
         })
+    }
+
+    /// The station logo for Preferences, or why it does not load. The file is read again only
+    /// when its path or its modified time changes.
+    fn branding_logo(&mut self) -> Option<Result<radio_ui_egui::view::Cover, String>> {
+        let Some(path) = self.state.station_logo() else {
+            self.logo = None;
+            return None;
+        };
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let stale = self
+            .logo
+            .as_ref()
+            .is_none_or(|l| l.path != path || l.modified != modified);
+        if stale {
+            // The lane reads it; until it answers the page shows no picture and no error.
+            let sent = self.worker.as_ref().is_some_and(|w| {
+                w.jobs
+                    .send(bg::Job::Logo {
+                        path: path.clone(),
+                        modified,
+                    })
+                    .is_ok()
+            });
+            self.logo = Some(LogoRead {
+                path,
+                modified,
+                result: (!sent).then(|| Err("The picture could not be read here.".to_owned())),
+            });
+        }
+        self.logo.as_ref().and_then(|l| l.result.clone())
     }
 
     /// The cover of the file of item `id`. The background lane reads it once; until then,
@@ -1007,6 +1049,14 @@ impl EngineSource {
     }
 }
 
+/// The station logo file as last asked for.
+struct LogoRead {
+    path: std::path::PathBuf,
+    modified: Option<std::time::SystemTime>,
+    /// `None` while the background lane reads the file.
+    result: Option<Result<radio_ui_egui::view::Cover, String>>,
+}
+
 /// The name of a mixer strip, as the mixer window shows it.
 pub(crate) fn strip_label(s: Strip) -> &'static str {
     match s {
@@ -1138,7 +1188,7 @@ impl ViewSource for EngineSource {
             tabs: self.tabs.clone(),
             main_playlist: main.name.clone(),
             main,
-            station: self.station.clone(),
+            station: self.station_name(),
             meters: self.meters(&pv),
             history,
             history_more: self.history_more,
@@ -1180,6 +1230,7 @@ impl ViewSource for EngineSource {
             output: Self::output(&pv, card_wanted),
             folders: self.folder_views(),
             settings: self.settings(),
+            branding_logo: self.branding_logo(),
             alarms,
             preview: false,
         }
@@ -1250,12 +1301,13 @@ impl ViewSource for EngineSource {
     }
 
     fn stream_title(&self, row: &Row) -> String {
+        let name = self.station_name();
         let previous = self
             .previous
             .get(&row.id)
             .cloned()
-            .unwrap_or_else(|| self.station.clone());
-        radio_model::stream_title(&meta_item(row), &previous, &self.station)
+            .unwrap_or_else(|| name.clone());
+        radio_model::stream_title(&meta_item(row), &previous, &name)
     }
 }
 

@@ -246,6 +246,9 @@ pub(crate) fn alarm_text(n: &Names<'_>, a: &Alarm) -> String {
             format!("The local output runs on the fallback: {reason}")
         }
         Alarm::LogFailed { reason } => format!("Writing the as-played log failed: {reason}"),
+        Alarm::PictureFailed { path, reason } => {
+            format!("The picture {path} does not load: {reason}")
+        }
         Alarm::Unsupported { what } => format!("Not available in this build: {what}"),
     }
 }
@@ -268,7 +271,8 @@ fn alarm_severity(a: &Alarm) -> Severity {
         | Alarm::OperatorItemEvicted { .. }
         | Alarm::HardEventLocked { .. }
         | Alarm::HardEventCancelled { .. }
-        | Alarm::OutputFallback { .. } => Severity::Warning,
+        | Alarm::OutputFallback { .. }
+        | Alarm::PictureFailed { .. } => Severity::Warning,
         Alarm::ClockStep { .. } | Alarm::Unsupported { .. } => Severity::Info,
     }
 }

@@ -23,6 +23,7 @@ pub(crate) enum Page {
     Meters,
     Icecast,
     WebRtc,
+    Branding,
     Clock,
     History,
     Library,
@@ -32,7 +33,7 @@ pub(crate) enum Page {
 
 impl Page {
     /// The pages in rail order: each group's pages together.
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Decks,
         Self::Cartwall,
         Self::Devices,
@@ -40,6 +41,7 @@ impl Page {
         Self::Meters,
         Self::Icecast,
         Self::WebRtc,
+        Self::Branding,
         Self::Clock,
         Self::History,
         Self::Library,
@@ -51,6 +53,7 @@ impl Page {
         match self {
             Self::Decks => "Decks",
             Self::WebRtc => "WebRTC",
+            Self::Branding => "Branding",
             Self::Cartwall => "Cartwall",
             Self::Clock => "Clock",
             Self::History => "History",
@@ -69,6 +72,7 @@ impl Page {
             Self::Meters => Icon::Gauge,
             Self::Icecast => Icon::RadioTower,
             Self::WebRtc => Icon::Podcast,
+            Self::Branding => Icon::Image,
             Self::Cartwall => Icon::LayoutGrid,
             Self::Clock => Icon::Clock,
             Self::History => Icon::History,
@@ -82,7 +86,7 @@ impl Page {
         match self {
             Self::Decks | Self::Cartwall => "Playout",
             Self::Devices | Self::Processing | Self::Meters => "Audio",
-            Self::Icecast | Self::WebRtc => "Streaming",
+            Self::Icecast | Self::WebRtc | Self::Branding => "Streaming",
             Self::Clock | Self::History | Self::Library | Self::Alarms => "Windows",
             Self::Shortcuts => "Input",
         }
@@ -100,6 +104,7 @@ impl Page {
             Self::Meters => "How long the meters hold a peak.",
             Self::Icecast => "The Icecast server that the station streams to.",
             Self::WebRtc => "The stream that listeners open in a browser, with no server between.",
+            Self::Branding => "The name and logo that listeners see when no song shows.",
             Self::Clock => "What the clock window shows.",
             Self::History => "The columns of the as-played log and how far back it goes.",
             Self::Library => "The folders that the library reads, and its categories.",
@@ -123,6 +128,7 @@ impl Page {
             }
             Self::Meters => "peak hold",
             Self::WebRtc => "webrtc listeners browser link stream port bitrate kbps",
+            Self::Branding => "station name logo picture brand listeners player",
             Self::Icecast => {
                 "status now streaming server host port tls encrypt mount user password format \
                  opus mp3 bitrate public address listeners fallback"
@@ -150,7 +156,8 @@ impl Page {
             | Self::History
             | Self::Alarms
             | Self::Library
-            | Self::WebRtc => Ok(()),
+            | Self::WebRtc
+            | Self::Branding => Ok(()),
             Self::Devices => Err("The devices of this computer have no defaults to go back to."),
             Self::Icecast => Err("The Icecast server has no default; change it field by field."),
             Self::Cartwall => Err("The cart pages are the station's own and have no defaults."),
@@ -194,6 +201,7 @@ pub(crate) struct State {
     pub(crate) search: String,
     /// The Search Preferences shortcut was pressed this frame.
     pub(crate) find: bool,
+    branding: BrandingDraft,
 }
 
 impl State {
@@ -201,6 +209,25 @@ impl State {
     pub(crate) fn open_at(&mut self, page: Page) {
         self.page = page;
         self.search.clear();
+    }
+
+    /// Saves a draft of the Branding page that is still being typed. It runs when
+    /// Preferences closes or the person moves to another page, where the field is no longer
+    /// drawn and so never sees itself lose the focus.
+    pub(crate) fn flush_drafts(&mut self, view: &StationView, actions: &mut Vec<Action>) {
+        use crate::parts;
+        let draft = &mut self.branding;
+        let Some(key) = draft.editing.take() else {
+            return;
+        };
+        let typed = if key == radio_model::BRANDING_NAME_KEY {
+            &draft.name
+        } else {
+            &draft.logo
+        };
+        if typed.as_str() != parts::text(view, parts::BRANDING, key) {
+            actions.push(parts::set(parts::BRANDING, key, typed.clone()));
+        }
     }
 }
 
@@ -247,7 +274,10 @@ pub(crate) fn show(
         &tabs,
         &mut nav,
         t,
-        |ui, i| {
+        // `searching` is true while there is search text: a page that the search selects
+        // does not take the focus from the search field.
+        |ui, i, searching| {
+            let branding = &mut state.branding;
             let page = Page::ALL.get(i).copied().unwrap_or_default();
             if let Some(tab) = page.mixer() {
                 mixer::preferences(ui, view, mixer_state, tab, streaming, actions, t);
@@ -262,12 +292,16 @@ pub(crate) fn show(
                 Page::Alarms => alarms::preferences(ui, view, actions, t),
                 Page::Shortcuts => shortcuts_page(ui, actions, t),
                 Page::WebRtc => webrtc_page(ui, view, actions, t),
+                Page::Branding => branding_page(ui, view, branding, !searching, actions, t),
                 _ => {}
             }
         },
     );
     state.search = nav.search;
     if let Some(&p) = Page::ALL.get(nav.selected) {
+        if p != state.page {
+            state.flush_drafts(view, actions);
+        }
         state.page = p;
     }
     if out.restore {
@@ -301,6 +335,14 @@ fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Ve
                 "direct_reserve",
                 RESERVE_DEFAULT,
             ));
+        }
+        Page::Branding => {
+            for key in [
+                radio_model::BRANDING_NAME_KEY,
+                radio_model::BRANDING_LOGO_KEY,
+            ] {
+                actions.push(crate::parts::set(crate::parts::BRANDING, key, ""));
+            }
         }
         // Pages without defaults show the button disabled with the reason.
         Page::Devices | Page::Icecast | Page::Cartwall | Page::Shortcuts => {}
@@ -434,6 +476,201 @@ fn webrtc_page(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
     });
 }
 
+/// What the Branding page is typing. A field keeps its text while it has the focus, and the
+/// setting is saved when the field is left, so the station does not read each keystroke.
+#[derive(Default)]
+struct BrandingDraft {
+    name: String,
+    logo: String,
+    /// The field being typed in, by key.
+    editing: Option<&'static str>,
+    /// The frame in which the page last drew, to tell when it opens.
+    drawn: u64,
+    /// The logo that egui holds, so a logo that left is forgotten.
+    picture: Option<String>,
+}
+
+/// A text field of the Branding page. `saved` is the setting; the draft follows it until the
+/// field has the focus. It returns the text when the person left the field with a change.
+fn branding_field(
+    ui: &mut egui::Ui,
+    key: &'static str,
+    draft: &mut String,
+    editing: &mut Option<&'static str>,
+    saved: &str,
+    hint: &str,
+    width: f32,
+) -> (egui::Response, Option<String>) {
+    use crate::theme::size;
+    if *editing != Some(key) {
+        draft.clear();
+        draft.push_str(saved);
+    }
+    let field = egui::TextEdit::singleline(draft).hint_text(hint);
+    let r = ui.add_sized([width, size::CONTROL_SM], field);
+    if r.has_focus() {
+        *editing = Some(key);
+    }
+    let mut out = None;
+    if r.lost_focus() {
+        *editing = None;
+        if draft.as_str() != saved {
+            out = Some(draft.clone());
+        }
+    }
+    (r, out)
+}
+
+/// The Branding page: the station name and the logo that listeners see.
+fn branding_page(
+    ui: &mut egui::Ui,
+    view: &StationView,
+    draft: &mut BrandingDraft,
+    take_focus: bool,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    use crate::theme::{self, size, space};
+    use crate::{icons, parts, view::check_picture};
+    use egui::RichText;
+    let frame = ui.ctx().cumulative_frame_nr();
+    let opened = frame > draft.drawn + 1;
+    draft.drawn = frame;
+    if opened {
+        draft.editing = None;
+    }
+    let name = parts::text(view, parts::BRANDING, radio_model::BRANDING_NAME_KEY);
+    let logo = parts::text(view, parts::BRANDING, radio_model::BRANDING_LOGO_KEY);
+    let caption = |text: &str| {
+        RichText::new(text)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted)
+    };
+    settings::section(ui, "Station", t, |ui| {
+        let BrandingDraft {
+            name: name_draft,
+            logo: logo_draft,
+            editing,
+            picture,
+            ..
+        } = draft;
+        settings::form_row(ui, "Station name", t, |ui| {
+            let (r, saved) = branding_field(
+                ui,
+                radio_model::BRANDING_NAME_KEY,
+                name_draft,
+                editing,
+                &name,
+                radio_model::DEFAULT_STATION_NAME,
+                ui.available_width(),
+            );
+            if opened && take_focus {
+                r.request_focus();
+            }
+            if let Some(text) = saved {
+                actions.push(parts::set(
+                    parts::BRANDING,
+                    radio_model::BRANDING_NAME_KEY,
+                    text,
+                ));
+            }
+            r
+        });
+        settings::form_note(
+            ui,
+            caption(view.say(
+                "Preview: saved, and taken up by a station.",
+                "Listeners see the name at the next item. Icecast takes it at the next start of \
+                 the app.",
+            )),
+        );
+        settings::form_row(ui, "Logo", t, |ui| {
+            let buttons = 2.0 * (size::DIALOG_BUTTON_W + ui.spacing().item_spacing.x);
+            let (r, saved) = branding_field(
+                ui,
+                radio_model::BRANDING_LOGO_KEY,
+                logo_draft,
+                editing,
+                &logo,
+                "path to a PNG, JPEG or WebP picture",
+                (ui.available_width() - buttons).max(size::CONTROL_SM),
+            );
+            if let Some(text) = saved {
+                actions.push(parts::set(
+                    parts::BRANDING,
+                    radio_model::BRANDING_LOGO_KEY,
+                    text,
+                ));
+            }
+            let button = |ui: &mut egui::Ui, label: &str, on: bool| {
+                ui.add_enabled_ui(on, |ui| {
+                    ui.add_sized(
+                        [size::DIALOG_BUTTON_W, size::CONTROL_SM],
+                        egui::Button::new(label),
+                    )
+                })
+                .inner
+            };
+            if button(ui, "Browse…", true).clicked()
+                && let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Pictures", &crate::view::PICTURE_EXTENSIONS)
+                    .pick_file()
+            {
+                actions.push(parts::set(
+                    parts::BRANDING,
+                    radio_model::BRANDING_LOGO_KEY,
+                    file.display().to_string(),
+                ));
+            }
+            if button(ui, "Clear", !logo.is_empty()).clicked() {
+                actions.push(parts::set(
+                    parts::BRANDING,
+                    radio_model::BRANDING_LOGO_KEY,
+                    "",
+                ));
+            }
+            r
+        });
+        let problem = |ui: &mut egui::Ui, why: &str| {
+            settings::form_note(
+                ui,
+                RichText::new(icons::lead(icons::Icon::TriangleAlert, why))
+                    .font(theme::text(theme::CAPTION))
+                    .color(t.danger),
+            );
+        };
+        // The picture, or why there is none. A logo that failed never looks set.
+        let mut shown = None;
+        match (check_picture(&logo), &view.branding_logo) {
+            _ if logo.trim().is_empty() => {
+                settings::form_note(ui, caption("No logo: listeners see the app icon."))
+            }
+            (Err(why), _) => problem(ui, why),
+            (_, Some(Err(why))) => problem(ui, why),
+            (Ok(()), Some(Ok(cover))) => {
+                shown = Some(cover.uri.clone());
+                ui.add(
+                    egui::Image::from_bytes(cover.uri.clone(), cover.bytes.clone())
+                        .fit_to_exact_size(egui::Vec2::splat(size::LOGO_PREVIEW))
+                        .corner_radius(t.radius)
+                        .alt_text("Logo preview"),
+                );
+            }
+            (Ok(()), None) => settings::form_note(
+                ui,
+                caption(view.say("Preview: the picture is not read.", "Reading the picture…")),
+            ),
+        }
+        ui.add_space(space::XS);
+        if *picture != shown {
+            if let Some(gone) = picture.take() {
+                ui.ctx().forget_image(&gone);
+            }
+            *picture = shown;
+        }
+    });
+}
+
 /// The Shortcuts page: the keyboard shortcuts are edited in their own dialog, which needs
 /// the room of a table.
 fn shortcuts_page(ui: &mut egui::Ui, actions: &mut Vec<Action>, t: &Tokens) {
@@ -447,5 +684,58 @@ fn shortcuts_page(ui: &mut egui::Ui, actions: &mut Vec<Action>, t: &Tokens) {
     );
     if ui.button("Keyboard Shortcuts…").clicked() {
         actions.push(Action::OpenShortcuts);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::Edit;
+
+    fn tab(page: Page) -> Tab {
+        Tab {
+            label: page.label(),
+            icon: page.icon(),
+            group: page.group(),
+            description: page.description(),
+            keywords: page.keywords(),
+            dot: None,
+            restore: page.restore(),
+        }
+    }
+
+    #[test]
+    fn a_search_for_logo_finds_branding() {
+        let found: Vec<Page> = Page::ALL
+            .into_iter()
+            .filter(|p| tab(*p).matches("logo"))
+            .collect();
+        assert_eq!(found, vec![Page::Branding]);
+    }
+
+    #[test]
+    fn restoring_branding_clears_the_name_and_the_logo() {
+        assert!(Page::Branding.restore().is_ok());
+        let mut actions = Vec::new();
+        restore_defaults(Page::Branding, &mut mixer::State::default(), &mut actions);
+        let mut keys: Vec<String> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::EditQuiet(Edit::SetPartSetting { part, key, value })
+                    if part == radio_model::BRANDING_PART && value == "" =>
+                {
+                    Some(key.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                radio_model::BRANDING_LOGO_KEY,
+                radio_model::BRANDING_NAME_KEY
+            ]
+        );
     }
 }

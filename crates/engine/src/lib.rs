@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
 };
 
@@ -348,6 +348,23 @@ impl State {
             .and_then(|s| s.get(radio_model::DECK_COUNT_KEY))
             .and_then(Value::as_u64);
         radio_model::deck_count(stored)
+    }
+
+    /// A text setting, trimmed. `None` when it is unset, not text, or blank.
+    fn text_setting(&self, part: &str, key: &str) -> Option<String> {
+        let text = self.settings(part)?.get(key)?.as_str()?.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    /// The station name from Preferences, or `None` when it is unset or blank.
+    pub fn station_name(&self) -> Option<String> {
+        self.text_setting(radio_model::BRANDING_PART, radio_model::BRANDING_NAME_KEY)
+    }
+
+    /// The station logo file from Preferences, or `None` when it is unset or blank.
+    pub fn station_logo(&self) -> Option<PathBuf> {
+        self.text_setting(radio_model::BRANDING_PART, radio_model::BRANDING_LOGO_KEY)
+            .map(PathBuf::from)
     }
 
     /// The settings of all parts of the UI.

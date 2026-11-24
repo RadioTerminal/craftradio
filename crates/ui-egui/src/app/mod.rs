@@ -709,6 +709,10 @@ impl RadioApp {
         if done {
             open.set(w, false);
         }
+        if !open.get(w) {
+            // A draft still being typed is saved however Preferences closed.
+            self.preferences.flush_drafts(view, actions);
+        }
         if was_open && !open.get(w) {
             // The next visit starts without the last search, so a ⚙ opens on its own page.
             self.preferences.search.clear();

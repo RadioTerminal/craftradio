@@ -26,8 +26,6 @@ use radio_ui_egui::theme::size;
 use radio_ui_egui::{AppPrefs, MockSource, RadioApp, ToolWindow, ViewSource};
 use radio_ui_engine::{EngineSource, KEYCHAIN_SERVICE, KeyringStore, SourceOptions};
 
-/// The stream title of items that hide their own title.
-const STATION_NAME: &str = "Radio";
 /// The folder of the app in the platform data folder.
 const APP_DIR: &str = "radio-station-manager";
 
@@ -202,7 +200,14 @@ fn real(args: &Args) -> Result<(), String> {
     }
     let tz = TimeZone::get(&engine.state().station.tz).unwrap_or(TimeZone::UTC);
     let secrets = KeyringStore::new(KEYCHAIN_SERVICE);
-    let icecast = match radio_ui_engine::icecast_config(engine.state(), &secrets, STATION_NAME) {
+    let icecast = match radio_ui_engine::icecast_config(
+        engine.state(),
+        &secrets,
+        &engine
+            .state()
+            .station_name()
+            .unwrap_or_else(|| radio_model::DEFAULT_STATION_NAME.to_owned()),
+    ) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("radio: Icecast stays off: {e}");
@@ -234,7 +239,7 @@ fn real(args: &Args) -> Result<(), String> {
     webrtc.identity = station_identity(&dir);
     cfg.webrtc = Some(webrtc);
     cfg.webrtc_always = args.webrtc.is_some();
-    cfg.station_name = STATION_NAME.to_owned();
+    cfg.station_name = radio_model::DEFAULT_STATION_NAME.to_owned();
     let fallback = dir.join("Fallback");
     cfg.fallback_folder = fallback.is_dir().then_some(fallback);
     let playout = Playout::start(engine, cfg).map_err(|e| format!("the playout failed: {e}"))?;
@@ -247,7 +252,7 @@ fn real(args: &Args) -> Result<(), String> {
         playout,
         SourceOptions {
             tz,
-            station_name: STATION_NAME.to_owned(),
+            station_name: radio_model::DEFAULT_STATION_NAME.to_owned(),
         },
     )
     .with_secrets(Arc::new(secrets));
@@ -355,7 +360,7 @@ fn headless(
         playout,
         SourceOptions {
             tz,
-            station_name: STATION_NAME.to_owned(),
+            station_name: radio_model::DEFAULT_STATION_NAME.to_owned(),
         },
     );
     if let Some(control) = control {

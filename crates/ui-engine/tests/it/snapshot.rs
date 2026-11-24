@@ -113,3 +113,92 @@ fn failed_checkpoints_show_a_persistent_warning() {
     assert!(view.mode.contains("NOT SAVED"));
     assert!(view.mode.contains("write denied"));
 }
+
+/// A row that hides its title shows the station name from Preferences, not the name the
+/// source started with.
+#[test]
+fn a_hidden_title_shows_the_branding_name_in_the_view() {
+    let d = dir();
+    let mut song = track(1, "Quiet", &wav(&d, "quiet", 3.0), 3.0);
+    song.meta = radio_model::ItemMeta {
+        title: "Quiet".into(),
+        publish: radio_model::PublishMode::Hide,
+        ..Default::default()
+    };
+    let (mut source, clock) = source(vec![song]);
+    wait_for(&mut source, &clock, |v| !v.rows.is_empty());
+    source
+        .playout()
+        .dispatch(radio_engine::Command::SettingsSet {
+            part: radio_model::BRANDING_PART.into(),
+            key: radio_model::BRANDING_NAME_KEY.into(),
+            value: "Radio Lipa".into(),
+        })
+        .unwrap();
+    let view = wait_for(&mut source, &clock, |v| v.station == "Radio Lipa");
+    let row = view.rows.first().expect("a row");
+    assert_eq!(source.stream_title(row), "Radio Lipa");
+}
+
+/// A logo that does not load shows why, a logo that loads shows its picture, and no logo
+/// shows nothing.
+#[test]
+fn a_logo_that_does_not_load_shows_why() {
+    use radio_ui_egui::view::Edit;
+    // A 1 by 1 PNG.
+    const PNG: [u8; 70] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64,
+        0x60, 0xf8, 0x5f, 0x0f, 0x00, 0x02, 0x87, 0x01, 0x80, 0xeb, 0x47, 0xba, 0x92, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let d = dir();
+    let (mut source, clock) = source(Vec::new());
+    let view = wait_for(&mut source, &clock, |_| true);
+    assert!(view.branding_logo.is_none(), "no logo is set");
+    let set = |source: &mut radio_ui_engine::EngineSource, path: &std::path::Path| {
+        let edit = Edit::SetPartSetting {
+            part: radio_model::BRANDING_PART.into(),
+            key: radio_model::BRANDING_LOGO_KEY.into(),
+            value: path.to_string_lossy().into_owned().into(),
+        };
+        assert_eq!(source.edit(edit), Ok(1));
+    };
+    let text = d.join("logo.png");
+    std::fs::write(&text, b"this is not a picture").unwrap();
+    set(&mut source, &text);
+    // Until the lane answers, nothing shows: no picture and no error.
+    let view = wait_for(&mut source, &clock, |v| v.branding_logo.is_some());
+    assert!(
+        matches!(&view.branding_logo, Some(Err(why)) if !why.is_empty()),
+        "a text file is no picture: {:?}",
+        view.branding_logo
+    );
+    let real = d.join("real.png");
+    std::fs::write(&real, PNG).unwrap();
+    set(&mut source, &real);
+    let view = wait_for(
+        &mut source,
+        &clock,
+        |v| matches!(&v.branding_logo, Some(Ok(c)) if c.uri.contains("real.png")),
+    );
+    let Some(Ok(cover)) = &view.branding_logo else {
+        panic!("a real PNG loads: {:?}", view.branding_logo);
+    };
+    assert!(!cover.bytes.is_empty());
+    // Back to the text file: once the picture of the other path has left, it never returns,
+    // and what settles is the error of the new path.
+    set(&mut source, &text);
+    let left = std::cell::Cell::new(false);
+    let view = wait_for(&mut source, &clock, |v| {
+        let old = matches!(&v.branding_logo, Some(Ok(c)) if c.uri.contains("real.png"));
+        assert!(!(left.get() && old), "the old path's picture came back");
+        left.set(left.get() || !old);
+        matches!(v.branding_logo, Some(Err(_)))
+    });
+    assert!(matches!(view.branding_logo, Some(Err(_))));
+    set(&mut source, std::path::Path::new(""));
+    let view = wait_for(&mut source, &clock, |v| v.branding_logo.is_none());
+    assert!(view.branding_logo.is_none(), "clearing the logo shows none");
+}

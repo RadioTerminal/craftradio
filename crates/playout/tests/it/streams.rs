@@ -2,6 +2,7 @@ use crate::fixtures::*;
 use radio_engine::Command;
 use radio_model::Source;
 use radio_playout::{Alarm, DeckPhase};
+use radio_stream::WebRtcConfig;
 use std::net::TcpListener;
 use std::time::Duration;
 
@@ -105,4 +106,64 @@ fn a_stream_whose_tls_fails_says_why_in_its_alarm() {
         );
     };
     assert!(reason.starts_with("TLS: "), "{reason}");
+}
+
+/// The title that `GET /now` of the listener server gives.
+fn now_title(port: u16) -> String {
+    use std::io::{Read, Write};
+    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    conn.write_all(b"GET /now HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut reply = String::new();
+    conn.read_to_string(&mut reply).unwrap();
+    reply
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// An item that hides its own title shows the station name from Preferences, and the
+/// configured name when that setting is blank.
+#[test]
+fn a_hidden_title_shows_the_station_name_from_the_settings() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut first = file_item(1, "First", &wav("n-first", 2.0, Side::Left), 2.0, 2.0, 0.0);
+    first.meta.publish = radio_model::PublishMode::Hide;
+    let mut second = file_item(
+        2,
+        "Second",
+        &wav("n-second", 2.0, Side::Left),
+        2.0,
+        2.0,
+        0.0,
+    );
+    second.meta.publish = radio_model::PublishMode::Hide;
+    let (p, clock) = offline(engine_with(vec![first, second]), |cfg| {
+        let mut w = WebRtcConfig::new(([127, 0, 0, 1], port).into());
+        w.stun.clear();
+        w.trackers.clear();
+        cfg.webrtc = Some(w);
+        cfg.webrtc_always = true;
+        cfg.station_name = "Configured Radio".into();
+    });
+    let set_name = |name: &str| {
+        p.dispatch(Command::SettingsSet {
+            part: radio_model::BRANDING_PART.into(),
+            key: radio_model::BRANDING_NAME_KEY.into(),
+            value: name.into(),
+        })
+        .unwrap();
+    };
+    set_name("Radio Lipa");
+    run(&p, &clock, 0.5);
+    assert_eq!(now_title(port), "Radio Lipa");
+
+    set_name("  ");
+    run(&p, &clock, 2.5);
+    assert_eq!(now_title(port), "Configured Radio");
 }

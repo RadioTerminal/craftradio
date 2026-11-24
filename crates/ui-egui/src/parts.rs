@@ -16,6 +16,8 @@ pub(crate) const MIXER: &str = "mixer";
 pub(crate) const DECKS: &str = radio_model::DECKS_PART;
 /// The WebRTC listener stream: the same part the playout reads.
 pub(crate) const WEBRTC: &str = "webrtc";
+/// The station name and logo: the same part the playout reads.
+pub(crate) const BRANDING: &str = radio_model::BRANDING_PART;
 pub(crate) const PREFERENCES: &str = "preferences";
 /// Which tool windows are open, by title, and whether the Library is docked.
 pub(crate) const WINDOWS: &str = "windows";
@@ -41,6 +43,14 @@ pub(crate) fn u32(view: &StationView, part: &str, key: &str, default: u32) -> u3
         .and_then(Value::as_u64)
         .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(default)
+}
+
+/// A text setting, or an empty string when it is unset.
+pub(crate) fn text(view: &StationView, part: &str, key: &str) -> String {
+    get(view, part, key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 pub(crate) fn strings(view: &StationView, part: &str, key: &str, default: &[&str]) -> Vec<String> {

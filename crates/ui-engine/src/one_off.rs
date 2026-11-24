@@ -51,6 +51,7 @@ pub(crate) fn view_of(o: &OneOff) -> OneOffView {
         hard: o.fix == FixMode::Hard,
         tolerance_s: o.tolerance.as_secs_f32(),
         repeat: repeat_of(o.repeat),
+        picture: o.item.meta.picture.clone(),
     }
 }
 
@@ -137,6 +138,9 @@ impl EngineSource {
 
     /// Sends the one-off with its item. A new one-off gets a fresh item id.
     pub(crate) fn send_one_off(&mut self, v: &OneOffView, mut item: Item) -> Result<(), String> {
+        // The picture of the one-off always wins, empty too: the dialog starts with the
+        // picture of a library item, and a cleared one stays cleared.
+        item.meta.picture = v.picture.trim().to_owned();
         item.id = ItemId(if v.id == 0 { self.fresh_ids(1) } else { v.id });
         let what = format!(
             "Saved the one-off {} at {}",

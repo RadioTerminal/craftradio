@@ -215,3 +215,11 @@ fn validate_rejects_duplicate_item_ids() {
     st.playlists.push(other);
     assert_eq!(st.validate(), Err(ModelError::DuplicateId(1)));
 }
+
+#[test]
+fn an_item_saved_before_pictures_loads_with_none() {
+    let meta: radio_model::ItemMeta =
+        toml::from_str("title = \"Echo\"\nartist = \"Cloud\"").unwrap();
+    assert!(meta.picture.is_empty());
+    assert_eq!(meta.title, "Echo");
+}

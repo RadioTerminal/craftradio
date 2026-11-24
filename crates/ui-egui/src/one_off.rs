@@ -14,7 +14,9 @@ use jiff::{RoundMode, ToSpan, Unit};
 use crate::add_menu::{self, DEFAULT_PLANNED_MIN, KEEP_ALIVE_LABEL};
 use crate::app::Action;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{Edit, OneOffRepeat, OneOffSource, OneOffView, StationView, check_stream_url};
+use crate::view::{
+    Edit, OneOffRepeat, OneOffSource, OneOffView, StationView, check_picture, check_stream_url,
+};
 
 /// The tolerance of a soft one-off that nobody set, in seconds (spec 6.3).
 pub(crate) const DEFAULT_TOLERANCE_S: f32 = 1.0;
@@ -78,6 +80,10 @@ pub(crate) struct OneOffDialog {
     pub(crate) hard: bool,
     pub(crate) tolerance_s: f32,
     pub(crate) repeat: OneOffRepeat,
+    /// The one-off's own picture file, or empty.
+    pub(crate) picture: String,
+    /// The picture that the last library pick filled in.
+    filled: String,
     /// True after the first press of Add. Errors show from then on.
     tried: bool,
     /// The first field takes the keyboard focus once.
@@ -119,6 +125,8 @@ impl OneOffDialog {
             hard: true,
             tolerance_s: DEFAULT_TOLERANCE_S,
             repeat: OneOffRepeat::Once,
+            picture: String::new(),
+            filled: String::new(),
             tried: false,
             focus: true,
         }
@@ -133,6 +141,7 @@ impl OneOffDialog {
         d.hard = o.hard;
         d.tolerance_s = o.tolerance_s;
         d.repeat = o.repeat;
+        d.picture.clone_from(&o.picture);
         let split = |len: Duration| {
             let s = u32::try_from(len.as_secs()).unwrap_or(u32::MAX);
             (s / 60, s % 60)
@@ -170,6 +179,18 @@ impl OneOffDialog {
             }
         }
         d
+    }
+
+    /// Picks a library item. The picture follows the pick while nobody set one by hand.
+    fn pick_library(&mut self, id: u64, title: String, picture: &str) {
+        if self.library.as_ref().is_some_and(|(now, _)| *now == id) {
+            return;
+        }
+        self.library = Some((id, title));
+        if self.picture.is_empty() || self.picture == self.filled {
+            self.picture = picture.to_owned();
+            self.filled = picture.to_owned();
+        }
     }
 
     fn len(&self) -> Duration {
@@ -227,6 +248,7 @@ impl OneOffDialog {
     /// The one-off that the fields describe, and a note for a time that happens twice.
     pub(crate) fn check(&self, view: &StationView) -> Result<(OneOffView, Option<String>), String> {
         let source = self.source(view)?;
+        check_picture(&self.picture).map_err(str::to_owned)?;
         let date: civil::Date = self
             .date
             .trim()
@@ -263,6 +285,7 @@ impl OneOffDialog {
                     self.tolerance_s
                 },
                 repeat: self.repeat,
+                picture: self.picture.trim().to_owned(),
             },
             note,
         ))
@@ -359,7 +382,7 @@ fn source_rows(ui: &mut egui::Ui, d: &mut OneOffDialog, view: &StationView, t: &
                                     Some(a) => format!("{a} – {}", item.title),
                                     None => item.title.clone(),
                                 };
-                                d.library = Some((item.id, title));
+                                d.pick_library(item.id, title, &item.meta.picture);
                             }
                         }
                     })
@@ -532,6 +555,16 @@ pub(crate) fn show(
                                     }
                                 });
                             ui.end_row();
+                            let l = label(ui, "Picture", t);
+                            widgets::picture_field(
+                                ui,
+                                &mut d.picture,
+                                "optional, shown to listeners",
+                                l.id,
+                                true,
+                                t,
+                            );
+                            ui.end_row();
                             let checked = d.check(view);
                             let line = match &checked {
                                 Err(e) if d.tried => Some((e.clone(), t.danger)),
@@ -646,16 +679,53 @@ mod tests {
     #[test]
     fn editing_a_one_off_fills_the_fields_back() {
         let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
+        let file =
+            std::env::temp_dir().join(format!("craftradio-one-off-{}.png", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        let picture = file.to_string_lossy().into_owned();
         let (o, _) = {
             let mut d = url_dialog(&view);
             d.hard = false;
             d.tolerance_s = 2.5;
             d.repeat = OneOffRepeat::Weekly;
+            d.picture.clone_from(&picture);
             d.check(&view).unwrap()
         };
         let mut o = o;
         o.id = 9;
         let back = OneOffDialog::edit(&o, &view).check(&view).unwrap().0;
         assert_eq!(back, o);
+        assert_eq!(back.picture, picture, "the picture comes back");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn a_library_pick_fills_the_picture_until_it_is_set_by_hand() {
+        let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
+        let mut d = OneOffDialog::new(&view);
+        d.pick_library(1, "One".into(), "/art/one.png");
+        assert_eq!(d.picture, "/art/one.png");
+        d.pick_library(2, "Two".into(), "");
+        assert_eq!(d.picture, "", "it follows an item without a picture");
+        d.pick_library(1, "One".into(), "/art/one.png");
+        d.pick_library(1, "One".into(), "/art/other.png");
+        assert_eq!(d.picture, "/art/one.png", "the same item changes nothing");
+        d.picture = "/mine.webp".into();
+        d.pick_library(3, "Three".into(), "/art/three.png");
+        assert_eq!(d.picture, "/mine.webp", "a picture set by hand stays");
+        assert_eq!(d.library.as_ref().map(|l| l.0), Some(3));
+    }
+
+    #[test]
+    fn a_picture_that_is_not_one_stops_the_one_off() {
+        let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
+        let mut d = url_dialog(&view);
+        d.picture = "/art/show.mp3".to_owned();
+        assert_eq!(
+            d.check(&view).unwrap_err(),
+            check_picture("/art/show.mp3").unwrap_err()
+        );
+        d.picture.clear();
+        assert!(d.check(&view).is_ok());
     }
 }
