@@ -141,7 +141,7 @@ fn describe_real(edit: &Edit, n: usize) -> String {
         Edit::SetWeight { weight, .. } => format!("Set the weight to ×{weight}"),
         Edit::SetStrip { strip, .. } => format!("Changed strip {strip}"),
         Edit::SetIcecast(ice) => format!(
-            "Applied the mount {}:{}{}; it connects on the next start",
+            "Applied the mount {}:{}{}; it connects now while on air",
             ice.host, ice.port, ice.mount
         ),
         Edit::SetStreaming(true) => "Streaming to listeners starts".to_owned(),

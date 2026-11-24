@@ -580,8 +580,7 @@ fn branding_page(
             ui,
             caption(view.say(
                 "Preview: saved, and taken up by a station.",
-                "Listeners see the name at the next item. Icecast takes it at the next start of \
-                 the app.",
+                "Listeners see the name at the next item. Icecast reconnects with the new name.",
             )),
         );
         settings::form_row(ui, "Logo", t, |ui| {

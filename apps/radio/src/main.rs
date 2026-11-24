@@ -246,7 +246,7 @@ fn real(args: &Args) -> Result<(), String> {
     println!("radio: station at {}", dir.join("station.db").display());
     let control = control_channel(args, &playout);
     if args.headless {
-        return headless(playout, control, args.run_for, tz);
+        return headless(playout, control, args.run_for, tz, Arc::new(secrets));
     }
     let mut source = EngineSource::new(
         playout,
@@ -351,6 +351,7 @@ fn headless(
     control: Option<radio_control::Control>,
     run_for: Option<Duration>,
     tz: jiff::tz::TimeZone,
+    secrets: Arc<dyn radio_ui_engine::SecretStore + Sync>,
 ) -> Result<(), String> {
     let alarms = playout.alarms().map_err(|e| e.to_string())?;
     let view = playout.snapshot();
@@ -363,7 +364,9 @@ fn headless(
             tz,
             station_name: radio_model::DEFAULT_STATION_NAME.to_owned(),
         },
-    );
+    )
+    // The keychain, so Icecast settings that the CLI or MCP change apply while it runs.
+    .with_secrets(secrets);
     if let Some(control) = control {
         source = source.with_companion(Box::new(control));
     }

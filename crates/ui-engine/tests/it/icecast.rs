@@ -15,6 +15,14 @@ impl SecretStore for Shared {
     }
 }
 
+/// A port on this computer where nobody listens, so a source that dials it never connects.
+fn refusing_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a free port")
+        .port()
+}
+
 /// The Icecast password goes to the secret store. The settings and the snapshot never carry
 /// it; the snapshot only says that it is set.
 #[test]
@@ -24,14 +32,14 @@ fn the_icecast_password_stays_out_of_the_settings_and_the_snapshot() {
     let mut source = source.with_secrets(std::sync::Arc::new(Shared(store.clone())));
     let secret = "hunter-test-only";
     let mount = IcecastView {
-        host: "stream.example.org".into(),
-        port: 8000,
+        host: "127.0.0.1".into(),
+        port: refusing_port(),
         mount: "/live".into(),
         user: "source".into(),
         password: secret.into(),
         password_set: false,
         keychain_error: None,
-        tls: true,
+        tls: false,
         format: StreamFormat::Opus,
         kbps: 96,
         public_url: String::new(),
@@ -44,13 +52,13 @@ fn the_icecast_password_stays_out_of_the_settings_and_the_snapshot() {
         "no password in the snapshot"
     );
     assert!(view.icecast.password_set);
-    assert_eq!(view.icecast.host, "stream.example.org");
+    assert_eq!(view.icecast.host, "127.0.0.1");
     let settings = serde_json::to_string(&view.settings).unwrap();
     assert!(!settings.contains(secret), "no password in the settings");
     assert_ne!(
         view.output.icecast,
         Status::Connected,
-        "saving does not connect"
+        "a mount where nobody listens is not Connected"
     );
 
     let state = source.playout().snapshot().state;
@@ -68,14 +76,14 @@ fn a_changed_host_gets_no_password_of_the_old_mount() {
     let (source, clock) = source(Vec::new());
     let mut source = source.with_secrets(std::sync::Arc::new(Shared(store.clone())));
     let mut mount = IcecastView {
-        host: "stream.example.org".into(),
-        port: 8000,
+        host: "127.0.0.1".into(),
+        port: refusing_port(),
         mount: "/live".into(),
         user: "source".into(),
         password: "only-for-the-old-host".into(),
         password_set: false,
         keychain_error: None,
-        tls: true,
+        tls: false,
         format: StreamFormat::Opus,
         kbps: 96,
         public_url: String::new(),
@@ -89,12 +97,10 @@ fn a_changed_host_gets_no_password_of_the_old_mount() {
         .dispatch(radio_engine::Command::SettingsSet {
             part: radio_ui_engine::ICECAST_PART.into(),
             key: "host".into(),
-            value: serde_json::json!("other.example.net"),
+            value: serde_json::json!("localhost"),
         })
         .unwrap();
-    let view = wait_for(&mut source, &clock, |v| {
-        v.icecast.host == "other.example.net"
-    });
+    let view = wait_for(&mut source, &clock, |v| v.icecast.host == "localhost");
     assert!(!view.icecast.password_set, "the new host has no password");
     let state = source.playout().snapshot().state;
     assert!(
@@ -130,15 +136,17 @@ fn tls_defaults_on_for_a_remote_host_and_the_start_honours_the_choice() {
     let view = wait_for(&mut source, &clock, |v| v.icecast.host == "127.0.0.1");
     assert!(!view.icecast.tls, "this computer gets no TLS");
 
-    // A person turns TLS off for a remote host, with a password set.
+    // A person turns TLS off for a remote host, with a password set. The host is one that
+    // never resolves (RFC 6761), so the source that now dials reaches no server.
     let mut mount = view.icecast.clone();
-    mount.host = "stream.example.org".into();
+    mount.host = "stream.invalid".into();
+    mount.port = refusing_port();
     mount.mount = "/live".into();
     mount.password = "test-only".into();
     mount.tls = false;
     assert_eq!(source.edit(Edit::SetIcecast(mount)), Ok(1));
     let view = wait_for(&mut source, &clock, |v| {
-        v.icecast.password_set && v.icecast.host == "stream.example.org"
+        v.icecast.password_set && v.icecast.host == "stream.invalid"
     });
     assert!(!view.icecast.tls, "the choice beats the default");
     assert!(view.icecast.password_in_clear(), "the warning shows");
@@ -353,4 +361,43 @@ fn clearing_the_mount_closes_icecast_and_the_strip_says_not_set_up() {
     assert_eq!(icecast_note(&view), "Not set up");
     assert_ne!(view.output.icecast, Status::Connected);
     assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Left);
+}
+
+/// The headless app: no window edits anything; the CLI or MCP sets the Icecast settings while
+/// it runs, the keychain already holds the password, and the source connects without a
+/// restart.
+#[test]
+fn a_headless_station_given_icecast_settings_by_the_cli_connects_without_a_restart() {
+    let (port, seen) = icecast_server();
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let key = format!("icecast:source@127.0.0.1:{port}/live");
+    store.set(&key, "test-only").unwrap();
+    let (source, clock) = source(Vec::new());
+    let mut source = source.with_secrets(std::sync::Arc::new(Shared(store)));
+    let view = source.snapshot(clock.now());
+    assert_eq!(icecast_note(&view), "Not set up");
+
+    for (k, v) in [
+        ("host", serde_json::json!("127.0.0.1")),
+        ("port", serde_json::json!(port)),
+        ("mount", serde_json::json!("/live")),
+        ("tls", serde_json::json!(false)),
+    ] {
+        let _ = source
+            .playout()
+            .dispatch(radio_engine::Command::SettingsSet {
+                part: radio_ui_engine::ICECAST_PART.into(),
+                key: k.into(),
+                value: v,
+            })
+            .unwrap();
+    }
+    let view = wait_for(&mut source, &clock, |v| {
+        v.output.icecast == Status::Connected
+    });
+    assert_eq!(view.output.icecast, Status::Connected);
+    assert!(matches!(
+        seen.recv_timeout(PATIENCE).unwrap(),
+        Seen::Arrived(_)
+    ));
 }
