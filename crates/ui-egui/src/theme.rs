@@ -70,6 +70,8 @@ pub mod size {
     pub const DECK_BUTTON: f32 = CONTROL_MD;
     /// An armed on-air button waits this long for the second press, in seconds.
     pub const ARM_S: f64 = 3.0;
+    /// While a button is armed, it draws again at this interval, in seconds.
+    pub const ARM_REPAINT_S: f32 = 0.1;
     /// Line segments in the countdown ring of an armed button.
     pub const RING_STEPS: usize = 32;
     /// The edge of the card of the deck on air.
