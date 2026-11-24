@@ -181,11 +181,25 @@ impl From<DecodeError> for Halt {
     }
 }
 
+/// Marks every output failed if the thread panics, so a listener is told the outputs are
+/// off instead of to try again in a moment. Dropped after the encoders, whose mounts have
+/// ended by then.
+struct FailOnPanic<'a>(&'a Outputs);
+
+impl Drop for FailOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.fail_all();
+        }
+    }
+}
+
 /// The thread: checks the source, begins the outputs and feeds them while they are heard.
 fn run(pushed: &Arc<Mount>, outputs: &Outputs, stop: &Arc<AtomicBool>) {
     if outputs.is_empty() {
         return;
     }
+    let _panic = FailOnPanic(outputs);
     // A source that can't be decoded never makes an output live.
     match open_source(pushed, stop) {
         Ok(_) => {}
