@@ -654,6 +654,8 @@ pub struct StationView {
     pub folders: Vec<FolderView>,
     /// Settings of each part of the app, by part and key.
     pub settings: Settings,
+    /// The station logo: `None` when none is set, else the picture or why it did not load.
+    pub branding_logo: Option<Result<Cover, String>>,
     /// The current alarms and warnings, in any order. The Alarms window sorts them.
     pub alarms: Vec<AlarmView>,
     /// True for the UI preview. The preview plays no audio and saves nothing.
@@ -1356,6 +1358,22 @@ pub fn check_stream_url(url: &str) -> Result<String, String> {
     Ok(host.to_owned())
 }
 
+/// Check the extension of a picture path. An empty path is fine: it means no picture.
+pub fn check_picture(path: &str) -> Result<(), &'static str> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(());
+    }
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase);
+    match ext.as_deref() {
+        Some("png" | "jpg" | "jpeg" | "webp") => Ok(()),
+        _ => Err("Pick a PNG, JPEG or WebP picture."),
+    }
+}
+
 /// Something that can describe the station at a given instant.
 pub trait ViewSource {
     fn snapshot(&mut self, now: jiff::Timestamp) -> StationView;
@@ -1433,7 +1451,7 @@ pub const NOT_SUPPORTED: &str = "preview — this source cannot do that";
 
 #[cfg(test)]
 mod tests {
-    use super::{IcecastView, check_stream_url};
+    use super::{IcecastView, check_picture, check_stream_url};
 
     /// The warning shows only when the password goes to another computer in clear text.
     #[test]
@@ -1467,5 +1485,14 @@ mod tests {
             !with_user.unwrap_err().contains("secret"),
             "the error does not repeat the password"
         );
+    }
+
+    #[test]
+    fn a_picture_path_needs_a_picture_extension() {
+        assert!(check_picture("").is_ok(), "no logo is fine");
+        assert!(check_picture("a.png").is_ok());
+        assert!(check_picture("/x/Logo.JPG").is_ok());
+        assert!(check_picture("a.mp3").is_err());
+        assert!(check_picture("a").is_err());
     }
 }

@@ -147,6 +147,7 @@ impl ViewSource for MockSource {
             folders: self.folder_views(),
             settings: self.settings.clone(),
             alarms,
+            branding_logo: None,
             preview: true,
         }
     }

@@ -177,3 +177,15 @@ fn the_webrtc_page_keeps_its_port_and_restores_it() {
         "WebRTC has defaults"
     );
 }
+
+#[test]
+fn the_branding_page_says_that_no_logo_means_the_app_icon() {
+    let mut h = preferences();
+    click(&mut h, "Branding");
+    assert!(shows(&h, "Station name") && shows(&h, "Logo"));
+    assert!(shows(&h, "No logo: listeners see the app icon."));
+    assert!(
+        h.get_by_label("Clear").accesskit_node().is_disabled(),
+        "there is no logo to clear"
+    );
+}

@@ -138,6 +138,8 @@ pub mod size {
     pub const DECK_WORD_MIN_W: f32 = 40.0;
     /// The cover on a deck card: as tall as the title and the playlist rows.
     pub const DECK_COVER: f32 = 44.0;
+    /// The station logo in Preferences, as it shows to listeners.
+    pub const LOGO_PREVIEW: f32 = 96.0;
     pub const PROGRESS_H: f32 = 6.0;
     pub const BADGE: f32 = 28.0;
     /// The status cluster beside the decks, by width. Full: every label and the date. Mid: only

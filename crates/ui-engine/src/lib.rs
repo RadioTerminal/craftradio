@@ -178,6 +178,8 @@ pub struct EngineSource {
     /// Covers of the files on the decks, by path. `None` while the background lane reads
     /// the file, and for a file without a cover.
     covers: HashMap<String, Option<Arc<[u8]>>>,
+    /// The station logo as last read: its file, when the file changed, and what it gave.
+    logo: Option<LogoRead>,
     /// The next item id that the source gives out, or 0 to start after the largest id.
     next_id: u64,
     /// Library files that no playlist holds.
@@ -291,6 +293,7 @@ impl EngineSource {
             history_loaded: false,
             history_at: None,
             covers: HashMap::new(),
+            logo: None,
             next_id: 0,
             files: Vec::new(),
             next_file: 0,
@@ -634,6 +637,35 @@ impl EngineSource {
                 cover: self.deck_cover(d.item),
             }
         })
+    }
+
+    /// The station logo for Preferences, or why it does not load. The file is read again only
+    /// when its path or its modified time changes.
+    fn branding_logo(&mut self) -> Option<Result<radio_ui_egui::view::Cover, String>> {
+        let Some(path) = self.state.station_logo() else {
+            self.logo = None;
+            return None;
+        };
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let stale = self
+            .logo
+            .as_ref()
+            .is_none_or(|l| l.path != path || l.modified != modified);
+        if stale {
+            let stamp = modified
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            let result = radio_stream::load_picture(&path).map(|p| radio_ui_egui::view::Cover {
+                uri: format!("bytes://branding-logo/{}?{stamp}", path.display()),
+                bytes: p.data.into(),
+            });
+            self.logo = Some(LogoRead {
+                path,
+                modified,
+                result,
+            });
+        }
+        self.logo.as_ref().map(|l| l.result.clone())
     }
 
     /// The cover of the file of item `id`. The background lane reads it once; until then,
@@ -1015,6 +1047,13 @@ impl EngineSource {
     }
 }
 
+/// The station logo file as last read.
+struct LogoRead {
+    path: std::path::PathBuf,
+    modified: Option<std::time::SystemTime>,
+    result: Result<radio_ui_egui::view::Cover, String>,
+}
+
 /// The name of a mixer strip, as the mixer window shows it.
 pub(crate) fn strip_label(s: Strip) -> &'static str {
     match s {
@@ -1188,6 +1227,7 @@ impl ViewSource for EngineSource {
             output: Self::output(&pv, card_wanted),
             folders: self.folder_views(),
             settings: self.settings(),
+            branding_logo: self.branding_logo(),
             alarms,
             preview: false,
         }
