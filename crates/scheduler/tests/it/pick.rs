@@ -139,3 +139,54 @@ fn equal_daypart_boundaries_allow_the_whole_day() {
         ));
     }
 }
+
+/// Playout makes a new plan, and so a new picker, for every pick. Each picker continues
+/// from the plays so far.
+fn picks_over_new_plans(pl: &radio_model::Playlist, count: usize) -> Vec<ItemId> {
+    let hist = PlayHistory::new();
+    let mut played = Vec::new();
+    for _ in 0..count {
+        let mut picker = Picker::new(pl);
+        picker.resume(pl, &played);
+        played.push(picker.next(pl, &hist, |_| true).unwrap().id);
+    }
+    played
+}
+
+/// A shuffled playlist plays every item before any repeats, also when every pick comes
+/// from a new plan.
+#[test]
+fn shuffle_plays_all_before_repeat_across_plans() {
+    let mut pl = playlist(
+        1,
+        "Test pool",
+        (1..=5)
+            .map(|id| track(id, "Test tone", "Test artist", 30))
+            .collect(),
+    );
+    pl.pick = PickOrder::Shuffle { seed: 42 };
+    let played = picks_over_new_plans(&pl, 20);
+    for cycle in played.chunks_exact(pl.items.len()) {
+        assert_eq!(
+            cycle.iter().collect::<BTreeSet<_>>().len(),
+            pl.items.len(),
+            "a cycle repeats an item: {played:?}"
+        );
+    }
+}
+
+/// A weighted playlist keeps its shares when every pick comes from a new plan: the light
+/// item still plays, and the heavy one plays more.
+#[test]
+fn weighted_keeps_its_shares_across_plans() {
+    let mut pl = pool();
+    pl.pick = PickOrder::Weighted {
+        weights: vec![(ItemId(1), 0), (ItemId(2), 1), (ItemId(3), 3)],
+    };
+    let played = picks_over_new_plans(&pl, 40);
+    let light = played.iter().filter(|id| **id == ItemId(2)).count();
+    let heavy = played.iter().filter(|id| **id == ItemId(3)).count();
+    assert!(light > 0, "the light item never played");
+    assert!(heavy > 2 * light, "heavy {heavy}, light {light}");
+    assert!(!played.contains(&ItemId(1)));
+}
