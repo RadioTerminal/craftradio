@@ -1,6 +1,6 @@
 use crate::framing::OggSource;
 use craft_audio::mp3::{Config, Encoder};
-use radio_server::{DecodeError, Decoded, Format, Mount, SourceDecoder, SourceGuard};
+use radio_server::{DecodeError, Decoded, Format, ListenerCap, Mount, SourceDecoder, SourceGuard};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -58,7 +58,7 @@ fn stop() -> Arc<AtomicBool> {
 
 #[test]
 fn opus_is_decoded_across_title_changes() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let tap = mount.tap().unwrap();
     let mut source = OggSource::new("Cloud Signal", Some("Echo"));
@@ -90,7 +90,7 @@ fn opus_is_decoded_across_title_changes() {
 
 #[test]
 fn mp3_is_decoded() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
     let tap = mount.tap().unwrap();
     let feeder = feed(guard, mp3_tone(48_000, 1000));
@@ -104,7 +104,7 @@ fn mp3_is_decoded() {
 
 #[test]
 fn a_44_1_khz_source_is_refused() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
     let tap = mount.tap().unwrap();
     let feeder = feed(guard, mp3_tone(44_100, 1000));
@@ -128,7 +128,7 @@ fn a_44_1_khz_source_is_refused() {
 
 /// A mount with a tap whose decoder has opened on the first chain's start.
 fn opened() -> (Arc<Mount>, SourceGuard, OggSource, SourceDecoder) {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let mut guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let tap = mount.tap().unwrap();
     let mut source = OggSource::new("Cloud Signal", None);
@@ -159,7 +159,7 @@ fn an_overrun_is_told_apart_from_the_end() {
 
 #[test]
 fn stop_ends_a_decoder_waiting_on_a_silent_source() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let _guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let tap = mount.tap().unwrap();
     let flag = stop();

@@ -1,5 +1,5 @@
 use crate::framing::{OggSource, granule, is_bos, pages};
-use radio_server::{Format, ListenError, Listener, Mount, Received};
+use radio_server::{Format, ListenError, Listener, ListenerCap, Mount, Received};
 use radio_stream::OggMuxer;
 use std::time::{Duration, Instant};
 
@@ -38,7 +38,7 @@ fn mp3_frames(count: usize) -> Vec<u8> {
 
 #[test]
 fn a_listener_who_joins_late_gets_a_decodable_stream() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let mut guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let mut source = OggSource::new("Cloud Signal", Some("Echo"));
     source.audio(1000);
@@ -79,7 +79,7 @@ fn a_listener_who_joins_late_gets_a_decodable_stream() {
 
 #[test]
 fn a_second_source_is_refused_until_the_first_ends() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let first = mount.begin(Format::Ogg, "Morning Station".into());
     assert!(first.is_some());
     assert!(mount.begin(Format::Ogg, "Morning Station".into()).is_none());
@@ -90,7 +90,7 @@ fn a_second_source_is_refused_until_the_first_ends() {
 
 #[test]
 fn a_listener_who_stops_reading_is_dropped_and_others_keep_up() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let mut guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let all = quick_pages(1000);
     let headers = 2;
@@ -127,7 +127,7 @@ fn a_listener_who_stops_reading_is_dropped_and_others_keep_up() {
 
 #[test]
 fn a_listener_dropped_for_falling_behind_ends_at_once() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let mut guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
     let stalled = mount.listen().unwrap();
     // Far more frames than its queue holds, a few at a time, as a source sends them.
@@ -145,7 +145,7 @@ fn a_listener_dropped_for_falling_behind_ends_at_once() {
 
 #[test]
 fn the_cap_refuses_one_listener_too_many() {
-    let mount = Mount::new(2);
+    let mount = Mount::new(ListenerCap::new(2));
     assert!(matches!(mount.listen(), Err(ListenError::NoSource)));
     let _guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
     let first = mount.listen().unwrap();
@@ -157,7 +157,7 @@ fn the_cap_refuses_one_listener_too_many() {
 
 #[test]
 fn a_tap_takes_no_listener_place() {
-    let mount = Mount::new(1);
+    let mount = Mount::new(ListenerCap::new(1));
     assert!(mount.tap().is_none(), "no tap without a source");
     let mut guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
     let _listener = mount.listen().unwrap();
@@ -172,8 +172,70 @@ fn a_tap_takes_no_listener_place() {
 }
 
 #[test]
+fn mounts_of_one_station_share_the_limit() {
+    let cap = ListenerCap::new(2);
+    let stream = Mount::new(cap.clone());
+    let output = Mount::new(cap);
+    let _stream_source = stream.begin(Format::Ogg, "Morning Station".into()).unwrap();
+    let _output_source = output.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    let on_stream = stream.listen().unwrap();
+    let _on_output = output.listen().unwrap();
+    assert!(matches!(stream.listen(), Err(ListenError::Full)));
+    assert!(matches!(output.listen(), Err(ListenError::Full)));
+    let _tap = stream.tap().expect("a tap takes no place");
+    assert_eq!(stream.stats().listeners, 1, "stats stay per mount");
+    assert_eq!(output.stats().listeners, 1, "stats stay per mount");
+
+    drop(on_stream);
+    let _admitted = output.listen().expect("the freed place is anyone's");
+    assert!(matches!(stream.listen(), Err(ListenError::Full)));
+}
+
+#[test]
+fn a_listener_dropped_for_falling_behind_gives_its_place_back() {
+    let mount = Mount::new(ListenerCap::new(1));
+    let mut guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    let stalled = mount.listen().unwrap();
+    for _ in 0..200 {
+        guard.write(&mp3_frames(4));
+    }
+    assert!(stalled.fell_behind());
+    // Its place is held until its connection lets go of it.
+    assert!(matches!(mount.listen(), Err(ListenError::Full)));
+    drop(stalled);
+    let _next = mount.listen().expect("the place came back");
+    assert!(
+        matches!(mount.listen(), Err(ListenError::Full)),
+        "the place came back once"
+    );
+}
+
+#[test]
+fn a_source_ending_gives_every_place_back() {
+    let cap = ListenerCap::new(2);
+    let mount = Mount::new(cap.clone());
+    let other = Mount::new(cap);
+    let guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    let listeners = [mount.listen().unwrap(), mount.listen().unwrap()];
+    drop(guard);
+    let _other_source = other.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    for listener in &listeners {
+        assert_eq!(listener.recv(WAIT), Received::Ended);
+    }
+    // The places are held until the listeners' connections let go of them.
+    assert!(matches!(other.listen(), Err(ListenError::Full)));
+    drop(listeners);
+    let _first = other.listen().expect("a place came back");
+    let _second = other.listen().expect("every place came back");
+    assert!(
+        matches!(other.listen(), Err(ListenError::Full)),
+        "each place came back once"
+    );
+}
+
+#[test]
 fn ending_the_source_ends_every_listener() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let mut guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
     let listeners = [mount.listen().unwrap(), mount.listen().unwrap()];
     guard.write(&mp3_frames(5));
@@ -191,7 +253,7 @@ fn ending_the_source_ends_every_listener() {
 
 #[test]
 fn a_listener_of_an_ended_source_never_hears_the_next_one() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let mut guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let mut source = OggSource::new("Cloud Signal", None);
     source.audio(200);
@@ -221,7 +283,7 @@ fn a_listener_of_an_ended_source_never_hears_the_next_one() {
 
 #[test]
 fn stats_follow_the_ogg_tags_and_the_mp3_title() {
-    let mount = Mount::new(10);
+    let mount = Mount::new(ListenerCap::new(10));
     let mut guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let mut source = OggSource::new("Cloud Signal", Some("Echo"));
     source.audio(100);

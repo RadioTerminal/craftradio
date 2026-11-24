@@ -5,7 +5,7 @@
 //! queue is full is dropped, and hears nothing more, not even what is already queued.
 
 use crate::framing::{Format, Framer};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -30,7 +30,7 @@ fn capped(text: String) -> String {
 pub enum ListenError {
     #[error("no source is live on this mount")]
     NoSource,
-    #[error("the mount has as many listeners as it allows")]
+    #[error("the station has as many listeners as it allows")]
     Full,
 }
 
@@ -57,10 +57,52 @@ pub struct MountStats {
     pub artist: String,
 }
 
+/// A station's listener limit, shared by every mount made with it: its pushed stream and
+/// its re-encoded outputs together hold at most `max` listeners.
+#[derive(Debug)]
+pub struct ListenerCap {
+    max: usize,
+    taken: AtomicUsize,
+}
+
+impl ListenerCap {
+    pub fn new(max: usize) -> Arc<ListenerCap> {
+        Arc::new(ListenerCap {
+            max,
+            taken: AtomicUsize::new(0),
+        })
+    }
+
+    /// A place, or `None` when every place is taken.
+    fn take(self: &Arc<Self>) -> Option<Place> {
+        self.taken
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                (taken < self.max).then_some(taken + 1)
+            })
+            .ok()?;
+        Some(Place {
+            cap: Arc::clone(self),
+        })
+    }
+}
+
+/// One taken place under a [`ListenerCap`], given back when dropped, so it is given back
+/// exactly once however its listener ends.
+#[derive(Debug)]
+struct Place {
+    cap: Arc<ListenerCap>,
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.cap.taken.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// One stream and its listeners.
 #[derive(Debug)]
 pub struct Mount {
-    max_listeners: usize,
+    cap: Arc<ListenerCap>,
     state: Mutex<State>,
 }
 
@@ -93,9 +135,10 @@ struct Slot {
 }
 
 impl Mount {
-    pub fn new(max_listeners: usize) -> Arc<Mount> {
+    /// A mount whose listeners take their places from `cap`.
+    pub fn new(cap: Arc<ListenerCap>) -> Arc<Mount> {
         Arc::new(Mount {
-            max_listeners,
+            cap,
             state: Mutex::default(),
         })
     }
@@ -133,15 +176,16 @@ impl Mount {
     }
 
     /// Joins the stream. A new listener first receives the header pages, then the stream
-    /// from the next page or frame on.
+    /// from the next page or frame on. It holds a place under the mount's [`ListenerCap`]
+    /// until the [`Listener`] is dropped, even after the mount has dropped it for falling
+    /// behind or its source has ended.
     pub fn listen(self: &Arc<Self>) -> Result<Listener, ListenError> {
         let mut state = self.state();
         let State { live, next_id, .. } = &mut *state;
         let live = live.as_mut().ok_or(ListenError::NoSource)?;
-        if live.listeners.len() >= self.max_listeners {
-            return Err(ListenError::Full);
-        }
-        let (slot, listener) = self.join(live, next_id);
+        let place = self.cap.take().ok_or(ListenError::Full)?;
+        let (slot, mut listener) = self.join(live, next_id);
+        listener.place = Some(place);
         live.listeners.push(slot);
         Ok(listener)
     }
@@ -179,6 +223,7 @@ impl Mount {
             format: live.format,
             queue: receiver,
             dropped,
+            place: None,
         };
         (slot, listener)
     }
@@ -284,6 +329,8 @@ pub struct Listener {
     queue: Receiver<Arc<[u8]>>,
     /// Set by the mount when it drops this listener for falling behind.
     dropped: Arc<AtomicBool>,
+    /// Its place under the listener limit; a tap has none. Given back when this is dropped.
+    place: Option<Place>,
 }
 
 impl Listener {

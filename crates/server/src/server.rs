@@ -11,7 +11,7 @@ use crate::framing::Format;
 use crate::http::{HttpError, Request, client_addr, read_request, respond};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
-use crate::mount::{ListenError, Mount, Received};
+use crate::mount::{ListenError, ListenerCap, Mount, Received};
 use crate::stats::status_json;
 use rustls::ServerConfig;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -115,7 +115,7 @@ impl Server {
             .map(|station| {
                 (
                     station.slug.clone(),
-                    Mount::new(station.max_stream_listeners),
+                    Mount::new(ListenerCap::new(station.max_stream_listeners)),
                 )
             })
             .collect();
