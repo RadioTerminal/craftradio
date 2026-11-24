@@ -1,0 +1,20 @@
+[package]
+name = "craftradio-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "craftradio-server"
+path = "src/main.rs"
+
+[dependencies]
+radio-server.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
