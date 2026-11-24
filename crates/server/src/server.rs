@@ -4,6 +4,7 @@
 
 use crate::ServerError;
 use crate::config::{Config, Station};
+use crate::conn::Conn;
 use crate::framing::Format;
 use crate::http::{HttpError, Request, client_addr, read_request, respond};
 use crate::key::key_matches;
@@ -213,7 +214,8 @@ struct Shared {
 struct Connections {
     stopping: bool,
     next_id: u64,
-    open: HashMap<u64, TcpStream>,
+    /// Each connection's socket, shared with its thread: one descriptor a connection.
+    open: HashMap<u64, Arc<TcpStream>>,
 }
 
 impl Shared {
@@ -231,7 +233,8 @@ impl Shared {
 
     /// Gives an accepted connection its thread, or closes it when stopping or when every
     /// connection thread is taken.
-    fn admit(self: &Arc<Self>, stream: TcpStream) {
+    fn admit(self: &Arc<Self>, stream: TcpStream, peer: SocketAddr) {
+        let stream = Arc::new(stream);
         let id = {
             let mut connections = self.connections();
             // Checked under the same lock `stop` closes connections under, so none slips
@@ -239,12 +242,9 @@ impl Shared {
             if connections.stopping || connections.open.len() >= self.max_connections {
                 return;
             }
-            let Ok(clone) = stream.try_clone() else {
-                return;
-            };
             let id = connections.next_id;
             connections.next_id += 1;
-            connections.open.insert(id, clone);
+            connections.open.insert(id, Arc::clone(&stream));
             id
         };
         let guard = ConnectionGuard {
@@ -255,15 +255,15 @@ impl Shared {
             .name("server-connection".into())
             .spawn(move || {
                 let guard = guard;
-                serve(&guard.shared, stream);
+                serve(&guard.shared, peer, Conn::new(stream));
             });
         // A thread that could not start drops its closure, and with it the guard.
         drop(spawned);
     }
 }
 
-/// Removes a connection from the list when its thread ends, closing the list's copy of
-/// the socket.
+/// Removes a connection from the list when its thread ends; the socket closes once the
+/// thread's own handle is gone too.
 struct ConnectionGuard {
     shared: Arc<Shared>,
     id: u64,
@@ -277,27 +277,25 @@ impl Drop for ConnectionGuard {
 }
 
 fn accept_loop(shared: &Arc<Shared>, listener: TcpListener) {
-    for incoming in listener.incoming() {
+    loop {
+        let accepted = listener.accept();
         if shared.stopping() {
             break;
         }
-        match incoming {
-            Ok(stream) => shared.admit(stream),
+        match accepted {
+            Ok((stream, peer)) => shared.admit(stream, peer),
             Err(_) => std::thread::sleep(ACCEPT_BACKOFF),
         }
     }
 }
 
-fn serve(shared: &Shared, mut stream: TcpStream) {
-    let Ok(peer) = stream.peer_addr() else {
-        return;
-    };
+fn serve(shared: &Shared, peer: SocketAddr, mut stream: Conn) {
     let head = shared.timeouts.head.max(MIN_TIMEOUT);
     // `read_request` tries a read that times out again until its deadline; without a
     // timeout a read could block past it, and a non-blocking socket would spin.
-    let timeouts_set = stream.set_read_timeout(Some(head)).is_ok()
+    let timeouts_set = stream.set_read_timeout(head).is_ok()
         && stream
-            .set_write_timeout(Some(shared.timeouts.listener_write.max(MIN_TIMEOUT)))
+            .set_write_timeout(shared.timeouts.listener_write.max(MIN_TIMEOUT))
             .is_ok();
     if !timeouts_set {
         return;
@@ -325,7 +323,7 @@ fn serve(shared: &Shared, mut stream: TcpStream) {
     route(shared, stream, peer.ip(), &request);
 }
 
-fn route(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Request) {
+fn route(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) {
     let method = request.method.as_str();
     match method {
         "GET" | "PUT" | "SOURCE" => {}
@@ -381,7 +379,7 @@ fn stream_slug(path: &str) -> Option<&str> {
 
 fn source(
     shared: &Shared,
-    mut stream: TcpStream,
+    mut stream: Conn,
     peer: IpAddr,
     request: &Request,
     station: &Station,
@@ -421,7 +419,7 @@ fn source(
     if stream.write_all(b"HTTP/1.0 200 OK\r\n\r\n").is_err()
         || stream.flush().is_err()
         || stream
-            .set_read_timeout(Some(shared.timeouts.source_silence.max(MIN_TIMEOUT)))
+            .set_read_timeout(shared.timeouts.source_silence.max(MIN_TIMEOUT))
             .is_err()
     {
         return;
@@ -448,7 +446,7 @@ fn source(
 /// does not decode) counts as a wrong key.
 fn authorized(
     shared: &Shared,
-    stream: &mut TcpStream,
+    stream: &mut Conn,
     peer: IpAddr,
     request: &Request,
     station: &Station,
@@ -482,7 +480,7 @@ fn authorized(
 
 /// `GET /admin/metadata?mount=/<slug>/stream&mode=updinfo&song=<title>`: an MP3 source's
 /// title, which its stream does not carry.
-fn metadata(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Request) {
+fn metadata(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) {
     let Some(path) = request.param("mount") else {
         return refuse(
             &mut stream,
@@ -536,7 +534,7 @@ fn metadata(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Requ
 }
 
 /// `GET /status-json.xsl`: public and unkeyed, for the listener page's "now playing".
-fn stats(shared: &Shared, mut stream: TcpStream) {
+fn stats(shared: &Shared, mut stream: Conn) {
     let mounts: Vec<_> = shared
         .config
         .stations
@@ -563,7 +561,7 @@ fn stats(shared: &Shared, mut stream: TcpStream) {
     );
 }
 
-fn listen(shared: &Shared, mut stream: TcpStream, mount: &Arc<Mount>) {
+fn listen(shared: &Shared, mut stream: Conn, mount: &Arc<Mount>) {
     let listener = match mount.listen() {
         Ok(listener) => listener,
         Err(ListenError::NoSource) => {
@@ -613,17 +611,11 @@ fn listen(shared: &Shared, mut stream: TcpStream, mount: &Arc<Mount>) {
 /// Answers with an error and closes gently: the write side first, then whatever the
 /// client still sends is read for a moment, so its unread bytes don't reset the
 /// connection and lose the reply.
-fn refuse(
-    stream: &mut TcpStream,
-    status: u16,
-    reason: &str,
-    headers: &[(&str, &str)],
-    body: &[u8],
-) {
+fn refuse(stream: &mut Conn, status: u16, reason: &str, headers: &[(&str, &str)], body: &[u8]) {
     if respond(stream, status, reason, headers, body).is_err() {
         return;
     }
-    if stream.shutdown(Shutdown::Write).is_err() || stream.set_read_timeout(Some(LINGER)).is_err() {
+    if stream.shutdown_write().is_err() || stream.set_read_timeout(LINGER).is_err() {
         return;
     }
     let until = Instant::now()

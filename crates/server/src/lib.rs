@@ -1,6 +1,7 @@
 //! The station server: takes Icecast pushes from the radio app and serves them to listeners.
 
 mod config;
+mod conn;
 mod framing;
 mod http;
 mod key;
