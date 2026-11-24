@@ -53,12 +53,17 @@ impl State {
     /// A key press of the shortcut. It returns `None` while the key is held down: such a press
     /// neither arms nor switches. Otherwise it returns what [`State::press`] returns.
     pub(crate) fn press_key(&mut self, on_air: bool, now: f64) -> Option<Option<Action>> {
-        let held = self.key_down.is_some_and(|at| now - at <= size::ARM_S);
+        let held = self.key_held(now);
         self.key_down = Some(now);
         if held {
             return None;
         }
         Some(self.press(on_air, now))
+    }
+
+    /// True while the shortcut's key is down: pressed, and not up since.
+    pub(crate) fn key_held(&self, now: f64) -> bool {
+        self.key_down.is_some_and(|at| now - at <= size::ARM_S)
     }
 
     /// The shortcut's key came up.

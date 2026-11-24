@@ -1,5 +1,5 @@
-//! The On air switch: the button above the output strips, the Playout menu item and the
-//! shortcut. Each needs a second press within the arm time, both ways.
+//! The On air switch: the Playout menu item and the shortcut. Each needs a second press within
+//! the arm time, both ways.
 
 use std::sync::{Arc, Mutex};
 
@@ -271,6 +271,44 @@ fn a_held_shortcut_while_typing_does_not_switch() {
 }
 
 #[test]
+fn the_last_autorepeat_and_the_key_up_in_one_frame_do_not_switch() {
+    let edits = Arc::default();
+    let mut h = typing(&edits);
+    modifiers(&mut h, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+    menu_click(&mut h);
+    // The last autorepeat's click and the key coming up, in the same frame.
+    h.state_mut().menu_click("air.toggle");
+    h.event(egui::Event::Key {
+        key: egui::Key::O,
+        physical_key: Some(egui::Key::O),
+        pressed: false,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    });
+    h.run_steps(FRAMES);
+    assert!(
+        switches(&edits).is_empty(),
+        "the autorepeat counts before the key-up"
+    );
+}
+
+#[test]
+fn an_autorepeat_as_the_modifiers_come_up_does_not_switch() {
+    let edits = Arc::default();
+    let mut h = typing(&edits);
+    modifiers(&mut h, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+    menu_click(&mut h);
+    // A queued autorepeat's click in the frame where ⌘⇧ come up, the O key still down.
+    h.state_mut().menu_click("air.toggle");
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run_steps(FRAMES);
+    assert!(
+        switches(&edits).is_empty(),
+        "a click while the key is down is the key held"
+    );
+}
+
+#[test]
 fn a_pointer_click_of_the_menu_item_still_counts_while_typing() {
     let edits = Arc::default();
     let mut h = typing(&edits);
@@ -284,7 +322,6 @@ fn a_pointer_click_of_the_menu_item_still_counts_while_typing() {
 #[test]
 fn the_menu_item_and_shortcut_arm_too() {
     let edits = Arc::default();
-    // The Mixer stays closed: the menu and the key work without the button on screen.
     let mut h = harness(&edits, Vec::new(), false);
     shortcut(&mut h);
     assert!(switches(&edits).is_empty(), "one key press only arms");

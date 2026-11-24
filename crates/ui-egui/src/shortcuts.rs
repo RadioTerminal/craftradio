@@ -233,6 +233,7 @@ pub(crate) fn air_chord_held(ctx: &egui::Context) -> bool {
     let held = ctx.input(|i| i.modifiers);
     shortcuts
         .iter()
+        // A shortcut without modifiers has nothing to hold: a click is then the pointer's.
         .any(|s| !s.modifiers.is_none() && held.contains(s.modifiers))
 }
 

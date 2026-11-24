@@ -448,7 +448,8 @@ impl RadioApp {
         }
     }
 
-    /// A click of the menu item `command`, as the native menu reports one. For tests.
+    /// A click of the menu item `command`, as the native menu reports one. It skips the menu
+    /// gate (a modal dialog does not hold it back). For tests.
     #[doc(hidden)]
     pub fn menu_click(&mut self, command: &str) {
         self.run_menu(&command.into());
@@ -596,7 +597,12 @@ impl RadioApp {
     }
 
     pub(super) fn toast(&mut self, ctx: &egui::Context, text: String) {
-        let until = ctx.input(|i| i.time) + size::TOAST_S;
+        self.toast_for(ctx, text, size::TOAST_S);
+    }
+
+    /// A toast that shows for `secs` seconds.
+    pub(super) fn toast_for(&mut self, ctx: &egui::Context, text: String, secs: f64) {
+        let until = ctx.input(|i| i.time) + secs;
         self.toast = Some((text, until));
         self.toast_undo = false;
     }
