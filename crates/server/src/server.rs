@@ -41,9 +41,6 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
 const LOCKED_FOR_SECS: &str = "300";
 const CHALLENGE: (&str, &str) = ("WWW-Authenticate", "Basic realm=\"craftradio\"");
-/// The longest title a source may set, in characters; the rest is cut off, so a key
-/// holder cannot bloat the public stats.
-const MAX_TITLE_CHARS: usize = 512;
 /// What Icecast answers a title update it took.
 const METADATA_OK: &[u8] = b"<?xml version=\"1.0\"?><iceresponse><message>Metadata update successful</message><return>1</return></iceresponse>";
 
@@ -519,8 +516,8 @@ fn metadata(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Requ
             b"the request has no song",
         );
     };
-    let title = song.chars().take(MAX_TITLE_CHARS).collect();
-    if !mount.set_title(title) {
+    // The mount cuts it to 512 characters.
+    if !mount.set_title(song.to_owned()) {
         return refuse(
             &mut stream,
             400,
