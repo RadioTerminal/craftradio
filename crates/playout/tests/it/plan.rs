@@ -449,3 +449,43 @@ fn every_3_tracks_rule_airs_while_play_next_cuts_items() {
         "the log marks POP items as rule insertions: {names:?}"
     );
 }
+
+/// A jingle woven in after every track airs each time, also while its earlier airing still
+/// waits on a deck.
+#[test]
+fn a_jingle_after_every_track_airs_each_time() {
+    let songs: Vec<_> = (1..=6)
+        .map(|n| {
+            let path = wav(&format!("e-song-{n}"), 1.0, Side::Left);
+            file_item(n, &format!("Song {n}"), &path, 1.0, 1.0, 0.0)
+        })
+        .collect();
+    let mut engine = engine_with(songs);
+    let jingle = file_item(
+        20,
+        "Jingle",
+        &wav("e-jingle", 0.5, Side::Right),
+        0.5,
+        0.5,
+        0.0,
+    );
+    add_playlist(
+        &mut engine,
+        "Jingles",
+        vec![jingle],
+        r#"rule({every: {tracks: 1}, place: "between", take: 1, constraints: []});"#,
+    );
+    let (p, clock) = offline(engine, |_| {});
+    run(&p, &clock, 7.0);
+
+    let mut rows = p.history(t0(), 20).unwrap();
+    rows.sort_by_key(|r| r.entry.start);
+    let titles: Vec<&str> = rows.iter().map(|r| r.entry.title.as_str()).collect();
+    assert!(titles.len() >= 6, "too few items aired: {titles:?}");
+    assert!(
+        titles
+            .windows(2)
+            .all(|w| (w[0] == "Jingle") != (w[1] == "Jingle")),
+        "songs and the jingle do not alternate: {titles:?}"
+    );
+}

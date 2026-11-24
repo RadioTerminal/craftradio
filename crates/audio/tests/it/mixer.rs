@@ -432,3 +432,68 @@ fn program_and_a_source_snd_together_are_soft_limited() {
         "under the −1 dBFS ceiling, not clipped: {loudest}"
     );
 }
+
+/// A fade-out on a deck whose feed has stalled still ends the deck: the fade counts time,
+/// not frames that arrived.
+#[test]
+fn fade_out_ends_a_deck_whose_ring_is_empty() {
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(SR);
+    for s in tone_samples(0.1, 1_000.0, -6.0) {
+        let _ = tx.push(s);
+    }
+    handle
+        .load_ring(DeckId::D, rx, LoadOptions::default())
+        .expect("load");
+    handle.send(play(0, DeckId::D)).expect("send");
+    // The ring runs dry after 0.1 s; the fade starts after that.
+    handle
+        .send(Command::new(
+            (SR / 4) as u64,
+            CommandKind::FadeOut {
+                deck: DeckId::D,
+                over: Duration::from_millis(500),
+            },
+        ))
+        .expect("send");
+
+    render_offline(&mut mixer, 2 * SR);
+    assert!(
+        handle
+            .events()
+            .any(|e| e == AudioEvent::DeckEnded(DeckId::D)),
+        "the starved deck never ended"
+    );
+}
+
+/// A second fade-out on a deck that already fades never raises the level again.
+#[test]
+fn a_second_fade_out_does_not_raise_the_level() {
+    let path = tone_wav("fade-twice", 48_000, 3.0, 1_000.0, -6.0);
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    handle
+        .load(DeckId::C, &path, LoadOptions::default())
+        .expect("load");
+    wait_ready(&handle, DeckId::C);
+    handle.send(play(0, DeckId::C)).expect("send");
+    let fade = |at: usize| {
+        Command::new(
+            at as u64,
+            CommandKind::FadeOut {
+                deck: DeckId::C,
+                over: Duration::from_secs(1),
+            },
+        )
+    };
+    let second = SR / 2 + SR * 8 / 10;
+    handle.send(fade(SR / 2)).expect("send");
+    handle.send(fade(second)).expect("send");
+
+    let out = render_offline(&mut mixer, 3 * SR);
+    let before = peak_db(frames(&out, second - SR / 20, second));
+    let after = peak_db(frames(&out, second, second + SR / 20));
+    assert!(
+        after <= before + 0.5,
+        "the level rose from {before} to {after} dBFS at the second fade"
+    );
+}

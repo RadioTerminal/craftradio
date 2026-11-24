@@ -33,6 +33,12 @@ pub(crate) struct DeadAir {
     next: usize,
     /// Fallback files that failed one after another.
     failures: usize,
+    /// Program went silent while the station was quiet on purpose, and is silent still.
+    /// The mixer reports a silence once, so playout looks again when the purpose ends.
+    unheard: bool,
+    /// The purpose ended at this time, with Program still silent. Program gets the
+    /// detector time from here before the silence counts as dead air.
+    unheard_since: Option<Timestamp>,
 }
 
 /// File analysis results by item. `None` means in progress or failed.
@@ -88,8 +94,12 @@ impl Core {
     /// Program has been silent for the detector time.
     pub(crate) fn on_silence(&mut self, now: Timestamp) {
         if self.quiet_on_purpose() || self.keep_alive_on_air() {
+            self.dead_air.unheard = true;
+            self.dead_air.unheard_since = None;
             return;
         }
+        self.dead_air.unheard = false;
+        self.dead_air.unheard_since = None;
         self.alarms.raise(now, Alarm::DeadAir);
         if self
             .slots
@@ -119,7 +129,7 @@ impl Core {
         for d in 0..4 {
             let fade = self.slots[d]
                 .as_ref()
-                .filter(|s| !s.not_started() && !s.end_sent)
+                .filter(|s| !s.not_started() && !s.end_sent && s.phase != Phase::Paused)
                 .is_some();
             if fade {
                 self.fade_at(d, at, Duration::ZERO, true);
@@ -167,6 +177,8 @@ impl Core {
     /// Program has audio again.
     pub(crate) fn on_sound(&mut self, now: Timestamp) {
         self.dead_air.skipped_at = None;
+        self.dead_air.unheard = false;
+        self.dead_air.unheard_since = None;
         self.alarms.clear(now, |a| *a == Alarm::DeadAir);
     }
 
@@ -174,6 +186,17 @@ impl Core {
     /// fallback plays, it checks if the plan can play again.
     pub(crate) fn check_dead_air(&mut self, now: Timestamp) {
         let after = self.cfg.mixer.silence.after;
+        if self.dead_air.unheard {
+            if self.quiet_on_purpose() || self.keep_alive_on_air() {
+                self.dead_air.unheard_since = None;
+            } else {
+                // An item that starts now needs time to sound, as after any silence.
+                let from = *self.dead_air.unheard_since.get_or_insert(now);
+                if since(from, now) >= after {
+                    self.on_silence(now);
+                }
+            }
+        }
         if self
             .dead_air
             .skipped_at
@@ -277,8 +300,19 @@ impl Core {
         }
     }
 
-    pub(crate) fn dead_air_file_failed(&mut self) {
+    /// A fallback file did not open. Once every file has failed in a row, the fallback has
+    /// nothing to play, and an alarm says so.
+    pub(crate) fn dead_air_file_failed(&mut self, now: Timestamp) {
         self.dead_air.failures += 1;
+        if self.dead_air.emergency && self.dead_air.failures == self.dead_air.files.len() {
+            let reason = "the files of the emergency folder did not open".to_string();
+            self.alarms.raise(now, Alarm::EmergencyFallback { reason });
+        }
+    }
+
+    /// A fallback file is on air, so the folder works.
+    pub(crate) fn dead_air_file_started(&mut self) {
+        self.dead_air.failures = 0;
     }
 
     /// Keeps one fallback file on air while the fallback plays.
@@ -326,13 +360,13 @@ impl Core {
             trim: Duration::ZERO,
         };
         match self.load(i, entry, item, DeckRole::Emergency, Duration::ZERO) {
+            // The file opens on a worker; only its start on air shows that it plays.
             Ok(_) => {
-                self.dead_air.failures = 0;
                 if let Some(s) = &mut self.slots[i] {
                     s.asap = true;
                 }
             }
-            Err(_) => self.dead_air.failures += 1,
+            Err(_) => self.dead_air_file_failed(now),
         }
     }
 

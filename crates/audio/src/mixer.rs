@@ -719,7 +719,16 @@ impl Mixer {
                 let late = self.sample.saturating_sub(cmd.at_sample);
                 let remaining = total.saturating_sub(late);
                 if slot.playing && !slot.paused && remaining > 0 {
-                    slot.fade = Some((remaining, total));
+                    // A deck that already fades never gets louder: a later fade can only
+                    // bring the end forward, from the level the deck has now.
+                    slot.fade = Some(match slot.fade {
+                        Some((left, of)) if remaining >= left => (left, of),
+                        Some((left, of)) if left > 0 => {
+                            let scaled = u128::from(remaining) * u128::from(of) / u128::from(left);
+                            (remaining, u64::try_from(scaled).unwrap_or(u64::MAX))
+                        }
+                        _ => (remaining, total),
+                    });
                     let item_tag = slot.source.as_ref().and_then(|s| s.item_tag);
                     self.emit(AudioEvent::Fading { deck, item_tag });
                 } else {
@@ -888,6 +897,13 @@ impl Mixer {
         if src.consumer.slots() < CHANNELS {
             if src.shared.eof.load(Ordering::Acquire) && src.consumer.slots() < CHANNELS {
                 return DeckStep::Ended;
+            }
+            // A fade counts time, so it also ends a deck that has no audio to fade.
+            if let Some((remaining, _)) = slot.fade.as_mut() {
+                if *remaining == 0 {
+                    return DeckStep::Ended;
+                }
+                *remaining -= 1;
             }
             if slot.underrun {
                 return DeckStep::Silent;

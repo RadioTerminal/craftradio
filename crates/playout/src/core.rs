@@ -201,6 +201,8 @@ pub(crate) struct Slot {
     pub(crate) phase: Phase,
     /// The real start on air.
     pub(crate) started: Option<Timestamp>,
+    /// When the operator paused the item, while it is paused.
+    pub(crate) paused_at: Option<Timestamp>,
     /// Playout sent the fade at the planned end.
     pub(crate) end_sent: bool,
     /// Something ended the item before its planned end.
@@ -893,6 +895,7 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
+        let fallback = s.role == DeckRole::Emergency;
         if let Some(fixed) = &s.entry.fixed {
             let by = since(fixed.target, wall);
             if wall > fixed.target && by > fixed.tolerance {
@@ -913,6 +916,9 @@ impl Core {
         // A hard event keeps its target as its start, so later plans still know it.
         if !s.is_hard() {
             s.entry.start = sub(wall, s.offset);
+        }
+        if fallback {
+            self.dead_air_file_started();
         }
         self.dirty = true;
         self.save_due = true;
@@ -1320,20 +1326,25 @@ impl Core {
             .filter(|s| s.not_started() && !s.is_hard())
             .count();
         let assigned = self.assigned();
-        // An item that waits on a deck already never loads on a second deck.
-        let waiting: Vec<ItemId> = self
-            .slots
-            .iter()
-            .flatten()
-            .filter(|s| s.not_started())
-            .map(|s| s.item.id)
-            .collect();
+        // An item that waits on a deck already never loads on a second deck. Its next
+        // airing waits for that deck, and so does everything after it: loading past it
+        // would drop that airing from the order.
+        let waits = |plan: bool| -> Vec<ItemId> {
+            self.slots
+                .iter()
+                .flatten()
+                .filter(|s| s.not_started() && (s.role == DeckRole::Plan) == plan)
+                .map(|s| s.item.id)
+                .collect()
+        };
+        // An item that the operator holds on a deck is theirs: the plan loads around it.
+        let (waiting, held) = (waits(true), waits(false));
         let next: Vec<Entry> = self
             .timeline
             .entries
             .iter()
             .filter(|e| !assigned.contains(&(e.item, e.start)))
-            .filter(|e| !waiting.contains(&e.item))
+            .filter(|e| !held.contains(&e.item))
             .filter(|e| !e.fixed.as_ref().is_some_and(|f| f.mode == FixMode::Hard))
             .filter(|e| {
                 !self
@@ -1342,6 +1353,7 @@ impl Core {
                     .any(|b| b.item == e.item && b.start == e.start && now < b.until)
             })
             .filter(|e| last.is_none_or(|l| e.start > l))
+            .take_while(|e| !waiting.contains(&e.item))
             .take(MAX_QUEUED.saturating_sub(queued))
             .cloned()
             .collect();
@@ -1456,6 +1468,7 @@ impl Core {
             role,
             phase,
             started: None,
+            paused_at: None,
             end_sent: false,
             cut: false,
             row: None,
@@ -1709,7 +1722,9 @@ impl Core {
                 .and_then(|s| s.capture.as_mut())
                 .and_then(|c| c.error());
             if let Some(reason) = error {
+                let mut on_air = false;
                 if let Some(s) = &self.slots[i] {
+                    on_air = s.role == DeckRole::Plan && !s.not_started();
                     let item = s.item.clone();
                     self.skip_broken(&item, reason, now);
                 }
@@ -1719,6 +1734,14 @@ impl Core {
                         Cmd::new(self.mixer.now(), CommandKind::Stop(DeckId::ALL[i]))
                             .for_item(s.tag),
                     );
+                }
+                // `Stop` sends no `DeckEnded`, so the deck is freed here.
+                self.finish(i, now);
+                // Nothing hands over to the next item now, so it starts here.
+                let idle = self.slots.iter().flatten().all(Slot::not_started);
+                let auto = self.engine.state().mode == radio_engine::Mode::Auto;
+                if (on_air || idle) && !self.hold && !self.dead_air.emergency && auto {
+                    let _ = self.start_next(None);
                 }
             }
         }
@@ -1836,7 +1859,7 @@ impl Core {
                 };
                 match s.role {
                     DeckRole::Plan => self.skip_broken(&s.item, reason, now),
-                    DeckRole::Emergency => self.dead_air_file_failed(),
+                    DeckRole::Emergency => self.dead_air_file_failed(now),
                     DeckRole::Operator | DeckRole::Bed => {
                         let alarm = Alarm::ItemSkipped {
                             item: s.item.id,
