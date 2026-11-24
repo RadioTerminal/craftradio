@@ -320,3 +320,11 @@ fn a_bitrate_the_encoder_cannot_make_is_refused() {
         );
     }
 }
+
+#[test]
+fn an_output_cannot_be_made_the_default() {
+    let mut text = station_with_outputs("morning", &[("low", "opus", 64)]);
+    text.push_str("default = true\n");
+    let message = refused(&text);
+    assert!(message.contains("default"), "{message}");
+}

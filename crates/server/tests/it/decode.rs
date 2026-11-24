@@ -42,12 +42,18 @@ pub(crate) fn heard(samples: &[f32]) -> bool {
 
 /// `ms` milliseconds of an MP3 tone at `rate`, stereo, 128 kbit/s.
 fn mp3_tone(rate: u32, ms: usize) -> Vec<u8> {
-    let mut encoder = Encoder::new(Config::cbr(rate, 2, 128)).unwrap();
+    mp3_tone_in(rate, 2, ms)
+}
+
+/// `ms` milliseconds of an MP3 tone at `rate` in `channels` channels, 128 kbit/s.
+fn mp3_tone_in(rate: u32, channels: usize, ms: usize) -> Vec<u8> {
+    let mut encoder = Encoder::new(Config::cbr(rate, channels as _, 128)).unwrap();
     let frames = rate as usize * ms / 1000;
     let tone: Vec<f32> = (0..frames)
         .map(|i| (i as f32 / rate as f32 * 440.0 * std::f32::consts::TAU).sin() * 0.2)
         .collect();
-    let mut bytes = encoder.encode(&[&tone, &tone]);
+    let planes = vec![tone.as_slice(); channels];
+    let mut bytes = encoder.encode(&planes);
     bytes.extend(encoder.flush());
     bytes
 }
@@ -106,14 +112,14 @@ fn mp3_is_decoded() {
     assert!(heard(&samples), "the MP3 tone comes out");
 }
 
-#[test]
-fn a_44_1_khz_source_is_refused() {
+/// Decodes an MP3 source that must be refused and gives why.
+fn refusal(bytes: Vec<u8>) -> DecodeError {
     let mount = Mount::new(ListenerCap::new(10));
     let guard = mount
         .begin(Format::Mp3, "Morning Station".into(), None)
         .unwrap();
     let tap = mount.tap().unwrap();
-    let feeder = feed(guard, mp3_tone(44_100, 1000));
+    let feeder = feed(guard, bytes);
 
     let refused = match SourceDecoder::open(tap, stop()) {
         Err(error) => error,
@@ -126,9 +132,30 @@ fn a_44_1_khz_source_is_refused() {
         }
     };
     feeder.join().unwrap();
+    refused
+}
+
+#[test]
+fn a_44_1_khz_source_is_refused() {
+    let refused = refusal(mp3_tone(44_100, 1000));
     assert!(
         matches!(refused, DecodeError::Unsupported { rate: 44_100, .. }),
         "refused for its rate: {refused:?}"
+    );
+}
+
+#[test]
+fn a_48_khz_mono_source_is_refused() {
+    let refused = refusal(mp3_tone_in(48_000, 1, 1000));
+    assert!(
+        matches!(
+            refused,
+            DecodeError::Unsupported {
+                rate: 48_000,
+                channels: 1
+            }
+        ),
+        "refused for its channels: {refused:?}"
     );
 }
 
