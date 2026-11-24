@@ -4969,6 +4969,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "percent-encoding",
+ "radio-stream",
  "ring",
  "serde",
  "thiserror 2.0.21",
