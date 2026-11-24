@@ -855,7 +855,7 @@ impl EngineSource {
     fn output(pv: &PlayoutView, card_wanted: bool) -> OutputStatus {
         let local = outputs::local_status(&pv.outputs.local, card_wanted);
         let icecast = match &pv.outputs.icecast {
-            None | Some(StreamStatus::Stopped) => Status::NotConnected,
+            None | Some(StreamStatus::Stopped | StreamStatus::OffAir) => Status::NotConnected,
             Some(StreamStatus::Connecting) => Status::Reconnecting { attempt: 0 },
             Some(StreamStatus::Connected { .. }) => Status::Connected,
             Some(StreamStatus::Retrying { last_error, .. }) => Status::Failed(last_error.clone()),

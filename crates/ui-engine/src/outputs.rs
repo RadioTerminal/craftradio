@@ -43,6 +43,7 @@ pub(crate) fn output_meter_views(out: &OutputStatus, card_wanted: bool) -> Vec<O
         Some(StreamStatus::Connecting) => (false, "Connecting"),
         Some(StreamStatus::Retrying { .. }) => (false, "Not connected"),
         Some(StreamStatus::Stopped) => (false, "Off"),
+        Some(StreamStatus::OffAir) => (false, "Off air"),
     };
     let webrtc = match &out.webrtc {
         None | Some(WebRtcStatus::Stopped) => (false, "Off".to_owned()),
