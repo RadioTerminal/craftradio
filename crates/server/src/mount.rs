@@ -11,6 +11,18 @@ use std::time::Duration;
 
 /// Chunks (pages or frames) a listener may fall behind before it is dropped.
 const QUEUE: usize = 256;
+/// The longest title or artist a mount keeps, in characters, whether it came from a
+/// title update or from Ogg tags; the rest is cut off, so a key holder cannot bloat the
+/// public stats.
+const MAX_TITLE_CHARS: usize = 512;
+
+/// `text` cut to [`MAX_TITLE_CHARS`] characters.
+fn capped(text: String) -> String {
+    match text.char_indices().nth(MAX_TITLE_CHARS) {
+        Some((end, _)) => text.get(..end).unwrap_or_default().to_owned(),
+        None => text,
+    }
+}
 
 /// Why a listener could not join.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -138,12 +150,13 @@ impl Mount {
     }
 
     /// Sets the title of an MP3 source, whose stream carries none. An Ogg source's next
-    /// tags replace it. Returns whether a source was live to take it.
+    /// tags replace it. Cut to 512 characters. Returns whether a source was live to take
+    /// it.
     pub fn set_title(&self, title: String) -> bool {
         let mut state = self.state();
         let live = state.live.is_some();
         if live {
-            state.title = title;
+            state.title = capped(title);
         }
         live
     }
@@ -205,8 +218,8 @@ impl SourceGuard {
             self.seen = self.framer.version();
             live.headers = self.framer.headers();
             if let Some((tag_title, tag_artist)) = self.framer.tags() {
-                *title = tag_title;
-                *artist = tag_artist.unwrap_or_default();
+                *title = capped(tag_title);
+                *artist = capped(tag_artist.unwrap_or_default());
             }
         }
     }

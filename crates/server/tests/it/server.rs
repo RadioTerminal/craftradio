@@ -916,6 +916,27 @@ fn a_title_is_cut_to_512_characters() {
     // The cap is the spec's value.
     assert_eq!(title.chars().count(), 512);
     assert!(long.starts_with(title), "the title is cut, not changed");
+
+    // An Ogg source's tags are cut the same way, title and artist both.
+    let (mut ogg_source, head) = push(addr, "evening", EVENING_KEY, "audio/ogg");
+    assert_eq!(head.status, 200);
+    let long_artist: String = "Échotal ".repeat(100);
+    let mut ogg = OggSource::new(&long, Some(&long_artist));
+    ogg.audio(200);
+    ogg_source.write_all(&ogg.take()).unwrap();
+    let entry = wait_for_entry(addr, "evening", |entry| {
+        entry.is_some_and(|entry| !entry["title"].as_str().unwrap_or_default().is_empty())
+    })
+    .unwrap();
+    let title = entry["title"].as_str().unwrap();
+    let artist = entry["artist"].as_str().unwrap();
+    assert_eq!(title.chars().count(), 512);
+    assert!(long.starts_with(title), "the tag title is cut, not changed");
+    assert_eq!(artist.chars().count(), 512);
+    assert!(
+        long_artist.starts_with(artist),
+        "the tag artist is cut, not changed"
+    );
 }
 
 #[test]
