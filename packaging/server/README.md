@@ -174,12 +174,22 @@ example `https://radio.example.org`) and the key from `craftradio-server key`.
   does not answer, with `unreachable: …`.
 
 The address needs `https://`; `http://` is only for a server on the same computer. The key
-goes to the OS keychain, as the push password of the mount the server named. The app asks
-the server again at each start: a down server leaves the last paired settings and says
-`Paired — server unreachable`, and a key rotated on the server says `Paired — key refused`
-without retrying, so it does not walk the lockout. The headless app prints the same state
-as `radio: …`. `craftradio-cli unpair --data-dir <dir>` (or Unpair on the Server page)
-puts the settings back and removes the key.
+goes to the OS keychain, as the push password of the mount the server named, and only ever
+to the address it was paired through: if that address changes, type the key again. The app
+asks the server again at each start, before it pushes. The Server page and the headless app
+(as `radio: …`) say one of:
+
+- `Not paired`
+- `Pairing with <address>…` (or `Paired — asking <address>…` at start)
+- `Paired with <address>`, the only state that means it works
+- `Paired — server unreachable: <reason>`: a down server leaves the last paired settings
+- `Paired — key refused`: a key rotated on the server; nothing retries it, so it does not
+  walk the lockout. Pair again with the new key.
+- `Not paired — the server refused the key`, `… — server unreachable: <reason>` or
+  `… — <reason>` when a first pairing did not go through
+
+`craftradio-cli unpair --data-dir <dir>` (or Disconnect on the Server page) puts the
+settings back and removes the key.
 
 ## Set the app's Icecast output by hand
 
