@@ -10,9 +10,6 @@ pub const SERVER_ADDRESS_KEY: &str = "address";
 /// and user, which name the keychain entry of the station key. Hand edits of `icecast.*`
 /// do not move it.
 pub const SERVER_PUSH_KEY: &str = "push";
-/// The key in the [`SERVER_PUSH_KEY`] object of the address the push was paired through.
-/// The stored key goes only to that address.
-pub const SERVER_PUSH_ADDRESS: &str = "address";
 /// The version of the pairing document's shape that this app reads.
 pub const PAIRING_VERSION: u32 = 1;
 
@@ -84,7 +81,7 @@ fn host_of(authority: &str) -> Option<&str> {
 }
 
 /// True for `localhost` or a loopback address (127.0.0.0/8, `::1`), without brackets.
-fn is_loopback_host(host: &str) -> bool {
+pub fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host
             .parse::<std::net::IpAddr>()

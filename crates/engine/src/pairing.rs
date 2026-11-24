@@ -3,9 +3,7 @@
 //! keychain.
 
 use crate::{EngineError, Outcome};
-use radio_model::{
-    PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_ADDRESS, SERVER_PUSH_KEY,
-};
+use radio_model::{PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_KEY};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -46,14 +44,16 @@ pub(crate) fn pair(
     let outputs = serde_json::to_value(&document.outputs)
         .map_err(|e| EngineError::BadArgument(format!("the outputs cannot be stored: {e}")))?;
     let ice = document.icecast;
-    // The push the key is stored for, and the address it was paired through.
-    let push = json!({
-        "host": ice.host,
-        "port": ice.port,
-        "mount": ice.mount,
-        "user": ice.user,
-        SERVER_PUSH_ADDRESS: address,
-    });
+    // The key is the push password: it never crosses a network in clear.
+    if !ice.tls && !radio_model::is_loopback_host(&ice.host) {
+        return Err(EngineError::BadArgument(format!(
+            "the push to {} has no TLS, which would send the station key in clear; only a \
+             push to this computer may go without it",
+            ice.host
+        )));
+    }
+    // The push the key is stored for.
+    let push = json!({"host": ice.host, "port": ice.port, "mount": ice.mount, "user": ice.user});
     let values = [
         json!(ice.host),
         json!(ice.port),

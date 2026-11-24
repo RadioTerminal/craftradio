@@ -129,8 +129,6 @@ fn pairing_writes_icecast_webrtc_and_server_settings() {
                 "port": doc.icecast.port,
                 "mount": doc.icecast.mount,
                 "user": doc.icecast.user,
-                // The key goes only to the address it was stored for.
-                "address": ADDRESS,
             }),
         ),
     ];
@@ -279,4 +277,17 @@ fn an_address_in_clear_to_another_computer_or_with_a_path_is_refused() {
         document: document(),
     })
     .unwrap();
+}
+
+/// A push without TLS to another computer would send the station key in clear: refused,
+/// whoever sends the command. To this computer it may go without TLS.
+#[test]
+fn a_push_in_clear_to_another_computer_is_refused() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let mut doc = document();
+    doc.icecast.tls = false;
+    assert!(pair(&mut e, doc.clone()).is_err());
+    assert_eq!(setting(&e, SERVER_PART, "address"), None);
+    doc.icecast.host = "127.0.0.1".into();
+    pair(&mut e, doc).unwrap();
 }
