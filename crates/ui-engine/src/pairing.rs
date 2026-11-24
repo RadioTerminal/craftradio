@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use radio_engine::{Command, State};
-use radio_model::{PAIRING_VERSION, PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART};
+use radio_model::{
+    PAIRING_VERSION, PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_KEY,
+};
 use radio_ui_egui::view::{PairState, PairingView, Secret, is_loopback};
 
 use crate::{EngineSource, SecretStore};
@@ -206,73 +208,75 @@ fn describe(e: &ureq::Error) -> String {
     }
 }
 
-/// What the background lane hands back for a pairing try.
+/// What the background lane hands back for a pairing try. The keychain is written only
+/// once the source accepted the answer, so an answer that came too late never stores a key.
 pub(crate) struct PairAnswer {
     pub(crate) seq: u64,
     pub(crate) address: String,
     pub(crate) result: Result<PairingDocument, PairError>,
+    /// The key this try sent, to store once the server took it, when it is new or the push
+    /// moved.
+    pub(crate) key: Option<Secret>,
+    /// True when a person typed the key; else it came from the keychain.
+    pub(crate) typed: bool,
 }
 
-/// One pairing try, off the UI thread: the key (given, or read from `paired_entry`, the
-/// keychain entry of the mount the station is paired with), the fetch, and on success the
-/// key under the entry of the document's mount, where the Icecast output reads it. A key the
-/// server refused is never stored.
+/// One pairing try, off the UI thread: the key (typed, or read from `paired_entry`, the
+/// keychain entry of the paired push), then the fetch. It never writes the keychain.
 pub(crate) fn run(
     seq: u64,
     address: String,
-    key: Option<Secret>,
+    typed: Option<Secret>,
     paired_entry: Option<String>,
     store: &Arc<dyn SecretStore + Sync>,
 ) -> PairAnswer {
-    let result = pair_with(&address, key, paired_entry, store.as_ref());
+    let was_typed = typed.is_some();
+    let (result, key) = match stored_or(typed, paired_entry.as_deref(), store.as_ref()) {
+        Ok(key) => (fetch(&address, key.expose()), Some(key)),
+        Err(e) => (Err(e), None),
+    };
     PairAnswer {
         seq,
         address,
         result,
+        key,
+        typed: was_typed,
     }
 }
 
-fn pair_with(
-    address: &str,
-    key: Option<Secret>,
-    paired_entry: Option<String>,
+/// The typed key, else the one stored under `paired_entry`.
+fn stored_or(
+    typed: Option<Secret>,
+    paired_entry: Option<&str>,
     store: &dyn SecretStore,
-) -> Result<PairingDocument, PairError> {
-    let (key, from_store) = match key {
-        Some(key) => (key, false),
-        None => {
-            let entry = paired_entry.as_deref().ok_or_else(|| {
-                PairError::Refused("enter the station key; the server's admin has it".into())
-            })?;
-            match store.get(entry) {
-                Ok(Some(key)) if !key.is_empty() => (Secret::new(key), true),
-                Ok(_) => {
-                    return Err(PairError::Refused(
-                        "the keychain has no key for this server; enter the key again".into(),
-                    ));
-                }
-                Err(e) => {
-                    return Err(PairError::Refused(format!(
-                        "the keychain did not answer: {e}"
-                    )));
-                }
-            }
-        }
-    };
-    let document = fetch(address, key.expose())?;
-    let ice = &document.icecast;
-    let entry = crate::icecast::mount_entry(&ice.user, &ice.host, ice.port, &ice.mount);
-    let moved = paired_entry.as_deref() != Some(entry.as_str());
-    if !from_store || moved {
-        store
-            .set(&entry, key.expose())
-            .map_err(|e| PairError::Refused(format!("the keychain did not take the key: {e}")))?;
+) -> Result<Secret, PairError> {
+    if let Some(key) = typed {
+        return Ok(key);
     }
-    // The server moved the push: the key of the old mount goes, so it has one copy.
-    if moved && let Some(old) = paired_entry {
-        let _ = store.delete(&old);
+    let entry = paired_entry.ok_or_else(|| {
+        PairError::Refused("enter the station key; the server's admin has it".into())
+    })?;
+    match store.get(entry) {
+        Ok(Some(key)) if !key.is_empty() => Ok(Secret::new(key)),
+        Ok(_) => Err(PairError::Refused(
+            "the keychain has no key for this server; enter the key again".into(),
+        )),
+        Err(e) => Err(PairError::Refused(format!(
+            "the keychain did not answer: {e}"
+        ))),
     }
-    Ok(document)
+}
+
+/// Whether the Icecast push may dial.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Hold {
+    #[default]
+    Open,
+    /// The start asks the paired server first: a rotated key is found by one request, not
+    /// by pushes that count toward the server's lockout.
+    Asking,
+    /// The paired server refused the key: the push waits for a new one.
+    Refused,
 }
 
 /// The pairing as the source keeps it.
@@ -285,11 +289,12 @@ pub(crate) struct Pairing {
     asked: u64,
     /// The paired address that the last snapshot saw in the settings.
     seen: Option<String>,
-    /// The address this source last asked, so its own pairing is not asked again when the
+    /// The address this source last paired itself, so it is not asked again when the
     /// settings show it.
     asked_for: Option<String>,
-    /// True while the paired server refused the key: the push stays closed.
-    held: bool,
+    hold: Hold,
+    /// True when the last snapshot saw the push refused, so only a new refusal counts.
+    push_refused: bool,
 }
 
 /// The address of the paired server, from the settings.
@@ -302,19 +307,40 @@ pub(crate) fn paired_address(state: &State) -> Option<String> {
         .map(str::to_owned)
 }
 
-impl EngineSource {
-    /// The keychain entry of the paired mount, when the station is paired.
-    fn paired_entry(&self) -> Option<String> {
-        paired_address(&self.state)
-            .map(|_| crate::icecast::secret_key(&crate::icecast_view(&self.state)))
-    }
+/// True when the station is paired with a server. Its Icecast push then waits until the
+/// app asked the server at start.
+pub fn is_paired(state: &State) -> bool {
+    paired_address(state).is_some()
+}
 
+/// The keychain entry of the paired push, from what the server's document named (the
+/// `server.push` setting), so hand edits of `icecast.*` do not move it. A pairing written
+/// before that setting existed falls back to the Icecast settings.
+fn paired_entry(state: &State) -> Option<String> {
+    paired_address(state)?;
+    let push = state
+        .settings(SERVER_PART)
+        .and_then(|s| s.get(SERVER_PUSH_KEY));
+    let text = |k: &str| push.and_then(|p| p.get(k)).and_then(|v| v.as_str());
+    let port = push
+        .and_then(|p| p.get("port"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|p| u16::try_from(p).ok());
+    match (text("user"), text("host"), port, text("mount")) {
+        (Some(user), Some(host), Some(port), Some(mount)) => {
+            Some(crate::icecast::mount_entry(user, host, port, mount))
+        }
+        _ => Some(crate::icecast::secret_key(&crate::icecast_view(state))),
+    }
+}
+
+impl EngineSource {
     /// Follows the paired address in the settings, whoever changed it (this window, the CLI,
-    /// MCP or a script). A paired address that this source did not just ask, as at start, is
-    /// asked once with the stored key: the settings it hands out overwrite hand edits, and a
-    /// down server leaves the last paired settings as they are. It never asks the same address
-    /// twice by itself, so a refused key is not tried again. Unpaired by anyone, the state
-    /// says not paired.
+    /// MCP or a script). A paired address that this source did not just pair itself, as at
+    /// start, is asked once with the stored key, and the push waits for the answer: the
+    /// settings the server hands out overwrite hand edits, and a down server leaves the last
+    /// paired settings as they are. The same address is never asked twice by itself, so a
+    /// refused key is not tried again. Unpaired by anyone, the state says not paired.
     pub(crate) fn watch_pairing(&mut self) {
         let now = paired_address(&self.state);
         if now == self.pairing.seen {
@@ -328,38 +354,70 @@ impl EngineSource {
                     self.pairing.address.clear();
                     self.pairing.state = PairState::NotPaired;
                     self.pairing.asked_for = None;
-                    self.pairing.held = false;
+                    self.release_push();
                 }
             }
             Some(address) => {
                 if self.pairing.asked_for.as_deref() != Some(address.as_str()) {
+                    self.pairing.hold = Hold::Asking;
                     self.ask_server(address, None);
+                    self.sync_icecast(true);
                 }
             }
         }
     }
 
+    /// A push refused by the paired server (HTTP 401), as playout reports it: the key was
+    /// rotated while the app ran. The state says key refused and the push stays closed.
+    pub(crate) fn watch_push(&mut self, icecast: Option<&radio_stream::StreamStatus>) {
+        let refused = matches!(icecast, Some(radio_stream::StreamStatus::Refused { .. }));
+        let new = refused && !self.pairing.push_refused;
+        self.pairing.push_refused = refused;
+        if new && is_paired(&self.state) && self.pairing.hold == Hold::Open {
+            // A try on its way is about a key the push just found refused.
+            self.pairing.asked += 1;
+            if let Some(address) = paired_address(&self.state) {
+                self.pairing.address = address;
+            }
+            self.pairing.state = PairState::KeyRefused;
+            self.pairing.hold = Hold::Refused;
+        }
+    }
+
+    /// Lets the push dial again, with the settings and key there are now.
+    fn release_push(&mut self) {
+        if self.pairing.hold != Hold::Open {
+            self.pairing.hold = Hold::Open;
+            self.sync_icecast(true);
+        }
+    }
+
     /// Sends a pairing try to the background lane.
-    fn ask_server(&mut self, address: String, key: Option<Secret>) {
+    fn ask_server(&mut self, address: String, typed: Option<Secret>) {
         self.pairing.asked += 1;
         self.pairing.address.clone_from(&address);
         self.pairing.asked_for = Some(address.clone());
         let job = crate::bg::Job::Pair {
             seq: self.pairing.asked,
             address,
-            key,
-            paired_entry: self.paired_entry(),
+            key: typed,
+            paired_entry: paired_entry(&self.state),
             store: Arc::clone(&self.secrets),
         };
         let sent = self
             .worker
             .as_ref()
             .is_some_and(|w| w.jobs.send(job).is_ok());
-        self.pairing.state = if sent {
-            PairState::Pairing
+        if sent {
+            self.pairing.state = PairState::Pairing;
         } else {
-            PairState::Refused("the background lane has stopped; restart the app".into())
-        };
+            self.pairing.state =
+                PairState::Refused("the background lane has stopped; restart the app".into());
+            self.pairing.asked_for = None;
+            if self.pairing.hold == Hold::Asking {
+                self.release_push();
+            }
+        }
     }
 
     /// `Edit::Pair`: checks the address and asks the server. An empty key uses the stored
@@ -385,27 +443,32 @@ impl EngineSource {
     /// `Edit::Unpair`: the settings pairing wrote go, the key leaves the keychain, and the
     /// Icecast push closes with the settings.
     pub(crate) fn unpair(&mut self) -> Result<usize, String> {
-        let Some(entry) = self.paired_entry() else {
+        let Some(entry) = paired_entry(&self.state) else {
             return Err("The station is not paired with a server".into());
         };
-        self.run_edit(Command::ServerUnpair)?;
-        if let Some(w) = &self.worker {
-            let _ = w.jobs.send(crate::bg::Job::Forget {
+        let w = self
+            .worker
+            .as_ref()
+            .ok_or("The background lane could not start; the key stays in the keychain")?;
+        w.jobs
+            .send(crate::bg::Job::Forget {
                 key: entry,
                 store: Arc::clone(&self.secrets),
-            });
-        }
-        // A try still on its way is for a pairing that is gone.
+            })
+            .map_err(|_| "The background lane has stopped; the key stays in the keychain")?;
+        self.run_edit(Command::ServerUnpair)?;
+        // A try still on its way is for a pairing that is gone: its answer stores nothing.
         self.pairing.asked += 1;
         self.pairing.address.clear();
         self.pairing.state = PairState::NotPaired;
         self.pairing.asked_for = None;
-        self.pairing.held = false;
+        self.pairing.hold = Hold::Open;
         self.secret_known = None;
         Ok(1)
     }
 
-    /// The answer of a pairing try from the background lane.
+    /// The answer of a pairing try from the background lane. Only the answer to the last
+    /// try counts; it writes the settings and, then, the keychain.
     pub(crate) fn pair_answer(&mut self, answer: PairAnswer) {
         if answer.seq != self.pairing.asked {
             return;
@@ -417,45 +480,98 @@ impl EngineSource {
             self.pairing.asked_for = None;
         }
         match answer.result {
-            Ok(document) => {
-                let sent = self.send(
-                    "",
-                    Command::ServerPair {
-                        address: answer.address,
-                        document,
-                    },
-                );
-                self.pairing.state = match sent {
-                    Ok(()) => PairState::Paired,
-                    Err(e) => PairState::Refused(format!("the settings were not written: {e}")),
-                };
-                // The key is stored: the snapshot asks the keychain again, and a rotated key
-                // for an unchanged mount applies at once (the same settings keep a working
-                // connection).
-                self.pairing.held = false;
-                self.secret_known = None;
-                self.sync_icecast(true);
-            }
+            Ok(document) => self.paired(answer.address, document, answer.key, answer.typed),
             Err(PairError::KeyRefused) => {
                 self.pairing.state = PairState::KeyRefused;
                 // The paired server refused the stored key: the push would walk its lockout
-                // with that key, so it waits for a new one.
+                // with it, so it waits for a new one.
                 if paired_address(&self.state).as_deref() == Some(answer.address.as_str()) {
-                    self.pairing.held = true;
+                    self.pairing.hold = Hold::Refused;
                     self.sync_icecast(true);
+                } else if self.pairing.hold == Hold::Asking {
+                    self.release_push();
                 }
             }
             Err(PairError::Unreachable(reason)) => {
                 self.pairing.state = PairState::Unreachable(reason);
+                if self.pairing.hold == Hold::Asking {
+                    self.release_push();
+                }
             }
-            Err(PairError::Refused(reason)) => self.pairing.state = PairState::Refused(reason),
+            Err(PairError::Refused(reason)) => {
+                self.pairing.state = PairState::Refused(reason);
+                if self.pairing.hold == Hold::Asking {
+                    self.release_push();
+                }
+            }
         }
     }
 
-    /// True while the paired server refused the key: the Icecast push then stays closed, so
-    /// it does not walk the server's lockout.
+    /// The server took the key: the settings, then the key under the entry of the push the
+    /// document names, where the Icecast output reads it. The key of a push the server moved
+    /// away from goes, so there is one copy.
+    fn paired(
+        &mut self,
+        address: String,
+        document: PairingDocument,
+        key: Option<Secret>,
+        typed: bool,
+    ) {
+        let ice = &document.icecast;
+        let entry = crate::icecast::mount_entry(&ice.user, &ice.host, ice.port, &ice.mount);
+        let old = paired_entry(&self.state);
+        let moved = old.as_deref() != Some(entry.as_str());
+        let store = Arc::clone(&self.secrets);
+        // A typed key is stored; a stored one moves with the push.
+        let key = key.filter(|_| typed || moved);
+        if let Err(e) = self.send("", Command::ServerPair { address, document }) {
+            self.pairing.state = PairState::Refused(format!("the settings were not written: {e}"));
+            self.release_push();
+            return;
+        }
+        let Some(w) = &self.worker else {
+            self.pairing.state =
+                PairState::Refused("the background lane has stopped; restart the app".into());
+            return;
+        };
+        let mut sent = true;
+        if let Some(key) = key {
+            sent &= w
+                .jobs
+                .send(crate::bg::Job::Secret {
+                    key: entry.clone(),
+                    set: Some(key.expose().to_owned()),
+                    store: Arc::clone(&store),
+                })
+                .is_ok();
+        }
+        if moved && let Some(old) = old {
+            sent &= w
+                .jobs
+                .send(crate::bg::Job::Forget { key: old, store })
+                .is_ok();
+        }
+        self.pairing.state = if sent {
+            PairState::Paired
+        } else {
+            PairState::Refused("the keychain was not reached; the key is not stored".into())
+        };
+        // The keychain jobs run first on the lane, so the push reads the new key; a rotated
+        // key for an unchanged mount applies at once (the same settings keep a working
+        // connection).
+        self.pairing.hold = Hold::Open;
+        self.secret_known = None;
+        self.sync_icecast(true);
+    }
+
+    /// True while the push waits: for the start's answer, or for a new key.
     pub(crate) fn push_held(&self) -> bool {
-        self.pairing.held
+        self.pairing.hold != Hold::Open
+    }
+
+    /// True while the paired server refused the key.
+    pub(crate) fn key_refused(&self) -> bool {
+        self.pairing.hold == Hold::Refused
     }
 
     /// The pairing for the snapshot. The key is not in it.

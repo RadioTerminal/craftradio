@@ -261,7 +261,7 @@ impl EngineSource {
         }
         let cfg = match result {
             // The paired server refused the key: the push waits for a new one.
-            Ok(Some(_)) if self.push_held() => {
+            Ok(Some(_)) if self.key_refused() => {
                 self.notices.push(
                     "Icecast stays off: the server refused the station key; pair again with \
                      the new key"
@@ -269,6 +269,8 @@ impl EngineSource {
                 );
                 None
             }
+            // The start asks the paired server first; the push follows its answer.
+            Ok(Some(_)) if self.push_held() => None,
             Ok(cfg) => cfg,
             Err(e) => {
                 self.notices.push(format!("Icecast stays off: {e}"));

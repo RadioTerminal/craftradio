@@ -187,6 +187,8 @@ impl Worker {
                             let answer = crate::pairing::PairAnswer {
                                 seq,
                                 address: asked,
+                                key: None,
+                                typed: false,
                                 result: Err(crate::pairing::PairError::Refused(
                                     "the app could not start the request".into(),
                                 )),
@@ -284,6 +286,8 @@ fn run(job: Job) -> Done {
         Job::Pair { seq, address, .. } => Done::Pair(crate::pairing::PairAnswer {
             seq,
             address,
+            key: None,
+            typed: false,
             result: Err(crate::pairing::PairError::Refused(
                 "the app could not start the request".into(),
             )),

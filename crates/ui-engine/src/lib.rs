@@ -21,7 +21,7 @@ mod one_off;
 mod outputs;
 mod pairing;
 
-pub use pairing::check_address;
+pub use pairing::{check_address, is_paired};
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
 /// with: `None` when none is set, so the playout keeps its own.
@@ -882,7 +882,9 @@ impl EngineSource {
             Some(StreamStatus::OffAir) => Status::OffAir,
             Some(StreamStatus::Connecting) => Status::Reconnecting { attempt: 0 },
             Some(StreamStatus::Connected { .. }) => Status::Connected,
-            Some(StreamStatus::Retrying { last_error, .. }) => Status::Failed(last_error.clone()),
+            Some(
+                StreamStatus::Retrying { last_error, .. } | StreamStatus::Refused { last_error },
+            ) => Status::Failed(last_error.clone()),
         };
         let listen_link = match &pv.outputs.webrtc {
             Some(WebRtcStatus::Listening { link, relays, .. }) if *relays > 0 => link.clone(),
@@ -1017,6 +1019,16 @@ impl EngineSource {
                 Severity::Alarm,
                 AlarmSource::Icecast,
                 format!("Icecast is not connected and tries again: {last_error}"),
+                here.clone(),
+            ));
+        }
+        if let Some(StreamStatus::Refused { last_error }) = &pv.outputs.icecast {
+            out.push(alarms::from_state(
+                "icecast_refused",
+                "",
+                Severity::Alarm,
+                AlarmSource::Icecast,
+                format!("Icecast waits for a new password: {last_error}"),
                 here.clone(),
             ));
         }
@@ -1179,6 +1191,7 @@ impl ViewSource for EngineSource {
         // After `with_secrets`, so the start asks with the keychain of the app.
         self.watch_pairing();
         self.take_done(now);
+        self.watch_push(pv.outputs.icecast.as_ref());
         self.poll_pending();
         self.poll_watches();
         let _ = self.fader_errors();

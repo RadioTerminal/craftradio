@@ -486,3 +486,213 @@ fn a_pairing_by_another_client_is_asked_once_and_connects() {
     assert_eq!(view.output.icecast, Status::Connected);
     assert!(wait_live(&mut source, &clock, &address, true));
 }
+
+/// A station server stand-in whose key can be rotated while it runs. It answers
+/// `/api/station` and takes pushes for the current key, refuses other keys with 401, and
+/// counts the pushes and the refusals.
+struct Rotating {
+    address: String,
+    key: Arc<std::sync::Mutex<String>>,
+    pushes: Arc<std::sync::atomic::AtomicUsize>,
+    refused: Arc<std::sync::atomic::AtomicUsize>,
+    open: Arc<std::sync::Mutex<Vec<std::net::TcpStream>>>,
+}
+
+impl Rotating {
+    fn start(key: &str) -> Self {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let me = Self {
+            address: address.clone(),
+            key: Arc::new(std::sync::Mutex::new(key.to_owned())),
+            pushes: Arc::default(),
+            refused: Arc::default(),
+            open: Arc::default(),
+        };
+        let (current, pushes, refused, open) = (
+            me.key.clone(),
+            me.pushes.clone(),
+            me.refused.clone(),
+            me.open.clone(),
+        );
+        let document = serde_json::to_string(&document_for(&address)).unwrap();
+        std::thread::spawn(move || {
+            for mut conn in listener.incoming().flatten() {
+                let mut head = Vec::new();
+                let mut byte = [0];
+                while !head.ends_with(b"\r\n\r\n") && conn.read_exact(&mut byte).is_ok() {
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&head).into_owned();
+                let password = head
+                    .lines()
+                    .find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("authorization")
+                            .then(|| value.trim().strip_prefix("Basic "))
+                            .flatten()
+                    })
+                    .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .and_then(|pair| pair.split_once(':').map(|(_, k)| k.to_owned()))
+                    .unwrap_or_default();
+                let ok = password == *current.lock().unwrap();
+                let push = head.starts_with("PUT ") || head.starts_with("SOURCE ");
+                if push {
+                    pushes.fetch_add(1, Ordering::SeqCst);
+                }
+                if !ok {
+                    refused.fetch_add(1, Ordering::SeqCst);
+                    let _ = conn.write_all(b"HTTP/1.0 401 Unauthorized\r\n\r\n");
+                    continue;
+                }
+                if push {
+                    let _ = conn.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+                    if let Ok(copy) = conn.try_clone() {
+                        open.lock().unwrap().push(copy);
+                    }
+                    std::thread::spawn(move || {
+                        let mut bytes = [0; 4096];
+                        while matches!(conn.read(&mut bytes), Ok(n) if n > 0) {}
+                    });
+                } else {
+                    let _ = write!(
+                        conn,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n{document}",
+                        document.len()
+                    );
+                }
+            }
+        });
+        me
+    }
+
+    /// A new key on the server: the old one is refused from now on, and the push is cut.
+    fn rotate(&self, key: &str) {
+        *self.key.lock().unwrap() = key.to_owned();
+        for conn in self.open.lock().unwrap().drain(..) {
+            let _ = conn.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    fn pushes(&self) -> usize {
+        self.pushes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn refused(&self) -> usize {
+        self.refused.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Takes snapshots for `d`.
+fn keep_snapshotting(source: &mut EngineSource, clock: &radio_playout::ManualClock, d: Duration) {
+    let until = Instant::now() + d;
+    while Instant::now() < until {
+        let _ = source.snapshot(clock.now());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The key is rotated on the server while the station pushes: the push's refusal says key
+/// refused, the push stops trying (the lockout of five is never reached), and the new key
+/// pairs and pushes again.
+#[test]
+fn a_key_rotated_during_a_run_says_key_refused_and_stops_the_push() {
+    let fake = Rotating::start(DAWN_KEY);
+    let (mut source, clock, _store) = station();
+    assert_eq!(pair(&mut source, &fake.address, DAWN_KEY), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired && v.output.icecast == Status::Connected
+    });
+
+    fake.rotate("invented-rotated-key-5Hn1");
+    let view = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::KeyRefused
+    });
+    assert_eq!(view.pairing.state, PairState::KeyRefused);
+    assert_eq!(view.pairing.label(), "Paired — key refused");
+    let refused = fake.refused();
+    // Longer than the push's first three retry delays.
+    keep_snapshotting(&mut source, &clock, Duration::from_secs(8));
+    assert_eq!(fake.refused(), refused, "nothing tried the old key again");
+    assert!(refused < 5, "{refused} refusals would reach the lockout");
+
+    assert_eq!(
+        pair(&mut source, &fake.address, "invented-rotated-key-5Hn1"),
+        Ok(1)
+    );
+    let view = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired && v.output.icecast == Status::Connected
+    });
+    assert_eq!(view.output.icecast, Status::Connected);
+}
+
+/// A paired station whose stored key was rotated away pushes nothing at start: it asks the
+/// server first, and the refusal keeps the push closed.
+#[test]
+fn a_paired_station_asks_before_it_pushes_at_start() {
+    let fake = Rotating::start("invented-rotated-key-5Hn1");
+    let (mut source, clock, store) = station();
+    paired_with(&mut source, &fake.address, document_for(&fake.address));
+    store.set(&dawn_entry(&fake.address), DAWN_KEY).unwrap();
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::KeyRefused
+    });
+    keep_snapshotting(&mut source, &clock, Duration::from_secs(3));
+    assert_eq!(fake.pushes(), 0, "no push with the refused key");
+    assert_eq!(fake.refused(), 1, "one request found the key refused");
+}
+
+/// The keychain entry of the key follows the paired push, not a hand edit of the Icecast
+/// settings: after a hand edit of the host, the start finds the key, pairs again and puts
+/// the host back; unpairing then removes that very entry.
+#[test]
+fn a_hand_edited_host_still_finds_the_key_and_unpair_removes_it() {
+    let (_server, address) = server();
+    let (_, body) = get(&address, "/api/station", Some(DAWN_KEY));
+    let document: PairingDocument = serde_json::from_str(&body).unwrap();
+    let (mut source, clock, store) = station();
+    paired_with(&mut source, &address, document);
+    store.set(&dawn_entry(&address), DAWN_KEY).unwrap();
+    source
+        .playout()
+        .dispatch(Command::SettingsSet {
+            part: "icecast".into(),
+            key: "host".into(),
+            value: "stream.invalid".into(),
+        })
+        .unwrap();
+
+    let view = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired && v.output.icecast == Status::Connected
+    });
+    assert_eq!(view.pairing.state, PairState::Paired);
+    assert_eq!(setting(&view, "icecast", "host"), Some("127.0.0.1".into()));
+    assert_eq!(view.output.icecast, Status::Connected);
+
+    source
+        .playout()
+        .dispatch(Command::SettingsSet {
+            part: "icecast".into(),
+            key: "host".into(),
+            value: "stream.invalid".into(),
+        })
+        .unwrap();
+    let _ = wait_for(&mut source, &clock, |v| {
+        setting(v, "icecast", "host") == Some("stream.invalid".into())
+    });
+    assert_eq!(source.edit(Edit::Unpair), Ok(1));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while store.get(&dawn_entry(&address)) != Ok(None) && Instant::now() < deadline {
+        let _ = source.snapshot(clock.now());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        store.get(&dawn_entry(&address)),
+        Ok(None),
+        "the paired key is gone"
+    );
+}
