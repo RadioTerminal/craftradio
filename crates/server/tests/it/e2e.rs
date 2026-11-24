@@ -1,14 +1,12 @@
 //! The radio app's own Icecast output and stream input against the station server: the
 //! real client, not a hand-written one.
 
-use base64::Engine;
+use crate::support::{PATIENCE, request, source_entry, stats, tls_files};
 use radio_server::{Config, Server, ServerHandle, hash_key};
 use radio_stream::{
     IcecastClient, IcecastConfig, IcecastHandle, StreamFormat, StreamInput, StreamStatus,
 };
-use serde_json::Value;
-use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -16,8 +14,6 @@ use std::time::{Duration, Instant};
 
 const KEY: &str = "invented-morning-key-7Lp2";
 const SLUG: &str = "morning";
-/// The longest a test waits for the client to connect, or for a title to show.
-const PATIENCE: Duration = Duration::from_secs(5);
 /// The longest a test waits for audio to come back through the server.
 const AUDIO_PATIENCE: Duration = Duration::from_secs(10);
 /// Samples in one 20 ms block of 48 kHz stereo, what the app's output encodes at a time.
@@ -180,25 +176,10 @@ fn assert_opus_heard(addr: SocketAddr) {
     use symphonia::core::meta::MetadataOptions;
 
     let deadline = Instant::now() + AUDIO_PATIENCE;
-    let mut stream = TcpStream::connect(addr).unwrap();
-    // A stream that stops fails the read, and the test, instead of hanging it.
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    write!(
-        stream,
-        "GET /{SLUG}/stream HTTP/1.1\r\nHost: radio.example.test\r\n\r\n"
-    )
-    .unwrap();
-    let mut head = Vec::new();
-    while !head.ends_with(b"\r\n\r\n") {
-        let mut byte = [0];
-        stream.read_exact(&mut byte).expect("a reply head");
-        head.push(byte[0]);
-    }
-    let head = String::from_utf8(head).unwrap();
-    assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
-    assert!(head.contains("Content-Type: audio/ogg\r\n"), "{head}");
+    // The client's read timeout fails a stream that stops, instead of hanging the test.
+    let (stream, head) = request(addr, "GET", &format!("/{SLUG}/stream"));
+    assert_eq!(head.status, 200);
+    assert_eq!(head.header("Content-Type"), Some("audio/ogg"));
 
     let source = MediaSourceStream::new(Box::new(ReadOnlySource::new(stream)), Default::default());
     let mut format = symphonia::default::get_probe()
@@ -240,45 +221,10 @@ fn assert_opus_heard(addr: SocketAddr) {
     panic!("no audio came through the server within {AUDIO_PATIENCE:?}");
 }
 
-/// The public stats document, read over plain HTTP.
-fn stats(addr: SocketAddr) -> Value {
-    let mut stream = TcpStream::connect(addr).unwrap();
-    stream.set_read_timeout(Some(PATIENCE)).unwrap();
-    stream
-        .write_all(b"GET /status-json.xsl HTTP/1.1\r\nHost: radio.example.test\r\n\r\n")
-        .unwrap();
-    let mut reply = Vec::new();
-    match stream.read_to_end(&mut reply) {
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::ConnectionReset => {}
-        Err(e) => panic!("reading the stats: {e}"),
-    }
-    let text = String::from_utf8(reply).unwrap();
-    let (head, body) = text.split_once("\r\n\r\n").unwrap();
-    assert!(head.starts_with("HTTP/1.0 200 "), "{head}");
-    serde_json::from_str(body).expect("the stats are JSON")
-}
-
-/// The station's entry in the stats, if it is live.
-fn entry(addr: SocketAddr) -> Option<Value> {
-    let path = format!("/{SLUG}/stream");
-    stats(addr)["icestats"]["source"]
-        .as_array()
-        .expect("icestats.source is an array")
-        .iter()
-        .find(|source| {
-            source["listenurl"]
-                .as_str()
-                .unwrap_or_default()
-                .ends_with(&path)
-        })
-        .cloned()
-}
-
 fn wait_for_title(addr: SocketAddr, title: &str) {
     let deadline = Instant::now() + PATIENCE;
     loop {
-        let found = entry(addr);
+        let found = source_entry(&stats(addr), SLUG);
         if found.as_ref().and_then(|e| e["title"].as_str()) == Some(title) {
             return;
         }
@@ -395,38 +341,23 @@ fn the_app_reports_a_wrong_key_as_refused() {
     drop(out);
     assert!(error.contains("401"), "{error}");
     assert!(!error.contains("invented-wrong-key"), "{error}");
-    assert_eq!(entry(addr), None, "a refused source is not on the air");
+    assert_eq!(
+        source_entry(&stats(addr), SLUG),
+        None,
+        "a refused source is not on the air"
+    );
     server.stop();
-}
-
-/// DER as a PEM block, written by hand: the workspace's `rcgen` has no PEM feature.
-fn pem(label: &str, der: &[u8]) -> String {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
-    let lines: Vec<&str> = encoded
-        .as_bytes()
-        .chunks(64)
-        .map(|line| std::str::from_utf8(line).unwrap())
-        .collect();
-    format!(
-        "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
-        lines.join("\n")
-    )
 }
 
 /// The fallback route with no proxy: the app pushes over TLS to the server's own TLS, and
 /// the app's stream input hears it over https. MP3, which the input decodes.
 #[test]
 fn the_apps_tls_output_is_heard_through_the_servers_own_tls() {
-    let made = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let cert = dir.path().join("cert.pem");
-    let key = dir.path().join("key.pem");
-    std::fs::write(&cert, pem("CERTIFICATE", made.cert.der())).unwrap();
-    std::fs::write(&key, pem("PRIVATE KEY", &made.signing_key.serialize_der())).unwrap();
-    let root = made.cert.der().to_vec();
+    let files = tls_files();
+    let root = files.root.to_vec();
     let mut config = config();
-    config.tls_cert = Some(cert);
-    config.tls_key = Some(key);
+    config.tls_cert = Some(files.cert.clone());
+    config.tls_key = Some(files.key.clone());
     let server = Server::start(config).unwrap();
     let out = output(
         icecast(
