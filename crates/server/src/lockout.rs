@@ -1,6 +1,7 @@
 //! Wrong-key lockout: five wrong keys from one address within a minute lock that address
-//! out of every keyed endpoint for five minutes.
+//! out of every keyed endpoint for five minutes. An IPv6 address counts as its /64.
 
+use crate::addr::limit_key;
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -78,7 +79,7 @@ impl Lockout {
     pub fn blocked(&self, addr: IpAddr, now: Instant) -> bool {
         self.inner()
             .entries
-            .get(&addr)
+            .get(&limit_key(addr))
             .is_some_and(|entry| entry.locked(now))
     }
 
@@ -86,7 +87,7 @@ impl Lockout {
     pub fn failed(&self, addr: IpAddr, now: Instant) {
         let mut inner = self.inner();
         inner.sweep(now);
-        let entry = inner.entries.entry(addr).or_default();
+        let entry = inner.entries.entry(limit_key(addr)).or_default();
         entry.forget_before(now);
         entry.failures.push_back(now);
         if entry.failures.len() >= MAX_FAILURES {

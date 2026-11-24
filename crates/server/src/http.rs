@@ -3,6 +3,7 @@
 //! A source's endless body follows its request head on the same socket, so
 //! [`read_request`] reads one byte at a time and never past the blank line.
 
+use crate::addr::canonical;
 use base64::Engine;
 use percent_encoding::percent_decode_str;
 use std::io::{ErrorKind, Read, Write};
@@ -191,9 +192,11 @@ fn decode_query(text: &str) -> String {
 }
 
 /// The address a request came from: the last `X-Forwarded-For` entry when the peer is the
-/// trusted proxy, else the peer.
+/// trusted proxy, else the peer. IPv4-mapped IPv6 addresses (the peer, the proxy and the
+/// forwarded address) count as the IPv4 address, and the result is in that form.
 pub fn client_addr(peer: IpAddr, request: &Request, trusted_proxy: Option<IpAddr>) -> IpAddr {
-    if trusted_proxy != Some(peer) {
+    let peer = canonical(peer);
+    if trusted_proxy.map(canonical) != Some(peer) {
         return peer;
     }
     // A proxy may append its own line rather than extend the client's, so the last line
@@ -202,7 +205,7 @@ pub fn client_addr(peer: IpAddr, request: &Request, trusted_proxy: Option<IpAddr
         .last_header("X-Forwarded-For")
         .and_then(|list| list.rsplit(',').next())
         .and_then(|last| last.trim().parse().ok())
-        .unwrap_or(peer)
+        .map_or(peer, canonical)
 }
 
 /// Writes a whole HTTP/1.0 reply that closes the connection.

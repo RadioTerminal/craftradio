@@ -68,3 +68,24 @@ fn forgetting_old_entries_keeps_a_locked_address_locked() {
     l.failed(other, t + secs(200));
     assert!(l.blocked(locked, t + secs(201)));
 }
+
+#[test]
+fn ipv6_addresses_in_one_64_share_a_lockout() {
+    let (l, t) = (Lockout::default(), Instant::now());
+    // A host given a /64 takes a new address for each wrong key.
+    for i in 0..5u64 {
+        l.failed(addr(&format!("2001:db8:1:2::{:x}", i + 1)), t + secs(i));
+    }
+    assert!(l.blocked(addr("2001:db8:1:2:ffff::9"), t + secs(5)));
+    assert!(!l.blocked(addr("2001:db8:1:3::1"), t + secs(5)));
+}
+
+#[test]
+fn an_ipv4_mapped_address_shares_the_ipv4_lockout() {
+    let (l, t) = (Lockout::default(), Instant::now());
+    for i in 0..5 {
+        l.failed(addr("::ffff:203.0.113.16"), t + secs(i));
+    }
+    assert!(l.blocked(addr("203.0.113.16"), t + secs(5)));
+    assert!(!l.blocked(addr("203.0.113.17"), t + secs(5)));
+}

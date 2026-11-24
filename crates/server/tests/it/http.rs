@@ -229,6 +229,36 @@ fn a_forged_forwarded_line_before_the_proxys_own_does_not_count() {
 }
 
 #[test]
+fn an_ipv4_mapped_address_counts_as_the_ipv4_address() {
+    let request = parse("GET / HTTP/1.0\r\nX-Forwarded-For: ::ffff:198.51.100.7\r\n\r\n");
+    // A server listening on [::] sees an IPv4 proxy as IPv4-mapped.
+    assert_eq!(
+        client_addr(addr("::ffff:127.0.0.1"), &request, Some(addr("127.0.0.1"))),
+        addr("198.51.100.7")
+    );
+    // The proxy may be written either way in the config.
+    assert_eq!(
+        client_addr(addr("127.0.0.1"), &request, Some(addr("::ffff:127.0.0.1"))),
+        addr("198.51.100.7")
+    );
+    // Any other peer is itself, in IPv4 form.
+    assert_eq!(
+        client_addr(
+            addr("::ffff:203.0.113.5"),
+            &request,
+            Some(addr("127.0.0.1"))
+        ),
+        addr("203.0.113.5")
+    );
+    // The proxy is matched exactly, not by its network.
+    let proxy = addr("2001:db8::1");
+    assert_eq!(
+        client_addr(addr("2001:db8::2"), &request, Some(proxy)),
+        addr("2001:db8::2")
+    );
+}
+
+#[test]
 fn a_forwarded_address_that_does_not_parse_falls_back_to_the_peer() {
     let request = parse("GET / HTTP/1.0\r\nX-Forwarded-For: not-an-address\r\n\r\n");
     let proxy = addr("192.0.2.1");
