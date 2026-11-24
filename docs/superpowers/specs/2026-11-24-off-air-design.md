@@ -1,6 +1,9 @@
 # Off air: one switch that stops everything the station sends
 
 **Status (2026-11-24):** built; the user-facing description is in the README, "Going off air".
+Operator changes while building: the switch is confirmed by pressing twice, both ways; and the
+On air button was removed from the Mixer, so the station switches from Playout › On Air and
+its shortcut, and the main window's status bar shows the state.
 
 ## Intent
 
