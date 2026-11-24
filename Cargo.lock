@@ -4964,6 +4964,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "radio-server"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "ring",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "radio-stream"
 version = "0.1.0"
 dependencies = [
