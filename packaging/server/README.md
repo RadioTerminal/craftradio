@@ -150,7 +150,9 @@ Leave `trusted_proxy` out. Then:
 `public_url` must be the bare origin (`https://radio.example.org`, with a port if it is
 not the default), with no path after it. The listener page fetches `/status-json.xsl` from
 the origin, so the server can't live under a path prefix such as
-`https://example.org/radio`.
+`https://example.org/radio`. The server refuses to start with any other `public_url`,
+because the pairing document at `/api/station` (which a station's key fetches) derives the
+app's Icecast host, port and TLS from it.
 
 ## Set the app's Icecast output by hand
 

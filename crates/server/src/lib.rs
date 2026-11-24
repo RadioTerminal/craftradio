@@ -11,6 +11,7 @@ mod icy;
 mod key;
 mod lockout;
 mod mount;
+pub mod pairing;
 mod server;
 mod stats;
 mod transcode;
