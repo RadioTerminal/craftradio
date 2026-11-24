@@ -72,27 +72,41 @@
           transition: transform .12s ease; }
   .play:active { transform: scale(.94); }
   .play svg { width: 26px; height: 26px; }
-  .volume { justify-self: end; display: flex; align-items: center; gap: 8px; color: var(--soft); }
-  .volume svg { width: 18px; height: 18px; flex: none; }
-  input[type=range] { width: 92px; accent-color: #fff; }
+  .volume { justify-self: end; display: flex; align-items: center; gap: 6px; color: var(--soft); --v: 1; }
+  .mute { width: 32px; height: 32px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%;
+          background: none; color: inherit; cursor: pointer; transition: background .2s ease, color .2s ease, transform .15s ease; }
+  .mute:hover { background: rgba(255,255,255,.1); color: var(--text); }
+  .mute:active { transform: scale(.88); }
+  .mute svg { width: 19px; height: 19px; overflow: visible; }
+  .mute .w1, .mute .w2 { transform-origin: 11px 12px; transition: opacity .25s ease, transform .3s cubic-bezier(.3,1.4,.5,1); }
+  .mute .x { stroke-dasharray: 15; stroke-dashoffset: 15; transition: stroke-dashoffset .3s ease; }
+  .volume[data-level="low"] .w2 { opacity: 0; transform: scale(.6); }
+  .volume[data-level="off"] .w1, .volume[data-level="off"] .w2 { opacity: 0; transform: scale(.4); }
+  .volume[data-level="off"] .x { stroke-dashoffset: 0; }
+  .volume[data-level="off"] .mute { color: var(--live); }
+  .volume.bump .mute svg { animation: bump .3s ease; }
+  @keyframes bump { 40% { transform: scale(1.18); } }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 92px; height: 20px; margin: 0; background: none; cursor: pointer; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; transition: height .15s ease;
+    background: linear-gradient(90deg, #fff calc(var(--v) * 100%), rgba(255,255,255,.22) 0); }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: rgba(255,255,255,.22); }
+  input[type=range]::-moz-range-progress { height: 4px; border-radius: 2px; background: #fff; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; margin-top: -4px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); transition: transform .15s ease; }
+  input[type=range]::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff; transition: transform .15s ease; }
+  input[type=range]:hover::-webkit-slider-runnable-track, input[type=range]:focus-visible::-webkit-slider-runnable-track { height: 6px; }
+  input[type=range]:hover::-webkit-slider-thumb, input[type=range]:active::-webkit-slider-thumb { transform: scale(1.35); margin-top: -3px; }
+  input[type=range]:hover::-moz-range-thumb, input[type=range]:active::-moz-range-thumb { transform: scale(1.35); }
+  .volume[data-level="off"] input[type=range] { opacity: .45; }
+  input[type=range] { transition: opacity .25s ease; }
 
-  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+  button:focus-visible, input:focus-visible, .tool:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 
   /* What played before: a frosted card under the player */
-  .history { margin-top: 16px; border-radius: 22px; padding: 14px 6px 8px; background: var(--glass);
-             -webkit-backdrop-filter: blur(30px) saturate(1.4); backdrop-filter: blur(30px) saturate(1.4);
-             box-shadow: 0 0 0 1px var(--edge); }
-  .history h2 { margin: 0; font: inherit; }
-  .history-toggle { width: 100%; display: flex; align-items: center; gap: 8px; padding: 2px 14px 6px;
-                    border: 0; background: none; color: var(--soft); font: inherit; font-size: 13px; font-weight: 600;
-                    cursor: pointer; text-align: left; }
-  .history-toggle .count { color: var(--faint); font-weight: 500; }
-  .history-toggle svg { width: 16px; height: 16px; margin-left: auto; transition: transform .2s ease; }
-  .history-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
-  .history:not(.open) { padding-bottom: 8px; }
+  .history { padding: 14px 6px 8px; }
+  .history h2 { padding: 2px 14px 8px; }
   .history ol { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto;
                 scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
-  .history:not(.open) ol { display: none; }
   .history li { display: grid; grid-template-columns: 36px 1fr auto; gap: 12px; align-items: center;
                 padding: 8px 14px; border-radius: 12px; }
   .history li + li { box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
@@ -104,11 +118,30 @@
   .history .a { margin: 1px 0 0; font-size: 13px; color: var(--soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .history time { font-size: 12.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-  /* Under the player */
-  .tuner { margin-top: 18px; padding: 0 4px; color: var(--soft); }
-  .tuner summary { cursor: pointer; font-size: 14px; list-style: none; }
-  .tuner summary::-webkit-details-marker { display: none; }
-  .tuner[open] summary { color: var(--text); }
+  /* Under the player: round tools that open frosted cards */
+  .tools { margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px; }
+  .tool { height: 38px; padding: 0 14px 0 11px; display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 19px; cursor: pointer;
+          font: inherit; font-size: 13px; font-weight: 600; color: var(--soft);
+          background: var(--glass); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); box-shadow: 0 0 0 1px var(--edge);
+          transition: color .2s ease, background .2s ease, transform .15s ease; }
+  .tool[hidden] { display: none; }
+  .tool.round { width: 38px; padding: 0; justify-content: center; }
+  .tool svg { width: 18px; height: 18px; flex: none; transition: transform .45s cubic-bezier(.3,1.4,.5,1); }
+  .tool:hover, .tool[aria-expanded="true"] { color: var(--text); background: rgba(255,255,255,.14); }
+  .tool:active { transform: scale(.94); }
+  .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; display: inline-grid; place-items: center;
+           font-size: 11.5px; font-variant-numeric: tabular-nums; background: rgba(255,255,255,.16); color: var(--text); }
+  #settings-toggle:hover svg { transform: rotate(30deg); }
+  #settings-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+  #history-toggle:hover svg { transform: rotate(-30deg); }
+  #history-toggle[aria-expanded="true"] svg { transform: rotate(-360deg); }
+  .panel { margin-top: 10px; border-radius: 22px; padding: 16px 18px 18px; background: var(--glass); color: var(--soft);
+           -webkit-backdrop-filter: blur(30px) saturate(1.4); backdrop-filter: blur(30px) saturate(1.4); box-shadow: 0 0 0 1px var(--edge); }
+  .panel:not([hidden]) { animation: rise .35s cubic-bezier(.2,.8,.2,1) both; }
+  .panel h2, .group h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--soft); }
+  .group + .group:not([hidden]) { margin-top: 16px; padding-top: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+  .group { animation: rise .4s cubic-bezier(.2,.8,.2,1) both; }
+  .group + .group { animation-delay: .06s; }
   .field { display: flex; gap: 8px; margin-top: 10px; }
   .field input { flex: 1; min-width: 0; padding: 11px 13px; font: inherit; color: var(--text);
                  background: rgba(255,255,255,.1); border: 1px solid var(--edge); border-radius: 12px; }
@@ -116,7 +149,6 @@
   .field button { padding: 0 16px; border: 0; border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer;
                   background: rgba(255,255,255,.9); color: #16181d; }
   .hint { margin: 10px 0 0; font-size: 13px; color: var(--faint); }
-  .tuner + .tuner { margin-top: 10px; }
   .relay { margin: 10px 0 0; font-size: 14px; color: var(--soft); }
   .relay .hint { display: block; }
   .relay label { cursor: pointer; }
@@ -125,8 +157,22 @@
   #relay-state { display: block; margin-top: 4px; color: var(--faint); }
   .hint code { color: var(--soft); font-size: 12.5px; }
 
+  /* Motion */
+  @keyframes rise { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,77,94,.7), 0 0 10px var(--live); }
+                     70% { box-shadow: 0 0 0 7px rgba(255,77,94,0), 0 0 10px var(--live); } }
+  @keyframes drift { from { transform: scale(1.15) rotate(0deg); } to { transform: scale(1.3) rotate(6deg); } }
+  .player { animation: rise .6s cubic-bezier(.2,.8,.2,1) both; }
+  .tools { animation: rise .6s .12s cubic-bezier(.2,.8,.2,1) both; }
+  .chip.on i { animation: pulse 1.8s ease-out infinite; }
+  .play:hover { transform: scale(1.06); }
+  .backdrop { animation: drift 40s ease-in-out infinite alternate; }
+  .history li { transition: background .2s ease; }
+  .history li:hover { background: rgba(255,255,255,.06); }
+  .history li { animation: rise .35s cubic-bezier(.2,.8,.2,1) both; }
+
   @media (prefers-reduced-motion: reduce) {
-    .backdrop, .cover img, .play, .meter b { transition: none; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
   }
 </style>
 </head>
@@ -158,41 +204,49 @@
           <button id="listen" class="play" type="button" aria-label="Listen">
             <svg id="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
           </button>
-          <label class="volume">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+          <div class="volume" id="vol">
+            <button id="mute" class="mute" type="button" aria-label="Mute" aria-pressed="false" title="Mute (M)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4V5z" fill="currentColor" fill-opacity=".18"/><path class="w1" d="M15.5 8.5a5 5 0 0 1 0 7"/><path class="w2" d="M18.6 5.4a9.5 9.5 0 0 1 0 13.2"/><path class="x" d="m16 9.5 5 5m0-5-5 5"/></svg>
+            </button>
             <input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
-          </label>
+          </div>
         </div>
       </div>
     </section>
 
-    <section class="history" id="history" aria-labelledby="history-title" hidden>
-      <h2 id="history-title">
-        <button class="history-toggle" id="history-toggle" type="button" aria-expanded="false" aria-controls="history-list">
-          Earlier this hour <span class="count" id="history-count"></span>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-        </button>
-      </h2>
+    <div class="tools">
+      <button class="tool" id="history-toggle" type="button" aria-expanded="false" aria-controls="history" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+        <span class="tool-label">Earlier</span><span class="badge" id="history-count"></span>
+      </button>
+      <button class="tool round" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings" aria-label="Settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+
+    <section class="history panel" id="history" aria-labelledby="history-title" hidden>
+      <h2 id="history-title">Earlier this hour</h2>
       <ol id="history-list"></ol>
     </section>
 
-    <details class="tuner" id="tuner">
-      <summary>Listen to another station</summary>
-      <div class="field">
-        <input id="station" type="text" placeholder="Station link or address" autocomplete="off" spellcheck="false" aria-label="Station link or address" aria-describedby="station-hint">
-        <button id="tune" type="button">Tune in</button>
+      <div class="panel" id="settings" hidden>
+        <div class="group" id="tuner">
+          <h2>Listen to another station</h2>
+          <div class="field">
+            <input id="station" type="text" placeholder="Station link or address" autocomplete="off" spellcheck="false" aria-label="Station link or address" aria-describedby="station-hint">
+            <button id="tune" type="button">Tune in</button>
+          </div>
+          <p class="hint" id="station-hint">Paste the link a station shares, an address such as <code>http://192.168.1.20:8000</code>, or a TinyIce mount such as <code>https://radio.example.com/live</code>.</p>
+        </div>
+        <div class="group" id="relay" hidden>
+          <h2>Sharing</h2>
+          <p class="relay">
+            <label><input type="checkbox" id="relay-on" aria-describedby="relay-note"> Help others listen</label>
+            <span class="hint" id="relay-note">Shares the stream with a few other listeners, so more people can tune in. They can see your IP address.</span>
+            <span id="relay-state" role="status"></span>
+          </p>
+        </div>
       </div>
-      <p class="hint" id="station-hint">Paste the link a station shares, an address such as <code>http://192.168.1.20:8000</code>, or a TinyIce mount such as <code>https://radio.example.com/live</code>.</p>
-    </details>
-
-    <details class="tuner" id="relay" hidden>
-      <summary>Settings</summary>
-      <p class="relay">
-        <label><input type="checkbox" id="relay-on" aria-describedby="relay-note"> Help others listen</label>
-        <span class="hint" id="relay-note">Shares the stream with a few other listeners, so more people can tune in. They can see your IP address.</span>
-        <span id="relay-state" role="status"></span>
-      </p>
-    </details>
   </div>
   <audio id="audio" autoplay></audio>
 </main>
@@ -226,7 +280,7 @@ const served = !location.hostname.endsWith("github.io") && location.protocol.sta
 const fromLink = parseStation(location.hash.slice(1)) || parseStation(new URLSearchParams(location.search).get("station") || "");
 let station = fromLink || (served ? { kind: "url", url: location.origin, label: location.origin } : null);
 if (station) input.value = station.kind === "id" ? location.origin + location.pathname + "#" + station.id : station.url;
-else $("tuner").open = true;
+else openCard("settings", true);
 
 function say(text) { state.textContent = text; }
 function setIcon(playing) { icon.innerHTML = playing ? STOP : PLAY; button.setAttribute("aria-label", playing ? "Stop" : "Listen"); }
@@ -278,14 +332,16 @@ if ("mediaSession" in navigator) {
 // as small "thumb" pictures, each once, by key.
 let played = [];
 const thumbs = new Map();
-const toggle = $("history-toggle");
-function setOpen(open) {
-  $("history").classList.toggle("open", open);
-  toggle.setAttribute("aria-expanded", String(open));
-  try { localStorage.setItem("historyOpen", open ? "1" : "0"); } catch (_) {}
+// The history and settings cards open from the tools under the player, one at a time.
+function openCard(name, open) {
+  const card = $(name), btn = $(name + "-toggle");
+  if (open) for (const other of ["history", "settings"]) if (other !== name) openCard(other, false);
+  card.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  if (name === "history") try { localStorage.setItem("historyOpen", open ? "1" : "0"); } catch (_) {}
 }
-toggle.addEventListener("click", () => setOpen(toggle.getAttribute("aria-expanded") !== "true"));
-try { setOpen(localStorage.getItem("historyOpen") === "1"); } catch (_) { setOpen(false); }
+for (const name of ["history", "settings"])
+  $(name + "-toggle").addEventListener("click", () => openCard(name, $(name).hidden));
 function tileColours(key) {
   let h = 2166136261;
   for (const c of key) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
@@ -319,8 +375,12 @@ function renderHistory() {
     li.append(tile, what, when);
     list.append(li);
   }
-  $("history").hidden = played.length === 0;
-  $("history-count").textContent = played.length ? "· " + played.length : "";
+  const toggleBtn = $("history-toggle"), wasShown = !toggleBtn.hidden;
+  toggleBtn.hidden = played.length === 0;
+  $("history-count").textContent = played.length || "";
+  toggleBtn.setAttribute("aria-label", "Earlier this hour, " + played.length + (played.length === 1 ? " song" : " songs"));
+  if (!played.length) openCard("history", false);
+  else if (!wasShown) { let want = false; try { want = localStorage.getItem("historyOpen") === "1"; } catch (_) {} if (want) openCard("history", true); }
 }
 setInterval(() => { if (played.length) renderHistory(); }, 30000);
 
@@ -1102,7 +1162,7 @@ async function repair() {
 }
 
 async function listen() {
-  if (!station) { await stop("Paste a station link first"); $("tuner").open = true; input.focus(); return; }
+  if (!station) { await stop("Paste a station link first"); openCard("settings", true); input.focus(); return; }
   if (station.kind === "url" && blockedMixed(station.url)) {
     await stop("This page cannot reach an http:// station on another computer. Open " + station.url + " directly.");
     return;
@@ -1166,7 +1226,7 @@ function tuneTo(text) {
   station = next;
   history.replaceState(null, "", next.kind === "id" ? "#" + next.id : "?station=" + encodeURIComponent(next.url));
   paint(next.label); setNow("", ""); setCover(null); played = []; renderHistory(); shareBtn.hidden = next.kind !== "id"; relayRow.hidden = next.kind !== "id";
-  $("tuner").open = false;
+  openCard("settings", false);
   stop().then(start);
 }
 
@@ -1180,7 +1240,40 @@ shareBtn.addEventListener("click", async () => {
 button.addEventListener("click", () => (wanted ? stop() : start()));
 $("tune").addEventListener("click", () => tuneTo(input.value));
 input.addEventListener("keydown", (e) => { if (e.key === "Enter") tuneTo(input.value); });
-$("volume").addEventListener("input", (e) => { audio.volume = Number(e.target.value); });
+// Volume and mute. The slider keeps its place while muted; moving it unmutes.
+const vol = $("vol"), volRange = $("volume"), muteBtn = $("mute");
+let lastLevel = "";
+function showVolume() {
+  const v = audio.muted ? 0 : audio.volume;
+  const level = v === 0 ? "off" : v < 0.5 ? "low" : "high";
+  vol.style.setProperty("--v", volRange.value);
+  vol.dataset.level = level;
+  if (lastLevel && level !== lastLevel) { vol.classList.remove("bump"); void vol.offsetWidth; vol.classList.add("bump"); }
+  lastLevel = level;
+  muteBtn.setAttribute("aria-pressed", String(audio.muted));
+  muteBtn.setAttribute("aria-label", audio.muted ? "Unmute" : "Mute");
+  muteBtn.title = (audio.muted ? "Unmute" : "Mute") + " (M)";
+}
+function toggleMute() {
+  if (audio.muted || Number(volRange.value) === 0) {
+    audio.muted = false;
+    if (Number(volRange.value) === 0) { volRange.value = 0.5; audio.volume = 0.5; }
+  } else audio.muted = true;
+  showVolume();
+}
+try { const saved = localStorage.getItem("volume"); if (saved !== null) { volRange.value = saved; audio.volume = Number(saved); } } catch (_) {}
+volRange.addEventListener("input", () => {
+  audio.volume = Number(volRange.value);
+  audio.muted = false;
+  showVolume();
+  try { localStorage.setItem("volume", volRange.value); } catch (_) {}
+});
+muteBtn.addEventListener("click", toggleMute);
+document.addEventListener("keydown", (e) => {
+  if ((e.key === "m" || e.key === "M") && !e.metaKey && !e.ctrlKey && !e.altKey && !/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) toggleMute();
+});
+vol.addEventListener("animationend", () => vol.classList.remove("bump"));
+showVolume();
 window.addEventListener("hashchange", () => { const s = parseStation(location.hash.slice(1)); if (s && (!station || s.id !== station.id)) tuneTo(location.hash.slice(1)); });
 window.addEventListener("pagehide", () => { if (resource) fetch(resource, { method: "DELETE", keepalive: true }); });
 setIcon(false);
