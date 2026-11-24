@@ -272,14 +272,13 @@ impl<'a> Walk<'a> {
         let pl = &station.playlists[pi];
         if self.resume && !self.resumed[pi] {
             self.resumed[pi] = true;
-            let last = self
+            let plays: Vec<ItemId> = self
                 .hist
                 .iter_since(Timestamp::MIN)
                 .filter(|p| p.playlist == pl.id)
-                .last();
-            if let Some(last) = last {
-                self.pickers[pi].resume_after(pl, last.item);
-            }
+                .map(|p| p.item)
+                .collect();
+            self.pickers[pi].resume(pl, &plays);
         }
         let (hist, tz, prev) = (&self.hist, &self.tz, self.entries.last());
         self.pickers[pi].next(pl, hist, |item| {
@@ -305,8 +304,16 @@ impl<'a> Walk<'a> {
                 playlist: pl.id,
                 rule: ri,
             };
-            if let Some(last) = self.entries.iter().rev().find(|e| e.origin == origin) {
-                self.pickers[pi].resume_after(pl, last.item);
+            // With the history, the first pick resumes after all of it, these entries
+            // included. Without it, the take goes on after its own entries.
+            let taken: Vec<ItemId> = self
+                .entries
+                .iter()
+                .filter(|e| e.origin == origin)
+                .map(|e| e.item)
+                .collect();
+            if !self.resume && !taken.is_empty() {
+                self.pickers[pi].resume(pl, &taken);
                 self.resumed[pi] = true;
             }
         }
