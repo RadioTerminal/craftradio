@@ -2,9 +2,11 @@
 
 mod config;
 mod key;
+mod lockout;
 
 pub use config::{Config, Station};
 pub use key::{hash_key, key_matches, new_key};
+pub use lockout::Lockout;
 
 /// Why the server could not start or do what it was asked.
 #[derive(Debug, thiserror::Error)]
