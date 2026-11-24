@@ -15,6 +15,7 @@ mod on_air;
 mod overflow;
 mod preferences;
 mod prefs_window;
+mod server_page;
 mod smoke;
 mod steady;
 mod tabs;

@@ -47,6 +47,7 @@ mod rules_editor;
 pub mod rules_script;
 mod scheduled_pane;
 mod select;
+mod server_page;
 mod settings;
 mod shortcuts;
 pub mod theme;
@@ -64,6 +65,10 @@ pub use view::{
     ViewSource,
 };
 pub use windows::ToolWindow;
+
+/// The colour the Server page gives the pairing state, for the tests of rule 7.
+#[doc(hidden)]
+pub use server_page::state_ink;
 
 /// Where the card of deck `i` was drawn in the last frame. For tests.
 #[doc(hidden)]
