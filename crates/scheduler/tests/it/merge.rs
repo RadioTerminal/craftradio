@@ -333,3 +333,118 @@ fn artist_separation_skips_same_artist_within_60m() {
             .all(|e| e.start >= first + Duration::from_secs(3600))
     );
 }
+
+fn played(e: &Entry) -> radio_scheduler::Played {
+    radio_scheduler::Played {
+        item: e.item,
+        playlist: e.playlist,
+        at: e.start,
+        artist: None,
+        title: format!("item-{}", e.item.0),
+    }
+}
+
+fn replan(st: &Station, now: Timestamp, aired: &[Entry], pinned: &[Entry]) -> Timeline {
+    let mut history = PlayHistory::new();
+    for e in aired {
+        history.push(played(e));
+    }
+    merge(&PlanInput {
+        station: st,
+        history: &history,
+        now,
+        horizon: Duration::from_secs(3600),
+        pinned,
+    })
+}
+
+/// An ad for the minute-20 break waits on a deck before that minute comes. The break
+/// still airs once: the plan does not add a second ad for the same minute.
+#[test]
+fn a_clock_break_on_a_deck_before_its_time_is_not_planned_twice() {
+    let st = station_with(jingles(100, 3), vec![rule(Trigger::AtMinutes(vec![20]), 1)]);
+    let now = at_14(14);
+    let first = run(&st, now, Duration::from_secs(3600));
+    let ad = first
+        .entries
+        .iter()
+        .position(|e| e.playlist == ADS)
+        .expect("the break is planned");
+    assert!(ad <= 3, "the ad fits on the decks");
+    let tl = replan(&st, now, &[], &first.entries[..=ad]);
+    let ads = tl.entries.iter().filter(|e| e.playlist == ADS).count();
+    assert_eq!(ads, 1, "{:?}", playlists(&tl.entries[..8]));
+}
+
+/// The first ad of a three-ad break is on a deck, alone. The other two still follow it.
+#[test]
+fn a_track_count_break_keeps_its_rest_after_its_first_ad_is_on_a_deck() {
+    let st = station_with(jingles(100, 5), vec![rule(Trigger::EveryNTracks(2), 3)]);
+    let first = run(&st, at_14(0), Duration::from_secs(3600));
+    let (m, j) = (MAIN, ADS);
+    assert_eq!(playlists(&first.entries[..6]), [m, m, j, j, j, m]);
+    let tl = replan(&st, at_14(0), &[], &first.entries[..3]);
+    assert_eq!(playlists(&tl.entries[..7]), [m, m, j, j, j, m, m]);
+    let ids = |t: &Timeline| -> Vec<u64> { t.entries[..5].iter().map(|e| e.item.0).collect() };
+    assert_eq!(ids(&tl), ids(&first), "the same ads, in the same order");
+}
+
+/// The first ad of a three-ad break has aired and the second waits on a deck. The third
+/// still follows, and no fourth comes.
+#[test]
+fn a_track_count_break_keeps_its_last_ad_after_the_first_has_aired() {
+    let st = station_with(jingles(100, 5), vec![rule(Trigger::EveryNTracks(2), 3)]);
+    let first = run(&st, at_14(0), Duration::from_secs(3600));
+    let e = &first.entries;
+    let tl = replan(&st, e[3].start, &e[..3], &e[3..4]);
+    let (m, j) = (MAIN, ADS);
+    assert_eq!(playlists(&tl.entries[..4]), [j, j, m, m]);
+}
+
+/// A three-ad break at minute 20 is on air with its first ad when that minute has passed.
+/// The other two ads still follow.
+#[test]
+fn a_clock_break_keeps_its_rest_after_its_time_has_passed() {
+    let st = station_with(jingles(100, 5), vec![rule(Trigger::AtMinutes(vec![20]), 3)]);
+    let first = run(&st, at_14(10), Duration::from_secs(3600));
+    let e = &first.entries;
+    let ad = e.iter().position(|x| x.playlist == ADS).unwrap();
+    assert!(e[ad].start >= at_14(20));
+    let now = e[ad].start + Duration::from_secs(1);
+    let tl = replan(&st, now, &e[..=ad], &e[ad..=ad]);
+    let (m, j) = (MAIN, ADS);
+    assert_eq!(playlists(&tl.entries[..5]), [j, j, j, m, m]);
+}
+
+/// A fixed three-ad break is on air after its target: two ads are on decks. The third
+/// still follows them.
+#[test]
+fn a_fixed_break_keeps_its_rest_after_its_target_has_passed() {
+    use radio_model::{FixMode, Repeat};
+    let break_rule = Rule {
+        trigger: Trigger::At {
+            at: date(2026, 11, 21).at(15, 0, 0, 0),
+            repeat: Repeat::Once,
+        },
+        placement: Placement::Fixed {
+            mode: FixMode::Hard,
+            tolerance: Duration::from_secs(30),
+        },
+        take: 3,
+        constraints: Vec::new(),
+    };
+    let st = station_with(jingles(100, 3), vec![break_rule]);
+    let first = run(&st, at_14(55), Duration::from_secs(3600));
+    let planned: Vec<Entry> = first
+        .entries
+        .iter()
+        .filter(|e| e.playlist == ADS)
+        .cloned()
+        .collect();
+    assert_eq!(planned.len(), 3);
+    let now = planned[0].start + Duration::from_secs(5);
+    let tl = replan(&st, now, &planned[..1], &planned[..2]);
+    let ads: Vec<_> = tl.entries.iter().filter(|e| e.playlist == ADS).collect();
+    assert_eq!(ads.len(), 3, "{ads:?}");
+    assert!(ads[2].start > planned[1].start);
+}

@@ -164,8 +164,27 @@ struct FixedRule {
     tolerance: Duration,
 }
 
+/// The entries of one rule that the walk adopted one after another: a break that is on
+/// decks already, in part or in full.
+struct Run {
+    playlist: usize,
+    rule: usize,
+    /// How many items of the take aired or wait on decks.
+    done: u8,
+}
+
 struct Walk<'a> {
     station: &'a Station,
+    /// The plays before this plan, without the entries that the walk records.
+    aired: &'a PlayHistory,
+    /// The break that the last adopted entries belong to.
+    run: Option<Run>,
+    /// The walk adopted or placed an entry already, so the history no longer touches the
+    /// next adopted entry.
+    walked: bool,
+    /// The rules with a fixed occurrence in this plan that has pinned entries. That
+    /// occurrence adds the rest of its take itself.
+    covered: Vec<(usize, usize)>,
     tz: TimeZone,
     items: BTreeMap<ItemId, (&'a Item, PlaylistId)>,
     hist: PlayHistory,
@@ -206,6 +225,8 @@ impl<'a> Walk<'a> {
         fixed: Option<Fixed>,
     ) {
         self.record(pl.id, item, start);
+        self.run = None;
+        self.walked = true;
         self.entries.push(Entry {
             playlist: pl.id,
             item: item.id,
@@ -250,12 +271,114 @@ impl<'a> Walk<'a> {
         self.hist.item_since(e.item, from).iter().any(|t| *t <= to)
     }
 
+    /// Notes that the adopted entry `e` belongs to a break. `aired` tells if the history
+    /// has its airing already.
+    fn note_run(&mut self, e: &Entry, aired: bool) {
+        let station: &'a Station = self.station;
+        let key = match &e.origin {
+            Origin::Rule { playlist, rule } => station
+                .playlists
+                .iter()
+                .position(|p| p.id == *playlist)
+                .filter(|&pi| *rule < station.playlists[pi].rules.len())
+                .map(|pi| (pi, *rule)),
+            _ => None,
+        };
+        let Some((pi, ri)) = key else {
+            self.run = None;
+            return;
+        };
+        let pl = &station.playlists[pi];
+        let goes_on = self
+            .run
+            .as_ref()
+            .is_some_and(|r| r.playlist == pi && r.rule == ri);
+        // A break at a clock time is on a deck: its time does not fire it again. An ad
+        // that waits before every time of the plan was loaded for the first of them.
+        for r in &mut self.tracks {
+            let Due::Times { at, next } = &mut r.due else {
+                continue;
+            };
+            if r.id != pl.id || r.rule != ri {
+                continue;
+            }
+            let before = *next;
+            while at.get(*next).is_some_and(|t| *t <= e.start) {
+                *next += 1;
+            }
+            if *next == before && !goes_on && !aired && *next < at.len() {
+                *next += 1;
+            }
+        }
+        if let (true, Some(run)) = (goes_on, self.run.as_mut()) {
+            run.done = run.done.saturating_add(1);
+            return;
+        }
+        // The first items of the break can have aired already. They are the last plays
+        // of the history, all from this playlist.
+        let mut before = 0u8;
+        if !self.walked {
+            for p in self.aired.iter_since(Timestamp::MIN) {
+                before = if p.playlist == pl.id {
+                    before.saturating_add(1)
+                } else {
+                    0
+                };
+            }
+        }
+        let done = if aired {
+            before.max(1)
+        } else {
+            before.saturating_add(1)
+        };
+        self.run = Some(Run {
+            playlist: pi,
+            rule: ri,
+            done,
+        });
+    }
+
+    /// Adds the rest of a break whose first items are on decks: the rule fired for them
+    /// in an earlier plan, and in this plan it is not due any more. `next` is the next
+    /// pinned entry.
+    fn finish_run(&mut self, next: Option<&Entry>) {
+        let Some(run) = self.run.take() else {
+            return;
+        };
+        let station: &'a Station = self.station;
+        let pl = &station.playlists[run.playlist];
+        // More of the break waits on a deck, after a gap: the break goes on there.
+        let same = Origin::Rule {
+            playlist: pl.id,
+            rule: run.rule,
+        };
+        if next.is_some_and(|p| p.origin == same) {
+            self.run = Some(run);
+            return;
+        }
+        let take = pl.rules[run.rule].take;
+        if run.done >= take || !pl.enabled || pl.is_main {
+            return;
+        }
+        if self.covered.contains(&(run.playlist, run.rule)) {
+            return;
+        }
+        // An entry that waits on a deck right behind the break keeps its place.
+        if next.is_some_and(|p| p.fixed.is_none() && p.start <= self.next_at) {
+            return;
+        }
+        self.fire(run.playlist, run.rule, self.next_at, None, run.done);
+    }
+
     fn adopt(&mut self, e: &Entry) {
         // Check before the record below adds this entry to the walk's history.
         // An aired main entry counts in the history already.
-        if matches!(e.origin, Origin::Rule { .. }) || !self.aired(e) {
+        let aired = self.aired(e);
+        if matches!(e.origin, Origin::Rule { .. }) || !aired {
             self.count(&e.origin);
         }
+        self.note_run(e, aired);
+        self.walked = true;
         let known = self.items.get(&e.item).copied();
         let step = known.map_or(e.len.max(MIN_STEP), |(item, _)| Self::step(item));
         if let Some((item, _)) = known {
@@ -383,6 +506,10 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         .collect();
     let mut w = Walk {
         station,
+        aired: input.history,
+        run: None,
+        walked: false,
+        covered: Vec::new(),
         tz: tz.clone(),
         items,
         hist: input.history.clone(),
@@ -498,6 +625,11 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
             .count();
         u8::try_from(rest.saturating_add(1)).unwrap_or(u8::MAX)
     };
+    w.covered = fixed
+        .iter()
+        .filter(|f| covered(f) > 0)
+        .map(|f| (f.playlist, f.rule))
+        .collect();
     let (mut next_fixed, mut next_pinned) = (0, 0);
     loop {
         while pinned
@@ -510,6 +642,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         if w.next_at >= end {
             break;
         }
+        w.finish_run(pinned.get(next_pinned));
         while let Some(f) = fixed.get(next_fixed).filter(|f| f.target <= w.next_at) {
             // An earlier event can push the walk past this target: adopt its pinned entries
             // first, so the rest of its take follows them.
