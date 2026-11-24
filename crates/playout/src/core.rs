@@ -797,6 +797,7 @@ impl Core {
         self.sync_webrtc();
         self.ticks += 1;
         if self.ticks == 1 {
+            self.seed_history(now);
             self.resume(now);
             self.sync_strips();
         }
@@ -870,6 +871,9 @@ impl Core {
                 at_sample,
                 item_tag,
             } => self.on_started(deck, at_sample, item_tag),
+            AudioEvent::DecodeFailed { deck, item_tag } => {
+                self.on_decode_failed(deck.index(), item_tag, now);
+            }
             AudioEvent::DeckEnded(deck) => self.finish(deck.index(), now),
             AudioEvent::Underrun(deck) => {
                 let file = self.slots[deck.index()]
@@ -883,6 +887,47 @@ impl Core {
             AudioEvent::Silence { .. } => self.on_silence(now),
             AudioEvent::SilenceEnded { .. } => self.on_sound(now),
         }
+    }
+
+    /// The file on deck `i` stopped decoding before its end. The item did not air in
+    /// full: its row ends as interrupted, the plan leaves it out for a while, and the
+    /// next item does not wait for the rest of it.
+    fn on_decode_failed(&mut self, i: usize, tag: Option<u64>, now: Timestamp) {
+        let Some(s) = &mut self.slots[i] else {
+            return;
+        };
+        if tag != Some(s.tag) {
+            return;
+        }
+        s.cut = true;
+        let (item, role) = (s.item.clone(), s.role);
+        let reason = "the file stopped decoding before its end".to_string();
+        if role == DeckRole::Plan {
+            self.skip_broken(&item, reason, now);
+            if self.hands_over_alone(i) {
+                let _ = self.start_next(Some(i));
+            }
+        } else {
+            let alarm = Alarm::ItemSkipped {
+                item: item.id,
+                title: item.title,
+                reason,
+            };
+            self.alarms.raise(now, alarm);
+        }
+    }
+
+    /// Tells if playout must start the next item itself after the item on deck `i`
+    /// failed: the station plays by itself, and no other item is on air or cued to take
+    /// over, as one is during a crossfade.
+    fn hands_over_alone(&self, i: usize) -> bool {
+        let taken_over = (0..4).filter(|&j| j != i).any(|j| {
+            self.slots[j].as_ref().is_some_and(|s| {
+                matches!(s.role, DeckRole::Plan | DeckRole::Operator) && !s.not_started()
+            })
+        });
+        let auto = self.engine.state().mode == radio_engine::Mode::Auto;
+        auto && !self.hold && !self.dead_air.emergency && !taken_over
     }
 
     fn on_started(&mut self, deck: DeckId, at_sample: u64, tag: Option<u64>) {
@@ -1433,9 +1478,10 @@ impl Core {
         match &item.source {
             Source::File { path } => {
                 let (path, cue_in) = (path.clone(), options.cue_in);
+                let open = self.cfg.open_file;
                 self.work.run(move || Done::Opened {
                     tag,
-                    result: Decoder::open_at(&path, cue_in).map_err(|e| e.to_string()),
+                    result: open(std::path::Path::new(&path), cue_in).map_err(|e| e.to_string()),
                     tagged: radio_library::read_loudness_tags(&path),
                 });
                 phase = Phase::Opening;
@@ -1739,8 +1785,7 @@ impl Core {
                 self.finish(i, now);
                 // Nothing hands over to the next item now, so it starts here.
                 let idle = self.slots.iter().flatten().all(Slot::not_started);
-                let auto = self.engine.state().mode == radio_engine::Mode::Auto;
-                if (on_air || idle) && !self.hold && !self.dead_air.emergency && auto {
+                if (on_air || idle) && self.hands_over_alone(i) {
                     let _ = self.start_next(None);
                 }
             }
@@ -2135,13 +2180,16 @@ impl Core {
             .flatten()
             .map(|s| s.entry.clone())
             .collect();
-        self.hard_seen.retain(|h| {
-            !on_deck.iter().any(|e| same_event(e, h))
-                && !self.aired_fixed.iter().any(|e| same_occurrence(e, h))
-        });
         self.blocked.retain(|b| now < b.until);
         self.cancelled
             .retain(|c| since(c.start, now) < Duration::from_secs(24 * 3600));
+        // The plan still has an event that the operator cancelled. It is not waited for,
+        // so it is not missed either.
+        self.hard_seen.retain(|h| {
+            !on_deck.iter().any(|e| same_event(e, h))
+                && !self.aired_fixed.iter().any(|e| same_occurrence(e, h))
+                && !self.cancelled.iter().any(|c| same_event(c, h))
+        });
         let mut missed = Vec::new();
         let mut due = Vec::new();
         for h in &self.hard_seen {

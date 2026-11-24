@@ -489,3 +489,71 @@ fn a_jingle_after_every_track_airs_each_time() {
         "songs and the jingle do not alternate: {titles:?}"
     );
 }
+
+/// Six one-second songs play, the least recently played first. Playout crashes or shuts down during the second,
+/// and the station starts again ten seconds later.
+fn stop_during_the_second_song(name: &str, crash: bool) -> (Playout, radio_playout::ManualClock) {
+    let db = std::env::temp_dir().join(format!("radio-crash-{}-{name}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    let mut engine = Engine::open(&db).unwrap();
+    let songs: Vec<_> = (1..=6)
+        .map(|n| {
+            let path = wav(&format!("{name}-{n}"), 1.0, Side::Left);
+            file_item(n, &format!("Song {n}"), &path, 1.0, 1.0, 0.0)
+        })
+        .collect();
+    engine
+        .dispatch(Command::PlaylistAddItems {
+            playlist: PlaylistId(1),
+            items: songs,
+            at: None,
+            lock: true,
+        })
+        .unwrap();
+    engine
+        .dispatch(Command::PlaylistSetPick {
+            playlist: PlaylistId(1),
+            pick: radio_model::PickOrder::LeastRecentlyPlayed,
+        })
+        .unwrap();
+    engine.flush().unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    run(&p, &clock, 1.5);
+    let rows = p.history(t0(), 10).unwrap();
+    assert_eq!(rows.len(), 2, "two songs went to air before the stop");
+    if crash {
+        std::mem::forget(p);
+    } else {
+        drop(p);
+    }
+
+    clock.advance(Duration::from_secs(10));
+    let mut cfg = PlayoutConfig::new(Arc::new(clock.clone()), OutputChoice::Offline);
+    cfg.horizon = Duration::from_secs(60);
+    cfg.measure = no_measure;
+    let p = Playout::start(Engine::open(&db).unwrap(), cfg).unwrap();
+    (p, clock)
+}
+
+/// After a restart the rotation still knows what aired before it: the song that has not
+/// played yet comes first, not the song that opened the playlist.
+#[test]
+fn the_rotation_continues_after_a_restart() {
+    for (name, crash) in [("rotation-crash", true), ("rotation-stop", false)] {
+        let (p, clock) = stop_during_the_second_song(name, crash);
+        let restart = t0() + Duration::from_secs(5);
+        run(&p, &clock, 5.5);
+        let rows = p.history(restart, 20).unwrap();
+        let titles: Vec<&str> = rows.iter().map(|r| r.entry.title.as_str()).collect();
+        let position = |title: &str| titles.iter().position(|t| *t == title);
+        // Songs one and two aired before the stop; the other four have not played yet.
+        let fresh = ["Song 3", "Song 4", "Song 5", "Song 6"];
+        let replay = position("Song 1").expect("song one comes round again");
+        assert!(
+            fresh
+                .iter()
+                .all(|t| position(t).is_some_and(|at| at < replay)),
+            "crash {crash}: a song played again before every song had played: {titles:?}"
+        );
+    }
+}
