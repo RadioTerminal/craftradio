@@ -1,16 +1,18 @@
 //! The server: a TCP port, one thread per connection, and the routes of a mount — a
 //! station's keyed source push in, its public listeners out, and the keyed title update
 //! an MP3 source sends as it would to Icecast — and the public stats of every live mount.
+//! With a certificate and key in the config every connection is TLS (see [`crate::conn`]).
 
 use crate::ServerError;
 use crate::config::{Config, Station};
-use crate::conn::Conn;
+use crate::conn::{Conn, server_config};
 use crate::framing::Format;
 use crate::http::{HttpError, Request, client_addr, read_request, respond};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
 use crate::mount::{ListenError, Mount, Received};
 use crate::stats::status_json;
+use rustls::ServerConfig;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -89,6 +91,16 @@ impl Server {
 
     #[doc(hidden)]
     pub fn start_with(config: Config, timeouts: Timeouts) -> Result<ServerHandle, ServerError> {
+        // Read before binding, so a bad file leaves the port free.
+        let tls = match (&config.tls_cert, &config.tls_key) {
+            (Some(cert), Some(key)) => Some(server_config(cert, key)?),
+            (None, None) => None,
+            _ => {
+                return Err(ServerError::Config(
+                    "tls_cert and tls_key must be given together".into(),
+                ));
+            }
+        };
         let listener = TcpListener::bind(config.listen)?;
         let local_addr = listener.local_addr()?;
         let mounts = config
@@ -112,6 +124,7 @@ impl Server {
         let shared = Arc::new(Shared {
             config,
             timeouts,
+            tls,
             mounts,
             lockout: Lockout::default(),
             stopping: AtomicBool::new(false),
@@ -213,6 +226,8 @@ fn wake_addr(local: SocketAddr) -> SocketAddr {
 struct Shared {
     config: Config,
     timeouts: Timeouts,
+    /// Set when the config names a certificate: every connection is then TLS.
+    tls: Option<Arc<ServerConfig>>,
     mounts: HashMap<String, Arc<Mount>>,
     lockout: Lockout,
     stopping: AtomicBool,
@@ -308,7 +323,7 @@ impl Shared {
             .name("server-connection".into())
             .spawn(move || {
                 let mut guard = guard;
-                serve(&mut guard, peer, Conn::new(stream));
+                serve(&mut guard, peer, stream);
             });
         // A thread that could not start drops its closure, and with it the guard.
         drop(spawned);
@@ -369,24 +384,32 @@ fn accept_loop(shared: &Arc<Shared>, listener: TcpListener) {
     }
 }
 
-fn serve(guard: &mut ConnectionGuard, peer: SocketAddr, mut stream: Conn) {
+fn serve(guard: &mut ConnectionGuard, peer: SocketAddr, tcp: Arc<TcpStream>) {
     let shared = Arc::clone(&guard.shared);
     let shared = &*shared;
     let head = shared.timeouts.head.max(MIN_TIMEOUT);
-    // `read_request` tries a read that times out again until its deadline; without a
-    // timeout a read could block past it, and a non-blocking socket would spin.
-    let timeouts_set = stream.set_read_timeout(head).is_ok()
-        && stream
-            .set_write_timeout(shared.timeouts.listener_write.max(MIN_TIMEOUT))
-            .is_ok();
-    if !timeouts_set {
-        return;
-    }
+    // The TLS handshake and the request head both have to be in by then. Until then the
+    // connection sets its socket's timeouts to what is left before each read and write,
+    // so neither blocks past it, however slowly the bytes come.
     let deadline = Instant::now()
         .checked_add(head)
         .unwrap_or_else(Instant::now);
+    let opened = match &shared.tls {
+        None => Ok(Conn::plain(tcp, deadline)),
+        Some(config) => Conn::tls(tcp, deadline, config),
+    };
+    // A handshake that failed or came too late: there is no HTTP to answer.
+    let Ok(mut stream) = opened else {
+        return;
+    };
     let read = read_request(&mut stream, deadline);
     guard.end_head();
+    if stream
+        .end_head(head, shared.timeouts.listener_write.max(MIN_TIMEOUT))
+        .is_err()
+    {
+        return;
+    }
     let request = match read {
         Ok(request) => request,
         Err(HttpError::Malformed) => {
