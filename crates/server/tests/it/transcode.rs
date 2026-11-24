@@ -105,6 +105,8 @@ struct Requests {
     retitle: Option<String>,
     /// Write this many silent pages at once, without pause.
     burst: usize,
+    /// Push silence instead of the tone from now on.
+    quiet: bool,
 }
 
 /// Pushes a tone into a mount in real time from a thread, 20 ms at a time, until dropped;
@@ -166,6 +168,11 @@ impl Pusher {
         self.requests.lock().unwrap().burst = pages;
     }
 
+    /// Pushes silence instead of the tone from now on (Ogg only).
+    fn quiet(&self) {
+        self.requests.lock().unwrap().quiet = true;
+    }
+
     /// Ends the source.
     fn end(self) {}
 }
@@ -200,8 +207,14 @@ fn push(
     let mut clock = Instant::now();
     let mut ticks = 0u32;
     let mut frames = 0usize;
+    let mut quiet = false;
     while !stop.load(Ordering::Acquire) {
-        let Requests { retitle, burst } = std::mem::take(&mut *requests.lock().unwrap());
+        let Requests {
+            retitle,
+            burst,
+            quiet: hush,
+        } = std::mem::take(&mut *requests.lock().unwrap());
+        quiet |= hush;
         if let Some(title) = retitle {
             ogg.restart(&title, None);
         }
@@ -214,6 +227,10 @@ fn push(
             ticks = 0;
         }
         let bytes = match &mut mp3 {
+            None if quiet => {
+                ogg.silence(20);
+                ogg.take()
+            }
             None => {
                 ogg.audio(20);
                 ogg.take()
@@ -396,6 +413,39 @@ fn every_join_after_a_pause_hears_audio() {
             station.settle(&pusher);
         }
     }
+    // And again at once, before the transcoder may have seen the output empty.
+    for round in 0..5 {
+        for output in ["opus", "mp3"] {
+            let mut ear = Ear::join(station.output(output));
+            assert!(ear.hears(), "quick join {round} on {output} hears the tone");
+        }
+    }
+    finish_promptly(transcoder);
+}
+
+#[test]
+fn a_pause_drops_what_was_decoded_before_it() {
+    let station = station();
+    let pusher = Pusher::start(&station.pushed, Source::Ogg);
+    let transcoder = station.spawn();
+    eventually("the outputs went live", || station.outputs_live());
+    let opus = station.output("opus");
+    let mut ear = Ear::join(opus);
+    assert!(ear.hears());
+    drop(ear);
+    // The tone goes on during the pause, then the source goes quiet.
+    station.settle(&pusher);
+    pusher.quiet();
+    pusher.wait_packets(SECOND);
+
+    let mut ear = Ear::join(opus);
+    for _ in 0..SECOND / 2 {
+        let samples = ear.next().expect("the output plays");
+        assert!(
+            !heard(samples),
+            "audio from before the pause was played after it"
+        );
+    }
     finish_promptly(transcoder);
 }
 
@@ -488,6 +538,19 @@ fn the_source_ending_ends_every_output() {
 }
 
 #[test]
+fn the_source_ending_while_nobody_listens_ends_every_output() {
+    let station = station();
+    let pusher = Pusher::start(&station.pushed, Source::Ogg);
+    let transcoder = station.spawn();
+    eventually("the outputs went live", || station.outputs_live());
+    station.settle(&pusher);
+
+    pusher.end();
+    eventually("the outputs ended", || !station.any_output_live());
+    finish_promptly(transcoder);
+}
+
+#[test]
 fn a_new_source_in_another_format_is_heard_on_the_outputs() {
     let station = station();
     let pusher = Pusher::start(&station.pushed, Source::Ogg);
@@ -553,6 +616,11 @@ fn finish_returns_while_the_source_is_silent() {
     // Gives the thread time to start waiting on the source; what the test proves is the
     // deadline in `finish_promptly`.
     thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        station.outputs.refusal(),
+        None,
+        "a silent source is not refused"
+    );
     finish_promptly(transcoder);
     assert!(!station.any_output_live());
 }
