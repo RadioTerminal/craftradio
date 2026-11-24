@@ -13,7 +13,7 @@ use crate::lockout::Lockout;
 use crate::mount::{ListenError, Mount, Received};
 use crate::stats::status_json;
 use rustls::ServerConfig;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -247,20 +247,32 @@ struct Connections {
     next_id: u64,
     /// Each connection's socket, shared with its thread: one descriptor a connection.
     open: HashMap<u64, Arc<TcpStream>>,
-    /// Connections still sending their head, by peer address (the trusted proxy's left
-    /// out).
+    /// The connections still sending their head (or TLS handshake), oldest first, with
+    /// their peer address; `None` for the trusted proxy.
+    in_head: BTreeMap<u64, Option<IpAddr>>,
+    /// How many of `in_head` each address has (the trusted proxy left out).
     heads: HashMap<IpAddr, usize>,
+    /// Connections whose head was cut off to make room: their sockets are shut and their
+    /// threads about to end. They count toward no limit and are never let on.
+    evicted: HashSet<u64>,
     /// The connections holding a station's reserved place: id to station slug.
     reserved: HashMap<u64, String>,
 }
 
 impl Connections {
+    /// Connection threads that count toward the cap: every open one but those evicted.
+    fn counted(&self) -> usize {
+        self.open.len().saturating_sub(self.evicted.len())
+    }
+
     /// Whether connection `id`, its head read, fits in the public part of the pool.
     fn public_room(&self, id: u64, public_connections: usize) -> bool {
         let public = self
             .open
             .keys()
-            .filter(|open| **open != id && !self.reserved.contains_key(*open))
+            .filter(|open| {
+                **open != id && !self.reserved.contains_key(*open) && !self.evicted.contains(*open)
+            })
             .count();
         public < public_connections
     }
@@ -272,6 +284,41 @@ impl Connections {
             return false;
         }
         self.reserved.insert(id, slug.to_owned());
+        true
+    }
+
+    /// Connection `id` is no longer sending its head. False if it was evicted meanwhile.
+    fn end_head(&mut self, id: u64) -> bool {
+        if let Some(Some(addr)) = self.in_head.remove(&id)
+            && let Some(heads) = self.heads.get_mut(&addr)
+        {
+            *heads = heads.saturating_sub(1);
+            if *heads == 0 {
+                self.heads.remove(&addr);
+            }
+        }
+        !self.evicted.contains(&id)
+    }
+
+    /// Makes room for a new connection at the cap by cutting off the oldest head still
+    /// arriving, one from a client address before one from the trusted proxy. A
+    /// connection whose head is read is never cut off. False if no head is arriving.
+    fn evict_oldest_head(&mut self) -> bool {
+        let oldest = self
+            .in_head
+            .iter()
+            .find(|(_, addr)| addr.is_some())
+            .or_else(|| self.in_head.iter().next())
+            .map(|(id, _)| *id);
+        let Some(id) = oldest else {
+            return false;
+        };
+        self.end_head(id);
+        self.evicted.insert(id);
+        if let Some(stream) = self.open.get(&id) {
+            // Its read fails at once, and its thread ends.
+            let _ = stream.shutdown(Shutdown::Both);
+        }
         true
     }
 }
@@ -289,9 +336,10 @@ impl Shared {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Gives an accepted connection its thread, or closes it when stopping, when every
-    /// connection thread is taken, or when its address already has as many heads coming
-    /// as it may.
+    /// Gives an accepted connection its thread, or closes it when stopping or when its
+    /// address already has as many heads coming as it may. At the cap, the oldest head
+    /// still arriving is cut off to make room, so a source always gets the chance to show
+    /// its key; with no head arriving, the new connection is closed.
     fn admit(self: &Arc<Self>, stream: TcpStream, peer: SocketAddr) {
         let stream = Arc::new(stream);
         let head_from = (self.config.trusted_proxy != Some(peer.ip())).then_some(peer.ip());
@@ -299,31 +347,35 @@ impl Shared {
             let mut connections = self.connections();
             // Checked under the same lock `stop` closes connections under, so none slips
             // in after it.
-            if connections.stopping || connections.open.len() >= self.max_connections {
+            if connections.stopping {
+                return;
+            }
+            if let Some(addr) = head_from
+                && connections.heads.get(&addr).copied().unwrap_or_default() >= HEADS_PER_ADDRESS
+            {
+                return;
+            }
+            if connections.counted() >= self.max_connections && !connections.evict_oldest_head() {
                 return;
             }
             if let Some(addr) = head_from {
-                let heads = connections.heads.entry(addr).or_default();
-                if *heads >= HEADS_PER_ADDRESS {
-                    return;
-                }
-                *heads += 1;
+                *connections.heads.entry(addr).or_default() += 1;
             }
             let id = connections.next_id;
             connections.next_id += 1;
             connections.open.insert(id, Arc::clone(&stream));
+            connections.in_head.insert(id, head_from);
             id
         };
         let guard = ConnectionGuard {
             shared: Arc::clone(self),
             id,
-            head_from,
         };
         let spawned = std::thread::Builder::new()
             .name("server-connection".into())
             .spawn(move || {
-                let mut guard = guard;
-                serve(&mut guard, peer, stream);
+                let guard = guard;
+                serve(&guard, peer, stream);
             });
         // A thread that could not start drops its closure, and with it the guard.
         drop(spawned);
@@ -335,25 +387,13 @@ impl Shared {
 struct ConnectionGuard {
     shared: Arc<Shared>,
     id: u64,
-    /// The address whose head count this connection is in, until its head is read.
-    head_from: Option<IpAddr>,
 }
 
 impl ConnectionGuard {
     /// The head is read (or failed): the connection no longer counts as one coming.
-    fn end_head(&mut self) {
-        if let Some(addr) = self.head_from.take() {
-            end_head(&mut self.shared.connections(), addr);
-        }
-    }
-}
-
-fn end_head(connections: &mut Connections, addr: IpAddr) {
-    if let Some(heads) = connections.heads.get_mut(&addr) {
-        *heads = heads.saturating_sub(1);
-        if *heads == 0 {
-            connections.heads.remove(&addr);
-        }
+    /// False if it was cut off meanwhile to make room, and must not go on.
+    fn end_head(&self) -> bool {
+        self.shared.connections().end_head(self.id)
     }
 }
 
@@ -361,10 +401,9 @@ impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         {
             let mut connections = self.shared.connections();
-            if let Some(addr) = self.head_from.take() {
-                end_head(&mut connections, addr);
-            }
+            connections.end_head(self.id);
             connections.open.remove(&self.id);
+            connections.evicted.remove(&self.id);
             connections.reserved.remove(&self.id);
         }
         self.shared.finished.notify_all();
@@ -384,7 +423,7 @@ fn accept_loop(shared: &Arc<Shared>, listener: TcpListener) {
     }
 }
 
-fn serve(guard: &mut ConnectionGuard, peer: SocketAddr, tcp: Arc<TcpStream>) {
+fn serve(guard: &ConnectionGuard, peer: SocketAddr, tcp: Arc<TcpStream>) {
     let shared = Arc::clone(&guard.shared);
     let shared = &*shared;
     let head = shared.timeouts.head.max(MIN_TIMEOUT);
@@ -403,7 +442,9 @@ fn serve(guard: &mut ConnectionGuard, peer: SocketAddr, tcp: Arc<TcpStream>) {
         return;
     };
     let read = read_request(&mut stream, deadline);
-    guard.end_head();
+    if !guard.end_head() {
+        return;
+    }
     if stream
         .end_head(head, shared.timeouts.listener_write.max(MIN_TIMEOUT))
         .is_err()
