@@ -2,7 +2,7 @@ use crate::framing::{OggSource, granule, pages};
 use base64::Engine;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use radio_server::{
-    Config, Format, MountStats, Server, ServerHandle, Timeouts, hash_key, status_json,
+    Config, Format, MountStats, Server, ServerError, ServerHandle, Timeouts, hash_key, status_json,
 };
 use serde_json::Value;
 use std::io::{ErrorKind, Read, Write};
@@ -61,7 +61,7 @@ fn client(addr: SocketAddr) -> TcpStream {
 }
 
 /// Reads a reply head one byte at a time, so no byte of the body is taken.
-fn read_head_bytes(stream: &mut TcpStream) -> Vec<u8> {
+fn read_head_bytes(stream: &mut impl Read) -> Vec<u8> {
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
         let mut byte = [0];
@@ -71,7 +71,7 @@ fn read_head_bytes(stream: &mut TcpStream) -> Vec<u8> {
     head
 }
 
-fn read_head(stream: &mut TcpStream) -> Head {
+fn read_head(stream: &mut impl Read) -> Head {
     let text = String::from_utf8(read_head_bytes(stream)).unwrap();
     let mut lines = text.trim_end().split("\r\n");
     let status_line = lines.next().unwrap();
@@ -101,16 +101,21 @@ fn send_push(
     extra: &str,
 ) -> TcpStream {
     let mut stream = client(addr);
+    stream
+        .write_all(push_head(slug, key, content_type, extra).as_bytes())
+        .unwrap();
+    stream
+}
+
+/// A source push's head as the app's `connect()` writes it.
+fn push_head(slug: &str, key: Option<&str>, content_type: &str, extra: &str) -> String {
     let auth = key.map(basic).unwrap_or_default();
-    write!(
-        stream,
+    format!(
         "PUT /{slug}/stream HTTP/1.0\r\nHost: radio.example.test\r\n{auth}\
          Content-Type: {content_type}\r\nContent-Length: 9223372036854775807\r\n\
          Ice-Name: Cloud Signal FM\r\nIce-Description: Invented test stream\r\nIce-Genre: Ambient\r\n\
          Ice-Bitrate: 96\r\n{extra}\r\n"
     )
-    .unwrap();
-    stream
 }
 
 /// Starts a source push and reads the reply head.
@@ -1154,4 +1159,259 @@ fn a_connection_holds_one_file_descriptor() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A certificate for 127.0.0.1 and its key, written as PEM files in a directory of their
+/// own; made fresh by each test.
+struct TlsFiles {
+    dir: tempfile::TempDir,
+    cert: std::path::PathBuf,
+    key: std::path::PathBuf,
+    root: rustls::pki_types::CertificateDer<'static>,
+}
+
+/// DER as a PEM block, written by hand: the workspace's `rcgen` has no PEM feature.
+fn pem_text(label: &str, der: &[u8]) -> String {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(der);
+    let lines: Vec<&str> = encoded
+        .as_bytes()
+        .chunks(64)
+        .map(|line| std::str::from_utf8(line).unwrap())
+        .collect();
+    format!(
+        "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
+        lines.join("\n")
+    )
+}
+
+fn tls_files() -> TlsFiles {
+    let made = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let cert = dir.path().join("cert.pem");
+    let key = dir.path().join("key.pem");
+    std::fs::write(&cert, pem_text("CERTIFICATE", made.cert.der())).unwrap();
+    std::fs::write(
+        &key,
+        pem_text("PRIVATE KEY", &made.signing_key.serialize_der()),
+    )
+    .unwrap();
+    TlsFiles {
+        dir,
+        cert,
+        key,
+        root: made.cert.der().clone(),
+    }
+}
+
+fn with_tls(cert: &std::path::Path, key: &std::path::Path) -> Config {
+    let mut config = config(200, None);
+    config.tls_cert = Some(cert.to_owned());
+    config.tls_key = Some(key.to_owned());
+    config
+}
+
+type TlsClient = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
+
+/// A TLS client that trusts only `root`.
+fn tls_client(addr: SocketAddr, root: &rustls::pki_types::CertificateDer<'static>) -> TlsClient {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(root.clone()).unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+    let connection = rustls::ClientConnection::new(std::sync::Arc::new(config), name).unwrap();
+    rustls::StreamOwned::new(connection, client(addr))
+}
+
+/// Reads a TLS stream until it ends, and whether it ended with `close_notify`; fails the
+/// test after `limit`.
+fn read_tls_to_end_within(stream: &mut TlsClient, limit: Duration) -> (Vec<u8>, bool) {
+    let deadline = Instant::now() + limit;
+    stream
+        .sock
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0; 4096];
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "the server did not close within {limit:?}"
+        );
+        match stream.read(&mut buf) {
+            Ok(0) => return (out, true),
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => return (out, false),
+        }
+    }
+}
+
+#[test]
+fn with_certificate_files_the_server_speaks_tls() {
+    let files = tls_files();
+    let server = Server::start(with_tls(&files.cert, &files.key)).unwrap();
+    let addr = server.local_addr();
+
+    let mut source = tls_client(addr, &files.root);
+    source
+        .write_all(push_head("morning", Some(MORNING_KEY), "audio/ogg", "").as_bytes())
+        .unwrap();
+    assert_eq!(read_head_bytes(&mut source), b"HTTP/1.0 200 OK\r\n\r\n");
+    let mut ogg = OggSource::new("Cloud Signal", Some("Echo"));
+    ogg.audio(200);
+    let before = ogg.take();
+    source.write_all(&before).unwrap();
+    source.flush().unwrap();
+    let last_before = granule(pages(&before).last().unwrap());
+
+    let mut listener = tls_client(addr, &files.root);
+    listener
+        .write_all(b"GET /morning/stream HTTP/1.0\r\nHost: radio.example.test\r\n\r\n")
+        .unwrap();
+    let head = read_head(&mut listener);
+    assert_eq!(head.status, 200);
+    assert_eq!(head.header("Content-Type"), Some("audio/ogg"));
+    ogg.audio(400);
+    for part in ogg.take().chunks(700) {
+        source.write_all(part).unwrap();
+    }
+    source.flush().unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    let mut heard = Vec::new();
+    let mut buf = [0; 4096];
+    while !pages(&heard).iter().any(|page| granule(page) > last_before) {
+        assert!(Instant::now() < deadline, "no page arrived over TLS");
+        let n = listener.read(&mut buf).unwrap();
+        assert!(n > 0, "the stream ended early");
+        heard.extend_from_slice(&buf[..n]);
+    }
+    assert!(heard.starts_with(b"OggS"));
+
+    // Plain HTTP on the TLS port gets no HTTP reply.
+    let mut plain = client(addr);
+    let _ = plain.write_all(b"GET /status-json.xsl HTTP/1.0\r\n\r\n");
+    let reply = read_to_end_within(&mut plain, PATIENCE);
+    assert!(!reply.starts_with(b"HTTP/"), "plain HTTP was answered");
+
+    // The source ends cleanly, and so, at once, does the listener's stream.
+    source.conn.send_close_notify();
+    source.flush().unwrap();
+    let (_, clean) = read_tls_to_end_within(&mut listener, PATIENCE);
+    assert!(clean, "the listener's stream ended without close_notify");
+}
+
+#[test]
+fn stop_ends_tls_sources_and_listeners_at_once() {
+    let files = tls_files();
+    let server = Server::start(with_tls(&files.cert, &files.key)).unwrap();
+    let addr = server.local_addr();
+    let mut source = tls_client(addr, &files.root);
+    source
+        .write_all(push_head("morning", Some(MORNING_KEY), "audio/mpeg", "").as_bytes())
+        .unwrap();
+    assert_eq!(read_head(&mut source).status, 200);
+    source.write_all(&mp3_frames(10)).unwrap();
+    source.flush().unwrap();
+    let mut listener = tls_client(addr, &files.root);
+    listener
+        .write_all(b"GET /morning/stream HTTP/1.0\r\n\r\n")
+        .unwrap();
+    assert_eq!(read_head(&mut listener).status, 200);
+
+    let started = Instant::now();
+    server.stop();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "stop took too long"
+    );
+    read_tls_to_end_within(&mut listener, Duration::from_secs(2));
+    read_tls_to_end_within(&mut source, Duration::from_secs(2));
+}
+
+#[test]
+fn a_tls_handshake_that_never_finishes_is_closed_at_the_deadline() {
+    let files = tls_files();
+    let server = Server::start_with(
+        with_tls(&files.cert, &files.key),
+        Timeouts {
+            head: Duration::from_millis(300),
+            ..Timeouts::default()
+        },
+    )
+    .unwrap();
+    let mut slow = client(server.local_addr());
+    // The start of a TLS record that never completes, one byte at a time, each well
+    // inside the head timeout.
+    let mut writer = slow.try_clone().unwrap();
+    let dribble = std::thread::spawn(move || {
+        let until = Instant::now() + Duration::from_secs(3);
+        for byte in [22, 3, 3, 0, 200].into_iter().chain(std::iter::repeat(1)) {
+            if Instant::now() > until || writer.write_all(&[byte]).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let started = Instant::now();
+    read_to_end_within(&mut slow, Duration::from_secs(2));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(slow);
+    dribble.join().unwrap();
+}
+
+#[test]
+fn a_missing_certificate_file_is_a_start_error() {
+    let files = tls_files();
+    let missing = files.dir.path().join("missing.pem");
+    let error = Server::start(with_tls(&missing, &files.key))
+        .err()
+        .expect("a missing certificate does not start");
+    let ServerError::Tls(message) = error else {
+        panic!("not a TLS error: {error}");
+    };
+    assert!(
+        message.contains(&missing.display().to_string()),
+        "{message}"
+    );
+
+    // A file with no certificate in it.
+    let error = Server::start(with_tls(&files.key, &files.key))
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&error, ServerError::Tls(message) if message.contains(&files.key.display().to_string())),
+        "{error}"
+    );
+
+    // A key that does not parse: the error names the file and quotes none of it.
+    let garbage = files.dir.path().join("garbage.pem");
+    let body = "aW52ZW50ZWQtbm90LWEta2V5LWF0LWFsbC0xMjM0NTY3ODkw";
+    std::fs::write(
+        &garbage,
+        format!("-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n"),
+    )
+    .unwrap();
+    let error = Server::start(with_tls(&files.cert, &garbage))
+        .err()
+        .unwrap();
+    let ServerError::Tls(message) = &error else {
+        panic!("not a TLS error: {error}");
+    };
+    assert!(
+        message.contains(&garbage.display().to_string()),
+        "{message}"
+    );
+    assert!(!message.contains(body), "{message}");
+    let bad_start = files.dir.path().join("bad-start.pem");
+    std::fs::write(&bad_start, format!("-----BEGIN {body}\n")).unwrap();
+    let error = Server::start(with_tls(&files.cert, &bad_start))
+        .err()
+        .unwrap();
+    assert!(!error.to_string().contains(body), "{error}");
 }

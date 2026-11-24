@@ -18,7 +18,12 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+# TLS from certificate files, with the ring provider the app's Icecast output uses too.
+rustls.workspace = true
 
 [dev-dependencies]
 # The app's own Ogg/Opus encoder builds the test streams.
 radio-stream.workspace = true
+# Test certificates, made when the tests run.
+rcgen.workspace = true
+tempfile.workspace = true
