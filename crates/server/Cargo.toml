@@ -22,8 +22,15 @@ thiserror.workspace = true
 rustls.workspace = true
 
 [dev-dependencies]
-# The app's own Ogg/Opus encoder builds the test streams.
-radio-stream.workspace = true
+# The app's own Ogg/Opus encoder builds the test streams, and its Icecast output and
+# stream input (MP3 included) are the client the end-to-end tests push and listen with.
+radio-stream = { workspace = true, features = ["mp3"] }
+# The audio ring the app's Icecast output reads from.
+rtrb.workspace = true
+# The station's own decoders (Symphonia's and Opus), to hear an Ogg/Opus mount: the app's
+# stream input decodes with Symphonia's codecs alone, which have no Opus.
+radio-codecs.workspace = true
+symphonia.workspace = true
 # Test certificates, made when the tests run.
 rcgen.workspace = true
 tempfile.workspace = true
