@@ -66,7 +66,9 @@
   .meter b { flex: 1; height: 12%; border-radius: 2px; background: rgba(255,255,255,.22); transition: height .08s linear; }
   .meter.live b { background: rgba(255,255,255,.78); }
   .row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: 14px; }
-  #state { margin: 0; font-size: 13px; color: var(--soft); }
+  #state { margin: 10px 0 0; font-size: 13px; color: var(--soft); text-align: center; }
+  /* "Ready" and "Live" say nothing the lamp and the button do not: they stay for screen readers only. */
+  #state.quiet { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .play { width: 64px; height: 64px; border-radius: 50%; border: 0; cursor: pointer; display: grid; place-items: center;
           background: var(--text); color: #16181d; box-shadow: 0 8px 24px -8px rgba(0,0,0,.6);
           transition: transform .12s ease; }
@@ -119,13 +121,13 @@
   .history time { font-size: 12.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   /* Under the player: round tools that open frosted cards */
-  .tools { margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px; }
-  .tool { height: 38px; padding: 0 14px 0 11px; display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 19px; cursor: pointer;
+  .tools { justify-self: start; display: flex; align-items: center; gap: 6px; }
+  .tool { height: 36px; padding: 0 10px 0 9px; display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 19px; cursor: pointer;
           font: inherit; font-size: 13px; font-weight: 600; color: var(--soft);
           background: var(--glass); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); box-shadow: 0 0 0 1px var(--edge);
           transition: color .2s ease, background .2s ease, transform .15s ease; }
   .tool[hidden] { display: none; }
-  .tool.round { width: 38px; padding: 0; justify-content: center; }
+  .tool.round { width: 36px; padding: 0; justify-content: center; }
   .tool svg { width: 18px; height: 18px; flex: none; transition: transform .45s cubic-bezier(.3,1.4,.5,1); }
   .tool:hover, .tool[aria-expanded="true"] { color: var(--text); background: rgba(255,255,255,.14); }
   .tool:active { transform: scale(.94); }
@@ -163,7 +165,6 @@
                      70% { box-shadow: 0 0 0 7px rgba(255,77,94,0), 0 0 10px var(--live); } }
   @keyframes drift { from { transform: scale(1.15) rotate(0deg); } to { transform: scale(1.3) rotate(6deg); } }
   .player { animation: rise .6s cubic-bezier(.2,.8,.2,1) both; }
-  .tools { animation: rise .6s .12s cubic-bezier(.2,.8,.2,1) both; }
   .chip.on i { animation: pulse 1.8s ease-out infinite; }
   .play:hover { transform: scale(1.06); }
   .backdrop { animation: drift 40s ease-in-out infinite alternate; }
@@ -200,7 +201,15 @@
       <div class="bar">
         <div class="meter" id="meter" aria-hidden="true"></div>
         <div class="row">
-          <p id="state" role="status">Ready</p>
+          <div class="tools">
+            <button class="tool" id="history-toggle" type="button" aria-expanded="false" aria-controls="history" title="Earlier this hour" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+              <span class="badge" id="history-count"></span>
+            </button>
+            <button class="tool round" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings" aria-label="Settings" title="Settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+          </div>
           <button id="listen" class="play" type="button" aria-label="Listen">
             <svg id="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
           </button>
@@ -211,18 +220,9 @@
             <input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
           </div>
         </div>
+        <p id="state" class="quiet" role="status">Ready</p>
       </div>
     </section>
-
-    <div class="tools">
-      <button class="tool" id="history-toggle" type="button" aria-expanded="false" aria-controls="history" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
-        <span class="tool-label">Earlier</span><span class="badge" id="history-count"></span>
-      </button>
-      <button class="tool round" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings" aria-label="Settings" title="Settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
-    </div>
 
     <section class="history panel" id="history" aria-labelledby="history-title" hidden>
       <h2 id="history-title">Earlier this hour</h2>
@@ -282,7 +282,7 @@ let station = fromLink || (served ? { kind: "url", url: location.origin, label: 
 if (station) input.value = station.kind === "id" ? location.origin + location.pathname + "#" + station.id : station.url;
 else openCard("settings", true);
 
-function say(text) { state.textContent = text; }
+function say(text) { state.textContent = text; state.classList.toggle("quiet", text === "Ready" || text === "Live"); }
 function setIcon(playing) { icon.innerHTML = playing ? STOP : PLAY; button.setAttribute("aria-label", playing ? "Stop" : "Listen"); }
 function onAir(on) { lamp.classList.toggle("on", on); lampText.textContent = on ? "Live" : "Off air"; }
 
