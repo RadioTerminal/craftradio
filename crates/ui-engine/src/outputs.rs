@@ -117,6 +117,7 @@ mod tests {
             icecast: None,
             webrtc: None,
             webrtc_available: true,
+            on_air: true,
         }
     }
 
