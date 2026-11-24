@@ -2,8 +2,6 @@
 mod brand;
 mod input;
 mod meter;
-#[cfg(feature = "mp3")]
-mod mp3;
 mod now;
 mod output;
 mod packets;

@@ -4,6 +4,11 @@
 //!
 //! The Opus decoder follows the shape of symphonia-adapter-libopus (MIT OR Apache-2.0), with
 //! craft-audio's decoder in place of libopus.
+//!
+//! The encoders are in [`encode`], behind the features `encode` (Opus in Ogg) and `encode-mp3`.
+
+#[cfg(any(feature = "encode", feature = "encode-mp3"))]
+pub mod encode;
 
 use craft_audio::opus::StreamDecoder;
 use symphonia::core::audio::{
