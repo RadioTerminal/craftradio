@@ -477,19 +477,7 @@ fn a_listener_joining_after_a_pause_gets_audio_before_any_chain_ends() {
         drop(ear);
         station.settle(&pusher);
 
-        // Each page as (begins a chain, ends a chain, position).
-        let listener = opus.listen().unwrap();
-        let mut seen = Vec::new();
-        while seen.iter().filter(|&&(_, _, at)| at > 0).count() < 10 {
-            match listener.recv(PATIENCE) {
-                Received::Chunk(chunk) => seen.extend(
-                    pages(&chunk)
-                        .into_iter()
-                        .map(|page| (is_bos(page), page[5] & 0x04 != 0, granule(page))),
-                ),
-                other => panic!("the output stopped: {other:?}"),
-            }
-        }
+        let seen = first_pages(opus);
         assert!(
             seen[0].0,
             "join {round} starts at a chain's start: {seen:?}"
@@ -504,6 +492,62 @@ fn a_listener_joining_after_a_pause_gets_audio_before_any_chain_ends() {
             "join {round} gets one chain: {seen:?}"
         );
     }
+    finish_promptly(transcoder);
+}
+
+/// A new listener's pages, each as (begins a chain, ends a chain, position), up to its
+/// tenth page of audio.
+fn first_pages(opus: &Arc<Mount>) -> Vec<(bool, bool, u64)> {
+    let listener = opus.listen().unwrap();
+    let mut seen = Vec::new();
+    while seen.iter().filter(|&&(_, _, at)| at > 0).count() < 10 {
+        match listener.recv(PATIENCE) {
+            Received::Chunk(chunk) => seen.extend(
+                pages(&chunk)
+                    .into_iter()
+                    .map(|page| (is_bos(page), page[5] & 0x04 != 0, granule(page))),
+            ),
+            other => panic!("the output stopped: {other:?}"),
+        }
+    }
+    seen
+}
+
+#[test]
+fn a_listener_joining_after_a_title_change_in_a_pause_gets_one_chain() {
+    let station = station();
+    let pusher = Pusher::start(&station.pushed, Source::Ogg);
+    let transcoder = station.spawn();
+    eventually("the outputs went live", || station.outputs_live());
+    let opus = station.output("opus");
+    let mut ear = Ear::join(opus);
+    assert!(ear.hears());
+    drop(ear);
+    station.settle(&pusher);
+
+    pusher.retitle("Paper Harbour");
+    eventually("the source took the new title", || {
+        station.pushed.stats().title == "Paper Harbour"
+    });
+    // Several of the idle transcoder's looks at the source.
+    pusher.wait_packets(SECOND / 5);
+
+    let seen = first_pages(opus);
+    assert!(seen[0].0, "the join starts at a chain's start: {seen:?}");
+    assert!(
+        !seen.iter().any(|&(_, ends, _)| ends),
+        "a chain ended before or between the first packets: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter().filter(|&&(begins, _, _)| begins).count(),
+        1,
+        "the join gets one chain: {seen:?}"
+    );
+    assert_eq!(
+        opus.stats().title,
+        "Paper Harbour",
+        "the chain has the new title"
+    );
     finish_promptly(transcoder);
 }
 

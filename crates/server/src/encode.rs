@@ -77,6 +77,8 @@ enum Codec {
         kbps: u32,
         encoder: Mp3Encoder,
         sink: MountWriter,
+        /// Whether the encoder has taken no audio since it was made.
+        fresh: bool,
     },
 }
 
@@ -95,6 +97,7 @@ impl OutputEncoder {
                 kbps,
                 encoder: Mp3Encoder::new(kbps)?,
                 sink,
+                fresh: true,
             },
         }))
     }
@@ -103,7 +106,8 @@ impl OutputEncoder {
     /// a new chain with these tags (closing an open one first), unless the open chain has
     /// carried no audio yet and has the same tags: it goes on, so a listener who joined it
     /// is not handed a chain of one silent packet. For MP3 a fresh encoder, so samples
-    /// held from before the pause are not played after it. For a title change in the
+    /// held from before the pause are not played after it, unless the encoder has taken
+    /// no audio yet. For a title change in the
     /// middle of a stretch, call [`retitle`](Self::retitle) instead.
     pub fn start(&mut self, title: &str, artist: Option<&str>) -> Result<(), EncodeError> {
         match &mut self.0 {
@@ -132,8 +136,16 @@ impl OutputEncoder {
                     heard: false,
                 });
             }
-            Codec::Mp3 { kbps, encoder, .. } => {
-                *encoder = Mp3Encoder::new(*kbps)?;
+            Codec::Mp3 {
+                kbps,
+                encoder,
+                fresh,
+                ..
+            } => {
+                if !*fresh {
+                    *encoder = Mp3Encoder::new(*kbps)?;
+                    *fresh = true;
+                }
             }
         }
         Ok(())
@@ -172,7 +184,13 @@ impl OutputEncoder {
                 chain.heard = true;
                 muxer.packet(encoder.encode(block)?, false)?;
             }
-            Codec::Mp3 { encoder, sink, .. } => {
+            Codec::Mp3 {
+                encoder,
+                sink,
+                fresh,
+                ..
+            } => {
+                *fresh = false;
                 sink.write_pieces(&encoder.encode(block)?);
             }
         }

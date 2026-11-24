@@ -352,10 +352,13 @@ fn transcode(
     }
 }
 
-/// Each started output that has no listener now ends its stretch of audio: it starts a
-/// new one at once, while nobody hears the end of the old one, so whoever joins before
-/// it gains a listener again hears nothing from before the pause. An output that fails
-/// to ends, and is marked failed.
+/// Each output that has no listener now has a fresh stretch of audio ready with the
+/// source's tags: one that was playing ends its stretch and starts a new one at once,
+/// while nobody hears the end of the old one, and one that was already paused starts a
+/// new one when the title changes. So whoever joins before it gains a listener again gets
+/// one stretch with the right title, and nothing from before the pause. Starting a stretch
+/// that is already fresh with the same tags does nothing. An output that fails to ends,
+/// and is marked failed.
 fn pause(
     outputs: &Outputs,
     encoders: &mut [Option<OutputEncoder>],
@@ -367,7 +370,7 @@ fn pause(
     for (index, ((encoder, started), &listening)) in
         encoders.iter_mut().zip(started).zip(listening).enumerate()
     {
-        if !*started || listening {
+        if listening {
             continue;
         }
         *started = false;
