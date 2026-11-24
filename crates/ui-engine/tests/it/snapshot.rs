@@ -168,6 +168,7 @@ fn a_logo_that_does_not_load_shows_why() {
     let text = d.join("logo.png");
     std::fs::write(&text, b"this is not a picture").unwrap();
     set(&mut source, &text);
+    // Until the lane answers, nothing shows: no picture and no error.
     let view = wait_for(&mut source, &clock, |v| v.branding_logo.is_some());
     assert!(
         matches!(&view.branding_logo, Some(Err(why)) if !why.is_empty()),
@@ -177,13 +178,26 @@ fn a_logo_that_does_not_load_shows_why() {
     let real = d.join("real.png");
     std::fs::write(&real, PNG).unwrap();
     set(&mut source, &real);
-    let view = wait_for(&mut source, &clock, |v| {
-        matches!(v.branding_logo, Some(Ok(_)))
-    });
+    let view = wait_for(
+        &mut source,
+        &clock,
+        |v| matches!(&v.branding_logo, Some(Ok(c)) if c.uri.contains("real.png")),
+    );
     let Some(Ok(cover)) = &view.branding_logo else {
         panic!("a real PNG loads: {:?}", view.branding_logo);
     };
     assert!(!cover.bytes.is_empty());
+    // Back to the text file: once the picture of the other path has left, it never returns,
+    // and what settles is the error of the new path.
+    set(&mut source, &text);
+    let left = std::cell::Cell::new(false);
+    let view = wait_for(&mut source, &clock, |v| {
+        let old = matches!(&v.branding_logo, Some(Ok(c)) if c.uri.contains("real.png"));
+        assert!(!(left.get() && old), "the old path's picture came back");
+        left.set(left.get() || !old);
+        matches!(v.branding_logo, Some(Err(_)))
+    });
+    assert!(matches!(view.branding_logo, Some(Err(_))));
     set(&mut source, std::path::Path::new(""));
     let view = wait_for(&mut source, &clock, |v| v.branding_logo.is_none());
     assert!(view.branding_logo.is_none(), "clearing the logo shows none");

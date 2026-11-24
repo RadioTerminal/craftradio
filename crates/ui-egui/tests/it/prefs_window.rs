@@ -178,6 +178,30 @@ fn the_webrtc_page_keeps_its_port_and_restores_it() {
     );
 }
 
+/// True when a control called `label` has the keyboard focus.
+fn focused(h: &Harness<'_, RadioApp>, label: &str) -> bool {
+    h.query_all_by_label(label)
+        .any(|n| n.accesskit_node().is_focused())
+}
+
+#[test]
+fn opening_branding_focuses_the_name_but_a_search_that_selects_it_does_not() {
+    let mut h = preferences();
+    click(&mut h, "Branding");
+    assert!(
+        focused(&h, "Station name"),
+        "a click on the rail focuses it"
+    );
+    let mut h = preferences();
+    search(&mut h, "logo");
+    assert!(shows(&h, "Station name"), "the search selected Branding");
+    assert!(!focused(&h, "Station name"), "the name did not take focus");
+    assert!(
+        focused(&h, "Search preferences"),
+        "the search keeps the focus while it is typed in"
+    );
+}
+
 #[test]
 fn the_branding_page_says_that_no_logo_means_the_app_icon() {
     let mut h = preferences();

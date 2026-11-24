@@ -206,7 +206,7 @@ pub(crate) fn page(
     tabs: &[Tab],
     nav: &mut Nav,
     t: &Tokens,
-    add: impl FnOnce(&mut egui::Ui, usize),
+    add: impl FnOnce(&mut egui::Ui, usize, bool),
 ) -> PageResponse {
     let Nav {
         selected,
@@ -319,7 +319,7 @@ pub(crate) fn page(
                     match tabs.get(*selected).filter(|_| !visible.is_empty()) {
                         Some(tab) => {
                             heading(ui, tab, t);
-                            add(ui, *selected);
+                            add(ui, *selected, !search.is_empty());
                         }
                         None => {
                             ui.label(

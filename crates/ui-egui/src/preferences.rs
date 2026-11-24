@@ -255,7 +255,9 @@ pub(crate) fn show(
         &tabs,
         &mut nav,
         t,
-        |ui, i| {
+        // `searching` is true while there is search text: a page that the search selects
+        // does not take the focus from the search field.
+        |ui, i, searching| {
             let branding = &mut state.branding;
             let page = Page::ALL.get(i).copied().unwrap_or_default();
             if let Some(tab) = page.mixer() {
@@ -271,7 +273,7 @@ pub(crate) fn show(
                 Page::Alarms => alarms::preferences(ui, view, actions, t),
                 Page::Shortcuts => shortcuts_page(ui, actions, t),
                 Page::WebRtc => webrtc_page(ui, view, actions, t),
-                Page::Branding => branding_page(ui, view, branding, actions, t),
+                Page::Branding => branding_page(ui, view, branding, !searching, actions, t),
                 _ => {}
             }
         },
@@ -502,6 +504,7 @@ fn branding_page(
     ui: &mut egui::Ui,
     view: &StationView,
     draft: &mut BrandingDraft,
+    take_focus: bool,
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
@@ -539,7 +542,7 @@ fn branding_page(
                 radio_model::DEFAULT_STATION_NAME,
                 ui.available_width(),
             );
-            if opened {
+            if opened && take_focus {
                 r.request_focus();
             }
             if let Some(text) = saved {

@@ -652,20 +652,22 @@ impl EngineSource {
             .as_ref()
             .is_none_or(|l| l.path != path || l.modified != modified);
         if stale {
-            let stamp = modified
-                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos());
-            let result = radio_stream::load_picture(&path).map(|p| radio_ui_egui::view::Cover {
-                uri: format!("bytes://branding-logo/{}?{stamp}", path.display()),
-                bytes: p.data.into(),
+            // The lane reads it; until it answers the page shows no picture and no error.
+            let sent = self.worker.as_ref().is_some_and(|w| {
+                w.jobs
+                    .send(bg::Job::Logo {
+                        path: path.clone(),
+                        modified,
+                    })
+                    .is_ok()
             });
             self.logo = Some(LogoRead {
                 path,
                 modified,
-                result,
+                result: (!sent).then(|| Err("The picture could not be read here.".to_owned())),
             });
         }
-        self.logo.as_ref().map(|l| l.result.clone())
+        self.logo.as_ref().and_then(|l| l.result.clone())
     }
 
     /// The cover of the file of item `id`. The background lane reads it once; until then,
@@ -1047,11 +1049,12 @@ impl EngineSource {
     }
 }
 
-/// The station logo file as last read.
+/// The station logo file as last asked for.
 struct LogoRead {
     path: std::path::PathBuf,
     modified: Option<std::time::SystemTime>,
-    result: Result<radio_ui_egui::view::Cover, String>,
+    /// `None` while the background lane reads the file.
+    result: Option<Result<radio_ui_egui::view::Cover, String>>,
 }
 
 /// The name of a mixer strip, as the mixer window shows it.

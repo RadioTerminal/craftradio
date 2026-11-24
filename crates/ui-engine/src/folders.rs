@@ -168,6 +168,20 @@ impl EngineSource {
                         .notices
                         .push(format!("The as-played log did not read: {e}")),
                 },
+                crate::bg::Done::Logo {
+                    path,
+                    modified,
+                    result,
+                } => {
+                    // An answer for an older path or time is dropped.
+                    if let Some(l) = self
+                        .logo
+                        .as_mut()
+                        .filter(|l| l.path == path && l.modified == modified)
+                    {
+                        l.result = Some(result);
+                    }
+                }
                 crate::bg::Done::Cover { path, bytes } => {
                     self.covers.insert(path, bytes);
                 }
