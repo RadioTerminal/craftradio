@@ -1448,6 +1448,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craftradio-server"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "radio-server",
+ "tempfile",
+]
+
+[[package]]
 name = "crc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4845,7 +4854,9 @@ version = "0.1.0"
 dependencies = [
  "craft-audio",
  "ogg",
+ "opus",
  "symphonia",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4964,11 +4975,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "radio-stream"
+name = "radio-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "craft-audio",
+ "percent-encoding",
+ "radio-codecs",
+ "radio-stream",
+ "rcgen",
+ "ring",
+ "rtrb",
+ "rustls",
+ "serde",
+ "serde_json",
+ "symphonia",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "radio-stream"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
  "igd-next",
  "image",
  "jiff",
@@ -4977,6 +5008,7 @@ dependencies = [
  "ogg",
  "opus",
  "percent-encoding",
+ "radio-codecs",
  "rcgen",
  "ring",
  "rtrb",

@@ -2,8 +2,6 @@
 mod brand;
 mod input;
 mod meter;
-#[cfg(feature = "mp3")]
-mod mp3;
 mod now;
 mod output;
 mod packets;
@@ -34,4 +32,14 @@ pub enum StreamError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Opus(#[from] opus::Error),
+}
+
+impl From<EncodeError> for StreamError {
+    fn from(error: EncodeError) -> Self {
+        match error {
+            EncodeError::Invalid(message) => Self::Invalid(message),
+            EncodeError::Io(error) => Self::Io(error),
+            EncodeError::Opus(error) => Self::Opus(error),
+        }
+    }
 }

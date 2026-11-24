@@ -7,9 +7,18 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Opus in Ogg, with libopus: OpusEncoder and OggMuxer.
+encode = ["dep:opus", "dep:ogg", "dep:thiserror"]
+# MP3, with craft-audio's native encoder: Mp3Encoder.
+encode-mp3 = ["dep:thiserror"]
+
 [dependencies]
 symphonia.workspace = true
 craft-audio = { workspace = true, features = ["opus-decode"] }
+opus = { workspace = true, optional = true }
+ogg = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
 craft-audio = { workspace = true, features = ["opus-encode", "opus-decode"] }

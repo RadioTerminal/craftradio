@@ -63,6 +63,7 @@ radio-control = { path = "crates/control" }
 radio-mcp = { path = "crates/mcp" }
 # The radio app explicitly enables MP3 output; other consumers opt in.
 radio-stream = { path = "crates/stream", default-features = false }
+radio-server = { path = "crates/server" }
 rusqlite = { version = "0.43", features = ["bundled"] }
 schemars = "1"
 # "clipboard": without it, copy buttons copy nothing to the system clipboard.

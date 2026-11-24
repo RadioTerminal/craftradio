@@ -1,0 +1,60 @@
+# craftradio-server config. Copy it to /etc/craftradio-server/config.toml, owned by root
+# and readable by the server's group only (root:craftradio, mode 0640, as README.md
+# installs it), and change every value. Every name and address here is invented. The
+# server reads this file at start; restart it after a change.
+# A key it does not know is an error, so a typo stops the server rather than being ignored.
+
+# Where the server listens (address:port). Behind Caddy or nginx on the same host, keep it
+# on loopback. With tls_cert and tls_key below and no proxy, listen on the public
+# address instead, for example "0.0.0.0:8443".
+listen = "127.0.0.1:8080"
+
+# The address listeners reach the server at: the bare origin, scheme and host (and port if
+# it is not the default), with no path after it. The stats at /status-json.xsl list each
+# stream as <public_url>/<slug>/stream, and each output as <public_url>/<slug>/<mount>.
+public_url = "https://radio.example.org"
+
+# The proxy whose X-Forwarded-For header is believed: one IP address, not a range. Set it
+# when a reverse proxy is in front; leave it out when clients connect directly.
+trusted_proxy = "127.0.0.1"
+
+# The server's own TLS, for running without a proxy: a PEM certificate chain and its PEM
+# private key. Give both or neither. Both are read once, at start.
+# tls_cert = "/etc/craftradio-server/fullchain.pem"
+# tls_key = "/etc/craftradio-server/privkey.pem"
+
+# One [[station]] block per station that may push to this server.
+[[station]]
+# The station's part of every URL: its stream is /<slug>/stream. 1–32 of a-z, 0-9 and -,
+# not starting with -. "admin", "api" and "status-json.xsl" are taken by the server.
+slug = "morning"
+# The name listeners see when the app does not send one.
+name = "Morning Station"
+# The hash of the station key, from `craftradio-server key`. The key itself never goes in
+# this file. This one is a placeholder that no key matches; each station needs its own.
+key_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# How many people may listen to the station at once, on /morning/stream and all its
+# outputs together; one more gets 503. Default 200.
+max_stream_listeners = 200
+
+# Outputs: the same broadcast in another format or bitrate, re-encoded by the server while
+# someone listens. Any number; each is served at /<slug>/<mount>. See README.md.
+[[station.output]]
+# 1–32 of a-z, 0-9, -, . and _, not starting with - or . ("stream", "live", "signal" and
+# "feed" are the server's own). This one is /morning/stream.mp3.
+mount = "stream.mp3"
+# "mp3" or "opus".
+format = "mp3"
+# kbit/s. MP3: 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256 or 320. Opus: 6–510.
+kbps = 192
+
+[[station.output]]
+mount = "low"
+format = "opus"
+kbps = 64
+
+[[station]]
+slug = "night-shift"
+name = "Night Shift Radio"
+key_hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+max_stream_listeners = 50

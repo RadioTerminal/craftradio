@@ -1,6 +1,5 @@
 use crate::StreamError;
 use base64::Engine;
-use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use std::{
     cell::Cell,
     io::{Read, Write},
@@ -10,91 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Encodes exactly 20 ms of 48 kHz stereo audio per packet.
-pub struct OpusEncoder(opus::Encoder);
-impl OpusEncoder {
-    pub fn new(kbps: u32) -> Result<Self, StreamError> {
-        if !(6..=510).contains(&kbps) {
-            return Err(StreamError::Invalid("bitrate must be 6..510 kbps".into()));
-        }
-        let mut encoder =
-            opus::Encoder::new(48_000, opus::Channels::Stereo, opus::Application::Audio)?;
-        encoder.set_bitrate(opus::Bitrate::Bits((kbps * 1000) as i32))?;
-        Ok(Self(encoder))
-    }
-    pub fn encode(&mut self, samples: &[f32]) -> Result<Vec<u8>, StreamError> {
-        if samples.len() != 1920 {
-            return Err(StreamError::Invalid(
-                "expected 1920 interleaved samples".into(),
-            ));
-        }
-        let mut packet = vec![0; 4000];
-        let len = self.0.encode_float(samples, &mut packet)?;
-        packet.truncate(len);
-        Ok(packet)
-    }
-    pub fn pre_skip(&mut self) -> Result<u16, StreamError> {
-        Ok(self.0.get_lookahead()? as u16)
-    }
-}
-
-/// Writes Ogg pages, with a distinct serial number for each metadata chain.
-pub struct OggMuxer<W: Write> {
-    writer: PacketWriter<'static, W>,
-    serial: u32,
-    granule: u64,
-}
-impl<W: Write> OggMuxer<W> {
-    pub fn new(writer: W) -> Self {
-        Self {
-            writer: PacketWriter::new(writer),
-            serial: 0,
-            granule: 0,
-        }
-    }
-    pub fn start(
-        &mut self,
-        title: &str,
-        artist: Option<&str>,
-        pre_skip: u16,
-    ) -> Result<(), StreamError> {
-        self.serial = self.serial.wrapping_add(1);
-        self.granule = 0;
-        let mut head = b"OpusHead\x01\x02".to_vec();
-        head.extend(pre_skip.to_le_bytes());
-        head.extend(48_000u32.to_le_bytes());
-        head.extend([0, 0, 0]);
-        self.writer
-            .write_packet(head, self.serial, PacketWriteEndInfo::EndPage, 0)?;
-        let mut tags = b"OpusTags".to_vec();
-        tags.extend(12u32.to_le_bytes());
-        tags.extend(b"radio-stream");
-        tags.extend(if artist.is_some() { 2u32 } else { 1u32 }.to_le_bytes());
-        for comment in
-            std::iter::once(format!("TITLE={title}")).chain(artist.map(|a| format!("ARTIST={a}")))
-        {
-            tags.extend((comment.len() as u32).to_le_bytes());
-            tags.extend(comment.as_bytes());
-        }
-        self.writer
-            .write_packet(tags, self.serial, PacketWriteEndInfo::EndPage, 0)?;
-        Ok(())
-    }
-    pub fn packet(&mut self, packet: Vec<u8>, end: bool) -> Result<(), StreamError> {
-        self.granule += 960;
-        self.writer.write_packet(
-            packet,
-            self.serial,
-            if end {
-                PacketWriteEndInfo::EndStream
-            } else {
-                PacketWriteEndInfo::EndPage
-            },
-            self.granule,
-        )?;
-        Ok(())
-    }
-}
+pub use radio_codecs::encode::{EncodeError, OggMuxer, OpusEncoder};
 
 /// Output encoding and bitrate in kilobits per second.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -712,7 +627,7 @@ enum SourceOutput {
     },
     #[cfg(feature = "mp3")]
     Mp3 {
-        encoder: crate::mp3::Mp3Encoder,
+        encoder: radio_codecs::encode::Mp3Encoder,
         socket: SourceStream,
     },
 }
@@ -730,7 +645,7 @@ impl SourceOutput {
             StreamFormat::Mp3 { kbps: _ } => {
                 #[cfg(feature = "mp3")]
                 {
-                    let encoder = crate::mp3::Mp3Encoder::new(cfg.format.kbps())?;
+                    let encoder = radio_codecs::encode::Mp3Encoder::new(cfg.format.kbps())?;
                     let Source { socket, replied } = connect(cfg, "PUT")?;
                     Ok((Self::Mp3 { encoder, socket }, replied))
                 }
@@ -743,14 +658,14 @@ impl SourceOutput {
     }
     fn socket(&mut self) -> &mut dyn Transport {
         match self {
-            Self::Opus { muxer, .. } => muxer.writer.inner_mut().as_mut(),
+            Self::Opus { muxer, .. } => muxer.get_mut().as_mut(),
             #[cfg(feature = "mp3")]
             Self::Mp3 { socket, .. } => socket.as_mut(),
         }
     }
     fn packet(&mut self, samples: &[f32]) -> Result<(), StreamError> {
         match self {
-            Self::Opus { encoder, muxer } => muxer.packet(encoder.encode(samples)?, false),
+            Self::Opus { encoder, muxer } => Ok(muxer.packet(encoder.encode(samples)?, false)?),
             #[cfg(feature = "mp3")]
             Self::Mp3 { encoder, socket } => {
                 socket.write_all(&encoder.encode(samples)?)?;
@@ -771,7 +686,7 @@ impl SourceOutput {
                 muxer.packet(encoder.encode(samples)?, true)?;
                 samples.clear();
                 *encoder = OpusEncoder::new(cfg.format.kbps())?;
-                muxer.start(title, None, encoder.pre_skip()?)
+                Ok(muxer.start(title, None, encoder.pre_skip()?)?)
             }
             #[cfg(feature = "mp3")]
             Self::Mp3 { .. } => {

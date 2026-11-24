@@ -63,8 +63,9 @@ output. Spec: `docs/2026-11-21-radio-station-manager-design.md`. Roadmap and pla
 | Layer | Crates | Notes |
 |---|---|---|
 | L0 | `model` | plain serde data; no I/O, no clock |
-| L1 | `timing`, `codecs` | time arithmetic, DST-safe local time; the decoders (Symphonia and native Opus) |
+| L1 | `timing`, `codecs` | time arithmetic, DST-safe local time; the decoders (Symphonia and native Opus) and, behind features, the encoders (Opus in Ogg, MP3) |
 | L2 | `scheduler`, `library` | playlists, rules, fitting; media library |
+| L2 | `server` | the public station server: keyed Icecast pushes in, listeners out; decodes a push with `codecs` for its re-encoded outputs (`radio-stream` is a dev-dependency of its tests) |
 | L3 | `audio`, `script` | decks / mixer / outputs; JS runtime |
 | L4 | `engine` | state, the command registry, persistence, as-played log |
 | L5 | `control`, `mcp` | local control socket, MCP server |
@@ -72,7 +73,7 @@ output. Spec: `docs/2026-11-21-radio-station-manager-design.md`. Roadmap and pla
 | L6 | `ui-engine` | the adapter that maps the engine and playout to the `ui-egui` view-model; the only crate that depends on `ui-egui` and the engine both |
 | — | `testkit` | test helpers (dev-dependency only) |
 
-Apps: `apps/radio` (desktop, `--headless`; ships as `craftradio`) and `apps/radio-cli` (CLI and `mcp`; ships as `craftradio-cli`).
+Apps: `apps/radio` (desktop, `--headless`; ships as `craftradio`), `apps/radio-cli` (CLI and `mcp`; ships as `craftradio-cli`) and `apps/radio-server` (the public station server; ships as `craftradio-server`).
 Every user-visible action is a command in `engine`; the UI, CLI, MCP and scripts dispatch it by id.
 
 ### Conventions

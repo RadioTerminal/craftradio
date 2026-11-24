@@ -1,0 +1,306 @@
+use crate::decode::{decode_all, heard, stop};
+use crate::framing::is_bos;
+use radio_codecs::encode::{EncodeError, Mp3Encoder};
+use radio_server::{
+    BLOCK, Decoded, Listener, ListenerCap, Mount, OutputEncoder, OutputFormat, Received,
+    SourceDecoder,
+};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Blocks in one second.
+const SECOND: usize = 50;
+
+/// Block `n` of a test signal: two tones and a little noise, the same on every run.
+fn block(n: usize) -> Vec<f32> {
+    let mut noise = (n as u32).wrapping_mul(2_654_435_761) | 1;
+    (0..BLOCK / 2)
+        .flat_map(|i| {
+            let t = (n * BLOCK / 2 + i) as f32 / 48_000.0;
+            noise ^= noise << 13;
+            noise ^= noise >> 17;
+            noise ^= noise << 5;
+            let hiss = (noise as f32 / u32::MAX as f32 - 0.5) * 0.05;
+            let left = (t * 440.0 * std::f32::consts::TAU).sin() * 0.2 + hiss;
+            let right = (t * 660.0 * std::f32::consts::TAU).sin() * 0.2 - hiss;
+            [left, right]
+        })
+        .collect()
+}
+
+/// An output mount with an encoder writing to it.
+fn output(format: OutputFormat, kbps: u32) -> (Arc<Mount>, OutputEncoder) {
+    let mount = Mount::new(ListenerCap::new(10));
+    let guard = mount
+        .begin(format.into(), "Morning Station".into(), Some(kbps))
+        .unwrap();
+    let encoder = OutputEncoder::new(format, kbps, guard).unwrap();
+    (mount, encoder)
+}
+
+/// Moves what `listener` has queued into `chunks`, without waiting.
+fn drain(listener: &Listener, chunks: &mut Vec<Vec<u8>>) {
+    loop {
+        match listener.recv(Duration::ZERO) {
+            Received::Chunk(chunk) => chunks.push(chunk.to_vec()),
+            Received::Timeout => return,
+            Received::Ended => panic!("the listener was ended"),
+        }
+    }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Encodes a second of the test signal and decodes it back from a tap on the mount.
+fn round_trip(format: OutputFormat, title: &str, artist: Option<&str>) -> (Vec<f32>, Decoded) {
+    let (mount, mut encoder) = output(format, 128);
+    let tap = mount.tap().unwrap();
+    encoder.start(title, artist).unwrap();
+    for n in 0..SECOND {
+        encoder.encode(&block(n)).unwrap();
+    }
+    let stats = mount.stats();
+    assert_eq!(
+        stats.kbps,
+        Some(128),
+        "the mount keeps the bitrate it was given"
+    );
+    if format == OutputFormat::Opus {
+        assert_eq!(stats.title, title);
+        assert_eq!(stats.artist, artist.unwrap_or_default());
+    }
+    // Ends the source, so the decoder reaches the end.
+    drop(encoder);
+    let mut decoder = SourceDecoder::open(tap, stop()).expect("the output opens");
+    decode_all(&mut decoder)
+}
+
+#[test]
+fn an_opus_output_plays_and_carries_its_title() {
+    let (samples, end) = round_trip(OutputFormat::Opus, "Cloud Signal", Some("Echo"));
+    assert!(matches!(end, Decoded::Ended));
+    assert!(heard(&samples), "the tone comes out");
+}
+
+#[test]
+fn an_mp3_output_plays() {
+    let (samples, end) = round_trip(OutputFormat::Mp3, "Cloud Signal", None);
+    assert!(matches!(end, Decoded::Ended));
+    assert!(heard(&samples), "the tone comes out");
+}
+
+/// Bytes a listener gets for five seconds at `kbps`.
+fn five_seconds(format: OutputFormat, kbps: u32) -> usize {
+    let (mount, mut encoder) = output(format, kbps);
+    let listener = mount.listen().unwrap();
+    encoder.start("Cloud Signal", None).unwrap();
+    let mut chunks = Vec::new();
+    for n in 0..5 * SECOND {
+        encoder.encode(&block(n)).unwrap();
+        drain(&listener, &mut chunks);
+    }
+    chunks.iter().map(Vec::len).sum()
+}
+
+#[test]
+fn a_higher_bitrate_makes_more_bytes() {
+    for format in [OutputFormat::Opus, OutputFormat::Mp3] {
+        let low = five_seconds(format, 64);
+        let high = five_seconds(format, 192);
+        assert!(high > low, "{format:?}: {high} bytes at 192, {low} at 64");
+        for (kbps, bytes) in [(64, low), (192, high)] {
+            let expected = kbps as usize * 1000 * 5 / 8;
+            assert!(
+                bytes.abs_diff(expected) <= expected / 4,
+                "{format:?} at {kbps} kbit/s: {bytes} bytes, about {expected} expected"
+            );
+        }
+    }
+}
+
+/// An Opus output that changed from one title to another, still live.
+struct Changed {
+    mount: Arc<Mount>,
+    _live: OutputEncoder,
+    /// What a listener who joined after the change got.
+    late: Vec<Vec<u8>>,
+    /// What a listener who was there from the start got.
+    early: Vec<Vec<u8>>,
+}
+
+fn across_a_change(
+    change: fn(&mut OutputEncoder, &str, Option<&str>) -> Result<(), EncodeError>,
+) -> Changed {
+    let (mount, mut encoder) = output(OutputFormat::Opus, 96);
+    let early = mount.listen().unwrap();
+    encoder.start("Cloud Signal", Some("Echo")).unwrap();
+    for n in 0..10 {
+        encoder.encode(&block(n)).unwrap();
+    }
+    change(&mut encoder, "Paper Harbour", None).unwrap();
+    for n in 10..15 {
+        encoder.encode(&block(n)).unwrap();
+    }
+    let late = mount.listen().unwrap();
+    for n in 15..20 {
+        encoder.encode(&block(n)).unwrap();
+    }
+    let (mut late_chunks, mut early_chunks) = (Vec::new(), Vec::new());
+    drain(&late, &mut late_chunks);
+    drain(&early, &mut early_chunks);
+    Changed {
+        mount,
+        _live: encoder,
+        late: late_chunks,
+        early: early_chunks,
+    }
+}
+
+/// A late listener starts at the new chain, and the old one was closed before it.
+fn starts_at_the_new_chain(changed: Changed) {
+    let Changed {
+        mount, late, early, ..
+    } = changed;
+    assert!(is_bos(&late[0]), "the first chunk begins a stream");
+    assert!(contains(&late[0], b"OpusHead"));
+    assert!(contains(&late[1], b"TITLE=Paper Harbour"), "the new tags");
+    assert!(!late.iter().any(|c| contains(c, b"Cloud Signal")));
+    assert_eq!(mount.stats().title, "Paper Harbour");
+    assert_eq!(mount.stats().artist, "");
+
+    // A listener who was there all along hears the first chain closed before the second.
+    let second = early.iter().rposition(|c| is_bos(c)).unwrap();
+    assert!(second > 0);
+    let end_of_stream = early[second - 1][5] & 0x04 != 0;
+    assert!(
+        end_of_stream,
+        "the first chain ends before the second begins"
+    );
+}
+
+#[test]
+fn a_listener_joining_after_a_restart_starts_at_the_new_chain() {
+    starts_at_the_new_chain(across_a_change(OutputEncoder::start));
+}
+
+#[test]
+fn a_listener_joining_after_an_opus_retitle_starts_at_the_new_chain() {
+    starts_at_the_new_chain(across_a_change(OutputEncoder::retitle));
+}
+
+#[test]
+fn an_opus_output_refuses_a_retitle_before_start() {
+    let (_mount, mut encoder) = output(OutputFormat::Opus, 96);
+    assert!(encoder.retitle("Cloud Signal", None).is_err());
+}
+
+/// The bytes a listener gets for two seconds of MP3, retitled after one if `retitle`.
+fn mp3_bytes(retitle: bool) -> Vec<u8> {
+    let (mount, mut encoder) = output(OutputFormat::Mp3, 128);
+    let listener = mount.listen().unwrap();
+    encoder.start("Cloud Signal", None).unwrap();
+    let mut chunks = Vec::new();
+    for n in 0..2 * SECOND {
+        if retitle && n == SECOND {
+            encoder.retitle("Paper Harbour", None).unwrap();
+        }
+        encoder.encode(&block(n)).unwrap();
+        drain(&listener, &mut chunks);
+    }
+    chunks.concat()
+}
+
+#[test]
+fn a_title_change_does_not_break_an_mp3_stream() {
+    let retitled = mp3_bytes(true);
+    assert!(!retitled.is_empty());
+    assert!(
+        retitled == mp3_bytes(false),
+        "the retitle changed the stream"
+    );
+}
+
+/// The MP3 encoder's sample rate: the output thread feeds interleaved stereo at 48 kHz.
+const MP3_RATE: u32 = 48_000;
+
+#[test]
+fn refuses_a_bitrate_mpeg1_cannot_carry_at_48_khz() {
+    assert!(Mp3Encoder::new(24).is_err());
+    assert!(Mp3Encoder::new(128).is_ok());
+}
+
+/// Decodes an MP3 byte stream to interleaved stereo with symphonia.
+fn decode_mp3(bytes: Vec<u8>) -> Vec<f32> {
+    use symphonia::core::{
+        codecs::audio::AudioDecoderOptions,
+        formats::{FormatOptions, TrackType, probe::Hint},
+        io::MediaSourceStream,
+        meta::MetadataOptions,
+    };
+    let source = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("mp3");
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            source,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .unwrap();
+    let track = format.default_track(TrackType::Audio).unwrap();
+    let params = track
+        .codec_params
+        .as_ref()
+        .unwrap()
+        .audio()
+        .unwrap()
+        .clone();
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())
+        .unwrap();
+    let (mut out, mut samples) = (Vec::new(), Vec::new());
+    while let Ok(Some(packet)) = format.next_packet() {
+        decoder
+            .decode(&packet)
+            .unwrap()
+            .copy_to_vec_interleaved(&mut samples);
+        out.extend_from_slice(&samples);
+    }
+    out
+}
+
+#[test]
+fn a_tone_decodes_back_close_to_what_went_in() {
+    let frames = 48_000;
+    let input: Vec<f32> = (0..frames)
+        .flat_map(|i| {
+            let t = i as f32 / MP3_RATE as f32;
+            let left = 0.5 * (std::f32::consts::TAU * 1_000.0 * t).sin();
+            let right = 0.5 * (std::f32::consts::TAU * 440.0 * t).sin();
+            [left, right]
+        })
+        .collect();
+    let mut encoder = Mp3Encoder::new(128).unwrap();
+    let mut bytes = Vec::new();
+    for chunk in input.chunks(1_920) {
+        bytes.extend(encoder.encode(chunk).unwrap());
+    }
+    let output = decode_mp3(bytes);
+    // The decoder lags the input; find the lag where the two line up best.
+    let compare = 24_000 * 2;
+    let snr = (0..4_000)
+        .map(|lag| {
+            let (mut signal, mut noise) = (0.0f64, 0.0f64);
+            for (i, &x) in input[..compare].iter().enumerate() {
+                let y = output.get(i + lag * 2).copied().unwrap_or(0.0);
+                signal += f64::from(x * x);
+                noise += f64::from((x - y) * (x - y));
+            }
+            10.0 * (signal / noise.max(1e-12)).log10()
+        })
+        .fold(f64::MIN, f64::max);
+    assert!(snr > 20.0, "signal to noise {snr:.1} dB");
+}

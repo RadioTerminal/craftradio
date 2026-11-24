@@ -1,0 +1,17 @@
+# Caddy in front of craftradio-server, for one host. Not yet checked through Caddy: see
+# README.md, "Checked". The host name is invented; use your own.
+#
+# Caddy gets and renews the certificate for the host. The server listens on loopback
+# (listen = "127.0.0.1:8080", trusted_proxy = "127.0.0.1" in its config).
+
+radio.example.org {
+	reverse_proxy 127.0.0.1:8080 {
+		# Meant to pass each piece of a stream on as it comes instead of buffering the
+		# reply. Not checked.
+		flush_interval -1
+		# The app's source push is an endless request body that must reach the server
+		# unbuffered, while the server's 200 reaches the app at once. Caddy's own docs say
+		# it buffers request bodies only when `request_buffers` is set, so it is left out
+		# here; whether Caddy passes such an upload through has not been checked.
+	}
+}

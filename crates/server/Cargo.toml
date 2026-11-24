@@ -1,0 +1,39 @@
+[package]
+name = "radio-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Station keys: random bytes and SHA-256.
+ring.workspace = true
+base64.workspace = true
+# Query strings of metadata updates.
+percent-encoding.workspace = true
+serde.workspace = true
+# The public stats document.
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+# TLS from certificate files, with the ring provider the app's Icecast output uses too.
+rustls.workspace = true
+# Decoding a pushed stream for the re-encoded outputs: Symphonia's readers, and the
+# station's own decoders (Symphonia's codecs and Opus); and its encoders, which also say
+# which bitrates an output may ask for.
+radio-codecs = { workspace = true, features = ["encode", "encode-mp3"] }
+symphonia.workspace = true
+
+[dev-dependencies]
+# The app's own Ogg/Opus encoder builds the test streams, and its Icecast output and
+# stream input (MP3 included) are the client the end-to-end tests push and listen with.
+radio-stream = { workspace = true, features = ["mp3"] }
+# The audio ring the app's Icecast output reads from.
+rtrb.workspace = true
+# craft-audio's MP3 encoder makes test frames at rates the app's output never sends.
+craft-audio.workspace = true
+# Test certificates, made when the tests run.
+rcgen.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,39 @@
+# systemd unit for craftradio-server. Install as
+# /etc/systemd/system/craftradio-server.service, then:
+#   systemctl daemon-reload && systemctl enable --now craftradio-server
+[Unit]
+Description=craftradio station server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=craftradio
+Group=craftradio
+ExecStart=/usr/local/bin/craftradio-server run --config /etc/craftradio-server/config.toml
+Restart=on-failure
+RestartSec=2
+
+# Each connection (listener, source, stats request) holds one file descriptor. The
+# default soft limit is often 1024; raise it above the sum of every station's
+# max_stream_listeners plus some room.
+LimitNOFILE=4096
+
+# Only with the server's own TLS on port 443 (or any port under 1024): let the
+# unprivileged user bind it.
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
