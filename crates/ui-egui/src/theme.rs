@@ -76,18 +76,6 @@ pub mod size {
     pub const RING_STEPS: usize = 32;
     /// The edge of the card of the deck on air.
     pub const ON_AIR_EDGE: f32 = 2.0;
-    /// The height of the On air button above the output strips: a hero control.
-    pub const ON_AIR_BUTTON: f32 = CONTROL_HERO;
-    /// The radius of the light on the On air button.
-    pub const ON_AIR_DOT: f32 = 7.0;
-    /// On air, the light pulses once in this many seconds, slowly, as a studio light does.
-    pub const PULSE_S: f32 = 2.4;
-    /// The faintest the pulsing light gets, as a part of its full strength.
-    pub const PULSE_LOW: f32 = 0.35;
-    /// The running ring of "Going on air…" turns once in this many seconds.
-    pub const SPIN_S: f32 = 1.2;
-    /// The part of a circle that the running ring covers.
-    pub const SPIN_SWEEP: f32 = 0.75;
     /// The gap between a cart edge and its key label.
     pub const KEY_INSET: f32 = 3.0;
 

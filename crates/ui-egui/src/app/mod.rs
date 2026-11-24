@@ -679,15 +679,7 @@ impl RadioApp {
         note(
             w,
             windows::show(ctx, w, open, saved(w), t, |ui| {
-                mixer::show(
-                    ui,
-                    view,
-                    &mut self.mixer,
-                    &mut self.air,
-                    &streaming,
-                    actions,
-                    t,
-                );
+                mixer::show(ui, view, &mut self.mixer, &streaming, actions, t);
             }),
         );
         let w = ToolWindow::Clock;

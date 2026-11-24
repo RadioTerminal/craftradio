@@ -84,18 +84,6 @@ fn harness(
     h
 }
 
-/// The app with the Mixer open.
-fn mixer(
-    edits: &Arc<Mutex<Vec<Edit>>>,
-    setup: Vec<Edit>,
-    going: bool,
-) -> Harness<'static, RadioApp> {
-    let mut h = harness(edits, setup, going);
-    h.get_by_label("Mixer").click();
-    h.run_steps(FRAMES);
-    h
-}
-
 /// The air switches that reached the source: the values of `air.on_air` it was set to.
 fn switches(edits: &Arc<Mutex<Vec<Edit>>>) -> Vec<bool> {
     edits
@@ -111,22 +99,6 @@ fn switches(edits: &Arc<Mutex<Vec<Edit>>>) -> Vec<bool> {
             _ => None,
         })
         .collect()
-}
-
-/// The air button, found by the start of its name.
-fn button<'a>(h: &'a Harness<'_, RadioApp>, starts: &str) -> Option<egui_kittest::Node<'a>> {
-    h.query_all(By::new().role(Role::Button)).find(|n| {
-        n.accesskit_node()
-            .label()
-            .is_some_and(|l| l.starts_with(starts))
-    })
-}
-
-fn press(h: &mut Harness<'_, RadioApp>, starts: &str) {
-    button(h, starts)
-        .unwrap_or_else(|| panic!("a button whose name starts {starts:?}"))
-        .click();
-    h.run_steps(FRAMES);
 }
 
 fn shows(h: &Harness<'_, RadioApp>, text: &str) -> bool {
@@ -150,66 +122,41 @@ fn shortcut(h: &mut Harness<'_, RadioApp>) {
 #[test]
 fn one_press_does_not_switch() {
     let edits = Arc::default();
-    let mut h = mixer(&edits, Vec::new(), false);
-    press(&mut h, "On air");
+    let mut h = harness(&edits, Vec::new(), false);
+    shortcut(&mut h);
     assert!(switches(&edits).is_empty(), "one press only arms");
     assert!(
-        button(&h, "Press again to go off air").is_some(),
-        "the armed button says what the second press does"
+        shows(&h, "Press again to go off air"),
+        "the station says what the second press does"
     );
 }
 
 #[test]
 fn two_presses_within_the_arm_time_switch() {
     let edits = Arc::default();
-    let mut h = mixer(&edits, Vec::new(), false);
-    press(&mut h, "On air");
-    press(&mut h, "Press again to go off air");
+    let mut h = harness(&edits, Vec::new(), false);
+    shortcut(&mut h);
+    shortcut(&mut h);
     assert_eq!(switches(&edits), vec![false], "the station goes off air");
-    assert!(
-        button(&h, "Off air").is_some(),
-        "the button says Off air in words"
-    );
+    assert!(shows(&h, "Off air"), "the status bar says Off air in words");
     // And back: on air takes two presses too.
-    press(&mut h, "Off air");
+    shortcut(&mut h);
     assert_eq!(switches(&edits), vec![false], "one press only arms");
-    press(&mut h, "Press again to go on air");
+    assert!(shows(&h, "Press again to go on air"));
+    shortcut(&mut h);
     assert_eq!(switches(&edits), vec![false, true]);
-    assert!(button(&h, "On air").is_some());
 }
 
 #[test]
 fn two_presses_apart_do_not_switch() {
     let edits = Arc::default();
-    let mut h = mixer(&edits, Vec::new(), false);
-    press(&mut h, "On air");
+    let mut h = harness(&edits, Vec::new(), false);
+    shortcut(&mut h);
     wait_out_the_arm_time(&mut h);
-    assert!(
-        button(&h, "On air").is_some(),
-        "the button disarms when the time runs out"
-    );
-    press(&mut h, "On air");
+    shortcut(&mut h);
     assert!(
         switches(&edits).is_empty(),
         "the late press only arms again"
-    );
-}
-
-#[test]
-fn the_button_works_by_keyboard() {
-    let edits = Arc::default();
-    let mut h = mixer(&edits, Vec::new(), false);
-    button(&h, "On air").expect("the button").focus();
-    h.run_steps(FRAMES);
-    h.key_press(egui::Key::Enter);
-    h.run_steps(FRAMES);
-    assert!(switches(&edits).is_empty(), "Enter arms");
-    h.key_press(egui::Key::Space);
-    h.run_steps(FRAMES);
-    assert_eq!(
-        switches(&edits),
-        vec![false],
-        "a second press, by Space, switches"
     );
 }
 
@@ -227,16 +174,10 @@ fn hold(h: &mut Harness<'_, RadioApp>, key: egui::Key, modifiers: egui::Modifier
 #[test]
 fn a_held_key_is_not_a_second_press() {
     let edits = Arc::default();
-    let mut h = mixer(&edits, Vec::new(), false);
+    let mut h = harness(&edits, Vec::new(), false);
     let chord = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
     hold(&mut h, egui::Key::O, chord);
     assert!(switches(&edits).is_empty(), "a held shortcut only arms");
-
-    wait_out_the_arm_time(&mut h);
-    button(&h, "On air").expect("the button").focus();
-    h.run_steps(FRAMES);
-    hold(&mut h, egui::Key::Enter, egui::Modifiers::NONE);
-    assert!(switches(&edits).is_empty(), "a held Enter only arms");
 }
 
 /// The shortcut's key press as the native macOS menu sends it: AppKit takes the key
@@ -405,12 +346,7 @@ fn off_air_shows_in_words_in_the_status_bar() {
 #[test]
 fn going_on_air_shows_while_reconnecting() {
     let edits = Arc::default();
-    let mut h = mixer(&edits, Vec::new(), true);
-    assert!(
-        button(&h, "Going on air…").is_some(),
-        "the button says it is going on air"
-    );
-    assert!(shows(&h, "Going on air…"));
+    let mut h = harness(&edits, Vec::new(), true);
     assert!(
         !shows(&h, "failed: connection refused"),
         "the status bar shows no failure while going on air"
@@ -437,8 +373,8 @@ fn going_on_air_shows_while_reconnecting() {
 fn the_deck_confirm_preference_does_not_skip_the_second_press() {
     let edits = Arc::default();
     let no_confirm = vec![setting(radio_model::DECKS_PART, "confirm_on_air", false)];
-    let mut h = mixer(&edits, no_confirm, false);
-    press(&mut h, "On air");
+    let mut h = harness(&edits, no_confirm, false);
+    shortcut(&mut h);
     assert!(
         switches(&edits).is_empty(),
         "going off air is never one press"
