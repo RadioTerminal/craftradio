@@ -12,7 +12,7 @@ mod mount;
 mod server;
 mod stats;
 
-pub use config::{Config, Station};
+pub use config::{Config, Output, OutputFormat, Station};
 pub use decode::{BLOCK, DecodeError, Decoded, RATE, SourceDecoder};
 pub use framing::{Format, Framer};
 pub use http::{HttpError, Request, client_addr, read_request, respond};

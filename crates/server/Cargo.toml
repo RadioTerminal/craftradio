@@ -21,8 +21,9 @@ thiserror.workspace = true
 # TLS from certificate files, with the ring provider the app's Icecast output uses too.
 rustls.workspace = true
 # Decoding a pushed stream for the re-encoded outputs: Symphonia's readers, and the
-# station's own decoders (Symphonia's codecs and Opus).
-radio-codecs.workspace = true
+# station's own decoders (Symphonia's codecs and Opus); and its encoders, which also say
+# which bitrates an output may ask for.
+radio-codecs = { workspace = true, features = ["encode", "encode-mp3"] }
 symphonia.workspace = true
 
 [dev-dependencies]

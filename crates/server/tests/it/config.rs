@@ -193,3 +193,130 @@ fn the_packaged_example_config_loads() {
     let config = Config::parse(&with_tls).unwrap();
     assert!(config.tls_cert.is_some() && config.tls_key.is_some());
 }
+
+/// One station with the given `[[station.output]]` tables after it.
+fn station_with_outputs(slug: &str, outputs: &[(&str, &str, u32)]) -> String {
+    let mut text = one_station(slug);
+    for (mount, format, kbps) in outputs {
+        text.push_str(&format!(
+            "[[station.output]]\nmount = \"{mount}\"\nformat = \"{format}\"\nkbps = {kbps}\n"
+        ));
+    }
+    text
+}
+
+/// Parses a config that must be refused and returns the message.
+fn refused(text: &str) -> String {
+    match Config::parse(text) {
+        Err(ServerError::Config(message)) => message,
+        other => panic!("the config was accepted: {other:?}"),
+    }
+}
+
+#[test]
+fn a_station_takes_any_number_of_outputs() {
+    // The spec's example (§5.1), with the keys this server reads today.
+    let text = r#"
+listen = "127.0.0.1:8080"
+public_url = "https://radio.example.org"
+trusted_proxy = "127.0.0.1"
+
+[[station]]
+slug = "morning"
+name = "Morning Station"
+key_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+max_stream_listeners = 200
+
+[[station.output]]
+mount = "stream.mp3"
+format = "mp3"
+kbps = 192
+
+[[station.output]]
+mount = "low"
+format = "opus"
+kbps = 64
+"#;
+    let config = Config::parse(text).unwrap();
+    let outputs = &config.station("morning").unwrap().outputs;
+    let got: Vec<_> = outputs
+        .iter()
+        .map(|o| (o.mount.as_str(), o.format, o.kbps))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("stream.mp3", OutputFormat::Mp3, 192),
+            ("low", OutputFormat::Opus, 64)
+        ]
+    );
+    // A station without outputs has none.
+    let config = Config::parse(&one_station("night")).unwrap();
+    assert!(config.station("night").unwrap().outputs.is_empty());
+}
+
+#[test]
+fn an_output_cannot_take_a_fixed_path() {
+    for mount in ["stream", "live", "signal", "feed"] {
+        let message = refused(&station_with_outputs("morning", &[(mount, "opus", 64)]));
+        assert!(
+            message.contains("morning") && message.contains(mount),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn two_outputs_of_a_station_cannot_share_a_mount() {
+    let message = refused(&station_with_outputs(
+        "morning",
+        &[("low", "opus", 64), ("low", "mp3", 128)],
+    ));
+    assert!(
+        message.contains("morning") && message.contains("low"),
+        "{message}"
+    );
+
+    let mut two = station_with_outputs("morning", &[("low", "opus", 64)]);
+    two.push_str(
+        "[[station]]\nslug = \"night\"\nname = \"Night Station\"\nkey_hash = \
+         \"sha256:1111111111111111111111111111111111111111111111111111111111111111\"\n\
+         [[station.output]]\nmount = \"low\"\nformat = \"opus\"\nkbps = 64\n",
+    );
+    let config = Config::parse(&two).unwrap();
+    assert_eq!(config.station("night").unwrap().outputs.len(), 1);
+}
+
+#[test]
+fn a_mount_name_is_one_path_segment() {
+    for mount in ["stream.mp3", "low_64"] {
+        assert!(
+            Config::parse(&station_with_outputs("morning", &[(mount, "opus", 64)])).is_ok(),
+            "mount {mount:?} was refused"
+        );
+    }
+    for mount in ["", "a/b", "a b", "Low", ".low", "-low"] {
+        let message = refused(&station_with_outputs("morning", &[(mount, "opus", 64)]));
+        assert!(message.contains("morning"), "{message}");
+    }
+}
+
+#[test]
+fn a_bitrate_the_encoder_cannot_make_is_refused() {
+    for (format, kbps) in [("mp3", 100), ("opus", 600)] {
+        let message = refused(&station_with_outputs("morning", &[("low", format, kbps)]));
+        assert!(
+            message.contains("morning")
+                && message.contains("low")
+                && message.contains(format)
+                && message.contains(&kbps.to_string()),
+            "{message}"
+        );
+    }
+    for (format, kbps) in [("mp3", 192), ("opus", 64)] {
+        assert!(
+            Config::parse(&station_with_outputs("morning", &[("low", format, kbps)])).is_ok(),
+            "{format} at {kbps} was refused"
+        );
+    }
+}
