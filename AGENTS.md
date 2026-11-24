@@ -81,6 +81,10 @@ Every user-visible action is a command in `engine`; the UI, CLI, MCP and scripts
 - Branches: `feature/`, `bugfix/`, `refactor/`, `docs/`, `test/` or `chore/` plus a roadmap
   id (`feature/m1.5-merge`).
 - Commits are plain English: what changed for the person or developer.
+- Merging into `main` (operator, 2026-11-24): rebase the branch onto `main` first, run the
+  checks on the rebased branch, then merge it with a merge commit (`git merge --no-ff`) named
+  `Merge: <what changed>`. No fast-forward and no squash, so `main` shows each branch as one
+  merge. Merging still needs the operator's word (rule 2).
 
 ### Checks
 
