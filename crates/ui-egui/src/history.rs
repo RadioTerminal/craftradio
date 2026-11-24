@@ -16,6 +16,7 @@ use crate::settings;
 use crate::theme::{self, Tokens, size, space};
 use crate::view::MetaTarget;
 use crate::view::{Row, StationView};
+use crate::windows::{self, Band};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Col {
@@ -57,7 +58,12 @@ pub(crate) fn show(
 ) {
     let shown = COLS.map(|(_, _, key)| parts::bool(view, parts::HISTORY, key, true));
     let hours_back = parts::u32(view, parts::HISTORY, "hours_back", MAX_HOURS_BACK);
-    // One row: the filters on the left, the settings button far right.
+    // In a window with a merged title bar the settings button sits there, as in the other
+    // windows. Elsewhere it ends the filter row, so it takes no row of its own.
+    let in_content = windows::title_band(ui) == Band::None;
+    if !in_content {
+        settings::opens_preferences(ui, "History", Page::History, actions);
+    }
     ui.horizontal(|ui| {
         let hint = "Filter by title or playlist";
         let edit = egui::TextEdit::singleline(&mut state.filter).hint_text(hint);
@@ -77,13 +83,15 @@ pub(crate) fn show(
                     widgets::selectable_value(ui, &mut state.playlist, Some(n.to_owned()), n);
                 }
             });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let mut open = false;
-            settings::settings_button(ui, "History", &mut open);
-            if open {
-                actions.push(Action::OpenPreferences(Page::History));
-            }
-        });
+        if in_content {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let mut open = false;
+                settings::settings_button(ui, "History", &mut open);
+                if open {
+                    actions.push(Action::OpenPreferences(Page::History));
+                }
+            });
+        }
     });
     ui.add_space(space::S);
 
