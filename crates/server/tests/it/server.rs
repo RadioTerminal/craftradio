@@ -1995,7 +1995,18 @@ fn an_output_that_failed_says_so_at_once_and_the_rest_play() {
         .begin(Format::Mp3, "Morning Station".into(), None)
         .unwrap();
     let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
-    // The Opus output began, so the transcoder has been through every output.
+    // Until the transcoder has decoded its first audio, the stats can list the held MP3
+    // mount itself; wait until it has marked that output failed.
+    let outputs = server.outputs("morning").unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    while !outputs.failed("mp3") {
+        assert!(
+            Instant::now() < deadline,
+            "the MP3 output was never marked failed"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // From then on the MP3 mount is not listed, so two mounts are the pushed one and Opus.
     let listed = wait_for_sources(addr, 2);
     let urls: Vec<&str> = listed
         .iter()
