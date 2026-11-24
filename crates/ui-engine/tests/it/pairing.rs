@@ -9,7 +9,7 @@ use radio_model::PairingDocument;
 use radio_playout::Clock;
 use radio_server::{Config, Server, ServerHandle, hash_key};
 use radio_ui_egui::view::{Edit, PairState, Secret, StationView, Status, ViewSource};
-use radio_ui_engine::{EngineSource, MemoryStore, SecretStore, check_address};
+use radio_ui_engine::{EngineSource, MemoryStore, SecretStore, check_address, server_entry};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,13 @@ fn station() -> (EngineSource, radio_playout::ManualClock, Arc<MemoryStore>) {
 fn dawn_entry(address: &str) -> String {
     let host_port = address.trim_start_matches("http://");
     format!("icecast:source@{host_port}/dawn/stream")
+}
+
+/// The keychain as a pairing with `address` left it: the key under the push's entry and
+/// under the address's own entry.
+fn keep_key(store: &MemoryStore, address: &str, key: &str) {
+    store.set(&dawn_entry(address), key).unwrap();
+    store.set(&server_entry(address), key).unwrap();
 }
 
 /// `GET <address><path>` with `key` as the Basic password, if any: the status and the body.
@@ -89,6 +96,17 @@ fn wait_live(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// A setting as the source shows it now.
+fn view_setting(
+    source: &mut EngineSource,
+    clock: &radio_playout::ManualClock,
+    part: &str,
+    key: &str,
+) -> serde_json::Value {
+    let view = source.snapshot(clock.now());
+    setting(&view, part, key).unwrap_or_default()
 }
 
 fn settings_text(view: &StationView) -> String {
@@ -200,7 +218,7 @@ fn a_server_that_is_down_says_unreachable_and_keeps_settings() {
     let address = format!("http://{}", silent.local_addr().unwrap());
     let (mut source, clock, store) = station();
     paired_with(&mut source, &address, document_for(&address));
-    store.set(&dawn_entry(&address), DAWN_KEY).unwrap();
+    keep_key(&store, &address, DAWN_KEY);
 
     let deadline = Instant::now() + Duration::from_secs(25);
     let view = loop {
@@ -250,7 +268,7 @@ fn the_app_refetches_at_start_and_overwrites_hand_edits() {
     let (mut source, clock, store) = station();
     // The station as a last run left it: paired, the key in the keychain, and a hand edit.
     paired_with(&mut source, &address, document);
-    store.set(&dawn_entry(&address), DAWN_KEY).unwrap();
+    keep_key(&store, &address, DAWN_KEY);
     for (part, key) in [("icecast", "public_url"), ("webrtc", "public_stream")] {
         source
             .playout()
@@ -285,7 +303,7 @@ fn a_refused_key_at_start_holds_the_push_until_a_new_key_pairs() {
     let (_server, address) = server();
     let (mut source, clock, store) = station();
     paired_with(&mut source, &address, document_for(&address));
-    store.set(&dawn_entry(&address), WRONG_KEY).unwrap();
+    keep_key(&store, &address, WRONG_KEY);
 
     let view = wait_for(&mut source, &clock, |v| {
         v.pairing.state == PairState::KeyRefused && icecast_note(v) != "Connected"
@@ -483,7 +501,7 @@ fn a_pairing_by_another_client_is_asked_once_and_connects() {
     let _ = wait_for(&mut source, &clock, |v| {
         v.pairing.state == PairState::KeyRefused
     });
-    store.set(&dawn_entry(&address), DAWN_KEY).unwrap();
+    keep_key(&store, &address, DAWN_KEY);
     paired_with(&mut source, &address, document_for(&address));
     let view = wait_for(&mut source, &clock, |v| {
         v.pairing.state == PairState::Paired && v.output.icecast == Status::Connected
@@ -501,6 +519,8 @@ struct Rotating {
     key: Arc<std::sync::Mutex<String>>,
     pushes: Arc<std::sync::atomic::AtomicUsize>,
     refused: Arc<std::sync::atomic::AtomicUsize>,
+    /// Every connection, counted as it is taken, before a byte is read.
+    connections: Arc<std::sync::atomic::AtomicUsize>,
     open: Arc<std::sync::Mutex<Vec<std::net::TcpStream>>>,
 }
 
@@ -515,8 +535,10 @@ impl Rotating {
             key: Arc::new(std::sync::Mutex::new(key.to_owned())),
             pushes: Arc::default(),
             refused: Arc::default(),
+            connections: Arc::default(),
             open: Arc::default(),
         };
+        let connections = me.connections.clone();
         let (current, pushes, refused, open) = (
             me.key.clone(),
             me.pushes.clone(),
@@ -526,6 +548,7 @@ impl Rotating {
         let document = serde_json::to_string(&document_for(&address)).unwrap();
         std::thread::spawn(move || {
             for mut conn in listener.incoming().flatten() {
+                connections.fetch_add(1, Ordering::SeqCst);
                 let mut head = Vec::new();
                 let mut byte = [0];
                 while !head.ends_with(b"\r\n\r\n") && conn.read_exact(&mut byte).is_ok() {
@@ -588,6 +611,10 @@ impl Rotating {
         self.pushes.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    fn connections(&self) -> usize {
+        self.connections.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn refused(&self) -> usize {
         self.refused.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -644,7 +671,7 @@ fn a_paired_station_asks_before_it_pushes_at_start() {
     let fake = Rotating::start("invented-rotated-key-5Hn1");
     let (mut source, clock, store) = station();
     paired_with(&mut source, &fake.address, document_for(&fake.address));
-    store.set(&dawn_entry(&fake.address), DAWN_KEY).unwrap();
+    keep_key(&store, &fake.address, DAWN_KEY);
     let _ = wait_for(&mut source, &clock, |v| {
         v.pairing.state == PairState::KeyRefused
     });
@@ -681,7 +708,7 @@ fn a_hand_edited_host_still_finds_the_key_and_unpair_removes_it() {
     let document: PairingDocument = serde_json::from_str(&body).unwrap();
     let (mut source, clock, store) = station();
     paired_with(&mut source, &address, document);
-    store.set(&dawn_entry(&address), DAWN_KEY).unwrap();
+    keep_key(&store, &address, DAWN_KEY);
     source
         .playout()
         .dispatch(Command::SettingsSet {
@@ -720,6 +747,7 @@ fn a_hand_edited_host_still_finds_the_key_and_unpair_removes_it() {
         Ok(None),
         "the paired key is gone"
     );
+    assert_eq!(store.get(&server_entry(&address)), Ok(None));
 }
 
 /// The stored key goes only to the address it was paired through. Another client writes a
@@ -743,6 +771,16 @@ fn the_stored_key_never_goes_to_a_changed_address() {
             value: other.address.clone().into(),
         })
         .unwrap();
+    // And the push, as a client that knows the settings would write it.
+    let push = view_setting(&mut source, &clock, "server", "push");
+    source
+        .playout()
+        .dispatch(Command::SettingsSet {
+            part: "server".into(),
+            key: "push".into(),
+            value: push,
+        })
+        .unwrap();
     let view = wait_for(&mut source, &clock, |v| {
         matches!(v.pairing.state, PairState::Refused(_))
     });
@@ -751,11 +789,7 @@ fn the_stored_key_never_goes_to_a_changed_address() {
     };
     assert!(reason.contains("enter the key again"), "{reason}");
     keep_snapshotting(&mut source, &clock, Duration::from_secs(1));
-    assert_eq!(
-        other.refused() + other.pushes(),
-        0,
-        "the other host saw nothing"
-    );
+    assert_eq!(other.connections(), 0, "the other host saw nothing");
 
     // An address outside the rule, written by hand, is refused before any request.
     source
@@ -842,4 +876,55 @@ fn a_keychain_that_does_not_take_the_key_is_not_paired() {
         reason.contains("the keychain did not take the key"),
         "{reason}"
     );
+}
+
+/// Another client pairs the station with a new https address and the same push: the new
+/// server gets no key (no request at all), and the state asks for the key.
+#[test]
+fn a_new_address_by_the_engine_command_gets_no_stored_key() {
+    let (_server, address) = server();
+    let other = Rotating::start(DAWN_KEY);
+    let other_https = other.address.replace("http://", "https://");
+    let (mut source, clock, store) = station();
+    assert_eq!(pair(&mut source, &address, DAWN_KEY), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired
+    });
+
+    paired_with(&mut source, &other_https, document_for(&address));
+    let view = wait_for(&mut source, &clock, |v| {
+        matches!(v.pairing.state, PairState::Refused(_))
+    });
+    let PairState::Refused(reason) = &view.pairing.state else {
+        panic!("{:?}", view.pairing);
+    };
+    assert!(reason.contains("enter the key again"), "{reason}");
+    keep_snapshotting(&mut source, &clock, Duration::from_secs(1));
+    assert_eq!(other.connections(), 0, "the new server saw nothing");
+    assert_eq!(store.get(&server_entry(&other_https)), Ok(None));
+}
+
+/// A normal pairing leaves what the next start needs: a station that starts paired, with
+/// that keychain and no key typed, asks the server and says Paired.
+#[test]
+fn a_pairing_is_asked_again_at_the_next_start_with_no_key_typed() {
+    let (_server, address) = server();
+    let (mut first, clock, store) = station();
+    assert_eq!(pair(&mut first, &address, DAWN_KEY), Ok(1));
+    let _ = wait_for(&mut first, &clock, |v| {
+        v.pairing.state == PairState::Paired && v.icecast.password_set
+    });
+    let (_, body) = get(&address, "/api/station", Some(DAWN_KEY));
+    let document: PairingDocument = serde_json::from_str(&body).unwrap();
+    drop(first);
+
+    // The next start: the same keychain, the station paired as the first run left it.
+    let (next, clock) = source(Vec::new());
+    let mut next = next.with_secrets(Arc::new(Shared(store)));
+    paired_with(&mut next, &address, document);
+    let view = wait_for(&mut next, &clock, |v| {
+        v.pairing.state == PairState::Paired && v.output.icecast == Status::Connected
+    });
+    assert_eq!(view.pairing.state, PairState::Paired);
+    assert_eq!(view.output.icecast, Status::Connected);
 }

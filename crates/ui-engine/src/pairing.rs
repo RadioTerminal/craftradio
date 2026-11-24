@@ -11,8 +11,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use radio_engine::{Command, State};
 use radio_model::{
-    PAIRING_VERSION, PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_ADDRESS,
-    SERVER_PUSH_KEY,
+    PAIRING_VERSION, PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_KEY,
 };
 use radio_ui_egui::view::{PairState, PairingView, Secret, is_loopback};
 
@@ -241,10 +240,20 @@ pub(crate) struct Pairing {
     hold: Hold,
     /// True when the last snapshot saw the push refused, so only a new refusal counts.
     push_refused: bool,
-    /// The keychain entry of the key while the station is paired, as last seen.
-    seen_entry: Option<String>,
-    /// The entry the key of an accepted pairing is being written to.
-    storing: Option<String>,
+    /// The keychain entries of the key while the station is paired, as last seen.
+    seen_entries: Vec<String>,
+    /// The entries the key of an accepted pairing is being written to.
+    storing: Vec<String>,
+    /// Why a write of `storing` failed, once one did.
+    store_failed: Option<String>,
+}
+
+/// The keychain entry of the station key for fetching from the server at `address` (in
+/// [`check_address`]'s shape). It is bound to the address in the keychain itself: only a
+/// person who types the key writes it, so a server address changed in the settings, by any
+/// client, finds no key there and nothing is sent.
+pub fn server_entry(address: &str) -> String {
+    format!("server:{address}")
 }
 
 /// The address of the paired server, from the settings.
@@ -284,17 +293,6 @@ pub fn paired_entry(state: &State) -> Option<String> {
     }
 }
 
-/// The address the stored key was paired through (`server.push.address`). The stored key
-/// goes only there.
-fn key_address(state: &State) -> Option<String> {
-    state
-        .settings(SERVER_PART)
-        .and_then(|s| s.get(SERVER_PUSH_KEY))
-        .and_then(|p| p.get(SERVER_PUSH_ADDRESS))
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-}
-
 impl EngineSource {
     /// Follows the paired address in the settings, whoever changed it (this window, the CLI,
     /// MCP or a script). A paired address that this source did not just pair itself, as at
@@ -304,9 +302,9 @@ impl EngineSource {
     /// refused key is not tried again. Unpaired by anyone, the state says not paired.
     pub(crate) fn watch_pairing(&mut self) {
         let now = paired_address(&self.state);
-        // The entry of the key, while paired, so an unpair by any client removes it.
-        if let Some(entry) = paired_entry(&self.state) {
-            self.pairing.seen_entry = Some(entry);
+        // The entries of the key, while paired, so an unpair by any client removes them.
+        if let (Some(push), Some(address)) = (paired_entry(&self.state), now.as_deref()) {
+            self.pairing.seen_entries = vec![push, server_entry(address)];
         }
         if now == self.pairing.seen {
             return;
@@ -316,9 +314,10 @@ impl EngineSource {
             None => {
                 if before.is_some() {
                     // Unpaired by another client (the CLI, MCP, a script): the key goes too.
-                    if let Some(entry) = self.pairing.seen_entry.take() {
+                    for entry in std::mem::take(&mut self.pairing.seen_entries) {
                         self.forget(entry);
                     }
+                    self.pairing.storing.clear();
                     self.pairing.asked += 1;
                     self.pairing.address.clear();
                     self.pairing.state = PairState::NotPaired;
@@ -396,18 +395,13 @@ impl EngineSource {
         if let Err(e) = check_address(&address) {
             return self.not_asked(format!("the server address is not usable: {e}"));
         }
-        if typed.is_none() && key_address(&self.state).as_deref() != Some(address.as_str()) {
-            return self.not_asked(
-                "the stored key was paired through another address; enter the key again to \
-                 pair with this one"
-                    .into(),
-            );
-        }
+        // The stored key is read only from the entry of this very address.
+        let entry = server_entry(&address);
         let job = crate::bg::Job::Pair {
             seq: self.pairing.asked,
             address,
             key: typed,
-            paired_entry: paired_entry(&self.state),
+            paired_entry: Some(entry),
             store: Arc::clone(&self.secrets),
         };
         let sent = self
@@ -444,15 +438,18 @@ impl EngineSource {
     /// `Edit::Unpair`: the settings pairing wrote go, the key leaves the keychain, and the
     /// Icecast push closes with the settings.
     pub(crate) fn unpair(&mut self) -> Result<usize, String> {
-        let Some(entry) = paired_entry(&self.state) else {
+        let (Some(entry), Some(address)) = (paired_entry(&self.state), paired_address(&self.state))
+        else {
             return Err("The station is not paired with a server".into());
         };
         if self.worker.is_none() {
             return Err("The background lane could not start; nothing changed".into());
         }
         self.run_edit(Command::ServerUnpair)?;
-        self.pairing.seen_entry = None;
+        self.pairing.seen_entries.clear();
+        self.pairing.storing.clear();
         self.forget(entry);
+        self.forget(server_entry(&address));
         // A try still on its way is for a pairing that is gone: its answer stores nothing.
         self.pairing.asked += 1;
         self.pairing.address.clear();
@@ -516,10 +513,27 @@ impl EngineSource {
         let ice = &document.icecast;
         let entry = crate::icecast::mount_entry(&ice.user, &ice.host, ice.port, &ice.mount);
         let old = paired_entry(&self.state);
+        let old_address = paired_address(&self.state);
         let moved = old.as_deref() != Some(entry.as_str());
         let store = Arc::clone(&self.secrets);
-        // A typed key is stored; a stored one moves with the push.
-        let key = key.filter(|_| typed || moved);
+        // A typed key is stored for the push and for this address; a stored one moves with the
+        // push (it came from this address's own entry).
+        let mut writes = Vec::new();
+        if let Some(key) = &key {
+            if typed {
+                writes.push((server_entry(&address), key.clone()));
+            }
+            if typed || moved {
+                writes.push((entry.clone(), key.clone()));
+            }
+        }
+        let mut forgets: Vec<String> = Vec::new();
+        if moved && let Some(old) = old {
+            forgets.push(old);
+        }
+        if let Some(old) = old_address.filter(|a| *a != address) {
+            forgets.push(server_entry(&old));
+        }
         if let Err(e) = self.send("", Command::ServerPair { address, document }) {
             self.pairing.state = PairState::Refused(format!("the settings were not written: {e}"));
             self.release_push();
@@ -531,31 +545,35 @@ impl EngineSource {
             return;
         };
         let mut sent = true;
-        self.pairing.storing = None;
-        if let Some(key) = key {
-            self.pairing.storing = Some(entry.clone());
+        self.pairing.storing.clear();
+        self.pairing.store_failed = None;
+        for (at, key) in writes {
+            self.pairing.storing.push(at.clone());
             sent &= w
                 .jobs
                 .send(crate::bg::Job::Secret {
-                    key: entry.clone(),
+                    key: at,
                     set: Some(key.expose().to_owned()),
                     store: Arc::clone(&store),
                 })
                 .is_ok();
         }
-        if moved && let Some(old) = old {
+        for old in forgets {
             sent &= w
                 .jobs
-                .send(crate::bg::Job::Forget { key: old, store })
+                .send(crate::bg::Job::Forget {
+                    key: old,
+                    store: Arc::clone(&store),
+                })
                 .is_ok();
         }
         // Paired once the keychain took the key (see `stored`), at once when none was to store.
-        self.pairing.state = match (sent, &self.pairing.storing) {
-            (false, _) => {
-                PairState::Refused("the keychain was not reached; the key is not stored".into())
-            }
-            (true, Some(_)) => PairState::Pairing,
-            (true, None) => PairState::Paired,
+        self.pairing.state = if !sent {
+            PairState::Refused("the keychain was not reached; the key is not stored".into())
+        } else if self.pairing.storing.is_empty() {
+            PairState::Paired
+        } else {
+            PairState::Pairing
         };
         // The keychain jobs run first on the lane, so the push reads the new key; a rotated
         // key for an unchanged mount applies at once (the same settings keep a working
@@ -568,14 +586,19 @@ impl EngineSource {
     /// The keychain's answer to a write: the key of an accepted pairing is stored, or the state
     /// says it is not.
     pub(crate) fn stored(&mut self, entry: &str, result: &Result<bool, String>) {
-        if self.pairing.storing.as_deref() != Some(entry) {
+        let Some(at) = self.pairing.storing.iter().position(|e| e == entry) else {
             return;
-        }
-        self.pairing.storing = None;
-        self.pairing.state = match result {
-            Ok(_) => PairState::Paired,
-            Err(e) => PairState::Refused(format!("the keychain did not take the key: {e}")),
         };
+        self.pairing.storing.remove(at);
+        if let Err(e) = result {
+            self.pairing.store_failed = Some(e.clone());
+        }
+        if self.pairing.storing.is_empty() {
+            self.pairing.state = match self.pairing.store_failed.take() {
+                None => PairState::Paired,
+                Some(e) => PairState::Refused(format!("the keychain did not take the key: {e}")),
+            };
+        }
     }
 
     /// True while the push waits: for the start's answer, or for a new key.

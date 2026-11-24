@@ -21,7 +21,9 @@ mod one_off;
 mod outputs;
 mod pairing;
 
-pub use pairing::{PairError, check_address, fetch as fetch_pairing, is_paired, paired_entry};
+pub use pairing::{
+    PairError, check_address, fetch as fetch_pairing, is_paired, paired_entry, server_entry,
+};
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
 /// with: `None` when none is set, so the playout keeps its own.
