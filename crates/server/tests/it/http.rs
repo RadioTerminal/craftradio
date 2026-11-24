@@ -291,3 +291,15 @@ fn a_plus_in_the_query_is_a_space_and_an_encoded_plus_is_a_plus() {
     let request = parse("GET /admin/metadata?song=Cloud+Signal%2B HTTP/1.0\r\n\r\n");
     assert_eq!(request.param("song"), Some("Cloud Signal+"));
 }
+
+#[test]
+fn a_request_printed_for_a_log_hides_its_key() {
+    let request = parse(&source_head());
+    let printed = format!("{request:?}");
+    assert!(!printed.contains(&basic("source", KEY)), "{printed}");
+    assert!(!printed.contains(KEY), "{printed}");
+    assert!(printed.contains("<redacted>"), "{printed}");
+    // The rest of the head still prints, so the log stays useful.
+    assert!(printed.contains("/morning/stream"), "{printed}");
+    assert!(printed.contains("Morning Station"), "{printed}");
+}
