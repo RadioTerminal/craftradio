@@ -471,3 +471,42 @@ fn stop_ends_live_sources_and_listeners_at_once() {
     );
     drop(server);
 }
+
+#[test]
+fn connections_over_the_thread_cap_are_closed_at_once() {
+    // One station that takes no listeners: 0 + 2 × 1 + 32 connection threads.
+    let config = Config::parse(&format!(
+        "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\n\
+         [[station]]\nslug = \"morning\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\nmax_stream_listeners = 0\n",
+        hash_key(MORNING_KEY),
+    ))
+    .unwrap();
+    let server = Server::start(config).unwrap();
+    let addr = server.local_addr();
+    // Idle clients that never finish a head each hold a thread.
+    let mut idle: Vec<TcpStream> = (0..34).map(|_| client(addr)).collect();
+    for stream in &mut idle {
+        stream.write_all(b"GET /mor").unwrap();
+    }
+    // Connections are accepted, and given a thread, in the order they were made.
+
+    let mut over = client(addr);
+    let _ = over.write_all(b"OPTIONS /morning/stream HTTP/1.0\r\n\r\n");
+    let reply = read_to_end_within(&mut over, Duration::from_secs(2));
+    assert!(reply.is_empty(), "a connection over the cap got a reply");
+
+    drop(idle.pop());
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let mut stream = client(addr);
+        let _ = stream.write_all(b"OPTIONS /morning/stream HTTP/1.0\r\n\r\n");
+        if read_to_end_within(&mut stream, PATIENCE).starts_with(b"HTTP/1.0 204") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the freed thread was never reused"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
