@@ -20,14 +20,20 @@ const WRONG_KEY: &str = "invented-wrong-key-2Lr8";
 /// URL is its own address, so the push the document names reaches it. The address it gives
 /// is the one a person types.
 fn server() -> (ServerHandle, String) {
-    let port = refusing_port();
-    let config = format!(
-        "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\n\
-         [[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
-        hash_key(DAWN_KEY),
-    );
-    let server = Server::start(Config::parse(&config).unwrap()).unwrap();
-    (server, format!("http://127.0.0.1:{port}"))
+    // The port is free when picked; another test may take it before the server binds it,
+    // so a taken port is picked again.
+    for _ in 0..20 {
+        let port = refusing_port();
+        let config = format!(
+            "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\n\
+             [[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
+            hash_key(DAWN_KEY),
+        );
+        if let Ok(server) = Server::start(Config::parse(&config).unwrap()) {
+            return (server, format!("http://127.0.0.1:{port}"));
+        }
+    }
+    panic!("no free port for the test server");
 }
 
 /// A source over a fresh station with a memory keychain the test can read.
@@ -619,6 +625,7 @@ fn a_key_rotated_during_a_run_says_key_refused_and_stops_the_push() {
     keep_snapshotting(&mut source, &clock, Duration::from_secs(8));
     assert_eq!(fake.refused(), refused, "nothing tried the old key again");
     assert!(refused < 5, "{refused} refusals would reach the lockout");
+    key_refused_everywhere(&source.snapshot(clock.now()));
 
     assert_eq!(
         pair(&mut source, &fake.address, "invented-rotated-key-5Hn1"),
@@ -644,6 +651,24 @@ fn a_paired_station_asks_before_it_pushes_at_start() {
     keep_snapshotting(&mut source, &clock, Duration::from_secs(3));
     assert_eq!(fake.pushes(), 0, "no push with the refused key");
     assert_eq!(fake.refused(), 1, "one request found the key refused");
+    key_refused_everywhere(&source.snapshot(clock.now()));
+}
+
+/// The strip, the status bar, the alarm and the page all say key refused.
+fn key_refused_everywhere(view: &StationView) {
+    assert_eq!(view.pairing.label(), "Paired — key refused");
+    assert_eq!(icecast_note(view), "Key refused");
+    let Status::Failed(why) = &view.output.icecast else {
+        panic!("the status bar: {:?}", view.output.icecast);
+    };
+    assert!(why.contains("refused the station key"), "{why}");
+    assert!(
+        view.alarms
+            .iter()
+            .any(|a| a.text.contains("refused the station key")),
+        "{:?}",
+        view.alarms
+    );
 }
 
 /// The keychain entry of the key follows the paired push, not a hand edit of the Icecast
@@ -694,5 +719,127 @@ fn a_hand_edited_host_still_finds_the_key_and_unpair_removes_it() {
         store.get(&dawn_entry(&address)),
         Ok(None),
         "the paired key is gone"
+    );
+}
+
+/// The stored key goes only to the address it was paired through. Another client writes a
+/// new `server.address`: the source sends that host nothing and asks for the key again.
+#[test]
+fn the_stored_key_never_goes_to_a_changed_address() {
+    let (_server, address) = server();
+    let other = Rotating::start(DAWN_KEY);
+    let (mut source, clock, store) = station();
+    assert_eq!(pair(&mut source, &address, DAWN_KEY), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired
+    });
+    assert!(store.get(&dawn_entry(&address)).unwrap().is_some());
+
+    source
+        .playout()
+        .dispatch(Command::SettingsSet {
+            part: "server".into(),
+            key: "address".into(),
+            value: other.address.clone().into(),
+        })
+        .unwrap();
+    let view = wait_for(&mut source, &clock, |v| {
+        matches!(v.pairing.state, PairState::Refused(_))
+    });
+    let PairState::Refused(reason) = &view.pairing.state else {
+        panic!("{:?}", view.pairing);
+    };
+    assert!(reason.contains("enter the key again"), "{reason}");
+    keep_snapshotting(&mut source, &clock, Duration::from_secs(1));
+    assert_eq!(
+        other.refused() + other.pushes(),
+        0,
+        "the other host saw nothing"
+    );
+
+    // An address outside the rule, written by hand, is refused before any request.
+    source
+        .playout()
+        .dispatch(Command::SettingsSet {
+            part: "server".into(),
+            key: "address".into(),
+            value: "http://radio.example.org".into(),
+        })
+        .unwrap();
+    let view = wait_for(
+        &mut source,
+        &clock,
+        |v| matches!(&v.pairing.state, PairState::Refused(r) if r.contains("not usable")),
+    );
+    assert!(matches!(view.pairing.state, PairState::Refused(_)));
+    assert!(matches!(
+        radio_ui_engine::fetch_pairing("http://radio.example.org", DAWN_KEY),
+        Err(radio_ui_engine::PairError::Refused(_))
+    ));
+}
+
+/// The CLI or MCP unpairs with the engine command: the key leaves the keychain too.
+#[test]
+fn an_unpair_by_the_engine_command_removes_the_key() {
+    let (_server, address) = server();
+    let (mut source, clock, store) = station();
+    assert_eq!(pair(&mut source, &address, DAWN_KEY), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired && v.icecast.password_set
+    });
+    source.playout().dispatch(Command::ServerUnpair).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while store.get(&dawn_entry(&address)) != Ok(None) && Instant::now() < deadline {
+        let _ = source.snapshot(clock.now());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        store.get(&dawn_entry(&address)),
+        Ok(None),
+        "the key is gone"
+    );
+}
+
+/// A keychain that does not take the key.
+struct NoWrites;
+
+impl SecretStore for NoWrites {
+    fn get(&self, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn set(&self, _: &str, _: &str) -> Result<(), String> {
+        Err("the keychain is locked".into())
+    }
+    fn delete(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The server takes the key but the keychain does not: the state never says Paired.
+#[test]
+fn a_keychain_that_does_not_take_the_key_is_not_paired() {
+    let (_server, address) = server();
+    let (source, clock) = source(Vec::new());
+    let mut source = source.with_secrets(Arc::new(NoWrites));
+    assert_eq!(pair(&mut source, &address, DAWN_KEY), Ok(1));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let view = loop {
+        let view = source.snapshot(clock.now());
+        assert_ne!(
+            view.pairing.state,
+            PairState::Paired,
+            "Paired without a stored key"
+        );
+        if matches!(view.pairing.state, PairState::Refused(_)) || Instant::now() > deadline {
+            break view;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let PairState::Refused(reason) = &view.pairing.state else {
+        panic!("{:?}", view.pairing);
+    };
+    assert!(
+        reason.contains("the keychain did not take the key"),
+        "{reason}"
     );
 }

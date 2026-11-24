@@ -11,12 +11,16 @@ use std::time::Duration;
 use base64::Engine as _;
 use radio_engine::{Command, State};
 use radio_model::{
-    PAIRING_VERSION, PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_KEY,
+    PAIRING_VERSION, PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_ADDRESS,
+    SERVER_PUSH_KEY,
 };
 use radio_ui_egui::view::{PairState, PairingView, Secret, is_loopback};
 
 use crate::{EngineSource, SecretStore};
 
+/// What the strip, the status bar and the alarm say while the paired server refuses the key.
+pub(crate) const KEY_REFUSED: &str =
+    "the server refused the station key; pair again with the new key";
 /// The whole fetch of the pairing document, connection included, takes at most this long.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A connection to the server takes at most this long.
@@ -35,71 +39,10 @@ pub enum PairError {
     Refused(String),
 }
 
-/// The server address in its one accepted shape, or why it is not one, in words.
-///
-/// The rule: a scheme is required; `https://` to any host, `http://` only to this computer
-/// (`localhost`, 127.0.0.0/8, `::1`), so the key never crosses a network in clear; the server
-/// only, with no user, path or query. A trailing slash is dropped.
+/// The server address in its one accepted shape, or why it is not one, in words: the rule
+/// of [`radio_model::check_server_address`], which the engine's `server.pair` applies too.
 pub fn check_address(address: &str) -> Result<String, String> {
-    let typed = address.trim().trim_end_matches('/');
-    if typed.is_empty() {
-        return Err("Enter the server's address, such as https://radio.example.org".into());
-    }
-    let lower = typed.to_ascii_lowercase();
-    let (scheme, rest) = if let Some(rest) = lower.strip_prefix("https://") {
-        ("https", rest)
-    } else if let Some(rest) = lower.strip_prefix("http://") {
-        ("http", rest)
-    } else {
-        return Err("The address starts with https://, such as https://radio.example.org".into());
-    };
-    if rest.contains('@') {
-        return Err("The address holds no user name or key; the key has a field of its own".into());
-    }
-    if rest.contains(['/', '?', '#']) {
-        return Err(
-            "The address is the server only, with no path, such as https://radio.example.org"
-                .into(),
-        );
-    }
-    if rest.chars().any(char::is_whitespace) {
-        return Err("The address has a space in it".into());
-    }
-    let host = host_of(rest).ok_or_else(|| {
-        "The address names no host, or its port is not a number from 1 to 65535".to_owned()
-    })?;
-    if scheme == "http" && !is_loopback(host) {
-        return Err(
-            "http:// is only for a server on this computer; use https:// so the key is \
-             encrypted"
-                .into(),
-        );
-    }
-    Ok(format!("{scheme}://{rest}"))
-}
-
-/// The host of `host`, `host:port`, `[v6]` or `[v6]:port`, when the port is 1–65535.
-fn host_of(authority: &str) -> Option<&str> {
-    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
-        let (host, after) = bracketed.split_once(']')?;
-        let port = match after {
-            "" => None,
-            _ => Some(after.strip_prefix(':')?),
-        };
-        (host, port)
-    } else {
-        match authority.split_once(':') {
-            Some((host, port)) => (host, Some(port)),
-            None => (authority, None),
-        }
-    };
-    if host.is_empty() {
-        return None;
-    }
-    if let Some(port) = port {
-        port.parse::<u16>().ok().filter(|p| *p > 0)?;
-    }
-    Some(host)
+    radio_model::check_server_address(address)
 }
 
 /// The pairing document from its JSON. The version is read first, so a newer server is
@@ -139,10 +82,13 @@ pub(crate) fn read_document(body: &str) -> Result<PairingDocument, PairError> {
     Ok(document)
 }
 
-/// Fetches `<address>/api/station` with `key` as the Basic password. `address` passed
-/// [`check_address`].
+/// Fetches `<address>/api/station` with `key` as the Basic password. An address outside
+/// [`check_address`]'s rule is refused before anything is sent, wherever it came from.
 pub fn fetch(address: &str, key: &str) -> Result<PairingDocument, PairError> {
+    let address = &check_address(address).map_err(PairError::Refused)?;
     let config = ureq::Agent::config_builder()
+        // A proxy from the environment would see the key, in clear over http.
+        .proxy(None)
         .timeout_global(Some(FETCH_TIMEOUT))
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .http_status_as_error(false)
@@ -295,6 +241,10 @@ pub(crate) struct Pairing {
     hold: Hold,
     /// True when the last snapshot saw the push refused, so only a new refusal counts.
     push_refused: bool,
+    /// The keychain entry of the key while the station is paired, as last seen.
+    seen_entry: Option<String>,
+    /// The entry the key of an accepted pairing is being written to.
+    storing: Option<String>,
 }
 
 /// The address of the paired server, from the settings.
@@ -334,6 +284,17 @@ pub fn paired_entry(state: &State) -> Option<String> {
     }
 }
 
+/// The address the stored key was paired through (`server.push.address`). The stored key
+/// goes only there.
+fn key_address(state: &State) -> Option<String> {
+    state
+        .settings(SERVER_PART)
+        .and_then(|s| s.get(SERVER_PUSH_KEY))
+        .and_then(|p| p.get(SERVER_PUSH_ADDRESS))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
 impl EngineSource {
     /// Follows the paired address in the settings, whoever changed it (this window, the CLI,
     /// MCP or a script). A paired address that this source did not just pair itself, as at
@@ -343,6 +304,10 @@ impl EngineSource {
     /// refused key is not tried again. Unpaired by anyone, the state says not paired.
     pub(crate) fn watch_pairing(&mut self) {
         let now = paired_address(&self.state);
+        // The entry of the key, while paired, so an unpair by any client removes it.
+        if let Some(entry) = paired_entry(&self.state) {
+            self.pairing.seen_entry = Some(entry);
+        }
         if now == self.pairing.seen {
             return;
         }
@@ -350,6 +315,10 @@ impl EngineSource {
         match now {
             None => {
                 if before.is_some() {
+                    // Unpaired by another client (the CLI, MCP, a script): the key goes too.
+                    if let Some(entry) = self.pairing.seen_entry.take() {
+                        self.forget(entry);
+                    }
                     self.pairing.asked += 1;
                     self.pairing.address.clear();
                     self.pairing.state = PairState::NotPaired;
@@ -392,11 +361,48 @@ impl EngineSource {
         }
     }
 
-    /// Sends a pairing try to the background lane.
+    /// Removes the keychain entry `entry` on the background lane; a failure is a notice.
+    fn forget(&mut self, entry: String) {
+        let sent = self.worker.as_ref().is_some_and(|w| {
+            w.jobs
+                .send(crate::bg::Job::Forget {
+                    key: entry,
+                    store: Arc::clone(&self.secrets),
+                })
+                .is_ok()
+        });
+        if !sent {
+            self.notices.push(
+                "The background lane has stopped; the station key stays in the keychain".into(),
+            );
+        }
+    }
+
+    /// A try that cannot be sent: the state says why, and a push waiting for it opens.
+    fn not_asked(&mut self, reason: String) {
+        self.pairing.state = PairState::Refused(reason);
+        self.pairing.asked_for = None;
+        if self.pairing.hold == Hold::Asking {
+            self.release_push();
+        }
+    }
+
+    /// Sends a pairing try to the background lane. The stored key goes only to the address
+    /// it was paired through, and no key goes to an address outside the rule.
     fn ask_server(&mut self, address: String, typed: Option<Secret>) {
         self.pairing.asked += 1;
         self.pairing.address.clone_from(&address);
         self.pairing.asked_for = Some(address.clone());
+        if let Err(e) = check_address(&address) {
+            return self.not_asked(format!("the server address is not usable: {e}"));
+        }
+        if typed.is_none() && key_address(&self.state).as_deref() != Some(address.as_str()) {
+            return self.not_asked(
+                "the stored key was paired through another address; enter the key again to \
+                 pair with this one"
+                    .into(),
+            );
+        }
         let job = crate::bg::Job::Pair {
             seq: self.pairing.asked,
             address,
@@ -411,12 +417,7 @@ impl EngineSource {
         if sent {
             self.pairing.state = PairState::Pairing;
         } else {
-            self.pairing.state =
-                PairState::Refused("the background lane has stopped; restart the app".into());
-            self.pairing.asked_for = None;
-            if self.pairing.hold == Hold::Asking {
-                self.release_push();
-            }
+            self.not_asked("the background lane has stopped; restart the app".into());
         }
     }
 
@@ -446,17 +447,12 @@ impl EngineSource {
         let Some(entry) = paired_entry(&self.state) else {
             return Err("The station is not paired with a server".into());
         };
-        let w = self
-            .worker
-            .as_ref()
-            .ok_or("The background lane could not start; the key stays in the keychain")?;
-        w.jobs
-            .send(crate::bg::Job::Forget {
-                key: entry,
-                store: Arc::clone(&self.secrets),
-            })
-            .map_err(|_| "The background lane has stopped; the key stays in the keychain")?;
+        if self.worker.is_none() {
+            return Err("The background lane could not start; nothing changed".into());
+        }
         self.run_edit(Command::ServerUnpair)?;
+        self.pairing.seen_entry = None;
+        self.forget(entry);
         // A try still on its way is for a pairing that is gone: its answer stores nothing.
         self.pairing.asked += 1;
         self.pairing.address.clear();
@@ -535,7 +531,9 @@ impl EngineSource {
             return;
         };
         let mut sent = true;
+        self.pairing.storing = None;
         if let Some(key) = key {
+            self.pairing.storing = Some(entry.clone());
             sent &= w
                 .jobs
                 .send(crate::bg::Job::Secret {
@@ -551,10 +549,13 @@ impl EngineSource {
                 .send(crate::bg::Job::Forget { key: old, store })
                 .is_ok();
         }
-        self.pairing.state = if sent {
-            PairState::Paired
-        } else {
-            PairState::Refused("the keychain was not reached; the key is not stored".into())
+        // Paired once the keychain took the key (see `stored`), at once when none was to store.
+        self.pairing.state = match (sent, &self.pairing.storing) {
+            (false, _) => {
+                PairState::Refused("the keychain was not reached; the key is not stored".into())
+            }
+            (true, Some(_)) => PairState::Pairing,
+            (true, None) => PairState::Paired,
         };
         // The keychain jobs run first on the lane, so the push reads the new key; a rotated
         // key for an unchanged mount applies at once (the same settings keep a working
@@ -562,6 +563,19 @@ impl EngineSource {
         self.pairing.hold = Hold::Open;
         self.secret_known = None;
         self.sync_icecast(true);
+    }
+
+    /// The keychain's answer to a write: the key of an accepted pairing is stored, or the state
+    /// says it is not.
+    pub(crate) fn stored(&mut self, entry: &str, result: &Result<bool, String>) {
+        if self.pairing.storing.as_deref() != Some(entry) {
+            return;
+        }
+        self.pairing.storing = None;
+        self.pairing.state = match result {
+            Ok(_) => PairState::Paired,
+            Err(e) => PairState::Refused(format!("the keychain did not take the key: {e}")),
+        };
     }
 
     /// True while the push waits: for the start's answer, or for a new key.

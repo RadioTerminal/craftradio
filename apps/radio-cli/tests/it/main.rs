@@ -1,3 +1,6 @@
+// These run the CLI with a keychain in memory, which only a debug build has: a release build
+// refuses it rather than ever falling back to the OS keychain in a test.
+#[cfg(debug_assertions)]
 mod pairing;
 
 use std::path::PathBuf;

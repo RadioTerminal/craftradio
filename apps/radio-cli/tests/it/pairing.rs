@@ -14,17 +14,23 @@ const WRONG_KEY: &str = "invented-wrong-key-4Tm9";
 /// A station server on a free port of this computer, with the station "dawn", and the
 /// address a person types for it.
 fn server() -> (ServerHandle, String) {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("a free port")
-        .port();
-    let config = format!(
-        "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\n\
-         [[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
-        hash_key(DAWN_KEY),
-    );
-    let server = Server::start(Config::parse(&config).unwrap()).unwrap();
-    (server, format!("http://127.0.0.1:{port}"))
+    // The port is free when picked; another test may take it before the server binds it,
+    // so a taken port is picked again.
+    for _ in 0..20 {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("a free port")
+            .port();
+        let config = format!(
+            "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\n\
+             [[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
+            hash_key(DAWN_KEY),
+        );
+        if let Ok(server) = Server::start(Config::parse(&config).unwrap()) {
+            return (server, format!("http://127.0.0.1:{port}"));
+        }
+    }
+    panic!("no free port for the test server");
 }
 
 /// A folder with a fresh station.db.
@@ -40,8 +46,14 @@ fn station() -> tempfile::TempDir {
 /// Runs the CLI with the memory keychain and `stdin` on standard input. The key never comes
 /// from the test's own environment.
 fn cli(args: &[&str], data_dir: &Path, stdin: &str) -> Output {
+    cli_with(args, data_dir, stdin, &[])
+}
+
+/// [`cli`] with more environment variables.
+fn cli_with(args: &[&str], data_dir: &Path, stdin: &str, env: &[(&str, &str)]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_craftradio-cli"))
         .args(args)
+        .envs(env.iter().copied())
         .arg("--data-dir")
         .arg(data_dir)
         .env("CRAFTRADIO_TEST_MEMORY_KEYCHAIN", "1")
@@ -156,4 +168,44 @@ fn cli_pair_with_no_server_says_unreachable_and_with_no_key_pairs_nothing() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("https://"));
     assert_eq!(paired_address(dir.path()), None);
+}
+
+/// A proxy named in the environment never sees the request that carries the key: the
+/// pairing goes straight to the server, even with every proxy variable pointing at a port
+/// where nothing listens.
+#[test]
+fn cli_pair_ignores_a_proxy_in_the_environment() {
+    let (_server, address) = server();
+    let dir = station();
+    let nowhere = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .unwrap();
+    let proxy = format!("http://{nowhere}");
+    let env: Vec<(&str, &str)> = [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .into_iter()
+    .map(|k| (k, proxy.as_str()))
+    .chain([("NO_PROXY", ""), ("no_proxy", "")])
+    .collect();
+    let out = cli_with(
+        &["pair", &address],
+        dir.path(),
+        &format!("{DAWN_KEY}\n"),
+        &env,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        paired_address(dir.path()).as_deref(),
+        Some(address.as_str())
+    );
 }

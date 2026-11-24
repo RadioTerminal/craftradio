@@ -123,7 +123,8 @@ pub(crate) fn pair(db: &Path, address: &str) -> Result<u8, String> {
         eprintln!("note: the key of the old push stays in the keychain under {old}: {e}");
     }
     println!("Paired with {address}: {name}, listeners hear it at {stream}");
-    println!("The key is in the keychain under {entry}. The app pushes at its next start.");
+    println!("The key is in the keychain under this entry: {entry}");
+    println!("The app pushes at its next start.");
     if let Some(note) = &outcome.note {
         eprintln!("note: {note}");
     }

@@ -211,6 +211,9 @@ impl EngineSource {
 
     /// An answer of the keychain from the background lane.
     pub(crate) fn secret_answer(&mut self, key: String, wrote: bool, result: Result<bool, String>) {
+        if wrote {
+            self.stored(&key, &result);
+        }
         if wrote && let Err(e) = &result {
             self.notices
                 .push(format!("The keychain did not take the password: {e}"));
@@ -261,14 +264,8 @@ impl EngineSource {
         }
         let cfg = match result {
             // The paired server refused the key: the push waits for a new one.
-            Ok(Some(_)) if self.key_refused() => {
-                self.notices.push(
-                    "Icecast stays off: the server refused the station key; pair again with \
-                     the new key"
-                        .into(),
-                );
-                None
-            }
+            // The strip, the status bar and the alarm say why.
+            Ok(Some(_)) if self.key_refused() => None,
             // The start asks the paired server first; the push follows its answer.
             Ok(Some(_)) if self.push_held() => None,
             Ok(cfg) => cfg,

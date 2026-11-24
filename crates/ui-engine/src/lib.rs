@@ -1022,7 +1022,19 @@ impl EngineSource {
                 here.clone(),
             ));
         }
-        if let Some(StreamStatus::Refused { last_error }) = &pv.outputs.icecast {
+        // Off air nothing is pushed, so nothing is refused either.
+        if self.key_refused() && pv.outputs.on_air {
+            out.push(alarms::from_state(
+                "icecast_key_refused",
+                "",
+                Severity::Alarm,
+                AlarmSource::Icecast,
+                format!("Icecast is off: {}", pairing::KEY_REFUSED),
+                here.clone(),
+            ));
+        } else if let Some(StreamStatus::Refused { last_error }) = &pv.outputs.icecast
+            && pv.outputs.on_air
+        {
             out.push(alarms::from_state(
                 "icecast_refused",
                 "",
@@ -1223,6 +1235,18 @@ impl ViewSource for EngineSource {
         self.air_seen = Some(on_air);
         let going_on_air = outputs::going_on_air(&pv.outputs, self.on_air_since, now);
         self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted, going_on_air);
+        let mut output = Self::output(&pv, card_wanted);
+        // The paired server refused the key, found at start or while pushing: the strip, the
+        // status bar and the alarm say so in the same words.
+        if self.key_refused() && on_air {
+            output.icecast = Status::Failed(pairing::KEY_REFUSED.to_owned());
+            for v in &mut self.output_views {
+                if v.kind == radio_ui_egui::view::OutputKind::Icecast {
+                    v.live = false;
+                    "Key refused".clone_into(&mut v.note);
+                }
+            }
+        }
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {
@@ -1277,7 +1301,7 @@ impl ViewSource for EngineSource {
             pairing: self.pairing_view(),
             dynamics: self.state.dynamics.unwrap_or_default(),
             loudness: self.state.loudness,
-            output: Self::output(&pv, card_wanted),
+            output,
             on_air,
             going_on_air,
             folders: self.folder_views(),
