@@ -104,6 +104,9 @@ pub struct PlayoutConfig {
     /// once per file: the engine keeps the result by content hash. The default is
     /// [`measure_file`]; tests put a fake one here.
     pub measure: fn(&Path) -> Option<Measured>,
+    /// Opens a file for a deck, at its cue-in. It runs on a worker. The default is
+    /// [`radio_audio::Decoder::open_at`]; tests put a fake one here.
+    pub open_file: fn(&Path, Duration) -> Result<radio_audio::Decoder, radio_audio::AudioError>,
     pub open_input: OpenInput,
 }
 
@@ -156,6 +159,7 @@ impl PlayoutConfig {
             confirm_timeout: Duration::from_secs(1),
             analyse: analyse_file,
             measure: measure_file,
+            open_file: |path, cue_in| radio_audio::Decoder::open_at(path, cue_in),
             open_input,
         }
     }

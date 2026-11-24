@@ -1069,3 +1069,51 @@ fn continue_after_a_pause_keeps_the_next_item_behind() {
     );
     assert!(next < 3 * SR, "item two started late, at frame {next}");
 }
+
+/// An operator skip of a hard event that waits on a deck cancels it: it does not air, and
+/// no alarm says it was missed.
+#[test]
+fn a_skipped_hard_event_is_not_reported_as_missed() {
+    let song = file_item(1, "Song", &wav("k-song", 12.0, Side::Left), 12.0, 11.5, 0.5);
+    let mut engine = engine_with(vec![song]);
+    let news = file_item(10, "News", &wav("k-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    add_playlist(
+        &mut engine,
+        "News",
+        vec![news],
+        r#"rule({at: {date: "2026-11-21", time: "13:00:04", repeat: "once"},
+                place: {fixed: "hard", tolerance: 1}, take: 1, constraints: []});"#,
+    );
+    let (p, clock) = offline(engine, |_| {});
+    run(&p, &clock, 1.0);
+    let deck = p
+        .snapshot()
+        .decks
+        .iter()
+        .position(|d| d.item == Some(radio_model::ItemId(10)))
+        .expect("the hard event waits on a deck");
+    let _ = p
+        .send(Command::DeckSkip {
+            deck: deck as u8,
+            expect_item: Some(radio_model::ItemId(10)),
+        })
+        .unwrap();
+    let program = run(&p, &clock, 6.0);
+
+    assert!(
+        first_audible(&program, 1, 0).is_none(),
+        "the cancelled event aired"
+    );
+    // The target is 3 s into this run. The song plays on through it.
+    assert!(
+        peak(&program, 0, 4 * SR, 5 * SR) > 0.1,
+        "the song was cut at the cancelled target"
+    );
+    let view = p.snapshot();
+    assert!(
+        view.alarms
+            .iter()
+            .all(|a| !matches!(a.alarm, radio_playout::Alarm::HardEventMissed { .. })),
+        "a cancelled event was reported as missed"
+    );
+}

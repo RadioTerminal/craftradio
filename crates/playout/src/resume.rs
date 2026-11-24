@@ -94,6 +94,40 @@ impl Core {
         }
     }
 
+    /// Fills the planner's history from the as-played log, so the rotation and its rules
+    /// (gaps, separations, caps per hour and per day) still know what aired before this
+    /// start. A row belongs to the item with its title and artist in the playlist with
+    /// its name; a row whose item is gone is left out.
+    pub(crate) fn seed_history(&mut self, now: Timestamp) {
+        const KEEP: Duration = Duration::from_secs(48 * 3600);
+        // The log gives its oldest rows first, so a row limit would cut the newest plays.
+        let Ok(rows) = self.log.history(sub(now, KEEP), u32::MAX) else {
+            return;
+        };
+        let station = &self.engine.state().station;
+        for row in rows.iter().filter(|r| r.entry.start <= now) {
+            let found = station
+                .playlists
+                .iter()
+                .filter(|p| p.name == row.entry.playlist)
+                .find_map(|p| {
+                    let same = |i: &&radio_model::Item| {
+                        i.title == row.entry.title && i.artist == row.entry.artist
+                    };
+                    p.items.iter().find(same).map(|i| (p.id, i))
+                });
+            if let Some((playlist, item)) = found {
+                self.history.push(Played {
+                    item: item.id,
+                    playlist,
+                    at: row.entry.start,
+                    artist: item.artist.clone(),
+                    title: item.title.clone(),
+                });
+            }
+        }
+    }
+
     /// Puts the entry that the saved plan has on air now back on a deck. The
     /// `on_interrupt` of its playlist decides: `Resume` continues at the position and in
     /// the same log row. `Replay` plays it from the start in a new row. `Skip` drops it.
@@ -168,14 +202,21 @@ impl Core {
                 if let Some(row) = row {
                     self.end_cut_row(row, e.start, saved.at);
                 }
-                // The rotation continues after the skipped item.
-                self.history.push(Played {
-                    item: item.id,
-                    playlist: e.playlist,
-                    at: e.start,
-                    artist: item.artist.clone(),
-                    title: item.title.clone(),
-                });
+                // The rotation continues after the skipped item. The history has it
+                // already when its row came from the log.
+                let known = self
+                    .history
+                    .last_played(item.id)
+                    .is_some_and(|t| t >= sub(e.start, Duration::from_secs(1)));
+                if !known {
+                    self.history.push(Played {
+                        item: item.id,
+                        playlist: e.playlist,
+                        at: e.start,
+                        artist: item.artist.clone(),
+                        title: item.title.clone(),
+                    });
+                }
                 return;
             }
             (Source::Stream { .. } | Source::LiveInput { .. }, _) => {

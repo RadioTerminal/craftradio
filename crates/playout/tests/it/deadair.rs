@@ -231,3 +231,85 @@ fn an_operator_start_after_a_quiet_time_is_not_dead_air() {
     assert!(!view.emergency);
     assert!(view.alarms.iter().all(|a| a.alarm != Alarm::DeadAir));
 }
+
+/// A file in memory whose reads fail in its middle: a disk that goes away during a song.
+struct FailingFile(std::io::Cursor<Vec<u8>>);
+impl std::io::Read for FailingFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // A probe looks at the last bytes of a file for tags, so those still read.
+        let len = self.0.get_ref().len() as u64;
+        if (len / 2..len.saturating_sub(64 * 1024)).contains(&self.0.position()) {
+            return Err(std::io::Error::other("the disk went away"));
+        }
+        self.0.read(buf)
+    }
+}
+impl std::io::Seek for FailingFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+/// Opens files as playout does, but a file named "broken" stops reading halfway.
+fn open_with_a_bad_disk(
+    path: &std::path::Path,
+    cue_in: Duration,
+) -> Result<radio_audio::Decoder, radio_audio::AudioError> {
+    if !path.to_string_lossy().contains("broken") {
+        return radio_audio::Decoder::open_at(path, cue_in);
+    }
+    let bytes = std::fs::read(path).expect("read fixture");
+    let file = FailingFile(std::io::Cursor::new(bytes));
+    radio_audio::Decoder::from_reader(file, Some("wav"), cue_in)
+}
+
+/// A song whose file stops decoding halfway is not logged as aired in full: its row is
+/// interrupted, an alarm names it, and the next song starts without waiting.
+#[test]
+fn a_file_that_fails_on_air_is_logged_as_interrupted() {
+    let broken = file_item(1, "Broken", &wav("broken", 4.0, Side::Left), 4.0, 4.0, 0.0);
+    let next = file_item(2, "Next", &wav("after", 3.0, Side::Right), 3.0, 3.0, 0.0);
+    let (p, clock) = offline(engine_with(vec![broken, next]), |cfg| {
+        cfg.open_file = open_with_a_bad_disk
+    });
+    let program = run(&p, &clock, 3.5);
+
+    let rows = p.history(t0(), 10).unwrap();
+    let row = rows.iter().find(|r| r.entry.title == "Broken").unwrap();
+    assert_eq!(row.status, Some(radio_engine::LogStatus::Interrupted));
+    assert!(p.snapshot().alarms.iter().any(|a| matches!(
+        &a.alarm,
+        Alarm::ItemSkipped { item, .. } if item.0 == 1
+    )));
+    // The file gives two of its four seconds. The next song does not wait for the rest.
+    let start = first_audible(&program, 1, 0).expect("the next song sounds");
+    assert!(start < 3 * SR, "the next song waited until frame {start}");
+}
+
+/// A file fails after the next song has started over its tail. That song plays on: the
+/// failure does not skip to a third one.
+#[test]
+fn a_file_that_fails_in_its_crossfade_leaves_the_next_song_alone() {
+    let broken = file_item(
+        1,
+        "Broken",
+        &wav("broken-late", 4.0, Side::Left),
+        4.0,
+        1.5,
+        0.0,
+    );
+    let next = file_item(2, "Next", &wav("crossed", 4.0, Side::Right), 4.0, 4.0, 0.0);
+    let third = file_item(3, "Third", &wav("third", 4.0, Side::Left), 4.0, 4.0, 0.0);
+    let (p, clock) = offline(engine_with(vec![broken, next, third]), |cfg| {
+        cfg.open_file = open_with_a_bad_disk
+    });
+    let program = run(&p, &clock, 3.5);
+
+    assert!(
+        peak(&program, 1, 5 * SR / 2, 7 * SR / 2) > 0.1,
+        "the next song stopped when the file before it failed"
+    );
+    let rows = p.history(t0(), 10).unwrap();
+    let row = rows.iter().find(|r| r.entry.title == "Next").unwrap();
+    assert_ne!(row.status, Some(radio_engine::LogStatus::Interrupted));
+    assert!(rows.iter().all(|r| r.entry.title != "Third"));
+}
