@@ -1078,7 +1078,13 @@ fn play(shared: &Shared, stream: &mut Conn, listener: &Listener, titles: Option<
                 let bytes = match &mut titles {
                     Some((titles, writer, out)) => {
                         out.clear();
-                        writer.write(&chunk, &titles.now(), out);
+                        // The title is looked up only for a chunk that reaches a block.
+                        let now = if writer.due(chunk.len()) {
+                            titles.now()
+                        } else {
+                            String::new()
+                        };
+                        writer.write(&chunk, &now, out);
                         out.as_slice()
                     }
                     None => &chunk[..],

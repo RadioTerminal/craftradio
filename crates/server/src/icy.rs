@@ -25,6 +25,12 @@ impl IcyWriter {
         Self::default()
     }
 
+    /// Whether writing `len` audio bytes next reaches a metadata block, so the caller
+    /// need look up the title only then.
+    pub fn due(&self, len: usize) -> bool {
+        self.audio + len >= METAINT
+    }
+
     /// Appends `chunk` to `out`, with a metadata block after every `METAINT` audio
     /// bytes: `StreamTitle='<now>';` when `now` differs from the last one sent, else an
     /// empty block.
