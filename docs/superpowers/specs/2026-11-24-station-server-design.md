@@ -11,8 +11,7 @@ opens connections fast enough can still keep cutting off a source that is mid-co
 closing that needs a rate limit, which is a new decision.
 
 **Open after phase 1b:** there is no resampler, so a source that is not 48 kHz stereo gets
-no outputs (§5.6). A transcoder thread that panics marks no output failed: its listeners
-get "starting" (503) after 2 s instead of the reason. The transcoder's burst test
+no outputs (§5.6). The transcoder's burst test
 (`outputs_recover_from_a_burst`) passes whether or not its listener was dropped for falling
 behind, so it does not prove that path ran. The push through a reverse proxy is still not
 checked (as after phase 1). Phase 1b's done check (§7) ran with the app's own stream input
@@ -264,7 +263,9 @@ Per-connection and per-address limits on offers follow the ones in `relay.rs`
   operator's choice.
 - Call: an output is encoded only while it has listeners, and the decoder runs only while
   some output does. The first listener of an idle output waits for the encoder to start
-  (well under a second). An idle server costs no CPU for outputs.
+  (well under a second). While nobody listens to any output, the server decodes and
+  encodes nothing: each connecting source is decoded briefly to learn its format, and an
+  idle transcoder looks for listeners and title changes every 50 ms.
 - Call: `max_stream_listeners` counts the pushed mount and all outputs of the station
   together.
 - Titles reach every output. MP3 outputs send ICY metadata to listeners that ask for it
