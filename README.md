@@ -105,6 +105,32 @@ craftradio-cli plan examples/station.toml --hours 4   # the timeline a station f
 
 An MCP server is planned on the same commands (`docs/superpowers/plans/2026-11-21-roadmap.md`).
 
+## Going off air
+
+One switch takes the station off air. Off air stops the Icecast push and WebRTC, even when
+the app started with `--webrtc`. The decks, the cartwall, the events and the sound card go on
+playing, so the studio keeps working while nothing leaves the computer. Back on air, Icecast
+reconnects with the settings the app started with, and WebRTC follows its own setting. A
+station saved off air starts off air and connects nothing.
+
+In the window there is an On air button above the output strips and an On Air item in the
+Playout menu, with the shortcut shown in the Playout menu. Switching takes two presses within
+a few seconds, both ways, like cutting the item on air; the deck preference that turns off
+cut confirmation does not apply. While Icecast reconnects after going on air, the button
+reads "Going on air…". The headless app prints `radio: on air` or `radio: off air` at start
+and on every change.
+
+The setting is part `air`, key `on_air` (a JSON boolean; absent means on air). A script, the
+MCP server or the control channel switches it at once, with no second press:
+
+```sh
+craftradio-cli cmd --data-dir ./station '{"id":"settings.set","args":{"part":"air","key":"on_air","value":false}}'
+```
+
+That line edits the station file, so close the app first (a running app keeps its own copy).
+For a running station use the `settings_set` MCP tool or `station.run` on the control channel
+([docs/control.md](docs/control.md)) with the same `id` and `args`.
+
 ## Under the hood
 
 A Rust workspace in layers: plain data (`model`), DST-safe time (`timing`), scheduling and the

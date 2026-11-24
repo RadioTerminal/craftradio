@@ -1,6 +1,6 @@
 # Off air: one switch that stops everything the station sends
 
-**Status (2026-11-24):** short design, for the operator's approval.
+**Status (2026-11-24):** built; the user-facing description is in the README, "Going off air".
 
 ## Intent
 
