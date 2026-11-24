@@ -249,3 +249,18 @@ fn the_page_is_reachable_by_keyboard_and_names_start_with_labels() {
         "Enter in the key field connects"
     );
 }
+
+/// While the server is being asked, Connect is off: a second click would send the key once
+/// more toward the server's lockout.
+#[test]
+fn connect_is_off_while_a_pairing_is_asked() {
+    let mut p = page(PairingView {
+        address: ADDRESS.to_owned(),
+        paired: false,
+        state: PairState::Pairing,
+    });
+    p.type_into("Server address", ADDRESS);
+    p.type_into("Station key", KEY);
+    p.click("Connect");
+    assert!(p.pairs().is_empty(), "no second try while one is asked");
+}

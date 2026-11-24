@@ -118,10 +118,15 @@ pub(crate) fn show(
             r
         });
         let address = draft.address.trim();
-        let can_connect = !address.is_empty() && (!draft.key.is_empty() || pairing.paired);
+        // One try at a time: a second click would be one more key toward the lockout.
+        let asking = pairing.state == PairState::Pairing;
+        let can_connect =
+            !asking && !address.is_empty() && (!draft.key.is_empty() || pairing.paired);
         let mut connect = false;
         ui.horizontal(|ui| {
-            let why = if address.is_empty() {
+            let why = if asking {
+                "The server is being asked; wait for its answer."
+            } else if address.is_empty() {
                 "Type the server address first."
             } else {
                 "Type the station key first."
