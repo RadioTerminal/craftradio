@@ -54,7 +54,10 @@ fn key_prints_a_key_and_the_hash_that_matches_it() {
     assert!(key_matches(key, hash), "key and hash don't match");
     // The explanation goes to stderr, so stdout stays clean to parse.
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(stderr.contains("key_hash"), "stderr: {stderr:?}");
+    assert_eq!(
+        stderr.trim_end(),
+        "Put the key_hash line in the station's config. The key is shown once; keep it for the app."
+    );
 
     // Each run makes a new key.
     let again = Command::new(BIN).arg("key").output().unwrap();

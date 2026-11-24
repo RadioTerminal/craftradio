@@ -3,6 +3,7 @@
 
 use clap::{Parser, Subcommand};
 use radio_server::{Config, Server, hash_key, new_key};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -73,8 +74,12 @@ fn key() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    println!("key: {key}");
-    println!("key_hash = \"{}\"", hash_key(&key));
+    // A closed stdout is an error to report, not a panic as with `println!`.
+    let mut out = io::stdout().lock();
+    if let Err(e) = writeln!(out, "key: {key}\nkey_hash = \"{}\"", hash_key(&key)) {
+        eprintln!("could not print the key: {e}");
+        return ExitCode::FAILURE;
+    }
     eprintln!(
         "Put the key_hash line in the station's config. The key is shown once; keep it for the app."
     );
