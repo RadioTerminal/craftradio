@@ -35,6 +35,8 @@ pub(crate) enum Action {
     /// An edit that shows a message only when it fails, for faders and settings.
     EditQuiet(Edit),
     Toast(String),
+    /// Show this range of the as-played log in History, or the last hours for `None`.
+    HistoryRange(Option<(jiff::Timestamp, jiff::Timestamp)>),
     /// Copy library items.
     CopyItems(Vec<u64>),
     /// Copy timeline rows or playlist items by title. With `cut`, a paste removes the source.
@@ -173,6 +175,9 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             format!("Acknowledged {n} alarms; they no longer count as new")
         }
         Edit::ExportAlarms { path, ids } => format!("Writing {} alarms to {path}…", ids.len()),
+        Edit::ExportHistory { path, report, .. } => {
+            format!("Writing the {} to {path}…", report.label())
+        }
         Edit::ScheduleOneOff(o) if o.id == 0 => format!("Added a one-off at {}", o.start),
         Edit::ScheduleOneOff(o) => format!("Changed the one-off at {}", o.start),
         Edit::RemoveOneOff(_) => "Removed the one-off; Undo brings it back".to_owned(),
@@ -263,6 +268,9 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         Edit::AddLive { playlist, .. } => format!("added {n} live input to {playlist}"),
         Edit::AckAlarm(_) | Edit::AckAlarms(_) => format!("acknowledged {n} alarms"),
         Edit::ExportAlarms { path, .. } => format!("wrote {n} alarms to {path}"),
+        Edit::ExportHistory { path, report, .. } => {
+            format!("wrote the {} to {path}", report.label())
+        }
         Edit::ScheduleOneOff(o) => format!("put a one-off at {}; nothing plays here", o.start),
         Edit::RemoveOneOff(_) => "removed the one-off".to_owned(),
     };
@@ -403,6 +411,7 @@ impl RadioApp {
             Action::OpenShortcuts => {
                 self.shortcuts_dialog = Some(craft_keymap::ui::DialogState::new());
             }
+            Action::HistoryRange(range) => self.source.history_range(range),
             Action::OpenPreferences(page) => {
                 self.preferences.open_at(page);
                 self.open.set(ToolWindow::Preferences, true);

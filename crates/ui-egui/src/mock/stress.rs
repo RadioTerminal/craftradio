@@ -74,7 +74,12 @@ pub fn stress(v: &mut StationView) {
             name.clone_from(new);
         }
     };
-    for (i, r) in v.rows.iter_mut().chain(v.history.iter_mut()).enumerate() {
+    for (i, r) in v
+        .rows
+        .iter_mut()
+        .chain(std::sync::Arc::make_mut(&mut v.history).iter_mut())
+        .enumerate()
+    {
         rename(&mut r.playlist);
         if i % 3 == 0 {
             r.title = title(i / 3);

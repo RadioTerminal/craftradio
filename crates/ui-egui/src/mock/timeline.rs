@@ -70,6 +70,7 @@ impl MockSource {
                             stream: None,
                             deck: None,
                             one_off: None,
+                            aired: None,
                             ..base
                         },
                     );
@@ -250,6 +251,7 @@ impl MockSource {
                 stream: None,
                 deck: None,
                 one_off: None,
+                aired: None,
                 title: item.title,
             });
         };

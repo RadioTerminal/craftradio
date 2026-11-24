@@ -1311,6 +1311,31 @@ impl EngineSource {
                     .map_err(|_| "The background lane stopped, so the export cannot run")?;
                 Ok(n)
             }
+            Edit::ExportHistory {
+                path,
+                report,
+                since,
+                until,
+                playlist,
+            } => {
+                let worker = self
+                    .worker
+                    .as_ref()
+                    .ok_or("The background lane is not running, so the export cannot run")?;
+                worker
+                    .jobs
+                    .send(crate::bg::Job::ExportHistory {
+                        log: self.playout.log(),
+                        path,
+                        report,
+                        since,
+                        until,
+                        playlist,
+                        zone: self.state.station.tz.clone(),
+                    })
+                    .map_err(|_| "The background lane stopped, so the export cannot run")?;
+                Ok(0)
+            }
         }
     }
 

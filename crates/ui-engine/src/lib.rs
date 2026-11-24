@@ -83,18 +83,20 @@ use radio_playout::{DeckPhase, LocalOutput, Playout, PlayoutView};
 use radio_scheduler::Origin as SOrigin;
 use radio_stream::{StreamStatus, WebRtcStatus};
 use radio_ui_egui::view::{
-    AlarmSource, AlarmView, CartMode, CartSlot, CartwallView, DeckState, DeckView, DeviceRoles,
-    DropTarget, Edit, FitView, FolderSource, Imported, LibraryItem, MeterView, Origin,
-    OutputStatus, PlayMode, PlaylistTab, Row, Severity, StationView, Status, StreamState,
-    ViewSource,
+    AirStatus, Aired, AlarmSource, AlarmView, CartMode, CartSlot, CartwallView, DeckState,
+    DeckView, DeviceRoles, DropTarget, Edit, FitView, FolderSource, Imported, LibraryItem,
+    MeterView, Origin, OutputStatus, PlayMode, PlaylistTab, Row, Severity, StationView, Status,
+    StreamState, ViewSource,
 };
 
 use map::{display_title, effective_meta, item_len, view_meta};
 
 /// The history pane shows the as-played rows of the last three hours.
 const HISTORY_HOURS: i64 = 3;
-/// The history pane shows at most this many rows.
+/// The history pane shows at most this many rows of the last hours.
 const HISTORY_ROWS: u32 = 300;
+/// The history pane shows at most this many rows of a range that a person picked.
+const HISTORY_RANGE_ROWS: u32 = 10_000;
 /// The source reads the as-played log again after this time, or after a deck change.
 const HISTORY_EVERY: SignedDuration = SignedDuration::from_secs(5);
 /// The number of carts on one page when the cartwall settings give no grid.
@@ -160,7 +162,13 @@ pub struct EngineSource {
     on_air_rows: HashSet<u64>,
     /// The fixed rows of the last snapshot.
     fixed_rows: HashSet<u64>,
-    history: Vec<Row>,
+    history: Arc<Vec<Row>>,
+    /// True when the last read stopped at its row limit.
+    history_more: bool,
+    /// The range of the log that History asked for. `None` is the last hours.
+    history_range: Option<(Timestamp, Timestamp)>,
+    /// True once the rows of the current range are read.
+    history_loaded: bool,
     history_at: Option<(Timestamp, [Option<ItemId>; 4])>,
     /// Covers of the files on the decks, by path. `None` while the background lane reads
     /// the file, and for a file without a cover.
@@ -272,7 +280,10 @@ impl EngineSource {
             next_ready: None,
             on_air_rows: HashSet::new(),
             fixed_rows: HashSet::new(),
-            history: Vec::new(),
+            history: Arc::default(),
+            history_more: false,
+            history_range: None,
+            history_loaded: false,
             history_at: None,
             covers: HashMap::new(),
             next_id: 0,
@@ -435,6 +446,7 @@ impl EngineSource {
             stream: None,
             deck: None,
             one_off: None,
+            aired: None,
         }
     }
 
@@ -634,23 +646,36 @@ impl EngineSource {
     }
 
     /// The as-played rows. The source reads them again after a while or after a deck change.
-    fn history_rows(&mut self, now: Timestamp) -> Vec<Row> {
+    fn history_rows(&mut self, now: Timestamp) -> Arc<Vec<Row>> {
         let fresh = self.history_at.is_some_and(|(at, decks)| {
             decks == self.decks && now >= at && now.duration_since(at) < HISTORY_EVERY
         });
-        if fresh {
+        // A range that ended before its rows were read never changes again.
+        let settled = self.history_loaded
+            && self
+                .history_range
+                .is_some_and(|(_, until)| self.history_at.is_some_and(|(at, _)| until <= at));
+        if fresh || settled {
             return self.history.clone();
         }
         self.history_at = Some((now, self.decks));
-        let since = now
-            .checked_sub(SignedDuration::from_hours(HISTORY_HOURS))
-            .unwrap_or(now);
+        let (since, until, limit) = match self.history_range {
+            Some((since, until)) => (since, until, HISTORY_RANGE_ROWS),
+            None => {
+                let since = now
+                    .checked_sub(SignedDuration::from_hours(HISTORY_HOURS))
+                    .unwrap_or(now);
+                (since, Timestamp::MAX, HISTORY_ROWS)
+            }
+        };
         // The background lane reads the log; a later snapshot shows the rows.
         if let Some(w) = &self.worker {
             let _ = w.jobs.send(bg::Job::History {
                 log: self.playout.log(),
                 since,
-                limit: HISTORY_ROWS,
+                until,
+                limit,
+                range: self.history_range,
             });
         }
         self.history.clone()
@@ -692,6 +717,16 @@ impl EngineSource {
             stream: None,
             deck: None,
             one_off: None,
+            aired: Some(Aired {
+                end: r.end.map(|end| self.zoned(end)),
+                status: match r.status {
+                    None => AirStatus::OnAir,
+                    Some(LogStatus::Aired) => AirStatus::Aired,
+                    Some(LogStatus::Interrupted) => AirStatus::CutOff,
+                    Some(LogStatus::Unfinished) => AirStatus::Unfinished,
+                },
+                rule: r.entry.rule.clone(),
+            }),
         }
     }
 
@@ -1041,6 +1076,15 @@ fn play_mode(m: Mode) -> PlayMode {
 }
 
 impl ViewSource for EngineSource {
+    fn history_range(&mut self, range: Option<(Timestamp, Timestamp)>) {
+        if self.history_range != range {
+            self.history_range = range;
+            self.history_loaded = false;
+            // The next snapshot reads the new range at once.
+            self.history_at = None;
+        }
+    }
+
     fn snapshot(&mut self, now: Timestamp) -> StationView {
         for (outputs, inputs) in self.device_updates.try_iter() {
             self.devices = outputs;
@@ -1092,6 +1136,7 @@ impl ViewSource for EngineSource {
             station: self.station.clone(),
             meters: self.meters(&pv),
             history,
+            history_more: self.history_more,
             library: self
                 .library
                 .iter()
