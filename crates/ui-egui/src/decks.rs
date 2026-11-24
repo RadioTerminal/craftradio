@@ -212,44 +212,43 @@ pub(crate) fn show(
     } else {
         size::DECK_TINY_W
     };
-    egui::ScrollArea::horizontal()
-        .id_salt("deck_strip_scroll")
-        .show(ui, |ui| {
-            ui.set_min_width((deck_min + space::M) * view.decks.len() as f32 + clock_width);
-            ui.spacing_mut().item_spacing.x = space::M;
-            egui_extras::StripBuilder::new(ui)
-                .size(egui_extras::Size::exact(size::DECK_STRIP_H))
-                .vertical(|mut strip| {
-                    strip.strip(|builder| {
-                        builder
-                            .sizes(
-                                egui_extras::Size::remainder().at_least(deck_min),
-                                view.decks.len(),
-                            )
-                            .size(egui_extras::Size::exact(clock_width))
-                            .horizontal(|mut strip| {
-                                for (i, deck) in view.decks.iter().enumerate() {
-                                    strip.cell(|ui| {
-                                        let card = deck_card(
-                                            ui,
-                                            i,
-                                            &view.decks,
-                                            ui.available_width(),
-                                            state,
-                                            actions,
-                                            t,
-                                        );
-                                        card.context_menu(|ui| {
-                                            deck_menu(ui, i, deck, view, state, now, actions)
-                                        });
-                                    });
-                                }
-                                strip.cell(|ui| {
-                                    cluster(ui, view, state, actions, clock_width, t);
+    // The cards share the width that is there: a narrow window makes narrow cards, and
+    // nothing scrolls.
+    let fit = (avail - clock_width) / view.decks.len() as f32 - space::M;
+    let deck_min = deck_min.min(fit.max(0.0));
+    ui.spacing_mut().item_spacing.x = space::M;
+    egui_extras::StripBuilder::new(ui)
+        .size(egui_extras::Size::exact(size::DECK_STRIP_H))
+        .vertical(|mut strip| {
+            strip.strip(|builder| {
+                builder
+                    .sizes(
+                        egui_extras::Size::remainder().at_least(deck_min),
+                        view.decks.len(),
+                    )
+                    .size(egui_extras::Size::exact(clock_width))
+                    .horizontal(|mut strip| {
+                        for (i, deck) in view.decks.iter().enumerate() {
+                            strip.cell(|ui| {
+                                let card = deck_card(
+                                    ui,
+                                    i,
+                                    &view.decks,
+                                    ui.available_width(),
+                                    state,
+                                    actions,
+                                    t,
+                                );
+                                card.context_menu(|ui| {
+                                    deck_menu(ui, i, deck, view, state, now, actions)
                                 });
                             });
+                        }
+                        strip.cell(|ui| {
+                            cluster(ui, view, state, actions, clock_width, t);
+                        });
                     });
-                });
+            });
         });
 }
 
