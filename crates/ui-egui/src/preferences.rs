@@ -602,31 +602,16 @@ fn branding_page(
                     text,
                 ));
             }
-            let button = |ui: &mut egui::Ui, label: &str, on: bool| {
-                ui.add_enabled_ui(on, |ui| {
-                    ui.add_sized(
-                        [size::DIALOG_BUTTON_W, size::CONTROL_SM],
-                        egui::Button::new(label),
-                    )
-                })
-                .inner
+            let picked = match crate::widgets::picture_buttons(ui, !logo.is_empty()) {
+                Some(crate::widgets::PicturePick::File(file)) => Some(file),
+                Some(crate::widgets::PicturePick::Clear) => Some(String::new()),
+                None => None,
             };
-            if button(ui, "Browse…", true).clicked()
-                && let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Pictures", &crate::view::PICTURE_EXTENSIONS)
-                    .pick_file()
-            {
+            if let Some(path) = picked {
                 actions.push(parts::set(
                     parts::BRANDING,
                     radio_model::BRANDING_LOGO_KEY,
-                    file.display().to_string(),
-                ));
-            }
-            if button(ui, "Clear", !logo.is_empty()).clicked() {
-                actions.push(parts::set(
-                    parts::BRANDING,
-                    radio_model::BRANDING_LOGO_KEY,
-                    "",
+                    path,
                 ));
             }
             r

@@ -10,9 +10,7 @@ use egui::{RichText, TextEdit};
 use crate::chrome::{Answer, Dialog};
 use crate::icons::Icon;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{
-    ItemMeta, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource, check_picture,
-};
+use crate::view::{ItemMeta, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource};
 
 const NOT_WRITTEN: &str = "preview — not written";
 const FIELDS: [&str; 6] = ["Title", "Artist", "Album", "Year", "Genre", "Comment"];
@@ -40,6 +38,7 @@ pub(crate) struct MetaEditor {
     picture_touched: bool,
     /// True when the items do not share one picture.
     picture_mixed: bool,
+    picture_check: crate::view::PictureCheck,
     keep_alive_touched: bool,
     trim_touched: bool,
     /// True when the items do not share one gain trim.
@@ -79,6 +78,7 @@ impl MetaEditor {
             custom_touched: false,
             picture_touched: false,
             picture_mixed,
+            picture_check: crate::view::PictureCheck::default(),
             keep_alive_touched: false,
             trim_touched: false,
             trim_mixed,
@@ -98,10 +98,16 @@ impl MetaEditor {
     /// Why the edited picture is refused. The pictures that nobody edited are not checked.
     fn picture_error(&self) -> Option<&'static str> {
         if self.picture_touched {
-            check_picture(&self.draft.picture).err()
+            self.picture_check.of(&self.draft.picture).err()
         } else {
             None
         }
+    }
+
+    /// True while the empty path stands for pictures that differ, which Clear can still
+    /// take from every item.
+    fn pictures_differ(&self) -> bool {
+        self.picture_mixed && !self.picture_touched
     }
 
     /// The tags of `meta` with the edited fields of the draft.
@@ -233,14 +239,16 @@ pub(crate) fn show(
                 caption(ui, "PICTURE", t);
                 ui.horizontal_top(|ui| {
                     let label = ui.label(RichText::new("Picture").color(t.text_muted));
-                    let hint = if ed.picture_mixed && !ed.picture_touched {
+                    let differ = ed.pictures_differ();
+                    let hint = if differ {
                         "(mixed)"
                     } else {
                         "path to a PNG, JPEG or WebP picture"
                     };
                     // A picture that nobody edited is not judged, so it never blocks Apply.
-                    let judge = ed.picture_touched;
-                    if widgets::picture_field(ui, &mut ed.draft.picture, hint, label.id, judge, t) {
+                    let problem = ed.picture_error();
+                    let path = &mut ed.draft.picture;
+                    if widgets::picture_field(ui, path, hint, label.id, problem, differ, t) {
                         ed.picture_touched = true;
                     }
                 });
@@ -369,6 +377,25 @@ mod tests {
         ed.picture_touched = true;
         let merged: Vec<_> = ed.targets.iter().map(|(_, m)| ed.merged(m)).collect();
         assert!(merged.iter().all(|m| m.picture == "/new.webp"));
+    }
+
+    #[test]
+    fn pictures_that_differ_can_all_be_cleared() {
+        let mut ed = editor(["/a.png", "/b.png"]);
+        assert!(ed.draft.picture.is_empty(), "the field shows no path");
+        assert!(ed.pictures_differ(), "yet Clear has something to clear");
+        // What Clear does to the field.
+        ed.draft.picture.clear();
+        ed.picture_touched = true;
+        assert!(
+            ed.targets
+                .iter()
+                .all(|(_, m)| ed.merged(m).picture.is_empty())
+        );
+        assert!(!ed.pictures_differ(), "then there is nothing left to clear");
+
+        let same = editor(["/a.png", "/a.png"]);
+        assert!(!same.pictures_differ());
     }
 
     #[test]
