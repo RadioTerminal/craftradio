@@ -29,6 +29,8 @@ pub enum Refusal {
 #[derive(Debug)]
 pub struct Outputs {
     outputs: Vec<(Output, Arc<Mount>)>,
+    /// Per output, in config order: whether it failed for the current source.
+    failed: Vec<AtomicBool>,
     refusal: Mutex<Option<Refusal>>,
     decoded: AtomicU64,
 }
@@ -41,6 +43,7 @@ impl Outputs {
                 .iter()
                 .map(|output| (output.clone(), Mount::new(Arc::clone(cap))))
                 .collect(),
+            failed: configs.iter().map(|_| AtomicBool::new(false)).collect(),
             refusal: Mutex::new(None),
             decoded: AtomicU64::new(0),
         })
@@ -68,6 +71,29 @@ impl Outputs {
         *self.refusal.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether the output named `name` failed for the current source: its mount could not
+    /// be begun, its encoder could not be made or stopped working, or the transcoder could
+    /// not run. It stays off until the source ends; the others go on. Cleared by
+    /// [`Transcoder::finish`].
+    pub fn failed(&self, name: &str) -> bool {
+        self.outputs
+            .iter()
+            .zip(&self.failed)
+            .any(|((output, _), failed)| output.mount == name && failed.load(Ordering::Acquire))
+    }
+
+    fn fail(&self, index: usize) {
+        if let Some(failed) = self.failed.get(index) {
+            failed.store(true, Ordering::Release);
+        }
+    }
+
+    fn fail_all(&self) {
+        for failed in &self.failed {
+            failed.store(true, Ordering::Release);
+        }
+    }
+
     /// Blocks decoded since the server started; for tests of "idle costs nothing".
     pub fn decoded_blocks(&self) -> u64 {
         self.decoded.load(Ordering::Relaxed)
@@ -93,12 +119,15 @@ pub fn spawn(pushed: Arc<Mount>, outputs: Arc<Outputs>) -> Transcoder {
     let thread = {
         let stop = Arc::clone(&stop);
         let outputs = Arc::clone(&outputs);
-        // A thread that could not start leaves the outputs off: their mounts never go live.
         std::thread::Builder::new()
             .name("server-transcoder".into())
             .spawn(move || run(&pushed, &outputs, &stop))
             .ok()
     };
+    // A thread that could not start leaves every output off, and says so.
+    if thread.is_none() {
+        outputs.fail_all();
+    }
     Transcoder {
         stop,
         thread,
@@ -121,6 +150,9 @@ impl Transcoder {
             let _ = thread.join();
         }
         self.outputs.set_refusal(None);
+        for failed in &self.outputs.failed {
+            failed.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -163,16 +195,25 @@ fn run(pushed: &Arc<Mount>, outputs: &Outputs, stop: &Arc<AtomicBool>) {
     let name = pushed.stats().name;
     let mut encoders: Vec<Option<OutputEncoder>> = outputs
         .each()
-        .map(|(output, mount)| {
-            let sink = mount.begin(output.format.into(), name.clone(), Some(output.kbps))?;
-            OutputEncoder::new(output.format, output.kbps, sink).ok()
+        .enumerate()
+        .map(|(index, (output, mount))| {
+            let encoder = mount
+                .begin(output.format.into(), name.clone(), Some(output.kbps))
+                .and_then(|sink| OutputEncoder::new(output.format, output.kbps, sink).ok());
+            if encoder.is_none() {
+                outputs.fail(index);
+            }
+            encoder
         })
         .collect();
     let ended = transcode(pushed, outputs, &mut encoders, stop);
     // Ends every output mount and its listeners.
     drop(encoders);
-    if let Err(refusal) = ended {
-        refuse(pushed, outputs, stop, refusal);
+    match ended {
+        Err(refusal) => refuse(pushed, outputs, stop, refusal),
+        // The outputs ended while the source goes on: none of them comes back for it.
+        Ok(()) if !stop.load(Ordering::Acquire) && pushed.stats().live => outputs.fail_all(),
+        Ok(()) => {}
     }
 }
 
@@ -203,7 +244,14 @@ fn transcode(
             .zip(encoders.iter())
             .map(|((_, mount), encoder)| encoder.is_some() && mount.stats().listeners > 0)
             .collect();
-        pause(encoders, &mut started, &listening, &now.title, artist);
+        pause(
+            outputs,
+            encoders,
+            &mut started,
+            &listening,
+            &now.title,
+            artist,
+        );
         if !listening.contains(&true) {
             // What was decoded before the pause must not play after it.
             active = None;
@@ -223,8 +271,11 @@ fn transcode(
         };
 
         let retitled = (&now.title, &now.artist) != (&seen.0, &seen.1);
-        for ((encoder, started), &listening) in
-            encoders.iter_mut().zip(started.iter_mut()).zip(&listening)
+        for (index, ((encoder, started), &listening)) in encoders
+            .iter_mut()
+            .zip(started.iter_mut())
+            .zip(&listening)
+            .enumerate()
         {
             let Some(output) = encoder.as_mut() else {
                 continue;
@@ -241,6 +292,7 @@ fn transcode(
             };
             if done.is_err() {
                 // This output ends; the others go on.
+                outputs.fail(index);
                 *encoder = None;
                 *started = false;
             }
@@ -273,10 +325,11 @@ fn transcode(
             continue;
         };
         outputs.decoded.fetch_add(1, Ordering::Relaxed);
-        for (encoder, started) in encoders.iter_mut().zip(started.iter_mut()) {
+        for (index, (encoder, started)) in encoders.iter_mut().zip(started.iter_mut()).enumerate() {
             if let Some(output) = encoder.as_mut().filter(|_| *started)
                 && output.encode(block).is_err()
             {
+                outputs.fail(index);
                 *encoder = None;
                 *started = false;
             }
@@ -288,15 +341,18 @@ fn transcode(
 /// Each started output that has no listener now ends its stretch of audio: it starts a
 /// new one at once, while nobody hears the end of the old one, so whoever joins before
 /// it gains a listener again hears nothing from before the pause. An output that fails
-/// to ends.
+/// to ends, and is marked failed.
 fn pause(
+    outputs: &Outputs,
     encoders: &mut [Option<OutputEncoder>],
     started: &mut [bool],
     listening: &[bool],
     title: &str,
     artist: Option<&str>,
 ) {
-    for ((encoder, started), &listening) in encoders.iter_mut().zip(started).zip(listening) {
+    for (index, ((encoder, started), &listening)) in
+        encoders.iter_mut().zip(started).zip(listening).enumerate()
+    {
         if !*started || listening {
             continue;
         }
@@ -305,6 +361,7 @@ fn pause(
             .as_mut()
             .is_some_and(|output| output.start(title, artist).is_err())
         {
+            outputs.fail(index);
             *encoder = None;
         }
     }

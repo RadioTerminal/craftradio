@@ -639,3 +639,39 @@ fn finish_returns_while_the_source_is_silent() {
     finish_promptly(transcoder);
     assert!(!station.any_output_live());
 }
+
+#[test]
+fn an_output_that_cannot_begin_is_marked_failed_and_the_others_play() {
+    let station = station();
+    // Something else holds the MP3 output's mount, so the transcoder can't begin it.
+    let held = station
+        .output("mp3")
+        .begin(Format::Mp3, "Morning Station".into(), None)
+        .unwrap();
+    let _pusher = Pusher::start(&station.pushed, Source::Ogg);
+    let transcoder = station.spawn();
+    eventually("the MP3 output was marked failed", || {
+        station.outputs.failed("mp3")
+    });
+    assert!(
+        !station.outputs.failed("opus"),
+        "the other output failed too"
+    );
+    assert_eq!(
+        station.outputs.refusal(),
+        None,
+        "a failure is not a refusal"
+    );
+    eventually("the Opus output went live", || {
+        station.output("opus").stats().live
+    });
+    let mut ear = Ear::join(station.output("opus"));
+    assert!(ear.hears(), "the other output plays");
+
+    finish_promptly(transcoder);
+    assert!(
+        !station.outputs.failed("mp3"),
+        "the failure ends with the source's transcoder"
+    );
+    drop(held);
+}
