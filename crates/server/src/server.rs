@@ -4,6 +4,7 @@
 //! With a certificate and key in the config every connection is TLS (see [`crate::conn`]).
 
 use crate::ServerError;
+use crate::addr::{canonical, limit_key};
 use crate::config::{Config, Station};
 use crate::conn::{Conn, server_config};
 use crate::framing::Format;
@@ -255,7 +256,8 @@ struct Connections {
     /// The connections still sending their head (or TLS handshake), oldest first, with
     /// their peer address; `None` for the trusted proxy.
     in_head: BTreeMap<u64, Option<IpAddr>>,
-    /// How many of `in_head` each address has (the trusted proxy left out).
+    /// How many of `in_head` each address (an IPv6 address by its /64) has, the trusted
+    /// proxy left out.
     heads: HashMap<IpAddr, usize>,
     /// Connections that were refused and answered, and are only reading what is left of
     /// the request before closing, oldest first. They hold a thread, but nothing else.
@@ -370,7 +372,11 @@ impl Shared {
     /// is closed.
     fn admit(self: &Arc<Self>, stream: TcpStream, peer: SocketAddr) {
         let stream = Arc::new(stream);
-        let head_from = (self.config.trusted_proxy != Some(peer.ip())).then_some(peer.ip());
+        let from_proxy = self
+            .config
+            .trusted_proxy
+            .is_some_and(|proxy| canonical(proxy) == canonical(peer.ip()));
+        let head_from = (!from_proxy).then_some(limit_key(peer.ip()));
         let id = {
             let mut connections = self.connections();
             // Checked under the same lock `stop` closes connections under, so none slips
