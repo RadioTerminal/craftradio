@@ -206,6 +206,11 @@ pub struct EngineSource {
     secrets: Arc<dyn SecretStore + Sync>,
     /// The keychain entry of the mount and whether it holds a password.
     secret_known: Option<(String, Option<Result<bool, String>>)>,
+    /// The Icecast settings and station name that playout last got settings for: at start,
+    /// the ones the app built its config from.
+    icecast_seen: (radio_ui_egui::view::IcecastView, String),
+    /// The last request for Icecast settings on the background lane. Older answers are dropped.
+    icecast_asked: u64,
     /// Fader values on their way to the engine, by strip.
     strip_gain: HashMap<String, f32>,
     /// Part settings on their way to the engine.
@@ -263,6 +268,7 @@ impl EngineSource {
         });
         let meter_reader = std::sync::Mutex::new(playout.meters());
         let mode = playout.snapshot().mode;
+        let icecast_seen = icecast::icecast_seen(&state, &opts.station_name);
         let mut source = Self {
             companions: Vec::new(),
             merger,
@@ -314,6 +320,8 @@ impl EngineSource {
             watch_errors: Vec::new(),
             secrets: Arc::new(MemoryStore::default()),
             secret_known: None,
+            icecast_seen,
+            icecast_asked: 0,
             strip_gain: HashMap::new(),
             pending_settings: HashMap::new(),
             alarms: Vec::new(),
@@ -382,6 +390,7 @@ impl EngineSource {
             .collect();
         self.sync_folders();
         self.sync_watches();
+        self.sync_icecast(false);
     }
 
     /// The media library: each file and stream of each playlist, once per source.

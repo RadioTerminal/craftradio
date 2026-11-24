@@ -37,7 +37,7 @@ impl StreamFormat {
 }
 
 /// Icecast source settings. TLS verifies the server certificate and host.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct IcecastConfig {
     pub host: String,
     pub port: u16,
@@ -257,12 +257,55 @@ pub enum StreamStatus {
 enum Control {
     Title(String),
     OnAir(bool),
+    /// New settings; `None` closes the source until settings come again.
+    Config(Option<IcecastConfig>),
     Stop,
 }
 /// Why [`send`] left a working connection.
 enum Left {
     Stop,
-    OffAir,
+    /// Off air, or no settings: wait until both are there.
+    Idle,
+    /// New settings: dial them at once.
+    Again,
+}
+/// What the control messages asked for so far. Only the last message of each kind counts.
+struct Wanted {
+    on_air: bool,
+    settings: Option<IcecastConfig>,
+    /// The settings changed since the source last dialled.
+    changed: bool,
+    title: String,
+}
+impl Wanted {
+    /// Applies one message. False when the source is to stop.
+    fn apply(&mut self, message: Control) -> bool {
+        match message {
+            Control::Title(t) => self.title = t,
+            Control::OnAir(on) => self.on_air = on,
+            // The same settings again keep a working connection.
+            Control::Config(settings) => {
+                if settings != self.settings {
+                    self.settings = settings;
+                    self.changed = true;
+                }
+            }
+            Control::Stop => return false,
+        }
+        true
+    }
+    /// On air with settings: the source should be connected.
+    fn ready(&self) -> bool {
+        self.on_air && self.settings.is_some()
+    }
+    /// What the source says while it is not ready.
+    fn idle_status(&self) -> StreamStatus {
+        if self.settings.is_none() {
+            StreamStatus::Stopped
+        } else {
+            StreamStatus::OffAir
+        }
+    }
 }
 /// Owns the source worker. Dropping it requests shutdown without blocking.
 pub struct IcecastHandle {
@@ -279,6 +322,13 @@ impl IcecastHandle {
     /// tap is kept and emptied while off air, so the mixer never waits on it.
     pub fn set_on_air(&self, on: bool) {
         let _ = self.control.send(Control::OnAir(on));
+    }
+    /// New settings for the source. Other settings close the connection and dial the new
+    /// ones (while on air); `None` closes it, and the source waits with status
+    /// [`StreamStatus::Stopped`], emptying the tap. The same settings again change nothing.
+    /// The last of the messages already sent wins, so an off air sent after still holds.
+    pub fn reconfigure(&self, cfg: Option<IcecastConfig>) {
+        let _ = self.control.send(Control::Config(cfg));
     }
     pub fn status(&self) -> StreamStatus {
         self.status
@@ -301,43 +351,50 @@ fn status(shared: &Mutex<StreamStatus>, value: StreamStatus) {
         *s = value;
     }
 }
-/// How often an off-air source empties the audio tap.
+/// How often an idle source empties the audio tap.
 const OFF_AIR_DRAIN: Duration = Duration::from_millis(20);
 
-/// Waits off air, discarding audio, until the source goes on air (true) or stops (false).
-fn wait_off_air(
+/// Waits off air or without settings, discarding audio, until the source is on air with
+/// settings (true) or stops (false).
+fn wait_idle(
     rx: &mpsc::Receiver<Control>,
     frames: &mut rtrb::Consumer<f32>,
-    title: &mut String,
+    wanted: &mut Wanted,
+    state: &Mutex<StreamStatus>,
 ) -> bool {
     loop {
+        status(state, wanted.idle_status());
         while frames.pop().is_ok() {}
-        let mut on_air = false;
         match rx.recv_timeout(OFF_AIR_DRAIN) {
-            Ok(Control::Title(t)) => *title = t,
-            Ok(Control::OnAir(on)) => on_air = on,
+            Ok(message) => {
+                if !wanted.apply(message) {
+                    return false;
+                }
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Ok(Control::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return false,
         }
         // Only the last switch already sent counts, so an on air taken back never dials.
-        if !settle(rx, &mut on_air, title) {
+        if !settle(rx, wanted) {
             return false;
         }
-        if on_air {
+        if wanted.ready() {
             return true;
         }
     }
 }
 
-/// Applies every control message already sent: titles, and the last switch in `on_air`.
-/// False when the source is to stop.
-fn settle(rx: &mpsc::Receiver<Control>, on_air: &mut bool, title: &mut String) -> bool {
+/// Applies every control message already sent. False when the source is to stop.
+fn settle(rx: &mpsc::Receiver<Control>, wanted: &mut Wanted) -> bool {
     loop {
         match rx.try_recv() {
-            Ok(Control::Title(t)) => *title = t,
-            Ok(Control::OnAir(on)) => *on_air = on,
+            Ok(message) => {
+                if !wanted.apply(message) {
+                    return false;
+                }
+            }
             Err(mpsc::TryRecvError::Empty) => return true,
-            Ok(Control::Stop) | Err(mpsc::TryRecvError::Disconnected) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => return false,
         }
     }
 }
@@ -353,7 +410,7 @@ impl IcecastClient {
         frames: rtrb::Consumer<f32>,
         meter: Arc<crate::LevelMeter>,
     ) -> IcecastHandle {
-        Self::start_inner(cfg, frames, Vec::new(), meter, true)
+        Self::start_inner(Some(cfg), frames, Vec::new(), meter, true)
     }
 
     /// Like [`IcecastClient::start_metered`], but off air: it does not connect until
@@ -363,7 +420,18 @@ impl IcecastClient {
         frames: rtrb::Consumer<f32>,
         meter: Arc<crate::LevelMeter>,
     ) -> IcecastHandle {
-        Self::start_inner(cfg, frames, Vec::new(), meter, false)
+        Self::start_inner(Some(cfg), frames, Vec::new(), meter, false)
+    }
+
+    /// A source with settings or none, on air or off air. Without settings it waits with
+    /// status [`StreamStatus::Stopped`] until [`IcecastHandle::reconfigure`] gives some.
+    pub fn start_metered_with(
+        cfg: Option<IcecastConfig>,
+        on_air: bool,
+        frames: rtrb::Consumer<f32>,
+        meter: Arc<crate::LevelMeter>,
+    ) -> IcecastHandle {
+        Self::start_inner(cfg, frames, Vec::new(), meter, on_air)
     }
 
     /// Add DER trust anchors, for private servers and TLS integration tests.
@@ -374,55 +442,54 @@ impl IcecastClient {
         frames: rtrb::Consumer<f32>,
         extra_roots: Vec<Vec<u8>>,
     ) -> IcecastHandle {
-        Self::start_inner(cfg, frames, extra_roots, Arc::default(), true)
+        Self::start_inner(Some(cfg), frames, extra_roots, Arc::default(), true)
     }
 
     fn start_inner(
-        cfg: IcecastConfig,
+        cfg: Option<IcecastConfig>,
         mut frames: rtrb::Consumer<f32>,
         extra_roots: Vec<Vec<u8>>,
         meter: Arc<crate::LevelMeter>,
-        mut on_air: bool,
+        on_air: bool,
     ) -> IcecastHandle {
-        let cfg = SourceConfig {
+        let mut wanted = Wanted {
+            on_air,
             settings: cfg,
-            extra_roots,
-            dropped_system_roots: Cell::new(0),
+            changed: false,
+            title: String::new(),
         };
         let (tx, rx) = mpsc::channel();
-        let shared = Arc::new(Mutex::new(if on_air {
+        let shared = Arc::new(Mutex::new(if wanted.ready() {
             StreamStatus::Connecting
         } else {
-            StreamStatus::OffAir
+            wanted.idle_status()
         }));
         let state = shared.clone();
         let spawned = thread::Builder::new()
             .name("icecast-source".into())
             .spawn(move || {
-                let mut title = String::new();
                 let mut delay = 1;
                 loop {
-                    if !on_air {
-                        status(&state, StreamStatus::OffAir);
-                        if !wait_off_air(&rx, &mut frames, &mut title) {
+                    if !wanted.ready() {
+                        if !wait_idle(&rx, &mut frames, &mut wanted, &state) {
                             break;
                         }
-                        on_air = true;
                         delay = 1;
                     }
                     status(&state, StreamStatus::Connecting);
                     let result = send(
-                        &cfg,
+                        &mut wanted,
+                        &extra_roots,
                         &mut frames,
                         &rx,
                         &state,
-                        &mut title,
                         &mut delay,
                         &meter,
                     );
                     match result {
                         Ok(Left::Stop) => break,
-                        Ok(Left::OffAir) => on_air = false,
+                        Ok(Left::Idle) => {}
+                        Ok(Left::Again) => delay = 1,
                         Err(error) => {
                             status(
                                 &state,
@@ -436,21 +503,28 @@ impl IcecastClient {
                                 match rx.recv_timeout(
                                     deadline.saturating_duration_since(std::time::Instant::now()),
                                 ) {
-                                    Ok(Control::Title(t)) => title = t,
-                                    Ok(Control::OnAir(true)) => {}
-                                    Ok(Control::OnAir(false)) => {
-                                        on_air = false;
-                                        break;
+                                    Ok(message) => {
+                                        if !wanted.apply(message) || !settle(&rx, &mut wanted) {
+                                            status(&state, StreamStatus::Stopped);
+                                            return;
+                                        }
+                                        // Off air, or new settings: stop waiting at once.
+                                        if !wanted.ready() || wanted.changed {
+                                            break;
+                                        }
                                     }
-                                    Ok(Control::Stop)
-                                    | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => {
                                         status(&state, StreamStatus::Stopped);
                                         return;
                                     }
                                     Err(mpsc::RecvTimeoutError::Timeout) => break,
                                 }
                             }
-                            delay = (delay * 2).min(30);
+                            delay = if wanted.changed {
+                                1
+                            } else {
+                                (delay * 2).min(30)
+                            };
                         }
                     }
                 }
@@ -618,28 +692,33 @@ fn connect(cfg: &SourceConfig, method: &str) -> Result<Source, StreamError> {
     })
 }
 fn send(
-    cfg: &SourceConfig,
+    wanted: &mut Wanted,
+    extra_roots: &[Vec<u8>],
     frames: &mut rtrb::Consumer<f32>,
     rx: &mpsc::Receiver<Control>,
     state: &Mutex<StreamStatus>,
-    title: &mut String,
     delay: &mut u64,
     meter: &crate::LevelMeter,
 ) -> Result<Left, StreamError> {
-    // An off air sent before the dial keeps the source from dialling at all.
-    let mut on_air = true;
-    if !settle(rx, &mut on_air, title) {
+    // An off air or new settings sent before the dial count before it.
+    if !settle(rx, wanted) {
         return Ok(Left::Stop);
     }
-    if !on_air {
-        return Ok(Left::OffAir);
-    }
+    let Some(settings) = wanted.settings.clone().filter(|_| wanted.on_air) else {
+        return Ok(Left::Idle);
+    };
+    wanted.changed = false;
+    let cfg = &SourceConfig {
+        settings,
+        extra_roots: extra_roots.to_vec(),
+        dropped_system_roots: Cell::new(0),
+    };
     // Discard audio collected during the outage before opening the source.
     let stale = frames.slots();
     for _ in 0..stale {
         let _ = frames.pop();
     }
-    let (mut output, replied) = SourceOutput::new(cfg, title)?;
+    let (mut output, replied) = SourceOutput::new(cfg, &wanted.title)?;
     let mut late = None;
     if !replied {
         // The wait for a reply is longer than a small ring holds, and listeners should not
@@ -659,8 +738,8 @@ fn send(
         },
     );
     #[cfg(feature = "mp3")]
-    if matches!(cfg.format, StreamFormat::Mp3 { .. }) && !title.is_empty() {
-        metadata_status(state, update_mp3_title(cfg, title));
+    if matches!(cfg.format, StreamFormat::Mp3 { .. }) && !wanted.title.is_empty() {
+        metadata_status(state, update_mp3_title(cfg, &wanted.title));
     }
     let mut samples = Vec::with_capacity(1920);
     loop {
@@ -669,11 +748,20 @@ fn send(
         }
         match rx.try_recv() {
             Ok(Control::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(Left::Stop),
-            Ok(Control::OnAir(false)) => return Ok(Left::OffAir),
+            Ok(Control::OnAir(false)) => {
+                wanted.on_air = false;
+                return Ok(Left::Idle);
+            }
             Ok(Control::OnAir(true)) | Err(mpsc::TryRecvError::Empty) => {}
             Ok(Control::Title(t)) => {
-                *title = t;
-                output.set_title(cfg, title, &mut samples, state)?;
+                wanted.title = t;
+                output.set_title(cfg, &wanted.title, &mut samples, state)?;
+            }
+            Ok(message @ Control::Config(_)) => {
+                wanted.apply(message);
+                if wanted.changed {
+                    return Ok(Left::Again);
+                }
             }
         }
         if let Some(reply) = &mut late

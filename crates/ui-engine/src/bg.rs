@@ -35,6 +35,13 @@ pub(crate) enum Job {
         set: Option<String>,
         store: Arc<dyn SecretStore + Sync>,
     },
+    /// Build the Icecast settings for playout from `state` and the keychain, as request `seq`.
+    Icecast {
+        seq: u64,
+        state: Arc<radio_engine::State>,
+        store: Arc<dyn SecretStore + Sync>,
+        station_name: String,
+    },
     /// Read the as-played log.
     History {
         log: LogHandle,
@@ -94,6 +101,11 @@ pub(crate) enum Done {
         key: String,
         wrote: bool,
         result: Result<bool, String>,
+    },
+    /// The Icecast settings of request `seq`, or why there are none.
+    Icecast {
+        seq: u64,
+        result: Result<Option<radio_stream::IcecastConfig>, String>,
     },
     /// The rows, the row limit of the read, and the picked range that the read was for.
     History(
@@ -215,6 +227,15 @@ fn run(job: Job) -> Done {
             };
             Done::Secret { key, wrote, result }
         }
+        Job::Icecast {
+            seq,
+            state,
+            store,
+            station_name,
+        } => Done::Icecast {
+            seq,
+            result: crate::icecast_config(&state, store.as_ref(), &station_name),
+        },
         Job::History {
             log,
             since,

@@ -1,4 +1,5 @@
 use crate::fixtures::*;
+use radio_playout::Clock;
 use radio_ui_egui::view::{Edit, IcecastView, Status, StreamFormat, ViewSource};
 use radio_ui_engine::{MemoryStore, SecretStore, icecast_config};
 
@@ -192,4 +193,164 @@ fn the_public_icecast_address_reaches_the_webrtc_station_and_a_bad_one_is_refuse
     let state = source.playout().snapshot().state;
     radio_ui_engine::webrtc_settings(&state, &mut cfg);
     assert_eq!(cfg.public_stream, None, "an empty address shares no stream");
+}
+
+/// What the Icecast test server saw of a source.
+#[derive(Debug, PartialEq)]
+enum Seen {
+    /// A source arrived, with the Authorization header it sent.
+    Arrived(String),
+    Left,
+}
+
+/// An Icecast server on this computer that takes each source, says 200 and reads it until it
+/// leaves.
+fn icecast_server() -> (u16, std::sync::mpsc::Receiver<Seen>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            let mut header = Vec::new();
+            let mut byte = [0];
+            while !header.ends_with(b"\r\n\r\n") {
+                if conn.read_exact(&mut byte).is_err() {
+                    break;
+                }
+                header.push(byte[0]);
+            }
+            let auth = String::from_utf8_lossy(&header)
+                .lines()
+                .find(|l| l.starts_with("Authorization:"))
+                .unwrap_or_default()
+                .to_owned();
+            let _ = conn.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+            if tx.send(Seen::Arrived(auth)).is_err() {
+                return;
+            }
+            let mut bytes = [0; 4096];
+            while matches!(conn.read(&mut bytes), Ok(n) if n > 0) {}
+            if tx.send(Seen::Left).is_err() {
+                return;
+            }
+        }
+    });
+    (port, rx)
+}
+
+fn local_mount(port: u16, password: &str) -> IcecastView {
+    IcecastView {
+        host: "127.0.0.1".into(),
+        port,
+        mount: "/live".into(),
+        user: "source".into(),
+        password: password.into(),
+        password_set: false,
+        keychain_error: None,
+        tls: false,
+        format: StreamFormat::Opus,
+        kbps: 96,
+        public_url: String::new(),
+    }
+}
+
+fn icecast_note(view: &radio_ui_egui::view::StationView) -> String {
+    view.output_meters
+        .iter()
+        .find(|m| m.kind == radio_ui_egui::view::OutputKind::Icecast)
+        .map(|m| m.note.clone())
+        .unwrap_or_default()
+}
+
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A station that started without Icecast connects once a person saves a mount and its
+/// password, without a restart.
+#[test]
+fn a_station_with_no_icecast_at_start_connects_once_set_up() {
+    let (port, seen) = icecast_server();
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let (source, clock) = source(Vec::new());
+    let mut source = source.with_secrets(std::sync::Arc::new(Shared(store)));
+    let view = source.snapshot(clock.now());
+    assert_eq!(icecast_note(&view), "Not set up");
+    assert_ne!(view.output.icecast, Status::Connected);
+
+    assert_eq!(
+        source.edit(Edit::SetIcecast(local_mount(port, "first-test-only"))),
+        Ok(1)
+    );
+    let view = wait_for(&mut source, &clock, |v| {
+        v.output.icecast == Status::Connected
+    });
+    assert_eq!(view.output.icecast, Status::Connected);
+    assert_eq!(icecast_note(&view), "Connected");
+    assert!(matches!(
+        seen.recv_timeout(PATIENCE).unwrap(),
+        Seen::Arrived(_)
+    ));
+}
+
+/// A new password alone for the same mount reconnects with that password.
+#[test]
+fn a_new_password_for_the_mount_reconnects_with_it() {
+    let (port, seen) = icecast_server();
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let (source, clock) = source(Vec::new());
+    let mut source = source.with_secrets(std::sync::Arc::new(Shared(store)));
+    assert_eq!(
+        source.edit(Edit::SetIcecast(local_mount(port, "first-test-only"))),
+        Ok(1)
+    );
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.output.icecast == Status::Connected
+    });
+    let Seen::Arrived(first) = seen.recv_timeout(PATIENCE).unwrap() else {
+        panic!("no source arrived");
+    };
+
+    assert_eq!(
+        source.edit(Edit::SetIcecast(local_mount(port, "second-test-only"))),
+        Ok(1)
+    );
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let second = loop {
+        let _ = source.snapshot(clock.now());
+        match seen.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(Seen::Arrived(auth)) => break auth,
+            Ok(Seen::Left) | Err(_) => {}
+        }
+        assert!(std::time::Instant::now() < deadline, "never reconnected");
+    };
+    assert_ne!(first, second, "the new password went to the server");
+}
+
+/// Clearing the host closes the connection and the strip says Icecast is not set up.
+#[test]
+fn clearing_the_mount_closes_icecast_and_the_strip_says_not_set_up() {
+    let (port, seen) = icecast_server();
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let (source, clock) = source(Vec::new());
+    let mut source = source.with_secrets(std::sync::Arc::new(Shared(store)));
+    assert_eq!(
+        source.edit(Edit::SetIcecast(local_mount(port, "test-only"))),
+        Ok(1)
+    );
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.output.icecast == Status::Connected
+    });
+    assert!(matches!(
+        seen.recv_timeout(PATIENCE).unwrap(),
+        Seen::Arrived(_)
+    ));
+
+    let mut cleared = local_mount(port, "");
+    cleared.host = String::new();
+    cleared.mount = String::new();
+    assert_eq!(source.edit(Edit::SetIcecast(cleared)), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| icecast_note(v) == "Not set up");
+    assert_eq!(icecast_note(&view), "Not set up");
+    assert_ne!(view.output.icecast, Status::Connected);
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Left);
 }

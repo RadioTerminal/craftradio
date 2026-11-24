@@ -155,6 +155,7 @@ impl EngineSource {
                 crate::bg::Done::Secret { key, wrote, result } => {
                     self.secret_answer(key, wrote, result);
                 }
+                crate::bg::Done::Icecast { seq, result } => self.icecast_answer(seq, result),
                 // An answer for a range that the person has left since is dropped.
                 crate::bg::Done::History(_, _, range) if range != self.history_range => {}
                 crate::bg::Done::History(rows, limit, _) => match rows {

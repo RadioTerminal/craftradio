@@ -279,6 +279,15 @@ impl Core {
         self.webrtc_played.truncate(PLAYED_MAX);
     }
 
+    /// New Icecast settings, or none: the source moves to them, or closes and waits.
+    pub(crate) fn set_icecast(&mut self, cfg: Option<radio_stream::IcecastConfig>) {
+        self.icecast_set_up = cfg.is_some();
+        if let Some(ice) = &self.icecast {
+            ice.reconfigure(cfg.clone());
+        }
+        self.cfg.icecast = cfg;
+    }
+
     /// Takes Icecast off air or puts it on air when the On air setting changed. WebRTC
     /// follows the same setting in [`Core::sync_webrtc`].
     pub(crate) fn sync_air(&mut self) {

@@ -156,6 +156,16 @@ pub fn icecast_config(
     }))
 }
 
+/// The stream name Icecast gets: the station name setting, else `fallback`, as at start.
+fn station_name(state: &State, fallback: &str) -> String {
+    state.station_name().unwrap_or_else(|| fallback.to_owned())
+}
+
+/// What the Icecast settings of playout are built from, without the password.
+pub(crate) fn icecast_seen(state: &State, fallback: &str) -> (IcecastView, String) {
+    (icecast_view(state), station_name(state, fallback))
+}
+
 impl EngineSource {
     /// The Icecast mount for the snapshot. The background lane asks the keychain once per
     /// mount; until it answers, the password shows as not set.
@@ -188,8 +198,60 @@ impl EngineSource {
             self.notices
                 .push(format!("The keychain did not take the password: {e}"));
         }
+        // A new password applies at once, as new settings do.
+        let stored = wrote && result.is_ok();
         if self.secret_known.as_ref().is_some_and(|(k, _)| *k == key) {
             self.secret_known = Some((key, Some(result)));
+        }
+        if stored {
+            self.sync_icecast(true);
+        }
+    }
+
+    /// Asks the background lane for the Icecast settings of playout when the settings or the
+    /// station name changed since playout last got them, or always with `force` (after a
+    /// keychain write). The keychain read stays off the UI thread.
+    pub(crate) fn sync_icecast(&mut self, force: bool) {
+        let seen = icecast_seen(&self.state, &self.station);
+        if !force && seen == self.icecast_seen {
+            return;
+        }
+        self.icecast_seen = seen;
+        let Some(w) = &self.worker else {
+            self.notices.push(
+                "The background lane has stopped; Icecast settings apply at the next start".into(),
+            );
+            return;
+        };
+        self.icecast_asked += 1;
+        let _ = w.jobs.send(crate::bg::Job::Icecast {
+            seq: self.icecast_asked,
+            state: std::sync::Arc::clone(&self.state),
+            store: std::sync::Arc::clone(&self.secrets),
+            station_name: station_name(&self.state, &self.station),
+        });
+    }
+
+    /// The Icecast settings from the background lane go to playout. Without a password the
+    /// source closes, so a changed host never keeps the connection of the old mount.
+    pub(crate) fn icecast_answer(
+        &mut self,
+        seq: u64,
+        result: Result<Option<IcecastConfig>, String>,
+    ) {
+        if seq != self.icecast_asked {
+            return;
+        }
+        let cfg = match result {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                self.notices.push(format!("Icecast stays off: {e}"));
+                None
+            }
+        };
+        if self.playout.set_icecast(cfg).is_err() {
+            self.notices
+                .push("The playout has stopped; the Icecast settings were not applied".into());
         }
     }
 

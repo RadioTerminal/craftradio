@@ -574,6 +574,7 @@ fn short_source_connections_keep_increasing_backoff() {
 }
 
 mod off_air;
+mod reconfigure;
 mod relay;
 mod tls;
 mod webrtc;
