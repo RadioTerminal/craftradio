@@ -26,12 +26,38 @@ pub enum HttpError {
 }
 
 /// A request head. The path and query are percent-decoded.
-#[derive(Debug, Clone)]
+///
+/// Its `Debug` output prints the `Authorization` header as `<redacted>`, so a logged
+/// request never carries a key.
+#[derive(Clone)]
 pub struct Request {
     pub method: String,
     pub path: String,
     pub query: Vec<(String, String)>,
     headers: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let shown = if name.eq_ignore_ascii_case("Authorization") {
+                    "<redacted>"
+                } else {
+                    value.as_str()
+                };
+                (name.as_str(), shown)
+            })
+            .collect();
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("query", &self.query)
+            .field("headers", &headers)
+            .finish()
+    }
 }
 
 impl Request {
