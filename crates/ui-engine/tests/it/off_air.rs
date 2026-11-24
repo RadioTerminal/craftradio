@@ -84,7 +84,9 @@ fn going_on_air_while_icecast_connects() {
     let (mut source, clock) = station(false);
     wait_for(&mut source, &clock, |v| v.output.icecast == Status::OffAir);
     set_on_air(&mut source, true);
-    let view = wait_for(&mut source, &clock, |v| v.on_air);
+    let view = wait_for(&mut source, &clock, |v| {
+        v.on_air && v.output.icecast != Status::OffAir
+    });
     assert!(view.on_air);
     assert_ne!(view.output.icecast, Status::OffAir);
     assert!(view.going_on_air, "Icecast has not connected yet");

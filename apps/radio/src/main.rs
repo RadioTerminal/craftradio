@@ -470,7 +470,7 @@ fn station_identity(dir: &std::path::Path) -> Option<Vec<u8>> {
 /// The headless status line for the On air setting.
 fn air_line(on_air: bool) -> &'static str {
     if on_air {
-        "on air (Icecast and WebRTC send)"
+        "on air"
     } else {
         "off air (Icecast and WebRTC are stopped; the decks play on)"
     }
