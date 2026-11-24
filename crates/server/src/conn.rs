@@ -60,6 +60,8 @@ fn pem_error(path: &Path, what: &str, error: &pem::Error) -> ServerError {
 pub(crate) struct Socket {
     tcp: Arc<TcpStream>,
     deadline: Option<Instant>,
+    /// The write side is shut: the reply has been sent in full.
+    write_shut: bool,
 }
 
 impl Socket {
@@ -114,6 +116,7 @@ impl Conn {
         Conn::Plain(Socket {
             tcp,
             deadline: Some(deadline),
+            write_shut: false,
         })
     }
 
@@ -127,6 +130,7 @@ impl Conn {
         let mut socket = Socket {
             tcp,
             deadline: Some(deadline),
+            write_shut: false,
         };
         let mut connection =
             ServerConnection::new(Arc::clone(config)).map_err(std::io::Error::other)?;
@@ -143,12 +147,16 @@ impl Conn {
         }
     }
 
-    /// The head is read: from now on the socket's own timeouts apply.
-    pub(crate) fn end_head(&mut self, read: Duration, write: Duration) -> std::io::Result<()> {
-        let socket = match self {
+    fn socket_mut(&mut self) -> &mut Socket {
+        match self {
             Conn::Plain(socket) => socket,
             Conn::Tls(tls) => &mut tls.sock,
-        };
+        }
+    }
+
+    /// The head is read: from now on the socket's own timeouts apply.
+    pub(crate) fn end_head(&mut self, read: Duration, write: Duration) -> std::io::Result<()> {
+        let socket = self.socket_mut();
         socket.deadline = None;
         socket.tcp.set_read_timeout(Some(read))?;
         socket.tcp.set_write_timeout(Some(write))
@@ -165,7 +173,15 @@ impl Conn {
             tls.conn.send_close_notify();
             tls.flush()?;
         }
-        self.socket().tcp.shutdown(Shutdown::Write)
+        let socket = self.socket_mut();
+        socket.tcp.shutdown(Shutdown::Write)?;
+        socket.write_shut = true;
+        Ok(())
+    }
+
+    /// Whether [`Conn::shutdown_write`] has ended the write side.
+    pub(crate) fn write_shut(&self) -> bool {
+        self.socket().write_shut
     }
 }
 
