@@ -22,7 +22,7 @@ Files here:
 2. Make a user for it, and its config directory:
 
    ```sh
-   useradd --system --no-create-home --shell /usr/sbin/nologin craftradio
+   useradd --system --user-group --no-create-home --shell /usr/sbin/nologin craftradio
    install -d -o root -g craftradio -m 0750 /etc/craftradio-server
    install -o root -g craftradio -m 0640 craftradio-server.example.toml \
      /etc/craftradio-server/config.toml
@@ -48,9 +48,21 @@ craftradio-server key
 
 It prints the key once and a `key_hash = "sha256:…"` line. Put the `key_hash` line in that
 station's `[[station]]` block and keep the key for the app; the config never holds the key
-itself. Restart the server after changing the config.
+itself. Each station needs a key of its own; a `key_hash` that is not `sha256:` and 64 hex
+digits stops the server at start. Restart the server after changing the config.
+
+A key holder can make the server spend CPU (for example by pushing crafted Ogg pages it
+must check), so stations that share a small host trust each other's operators that far.
 
 ## Route 1: behind Caddy (or nginx)
+
+**Not checked.** Route 2, the server's own TLS (`tls_cert`/`tls_key`), is the route that
+has been checked with the app; this one has not (see "Checked" below). The risk is
+specific: the app sends an HTTP/1.0 `PUT` with an endless `Content-Length`, and the
+server answers `200` at once while it goes on reading the body. The proxy must pass that
+upload full-duplex and unbuffered: hand the `200` back to the app before the body ends,
+and pass the body on as it comes. A proxy that waits for the whole body never delivers
+any audio.
 
 The server listens on loopback and the proxy does TLS:
 
@@ -60,9 +72,9 @@ public_url = "https://radio.example.org"
 trusted_proxy = "127.0.0.1"
 ```
 
-Use `Caddyfile` from this folder with your host name. It passes the stream on as it comes
-(`flush_interval -1`) and leaves request bodies unbuffered, which the app's endless source
-push needs.
+Use `Caddyfile` from this folder with your host name. It is meant to pass the stream on
+as it comes (`flush_interval -1`) and to leave request bodies unbuffered, which the app's
+endless source push needs; neither has been checked.
 
 **nginx:** in the `location` that proxies to the server, set
 
@@ -81,8 +93,8 @@ The Caddyfile and the nginx lines have not been checked against a running proxy 
 Behind a proxy:
 
 - **Set `trusted_proxy`** to the proxy's address. Without it every client seems to come
-  from the proxy, so they all share one lockout address: five wrong keys from anyone lock
-  every station out for five minutes.
+  from the proxy, so they all share one lockout address: five wrong keys from anyone
+  within 60 s lock every station out for five minutes.
 - **The proxy must limit slow clients itself.** The server limits how many connections one
   address may have that are still sending their request head, but not for the trusted
   proxy, which every client shares. Set the proxy's own client timeouts and connection
