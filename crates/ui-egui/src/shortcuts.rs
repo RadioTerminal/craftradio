@@ -262,7 +262,20 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.preferences = take(i, &PREFERENCES.into());
         p.find = take(i, &FIND.into());
         p.fade = take(i, &FADE.into());
-        p.air = take(i, &AIR_TOGGLE.into());
+        // A held key repeats; going on or off air takes two real presses, so a repeat only
+        // goes away here.
+        let fresh = map
+            .bindings(&AIR_TOGGLE.into())
+            .into_iter()
+            .filter(|b| !b.trigger.double)
+            .map(|b| b.trigger.chord.to_egui_shortcut())
+            .any(|s| {
+                i.events.iter().any(|e| {
+                    matches!(e, Event::Key { key, modifiers, pressed: true, repeat: false, .. }
+                        if *key == s.logical_key && modifiers.matches_logically(s.modifiers))
+                })
+            });
+        p.air = take(i, &AIR_TOGGLE.into()) && fresh;
         p.duplicate = take(i, &DUPLICATE.into());
         p.delete = take(i, &DELETE.into());
         p.select_all = take(i, &SELECT_ALL.into());

@@ -145,7 +145,24 @@ pub(crate) fn button(
     let enabled = ui.is_enabled();
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, &w.name));
     let resp = resp.on_hover_text(&w.hint);
-    if resp.clicked() {
+    // A held Enter or Space repeats and clicks again; that is not a second press.
+    let held = ui.input(|i| {
+        let key = |repeat: bool| {
+            i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Enter | egui::Key::Space,
+                        pressed: true,
+                        repeat: r,
+                        ..
+                    } if *r == repeat
+                )
+            })
+        };
+        key(true) && !key(false)
+    });
+    if resp.clicked() && !held {
         resp.request_focus();
         if let Some(a) = state.press(view.on_air, now) {
             actions.push(a);
@@ -164,10 +181,15 @@ pub(crate) fn button(
             (t.warn_fill, t.warn, t.warn)
         } else {
             let lerp = |off: egui::Color32, on: egui::Color32| off.lerp_to_gamma(on, k);
-            let on_dot = if view.preview { t.text_muted } else { t.on_air };
+            // The preview sends nothing, so its On air never takes the live colours (rule 7).
+            let (on_fill, on_edge, on_dot) = if view.preview {
+                (t.field, t.field_border, t.text_muted)
+            } else {
+                (t.on_air_bg, t.on_air, t.on_air)
+            };
             (
-                lerp(t.warn_fill, t.on_air_bg),
-                lerp(t.warn, t.on_air),
+                lerp(t.warn_fill, on_fill),
+                lerp(t.warn, on_edge),
                 lerp(t.warn, on_dot),
             )
         };

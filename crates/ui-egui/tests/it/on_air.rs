@@ -204,9 +204,39 @@ fn the_button_works_by_keyboard() {
     h.key_press(egui::Key::Enter);
     h.run_steps(FRAMES);
     assert!(switches(&edits).is_empty(), "Enter arms");
-    h.key_press(egui::Key::Enter);
+    h.key_press(egui::Key::Space);
     h.run_steps(FRAMES);
-    assert_eq!(switches(&edits), vec![false], "a second Enter switches");
+    assert_eq!(
+        switches(&edits),
+        vec![false],
+        "a second press, by Space, switches"
+    );
+}
+
+/// A key pressed and held: the first press, then a press while it is still down, which egui
+/// takes as a repeat. A repeat is not a second press.
+fn hold(h: &mut Harness<'_, RadioApp>, key: egui::Key, modifiers: egui::Modifiers) {
+    for _ in 0..2 {
+        h.key_down_modifiers(modifiers, key);
+        h.run_steps(FRAMES);
+    }
+    h.key_up_modifiers(modifiers, key);
+    h.run_steps(FRAMES);
+}
+
+#[test]
+fn a_held_key_is_not_a_second_press() {
+    let edits = Arc::default();
+    let mut h = mixer(&edits, Vec::new(), false);
+    let chord = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+    hold(&mut h, egui::Key::O, chord);
+    assert!(switches(&edits).is_empty(), "a held shortcut only arms");
+
+    wait_out_the_arm_time(&mut h);
+    button(&h, "On air").expect("the button").focus();
+    h.run_steps(FRAMES);
+    hold(&mut h, egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(switches(&edits).is_empty(), "a held Enter only arms");
 }
 
 #[test]
