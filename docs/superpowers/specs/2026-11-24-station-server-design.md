@@ -264,8 +264,9 @@ Per-connection and per-address limits on offers follow the ones in `relay.rs`
 - Call: an output is encoded only while it has listeners, and the decoder runs only while
   some output does. The first listener of an idle output waits for the encoder to start
   (well under a second). While nobody listens to any output, the server decodes and
-  encodes nothing: each connecting source is decoded briefly to learn its format, and an
-  idle transcoder looks for listeners and title changes every 50 ms.
+  encodes no audio: each connecting source is decoded briefly to learn its format, an
+  idle transcoder looks for listeners and title changes every 50 ms, and a title change
+  makes each idle Opus output start a new chain (one silent packet).
 - Call: `max_stream_listeners` counts the pushed mount and all outputs of the station
   together.
 - Titles reach every output. MP3 outputs send ICY metadata to listeners that ask for it

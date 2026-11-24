@@ -107,8 +107,8 @@ impl OutputEncoder {
     /// carried no audio yet and has the same tags: it goes on, so a listener who joined it
     /// is not handed a chain of one silent packet. For MP3 a fresh encoder, so samples
     /// held from before the pause are not played after it, unless the encoder has taken
-    /// no audio yet. For a title change in the
-    /// middle of a stretch, call [`retitle`](Self::retitle) instead.
+    /// no audio yet. For a title change in the middle of a stretch, call
+    /// [`retitle`](Self::retitle) instead.
     pub fn start(&mut self, title: &str, artist: Option<&str>) -> Result<(), EncodeError> {
         match &mut self.0 {
             Codec::Opus {
