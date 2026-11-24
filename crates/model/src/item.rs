@@ -69,6 +69,8 @@ pub struct ItemMeta {
     pub comment: String,
     pub publish: PublishMode,
     pub custom: String,
+    /// A picture file (PNG, JPEG or WebP) that listeners see as the item's cover. Empty means none.
+    pub picture: String,
 }
 
 /// Selects the text sent to the stream output.

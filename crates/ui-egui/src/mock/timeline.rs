@@ -103,6 +103,7 @@ impl MockSource {
                     row.origin = Origin::Rule;
                     row.locked = false;
                     row.meta = from_title(title, PublishMode::FromTags);
+                    row.meta.picture.clone_from(&view.picture);
                     row.timing = Some(Timing {
                         hard: view.hard,
                         tolerance_s: view.tolerance_s,

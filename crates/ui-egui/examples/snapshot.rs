@@ -61,6 +61,7 @@ fn one_off_seed() -> Edit {
         hard: false,
         tolerance_s: 2.0,
         repeat: OneOffRepeat::Once,
+        picture: String::new(),
     })
 }
 

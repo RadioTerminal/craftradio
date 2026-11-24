@@ -10,7 +10,9 @@ use egui::{RichText, TextEdit};
 use crate::chrome::{Answer, Dialog};
 use crate::icons::Icon;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{ItemMeta, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource};
+use crate::view::{
+    ItemMeta, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource, check_picture,
+};
 
 const NOT_WRITTEN: &str = "preview — not written";
 const FIELDS: [&str; 6] = ["Title", "Artist", "Album", "Year", "Genre", "Comment"];
@@ -35,6 +37,9 @@ pub(crate) struct MetaEditor {
     touched: [bool; 6],
     publish_touched: bool,
     custom_touched: bool,
+    picture_touched: bool,
+    /// True when the items do not share one picture.
+    picture_mixed: bool,
     keep_alive_touched: bool,
     trim_touched: bool,
     /// True when the items do not share one gain trim.
@@ -59,6 +64,10 @@ impl MetaEditor {
                 field(&mut draft, i).clear();
             }
         }
+        let picture_mixed = targets.iter().any(|(_, m)| m.picture != draft.picture);
+        if picture_mixed {
+            draft.picture.clear();
+        }
         let first_trim = draft.gain_trim_db;
         let trim_mixed = targets.iter().any(|(_, m)| m.gain_trim_db != first_trim);
         Self {
@@ -68,6 +77,8 @@ impl MetaEditor {
             touched: [false; 6],
             publish_touched: false,
             custom_touched: false,
+            picture_touched: false,
+            picture_mixed,
             keep_alive_touched: false,
             trim_touched: false,
             trim_mixed,
@@ -81,6 +92,15 @@ impl MetaEditor {
         match self.targets.as_slice() {
             [(_, m)] => format!("{} — metadata", m.title),
             many => format!("{} items — metadata", many.len()),
+        }
+    }
+
+    /// Why the edited picture is refused. The pictures that nobody edited are not checked.
+    fn picture_error(&self) -> Option<&'static str> {
+        if self.picture_touched {
+            check_picture(&self.draft.picture).err()
+        } else {
+            None
         }
     }
 
@@ -98,6 +118,9 @@ impl MetaEditor {
         }
         if self.custom_touched {
             out.custom.clone_from(&self.draft.custom);
+        }
+        if self.picture_touched {
+            out.picture.clone_from(&self.draft.picture);
         }
         // Keep-alive applies only to streams.
         if self.keep_alive_touched && out.keep_alive.is_some() {
@@ -127,9 +150,10 @@ pub(crate) fn show(
         n => format!("Apply to {n} items"),
     };
     let (note_shown, base_preview) = (ed.note, ed.base_preview);
+    let can_apply = ed.picture_error().is_none();
     let mut write_pressed = false;
     let answer = Dialog::new("meta_editor", Icon::Tag, &title)
-        .ok(&ok_label, true)
+        .ok(&ok_label, can_apply)
         .width(size::EDITOR_W)
         .show(
             ctx,
@@ -205,6 +229,24 @@ pub(crate) fn show(
                 if ed.targets.len() > 1 {
                     caption(ui, "The line shows the first selected item.", t);
                 }
+                ui.add_space(space::S);
+                caption(ui, "PICTURE", t);
+                ui.horizontal_top(|ui| {
+                    let label = ui.label(RichText::new("Picture").color(t.text_muted));
+                    let hint = if ed.picture_mixed && !ed.picture_touched {
+                        "(mixed)"
+                    } else {
+                        "path to a PNG, JPEG or WebP picture"
+                    };
+                    if widgets::picture_field(ui, &mut ed.draft.picture, hint, label.id, t) {
+                        ed.picture_touched = true;
+                    }
+                });
+                caption(
+                    ui,
+                    "Listeners see it as the cover when the title is shown.",
+                    t,
+                );
                 if let Some(keep) = ed.draft.keep_alive.as_mut() {
                     ui.add_space(space::S);
                     caption(ui, "STREAM", t);
@@ -285,4 +327,56 @@ fn caption(ui: &mut egui::Ui, text: &str, t: &Tokens) {
             .font(theme::text(theme::CAPTION))
             .color(t.text_muted),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::ViewSource;
+
+    fn editor(pictures: [&str; 2]) -> MetaEditor {
+        let tz = jiff::tz::TimeZone::get("Europe/Ljubljana").expect("tz");
+        let ts = "2026-11-21T13:58:30Z".parse().expect("ts");
+        let base = crate::MockSource::new(tz).snapshot(ts).rows[0].clone();
+        let targets = pictures
+            .iter()
+            .zip(1..)
+            .map(|(p, id)| {
+                let meta = ItemMeta {
+                    title: format!("Show {id}"),
+                    picture: (*p).to_owned(),
+                    ..ItemMeta::default()
+                };
+                (MetaTarget::Row(id), meta)
+            })
+            .collect();
+        MetaEditor::new(targets, base)
+    }
+
+    #[test]
+    fn an_untouched_picture_keeps_each_items_own() {
+        let mut ed = editor(["/a.png", "/b.png"]);
+        ed.draft.title = "Same".to_owned();
+        ed.touched[0] = true;
+        let merged: Vec<_> = ed.targets.iter().map(|(_, m)| ed.merged(m)).collect();
+        assert_eq!(merged[0].picture, "/a.png");
+        assert_eq!(merged[1].picture, "/b.png");
+        assert!(ed.picture_mixed, "the items disagree");
+
+        ed.draft.picture = "/new.webp".to_owned();
+        ed.picture_touched = true;
+        let merged: Vec<_> = ed.targets.iter().map(|(_, m)| ed.merged(m)).collect();
+        assert!(merged.iter().all(|m| m.picture == "/new.webp"));
+    }
+
+    #[test]
+    fn a_picture_that_is_not_one_blocks_save_only_once_edited() {
+        let mut ed = editor(["/a.mp3", "/a.mp3"]);
+        assert!(ed.picture_error().is_none(), "nobody edited it");
+        ed.draft.picture = "/notes.txt".to_owned();
+        ed.picture_touched = true;
+        assert!(ed.picture_error().is_some());
+        ed.draft.picture.clear();
+        assert!(ed.picture_error().is_none(), "clearing is always fine");
+    }
 }

@@ -14,7 +14,9 @@ use jiff::{RoundMode, ToSpan, Unit};
 use crate::add_menu::{self, DEFAULT_PLANNED_MIN, KEEP_ALIVE_LABEL};
 use crate::app::Action;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{Edit, OneOffRepeat, OneOffSource, OneOffView, StationView, check_stream_url};
+use crate::view::{
+    Edit, OneOffRepeat, OneOffSource, OneOffView, StationView, check_picture, check_stream_url,
+};
 
 /// The tolerance of a soft one-off that nobody set, in seconds (spec 6.3).
 pub(crate) const DEFAULT_TOLERANCE_S: f32 = 1.0;
@@ -78,6 +80,8 @@ pub(crate) struct OneOffDialog {
     pub(crate) hard: bool,
     pub(crate) tolerance_s: f32,
     pub(crate) repeat: OneOffRepeat,
+    /// The one-off's own picture file, or empty.
+    pub(crate) picture: String,
     /// True after the first press of Add. Errors show from then on.
     tried: bool,
     /// The first field takes the keyboard focus once.
@@ -119,6 +123,7 @@ impl OneOffDialog {
             hard: true,
             tolerance_s: DEFAULT_TOLERANCE_S,
             repeat: OneOffRepeat::Once,
+            picture: String::new(),
             tried: false,
             focus: true,
         }
@@ -133,6 +138,7 @@ impl OneOffDialog {
         d.hard = o.hard;
         d.tolerance_s = o.tolerance_s;
         d.repeat = o.repeat;
+        d.picture.clone_from(&o.picture);
         let split = |len: Duration| {
             let s = u32::try_from(len.as_secs()).unwrap_or(u32::MAX);
             (s / 60, s % 60)
@@ -227,6 +233,7 @@ impl OneOffDialog {
     /// The one-off that the fields describe, and a note for a time that happens twice.
     pub(crate) fn check(&self, view: &StationView) -> Result<(OneOffView, Option<String>), String> {
         let source = self.source(view)?;
+        check_picture(&self.picture).map_err(str::to_owned)?;
         let date: civil::Date = self
             .date
             .trim()
@@ -263,6 +270,7 @@ impl OneOffDialog {
                     self.tolerance_s
                 },
                 repeat: self.repeat,
+                picture: self.picture.trim().to_owned(),
             },
             note,
         ))
@@ -532,6 +540,15 @@ pub(crate) fn show(
                                     }
                                 });
                             ui.end_row();
+                            let l = label(ui, "Picture", t);
+                            widgets::picture_field(
+                                ui,
+                                &mut d.picture,
+                                "optional, shown to listeners",
+                                l.id,
+                                t,
+                            );
+                            ui.end_row();
                             let checked = d.check(view);
                             let line = match &checked {
                                 Err(e) if d.tried => Some((e.clone(), t.danger)),
@@ -651,11 +668,23 @@ mod tests {
             d.hard = false;
             d.tolerance_s = 2.5;
             d.repeat = OneOffRepeat::Weekly;
+            d.picture = "/art/show.png".to_owned();
             d.check(&view).unwrap()
         };
         let mut o = o;
         o.id = 9;
         let back = OneOffDialog::edit(&o, &view).check(&view).unwrap().0;
         assert_eq!(back, o);
+        assert_eq!(back.picture, "/art/show.png", "the picture comes back");
+    }
+
+    #[test]
+    fn a_picture_that_is_not_one_stops_the_one_off() {
+        let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
+        let mut d = url_dialog(&view);
+        d.picture = "/art/show.mp3".to_owned();
+        assert!(d.check(&view).is_err());
+        d.picture.clear();
+        assert!(d.check(&view).is_ok());
     }
 }

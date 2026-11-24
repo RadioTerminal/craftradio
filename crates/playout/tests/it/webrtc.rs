@@ -186,3 +186,72 @@ fn a_logo_that_does_not_load_raises_an_alarm() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// A station whose one item airs at once with the given publish mode and picture. The
+/// picture is a text file with a picture name, so it never loads and says so with an alarm.
+fn station_with_picture(
+    name: &str,
+    publish: radio_model::PublishMode,
+) -> (String, Playout, radio_playout::ManualClock) {
+    let picture =
+        std::env::temp_dir().join(format!("craftradio-item-{name}-{}.png", std::process::id()));
+    std::fs::write(&picture, "text, not a picture").unwrap();
+    let picture = picture.to_string_lossy().into_owned();
+    let mut item = file_item(1, "Show", &wav(name, 2.0, Side::Left), 2.0, 2.0, 0.0);
+    item.meta.title = "Show".into();
+    item.meta.publish = publish;
+    item.meta.custom = "Our show".into();
+    item.meta.picture.clone_from(&picture);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (p, clock) = offline(engine_with(vec![item]), |cfg| {
+        let mut w = WebRtcConfig::new(([127, 0, 0, 1], port).into());
+        w.stun.clear();
+        w.trackers.clear();
+        cfg.webrtc = Some(w);
+        cfg.webrtc_always = true;
+    });
+    (picture, p, clock)
+}
+
+/// True when an alarm about `picture` arrives while 1.5 s of the station play.
+fn picture_alarm(p: &Playout, clock: &radio_playout::ManualClock, picture: &str) -> bool {
+    let alarms = p.alarms().unwrap();
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline {
+        run(p, clock, 0.05);
+        if alarms.try_iter().any(
+            |a| matches!(&a.alarm, radio_playout::Alarm::PictureFailed { path, .. } if path == picture),
+        ) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// An item's own picture is its cover when it shows its tags or its own text, and a hidden
+/// item never reads it. A picture that cannot load raises an alarm, so the alarm shows
+/// which items the station read the picture of.
+#[test]
+fn an_item_picture_is_its_cover() {
+    use radio_model::PublishMode::{Custom, FromTags, Hide};
+    for (name, mode, read) in [
+        ("pic-tags", FromTags, true),
+        ("pic-custom", Custom, true),
+        ("pic-hide", Hide, false),
+    ] {
+        let (picture, p, clock) = station_with_picture(name, mode);
+        assert_eq!(picture_alarm(&p, &clock, &picture), read, "{name}");
+    }
+}
+
+/// A picture that is not one raises an alarm that names the file.
+#[test]
+fn a_broken_item_picture_raises_an_alarm() {
+    let (picture, p, clock) = station_with_picture("pic-broken", radio_model::PublishMode::Custom);
+    assert!(picture_alarm(&p, &clock, &picture), "no picture alarm");
+}

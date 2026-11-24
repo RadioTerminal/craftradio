@@ -205,17 +205,14 @@ impl Core {
             PublishMode::FromTags => Some(NowPlaying {
                 title: shown.meta.title.clone(),
                 artist: shown.meta.artist.clone(),
-                file: match &item.source {
-                    Source::File { path } => Some(std::path::PathBuf::from(path)),
-                    _ => None,
-                },
+                file: cover_file(item),
                 at,
                 listed: true,
             }),
             PublishMode::Custom | PublishMode::Hide => Some(NowPlaying {
                 title: title.clone(),
                 artist: String::new(),
-                file: None,
+                file: cover_file(item),
                 at,
                 listed: shown.meta.publish == PublishMode::Custom,
             }),
@@ -271,13 +268,7 @@ impl Core {
             let Some((title, artist)) = item.and_then(|i| listed_title(i, &name)) else {
                 continue;
             };
-            // Only an item that shows its tags shows its cover.
-            let file = item
-                .filter(|i| i.meta.publish == PublishMode::FromTags)
-                .and_then(|i| match &i.source {
-                    Source::File { path } => Some(std::path::PathBuf::from(path)),
-                    _ => None,
-                });
+            let file = item.and_then(cover_file);
             self.webrtc_played.push_front(Played {
                 title,
                 artist,
@@ -397,6 +388,23 @@ fn listed_title(item: &Item, station_name: &str) -> Option<(String, String)> {
     .filter(|(title, _)| !title.trim().is_empty())
 }
 
+/// The file that gives listeners the cover of `item`. An item that shows its tags or its own
+/// text shows its own picture. Without one, only an item that shows its tags falls back to
+/// the cover in the tags of its audio file. A hidden item has no cover.
+fn cover_file(item: &Item) -> Option<std::path::PathBuf> {
+    let own = item.meta.picture.trim();
+    match item.meta.publish {
+        PublishMode::FromTags | PublishMode::Custom if !own.is_empty() => {
+            Some(std::path::PathBuf::from(own))
+        }
+        PublishMode::FromTags => match &item.source {
+            Source::File { path } => Some(std::path::PathBuf::from(path)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl NowPlaying {
     fn send(&self, server: &WebRtcHandle, played: &std::collections::VecDeque<Played>) {
         let history: Vec<Played> = played.iter().cloned().collect();
@@ -426,5 +434,55 @@ impl Core {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(publish: PublishMode, picture: &str, source: Source) -> Item {
+        let mut item = radio_testkit::track(1, "Show", "Host", 1);
+        item.source = source;
+        item.meta.publish = publish;
+        item.meta.picture = picture.to_owned();
+        item
+    }
+
+    fn file() -> Source {
+        Source::File {
+            path: "/music/show.mp3".into(),
+        }
+    }
+
+    #[test]
+    fn an_item_picture_beats_the_tag_cover_and_a_hidden_item_has_none() {
+        use PublishMode::{FromTags, Hide, KeepPrevious};
+        let own = std::path::PathBuf::from("/art/show.png");
+        for mode in [FromTags, PublishMode::Custom] {
+            assert_eq!(
+                cover_file(&item(mode, "/art/show.png", file())),
+                Some(own.clone())
+            );
+        }
+        for mode in [Hide, KeepPrevious] {
+            assert_eq!(
+                cover_file(&item(mode, "/art/show.png", file())),
+                None,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_picture_only_tags_mode_reads_the_audio_file() {
+        let audio = Some(std::path::PathBuf::from("/music/show.mp3"));
+        assert_eq!(cover_file(&item(PublishMode::FromTags, "", file())), audio);
+        assert_eq!(cover_file(&item(PublishMode::Custom, "  ", file())), None);
+        let stream = Source::Stream {
+            url: "https://relay.example.org/live".into(),
+            keep_alive: true,
+        };
+        assert_eq!(cover_file(&item(PublishMode::FromTags, "", stream)), None);
     }
 }

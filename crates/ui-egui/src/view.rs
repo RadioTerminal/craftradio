@@ -150,6 +150,8 @@ pub struct OneOffView {
     pub hard: bool,
     pub tolerance_s: f32,
     pub repeat: OneOffRepeat,
+    /// A picture file that listeners see as its cover. Empty means none.
+    pub picture: String,
 }
 
 /// What a one-off plays.
@@ -255,6 +257,8 @@ pub struct ItemMeta {
     pub comment: String,
     pub publish: PublishMode,
     pub custom: String,
+    /// The item's own picture file. Empty means none.
+    pub picture: String,
     /// For a stream: true when it reconnects until its planned end. `None` for other items.
     pub keep_alive: Option<bool>,
     /// For a file of the station: the manual gain trim in dB, on top of the loudness gain.

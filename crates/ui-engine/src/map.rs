@@ -68,6 +68,7 @@ pub(crate) fn view_meta(item: &Item, m: &radio_model::ItemMeta, trim: Option<f32
             MPublish::Hide => PublishMode::Hide,
         },
         custom: m.custom.clone(),
+        picture: m.picture.clone(),
         keep_alive: match item.source {
             Source::Stream { keep_alive, .. } => Some(keep_alive),
             _ => None,
@@ -94,6 +95,7 @@ pub(crate) fn model_meta(m: &ItemMeta) -> radio_model::ItemMeta {
             PublishMode::Hide => MPublish::Hide,
         },
         custom: m.custom.clone(),
+        picture: m.picture.clone(),
     }
 }
 
