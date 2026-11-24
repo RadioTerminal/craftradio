@@ -731,7 +731,16 @@ fn connections_over_the_thread_cap_are_closed_at_once() {
         hash_key(MORNING_KEY),
     ))
     .unwrap();
-    let server = Server::start(config).unwrap();
+    // Idle heads never time out during the test, so only the client it drops can free a
+    // thread.
+    let server = Server::start_with(
+        config,
+        Timeouts {
+            head: Duration::from_secs(600),
+            ..Timeouts::default()
+        },
+    )
+    .unwrap();
     let addr = server.local_addr();
     // Idle clients that never finish a head each hold a thread.
     let mut idle: Vec<TcpStream> = (0..34).map(|_| client(addr)).collect();
