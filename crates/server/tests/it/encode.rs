@@ -1,5 +1,6 @@
 use crate::decode::{decode_all, heard, stop};
 use crate::framing::is_bos;
+use radio_codecs::encode::EncodeError;
 use radio_server::{
     BLOCK, Decoded, Listener, ListenerCap, Mount, OutputEncoder, OutputFormat, Received,
     SourceDecoder,
@@ -119,15 +120,26 @@ fn a_higher_bitrate_makes_more_bytes() {
     }
 }
 
-#[test]
-fn a_listener_joining_after_a_restart_starts_at_the_new_chain() {
+/// An Opus output that changed from one title to another, still live.
+struct Changed {
+    mount: Arc<Mount>,
+    _live: OutputEncoder,
+    /// What a listener who joined after the change got.
+    late: Vec<Vec<u8>>,
+    /// What a listener who was there from the start got.
+    early: Vec<Vec<u8>>,
+}
+
+fn across_a_change(
+    change: fn(&mut OutputEncoder, &str, Option<&str>) -> Result<(), EncodeError>,
+) -> Changed {
     let (mount, mut encoder) = output(OutputFormat::Opus, 96);
     let early = mount.listen().unwrap();
     encoder.start("Cloud Signal", Some("Echo")).unwrap();
     for n in 0..10 {
         encoder.encode(&block(n)).unwrap();
     }
-    encoder.start("Paper Harbour", None).unwrap();
+    change(&mut encoder, "Paper Harbour", None).unwrap();
     for n in 10..15 {
         encoder.encode(&block(n)).unwrap();
     }
@@ -135,24 +147,77 @@ fn a_listener_joining_after_a_restart_starts_at_the_new_chain() {
     for n in 15..20 {
         encoder.encode(&block(n)).unwrap();
     }
+    let (mut late_chunks, mut early_chunks) = (Vec::new(), Vec::new());
+    drain(&late, &mut late_chunks);
+    drain(&early, &mut early_chunks);
+    Changed {
+        mount,
+        _live: encoder,
+        late: late_chunks,
+        early: early_chunks,
+    }
+}
 
-    let mut chunks = Vec::new();
-    drain(&late, &mut chunks);
-    assert!(is_bos(&chunks[0]), "the first chunk begins a stream");
-    assert!(contains(&chunks[0], b"OpusHead"));
-    assert!(contains(&chunks[1], b"TITLE=Paper Harbour"), "the new tags");
-    assert!(!chunks.iter().any(|c| contains(c, b"Cloud Signal")));
+/// A late listener starts at the new chain, and the old one was closed before it.
+fn starts_at_the_new_chain(changed: Changed) {
+    let Changed {
+        mount, late, early, ..
+    } = changed;
+    assert!(is_bos(&late[0]), "the first chunk begins a stream");
+    assert!(contains(&late[0], b"OpusHead"));
+    assert!(contains(&late[1], b"TITLE=Paper Harbour"), "the new tags");
+    assert!(!late.iter().any(|c| contains(c, b"Cloud Signal")));
     assert_eq!(mount.stats().title, "Paper Harbour");
     assert_eq!(mount.stats().artist, "");
 
     // A listener who was there all along hears the first chain closed before the second.
-    let mut heard_all = Vec::new();
-    drain(&early, &mut heard_all);
-    let second = heard_all.iter().rposition(|c| is_bos(c)).unwrap();
+    let second = early.iter().rposition(|c| is_bos(c)).unwrap();
     assert!(second > 0);
-    let end_of_stream = heard_all[second - 1][5] & 0x04 != 0;
+    let end_of_stream = early[second - 1][5] & 0x04 != 0;
     assert!(
         end_of_stream,
         "the first chain ends before the second begins"
+    );
+}
+
+#[test]
+fn a_listener_joining_after_a_restart_starts_at_the_new_chain() {
+    starts_at_the_new_chain(across_a_change(OutputEncoder::start));
+}
+
+#[test]
+fn a_listener_joining_after_an_opus_retitle_starts_at_the_new_chain() {
+    starts_at_the_new_chain(across_a_change(OutputEncoder::retitle));
+}
+
+#[test]
+fn an_opus_output_refuses_a_retitle_before_start() {
+    let (_mount, mut encoder) = output(OutputFormat::Opus, 96);
+    assert!(encoder.retitle("Cloud Signal", None).is_err());
+}
+
+/// The bytes a listener gets for two seconds of MP3, retitled after one if `retitle`.
+fn mp3_bytes(retitle: bool) -> Vec<u8> {
+    let (mount, mut encoder) = output(OutputFormat::Mp3, 128);
+    let listener = mount.listen().unwrap();
+    encoder.start("Cloud Signal", None).unwrap();
+    let mut chunks = Vec::new();
+    for n in 0..2 * SECOND {
+        if retitle && n == SECOND {
+            encoder.retitle("Paper Harbour", None).unwrap();
+        }
+        encoder.encode(&block(n)).unwrap();
+        drain(&listener, &mut chunks);
+    }
+    chunks.concat()
+}
+
+#[test]
+fn a_title_change_does_not_break_an_mp3_stream() {
+    let retitled = mp3_bytes(true);
+    assert!(!retitled.is_empty());
+    assert!(
+        retitled == mp3_bytes(false),
+        "the retitle changed the stream"
     );
 }

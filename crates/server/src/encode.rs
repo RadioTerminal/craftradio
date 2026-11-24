@@ -84,9 +84,10 @@ impl OutputEncoder {
         }))
     }
 
-    /// Begins a stretch of audio: for Opus a new chain with these tags, for MP3 a
-    /// fresh encoder. Call before the first block, after a pause, and when the title
-    /// changes (Opus).
+    /// Begins a stretch of audio: call before the first block and after a pause. For Opus
+    /// a new chain with these tags (closing an open one first); for MP3 a fresh encoder,
+    /// so samples held from before the pause are not played after it. For a title change
+    /// in the middle of a stretch, call [`retitle`](Self::retitle) instead.
     pub fn start(&mut self, title: &str, artist: Option<&str>) -> Result<(), EncodeError> {
         match &mut self.0 {
             Codec::Opus {
@@ -95,14 +96,13 @@ impl OutputEncoder {
                 muxer,
                 open,
             } => {
+                let mut fresh = OpusEncoder::new(*kbps)?;
+                let pre_skip = fresh.pre_skip()?;
                 if *open {
-                    // Closes the chain as the app's output does: a silent last packet
-                    // marked as the end, and a fresh encoder for the next chain.
-                    muxer.packet(encoder.encode(&[0.0; BLOCK])?, true)?;
-                    *open = false;
-                    *encoder = OpusEncoder::new(*kbps)?;
+                    close_chain(encoder, muxer, open)?;
                 }
-                muxer.start(title, artist, encoder.pre_skip()?)?;
+                *encoder = fresh;
+                muxer.start(title, artist, pre_skip)?;
                 *open = true;
             }
             Codec::Mp3 { kbps, encoder, .. } => {
@@ -110,6 +110,18 @@ impl OutputEncoder {
             }
         }
         Ok(())
+    }
+
+    /// Changes the title in the middle of a stretch of audio, after [`start`](Self::start).
+    /// For Opus the chain is closed and a new one begins with these tags; for MP3, whose
+    /// stream carries no title, nothing changes and the audio goes on unbroken. Before
+    /// `start`, an Opus output refuses it, as it refuses [`encode`](Self::encode).
+    pub fn retitle(&mut self, title: &str, artist: Option<&str>) -> Result<(), EncodeError> {
+        match &mut self.0 {
+            Codec::Opus { open: false, .. } => Err(not_started()),
+            Codec::Opus { .. } => self.start(title, artist),
+            Codec::Mp3 { .. } => Ok(()),
+        }
     }
 
     /// Encodes one block of exactly `BLOCK` samples into the mount.
@@ -128,9 +140,7 @@ impl OutputEncoder {
                 ..
             } => {
                 if !*open {
-                    return Err(EncodeError::Invalid(
-                        "an Opus output encodes only after start".into(),
-                    ));
+                    return Err(not_started());
                 }
                 muxer.packet(encoder.encode(block)?, false)?;
             }
@@ -140,4 +150,20 @@ impl OutputEncoder {
         }
         Ok(())
     }
+}
+
+/// Why an Opus output refused to go on before [`OutputEncoder::start`].
+fn not_started() -> EncodeError {
+    EncodeError::Invalid("an Opus output takes audio and titles only after start".into())
+}
+
+/// Closes the open chain as the app's output does: a silent last packet marked as the end.
+fn close_chain(
+    encoder: &mut OpusEncoder,
+    muxer: &mut OggMuxer<MountWriter>,
+    open: &mut bool,
+) -> Result<(), EncodeError> {
+    muxer.packet(encoder.encode(&[0.0; BLOCK])?, true)?;
+    *open = false;
+    Ok(())
 }
