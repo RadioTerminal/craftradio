@@ -250,6 +250,11 @@ pub enum StreamStatus {
         in_secs: u64,
         last_error: String,
     },
+    /// The server refused the password (HTTP 401). The source does not try again until it
+    /// gets new settings, so it never walks the server's lockout with a wrong password.
+    Refused {
+        last_error: String,
+    },
     Stopped,
     /// Off air on purpose: the source holds no connection and does not try to connect.
     OffAir,
@@ -490,6 +495,37 @@ impl IcecastClient {
                         Ok(Left::Stop) => break,
                         Ok(Left::Idle) => {}
                         Ok(Left::Again) => delay = 1,
+                        // A refused password waits for new settings: the same one again would
+                        // only count toward the server's lockout.
+                        Err(StreamError::PasswordRefused) => {
+                            status(
+                                &state,
+                                StreamStatus::Refused {
+                                    last_error: StreamError::PasswordRefused.to_string(),
+                                },
+                            );
+                            loop {
+                                // Nothing goes out: the audio that comes meanwhile is dropped.
+                                while frames.pop().is_ok() {}
+                                match rx.recv_timeout(OFF_AIR_DRAIN) {
+                                    Ok(message) => {
+                                        if !wanted.apply(message) || !settle(&rx, &mut wanted) {
+                                            status(&state, StreamStatus::Stopped);
+                                            return;
+                                        }
+                                        if wanted.changed {
+                                            break;
+                                        }
+                                    }
+                                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                        status(&state, StreamStatus::Stopped);
+                                        return;
+                                    }
+                                }
+                            }
+                            delay = 1;
+                        }
                         Err(error) => {
                             status(
                                 &state,
@@ -594,13 +630,13 @@ impl LateReply {
                 Ok(n) => {
                     self.bytes.extend_from_slice(&part[..n]);
                     if self.bytes.contains(&b'\n') || self.bytes.len() >= 8192 {
-                        let code = status_code(&self.bytes);
-                        if code == "200" {
-                            return Ok(true);
-                        }
-                        return Err(StreamError::Invalid(format!(
-                            "source rejected: HTTP {code}"
-                        )));
+                        return match status_code(&self.bytes).as_str() {
+                            "200" => Ok(true),
+                            "401" => Err(StreamError::PasswordRefused),
+                            code => Err(StreamError::Invalid(format!(
+                                "source rejected: HTTP {code}"
+                            ))),
+                        };
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -680,6 +716,9 @@ fn connect(cfg: &SourceConfig, method: &str) -> Result<Source, StreamError> {
     let code = status_code(&response);
     if code == "405" && method == "PUT" {
         return connect(cfg, "SOURCE");
+    }
+    if code == "401" {
+        return Err(StreamError::PasswordRefused);
     }
     if code != "200" {
         return Err(StreamError::Invalid(format!(

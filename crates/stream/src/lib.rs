@@ -28,6 +28,10 @@ pub const MP3: bool = cfg!(feature = "mp3");
 pub enum StreamError {
     #[error("{0}")]
     Invalid(String),
+    /// The server refused the source's password (HTTP 401). Trying the same password again
+    /// would only count toward the server's lockout.
+    #[error("source rejected: HTTP 401, the server refused the password")]
+    PasswordRefused,
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
