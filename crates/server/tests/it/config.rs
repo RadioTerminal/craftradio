@@ -61,8 +61,19 @@ fn rejects_slug_that_is_not_a_path_segment() {
 
 #[test]
 fn rejects_unknown_field() {
-    let text = TWO.replace("key_hash = \"sha256:00\"", "key = \"plain\"");
-    assert!(matches!(Config::parse(&text), Err(ServerError::Config(_))));
+    let on_station = TWO.replace(
+        "key_hash = \"sha256:00\"",
+        "key_hash = \"sha256:00\"\nkey = \"plain\"",
+    );
+    assert!(matches!(
+        Config::parse(&on_station),
+        Err(ServerError::Config(_))
+    ));
+    let at_top = TWO.replacen("[[station]]", "media = \"x\"\n[[station]]", 1);
+    assert!(matches!(
+        Config::parse(&at_top),
+        Err(ServerError::Config(_))
+    ));
 }
 
 #[test]
