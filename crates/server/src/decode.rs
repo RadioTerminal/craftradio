@@ -35,6 +35,14 @@ pub enum DecodeError {
     /// The bytes are not a stream the decoders read.
     #[error("the source cannot be decoded: {0}")]
     Unreadable(String),
+    /// Only from [`SourceDecoder::open`]: the source ended, or `stop` was set, before the
+    /// stream's format was known.
+    #[error("the source ended before its format was known")]
+    Ended,
+    /// Only from [`SourceDecoder::open`]: the tap fell behind and the mount dropped it
+    /// before the stream's format was known; a new tap may do better.
+    #[error("the tap fell behind before the stream's format was known")]
+    Overrun,
 }
 
 /// What [`SourceDecoder::next`] did.
@@ -148,6 +156,8 @@ impl std::fmt::Debug for SourceDecoder {
 
 impl SourceDecoder {
     /// Reads the tap until the stream's format is known. `stop` ends any wait.
+    /// [`DecodeError::Ended`] when the source ended or `stop` was set first,
+    /// [`DecodeError::Overrun`] when the tap fell behind first.
     pub fn open(tap: Listener, stop: Arc<AtomicBool>) -> Result<Self, DecodeError> {
         let end = Arc::new(OnceLock::new());
         let source = TapSource {
@@ -166,15 +176,8 @@ impl SourceDecoder {
                 MetadataOptions::default(),
             )
             .map_err(|error| match end.get() {
-                Some(End::Stopped) => {
-                    DecodeError::Unreadable("stopped before the stream's format was known".into())
-                }
-                Some(End::Ended) => {
-                    DecodeError::Unreadable("the source ended before its format was known".into())
-                }
-                Some(End::Overrun) => DecodeError::Unreadable(
-                    "the tap fell behind before the stream's format was known".into(),
-                ),
+                Some(End::Stopped | End::Ended) => DecodeError::Ended,
+                Some(End::Overrun) => DecodeError::Overrun,
                 None => DecodeError::Unreadable(error.to_string()),
             })?;
         let codecs = radio_codecs::registry();

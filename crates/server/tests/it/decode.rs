@@ -176,13 +176,90 @@ fn stop_ends_a_decoder_waiting_on_a_silent_source() {
     let (done, opened) = mpsc::channel();
     let shared = Arc::clone(&flag);
     thread::spawn(move || {
-        let _ = done.send(SourceDecoder::open(tap, shared).is_ok());
+        let _ = done.send(SourceDecoder::open(tap, shared).err());
     });
     // Gives `open` time to start waiting; what the test proves is the deadline below.
     thread::sleep(Duration::from_millis(300));
     flag.store(true, Ordering::Release);
-    let opened = opened
+    let refused = opened
         .recv_timeout(Duration::from_secs(2))
         .expect("open returned once stop was set");
-    assert!(!opened, "a source that sent nothing did not open");
+    assert_eq!(
+        refused,
+        Some(DecodeError::Ended),
+        "a source that sent nothing did not open, and was not called unreadable"
+    );
+}
+
+#[test]
+fn a_source_that_ends_before_its_format_is_known_is_not_called_unreadable() {
+    let mount = Mount::new(ListenerCap::new(10));
+    let guard = mount
+        .begin(Format::Ogg, "Morning Station".into(), None)
+        .unwrap();
+    let tap = mount.tap().unwrap();
+    drop(guard);
+    let refused = SourceDecoder::open(tap, stop()).err();
+    assert_eq!(refused, Some(DecodeError::Ended));
+}
+
+#[test]
+fn a_tap_that_falls_behind_before_the_format_is_known_is_an_overrun() {
+    let mount = Mount::new(ListenerCap::new(10));
+    let mut guard = mount
+        .begin(Format::Ogg, "Morning Station".into(), None)
+        .unwrap();
+    let tap = mount.tap().unwrap();
+    let mut source = OggSource::new("Cloud Signal", None);
+    // More pages than a tap's queue holds, before the decoder reads any.
+    source.audio(300 * 20);
+    for piece in source.take().chunks(4096) {
+        guard.write(piece);
+    }
+    let refused = SourceDecoder::open(tap, stop()).err();
+    assert_eq!(refused, Some(DecodeError::Overrun));
+}
+
+#[test]
+fn a_tap_joined_in_the_middle_of_an_ogg_chain_decodes() {
+    let mount = Mount::new(ListenerCap::new(10));
+    let mut guard = mount
+        .begin(Format::Ogg, "Morning Station".into(), None)
+        .unwrap();
+    let mut source = OggSource::new("Cloud Signal", None);
+    // Many pages into the chain, as a re-tap after an overrun or a pause finds it.
+    source.audio(1000 * 20);
+    for piece in source.take().chunks(4096) {
+        guard.write(piece);
+    }
+    let tap = mount.tap().unwrap();
+    source.audio(PACKETS * 20);
+    let feeder = feed(guard, source.take());
+
+    let mut decoder = SourceDecoder::open(tap, stop()).expect("the stream opens");
+    let (samples, end) = decode_all(&mut decoder);
+    feeder.join().unwrap();
+    assert!(matches!(end, Decoded::Ended));
+    assert!(heard(&samples), "the audio after the join comes out");
+}
+
+#[test]
+fn a_tap_joined_in_the_middle_of_an_mp3_stream_decodes() {
+    let mount = Mount::new(ListenerCap::new(10));
+    let mut guard = mount
+        .begin(Format::Mp3, "Morning Station".into(), None)
+        .unwrap();
+    let tone = mp3_tone(48_000, 3000);
+    let (before, after) = tone.split_at(tone.len() * 2 / 3);
+    for piece in before.chunks(4096) {
+        guard.write(piece);
+    }
+    let tap = mount.tap().unwrap();
+    let feeder = feed(guard, after.to_vec());
+
+    let mut decoder = SourceDecoder::open(tap, stop()).expect("the stream opens");
+    let (samples, end) = decode_all(&mut decoder);
+    feeder.join().unwrap();
+    assert!(matches!(end, Decoded::Ended));
+    assert!(heard(&samples), "the audio after the join comes out");
 }
