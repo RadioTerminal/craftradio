@@ -1,5 +1,5 @@
 use crate::decode::{heard, stop};
-use crate::framing::{OggSource, granule};
+use crate::framing::{OggSource, granule, is_bos, pages};
 use crate::support::PATIENCE;
 use craft_audio::mp3::{Config, Encoder};
 use radio_server::{
@@ -458,9 +458,52 @@ fn a_pause_drops_what_was_decoded_before_it() {
         }
     };
     assert!(
-        first_audio <= 2 * 960,
-        "the first audio page is at sample {first_audio} of its chain"
+        first_audio <= 960,
+        "the first audio page is at sample {first_audio} of its chain, not its first packet"
     );
+    finish_promptly(transcoder);
+}
+
+#[test]
+fn a_listener_joining_after_a_pause_gets_audio_before_any_chain_ends() {
+    let station = station();
+    let pusher = Pusher::start(&station.pushed, Source::Ogg);
+    let transcoder = station.spawn();
+    eventually("the outputs went live", || station.outputs_live());
+    let opus = station.output("opus");
+    for round in 0..3 {
+        let mut ear = Ear::join(opus);
+        assert!(ear.hears(), "join {round} hears the tone");
+        drop(ear);
+        station.settle(&pusher);
+
+        // Each page as (begins a chain, ends a chain, position).
+        let listener = opus.listen().unwrap();
+        let mut seen = Vec::new();
+        while seen.iter().filter(|&&(_, _, at)| at > 0).count() < 10 {
+            match listener.recv(PATIENCE) {
+                Received::Chunk(chunk) => seen.extend(
+                    pages(&chunk)
+                        .into_iter()
+                        .map(|page| (is_bos(page), page[5] & 0x04 != 0, granule(page))),
+                ),
+                other => panic!("the output stopped: {other:?}"),
+            }
+        }
+        assert!(
+            seen[0].0,
+            "join {round} starts at a chain's start: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|&(_, ends, _)| ends),
+            "join {round}: a chain ended before or between its first packets: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter().filter(|&&(begins, _, _)| begins).count(),
+            1,
+            "join {round} gets one chain: {seen:?}"
+        );
+    }
     finish_promptly(transcoder);
 }
 

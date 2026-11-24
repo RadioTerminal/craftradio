@@ -50,13 +50,28 @@ impl Write for MountWriter {
 /// Encodes one output of a station into its mount.
 pub struct OutputEncoder(Codec);
 
+/// An open Opus chain: the tags it began with, and whether it has carried audio yet.
+struct Chain {
+    title: String,
+    artist: Option<String>,
+    heard: bool,
+}
+
+impl Chain {
+    /// Whether a new stretch with these tags may go on in this chain: it has carried no
+    /// audio, so its encoder is still fresh, and its tags are the same.
+    fn reusable(&self, title: &str, artist: Option<&str>) -> bool {
+        !self.heard && self.title == title && self.artist.as_deref() == artist
+    }
+}
+
 enum Codec {
     Opus {
         kbps: u32,
         encoder: OpusEncoder,
         muxer: OggMuxer<MountWriter>,
-        /// Whether a chain has begun and not yet been closed.
-        open: bool,
+        /// The chain that has begun and not yet been closed.
+        chain: Option<Chain>,
     },
     Mp3 {
         kbps: u32,
@@ -74,7 +89,7 @@ impl OutputEncoder {
                 kbps,
                 encoder: OpusEncoder::new(kbps)?,
                 muxer: OggMuxer::new(sink),
-                open: false,
+                chain: None,
             },
             OutputFormat::Mp3 => Codec::Mp3 {
                 kbps,
@@ -85,25 +100,37 @@ impl OutputEncoder {
     }
 
     /// Begins a stretch of audio: call before the first block and after a pause. For Opus
-    /// a new chain with these tags (closing an open one first); for MP3 a fresh encoder,
-    /// so samples held from before the pause are not played after it. For a title change
-    /// in the middle of a stretch, call [`retitle`](Self::retitle) instead.
+    /// a new chain with these tags (closing an open one first), unless the open chain has
+    /// carried no audio yet and has the same tags: it goes on, so a listener who joined it
+    /// is not handed a chain of one silent packet. For MP3 a fresh encoder, so samples
+    /// held from before the pause are not played after it. For a title change in the
+    /// middle of a stretch, call [`retitle`](Self::retitle) instead.
     pub fn start(&mut self, title: &str, artist: Option<&str>) -> Result<(), EncodeError> {
         match &mut self.0 {
             Codec::Opus {
                 kbps,
                 encoder,
                 muxer,
-                open,
+                chain,
             } => {
+                if chain
+                    .as_ref()
+                    .is_some_and(|chain| chain.reusable(title, artist))
+                {
+                    return Ok(());
+                }
                 let mut fresh = OpusEncoder::new(*kbps)?;
                 let pre_skip = fresh.pre_skip()?;
-                if *open {
-                    close_chain(encoder, muxer, open)?;
+                if chain.is_some() {
+                    close_chain(encoder, muxer, chain)?;
                 }
                 *encoder = fresh;
                 muxer.start(title, artist, pre_skip)?;
-                *open = true;
+                *chain = Some(Chain {
+                    title: title.to_owned(),
+                    artist: artist.map(str::to_owned),
+                    heard: false,
+                });
             }
             Codec::Mp3 { kbps, encoder, .. } => {
                 *encoder = Mp3Encoder::new(*kbps)?;
@@ -118,7 +145,7 @@ impl OutputEncoder {
     /// `start`, an Opus output refuses it, as it refuses [`encode`](Self::encode).
     pub fn retitle(&mut self, title: &str, artist: Option<&str>) -> Result<(), EncodeError> {
         match &mut self.0 {
-            Codec::Opus { open: false, .. } => Err(not_started()),
+            Codec::Opus { chain: None, .. } => Err(not_started()),
             Codec::Opus { .. } => self.start(title, artist),
             Codec::Mp3 { .. } => Ok(()),
         }
@@ -136,12 +163,13 @@ impl OutputEncoder {
             Codec::Opus {
                 encoder,
                 muxer,
-                open,
+                chain,
                 ..
             } => {
-                if !*open {
+                let Some(chain) = chain.as_mut() else {
                     return Err(not_started());
-                }
+                };
+                chain.heard = true;
                 muxer.packet(encoder.encode(block)?, false)?;
             }
             Codec::Mp3 { encoder, sink, .. } => {
@@ -161,9 +189,9 @@ fn not_started() -> EncodeError {
 fn close_chain(
     encoder: &mut OpusEncoder,
     muxer: &mut OggMuxer<MountWriter>,
-    open: &mut bool,
+    chain: &mut Option<Chain>,
 ) -> Result<(), EncodeError> {
     muxer.packet(encoder.encode(&[0.0; BLOCK])?, true)?;
-    *open = false;
+    *chain = None;
     Ok(())
 }
