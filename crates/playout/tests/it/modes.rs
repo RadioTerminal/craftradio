@@ -1032,3 +1032,40 @@ fn pick_only_rule_edit_does_not_raise_hard_event_locked() {
             .any(|a| matches!(a.alarm, radio_playout::Alarm::HardEventLocked { .. }))
     );
 }
+
+/// Continue after a pause moves the rest of the item later: the next item waits for the
+/// handover and does not start on top of the item that continues.
+#[test]
+fn continue_after_a_pause_keeps_the_next_item_behind() {
+    let one = file_item(1, "One", &wav("c-one", 4.0, Side::Left), 4.0, 3.5, 0.5);
+    let two = file_item(2, "Two", &wav("c-two", 2.0, Side::Right), 2.0, 1.5, 0.5);
+    let (p, clock) = offline(engine_with(vec![one, two]), |_| {});
+    run(&p, &clock, 1.0);
+    let _ = p
+        .send(Command::DeckPause {
+            deck: 0,
+            expect_item: Some(radio_model::ItemId(1)),
+        })
+        .unwrap();
+    run(&p, &clock, 2.0);
+    let _ = p
+        .send(Command::DeckPlay {
+            deck: 0,
+            expect_item: Some(radio_model::ItemId(1)),
+            fade_in: Duration::ZERO,
+        })
+        .unwrap();
+    let after = run(&p, &clock, 4.0);
+
+    assert!(
+        first_audible(&after, 0, 0).is_some(),
+        "item one did not continue"
+    );
+    // One had 2.5 s left to its segue when it paused.
+    let next = first_audible(&after, 1, 0).expect("item two never started");
+    assert!(
+        next > 2 * SR,
+        "item two started {next} frames after the continue, over item one"
+    );
+    assert!(next < 3 * SR, "item two started late, at frame {next}");
+}

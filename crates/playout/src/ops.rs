@@ -3,7 +3,7 @@
 
 use crate::Reply;
 use crate::alarm::Alarm;
-use crate::core::{CUT_FADE, Core, Phase, Slot};
+use crate::core::{CUT_FADE, Core, Phase, Slot, add, since};
 use crate::view::DeckRole;
 use crate::work::Done;
 use jiff::Timestamp;
@@ -492,6 +492,8 @@ impl Core {
             let fade = self.slots[i]
                 .as_ref()
                 .filter(|s| !s.not_started() && !s.end_sent && s.role != DeckRole::Bed)
+                // A paused item stays as the operator left it.
+                .filter(|s| s.phase != Phase::Paused)
                 .map(Self::early_fade);
             if let Some(over) = fade {
                 self.fade_at(i, at, over, true);
@@ -503,16 +505,31 @@ impl Core {
 
     /// Follows pause and continue in the mixer.
     pub(crate) fn poll_states(&mut self) {
+        let now = self.clock.now();
         for i in 0..4 {
             let state = self.mixer.deck_state(DeckId::ALL[i]);
             if let Some(s) = &mut self.slots[i] {
                 match (s.phase, state) {
                     (Phase::Playing, DeckState::Paused) => {
                         s.phase = Phase::Paused;
-                        // A pause moves the planned end; the item now plays to its file end.
-                        s.end_sent = true;
+                        s.paused_at = Some(now);
                     }
-                    (Phase::Paused, DeckState::Playing) => s.phase = Phase::Playing,
+                    (Phase::Paused, DeckState::Playing) => {
+                        s.phase = Phase::Playing;
+                        // The rest of the item plays later by the length of the pause, so
+                        // its planned end and the item after it move with it. A live
+                        // input keeps its end on the clock.
+                        let paused = s.paused_at.take().map(|at| since(at, now));
+                        let live = matches!(s.item.source, Source::LiveInput { .. });
+                        if let (Some(by), false) = (paused, live) {
+                            s.started = s.started.map(|t| add(t, by));
+                            if !s.is_hard() {
+                                s.entry.start = add(s.entry.start, by);
+                            }
+                            self.dirty = true;
+                            self.save_due = true;
+                        }
+                    }
                     _ => {}
                 }
             }

@@ -160,3 +160,53 @@ fn late_operator_start_does_not_extend_the_live_interval() {
         "late start extended the live interval"
     );
 }
+
+static UNPLUGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct Failing(rtrb::Producer<f32>);
+impl Capture for Failing {
+    fn error(&mut self) -> Option<String> {
+        while self.0.slots() >= 2 {
+            self.0.push(0.2).unwrap();
+            self.0.push(0.0).unwrap();
+        }
+        UNPLUGGED
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then(|| "Input device unplugged".to_owned())
+    }
+}
+fn failing(_: &str, _: [u16; 2], tx: rtrb::Producer<f32>) -> Result<Box<dyn Capture>, String> {
+    Ok(Box::new(Failing(tx)))
+}
+
+/// A live input that fails on air frees its deck, so the next item plays.
+#[test]
+fn a_live_input_that_fails_on_air_gives_way_to_the_next_item() {
+    let mut input = live("Test input");
+    input.planned_len = Some(Duration::from_secs(30));
+    let next = file_item(
+        2,
+        "Next",
+        &wav("live-next", 3.0, Side::Right),
+        3.0,
+        2.5,
+        0.5,
+    );
+    let (p, clock) = offline(engine_with(vec![input, next]), |cfg| {
+        cfg.open_input = failing
+    });
+    let before = run(&p, &clock, 0.5);
+    assert!(
+        peak(&before, 0, SR / 10, SR / 2) > 0.1,
+        "the input is on air"
+    );
+    UNPLUGGED.store(true, std::sync::atomic::Ordering::Relaxed);
+    let out = run(&p, &clock, 2.0);
+    assert!(
+        p.snapshot().decks.iter().all(|d| d.item != Some(ItemId(1))),
+        "the failed live input still holds a deck"
+    );
+    assert!(
+        first_audible(&out, 1, 0).is_some(),
+        "the next item never started"
+    );
+}

@@ -106,3 +106,128 @@ fn emergency_fallback_returns_to_the_plan() {
         })
     );
 }
+
+/// Fallback files that do not open are tried once each, and then an alarm says that the
+/// fallback has nothing to play.
+#[test]
+fn unreadable_fallback_files_raise_an_alarm() {
+    let quiet = file_item(
+        1,
+        "Quiet",
+        &wav("u-one", 10.0, Side::Silent),
+        10.0,
+        9.5,
+        0.0,
+    );
+    let first = wav("u-bad-one", 0.1, Side::Both);
+    let folder = std::path::Path::new(&first).parent().unwrap().to_path_buf();
+    std::fs::write(&first, b"not audio").unwrap();
+    std::fs::write(folder.join("u-bad-two.wav"), b"not audio either").unwrap();
+    let (p, clock) = offline(engine_with(vec![quiet]), |cfg| {
+        cfg.mixer.silence.after = Duration::from_millis(500);
+        cfg.fallback_folder = Some(folder);
+    });
+    run(&p, &clock, 3.0);
+
+    let view = p.snapshot();
+    assert!(view.emergency);
+    let reasons: Vec<&str> = view
+        .alarms
+        .iter()
+        .filter_map(|a| match &a.alarm {
+            Alarm::EmergencyFallback { reason } => Some(reason.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        reasons.iter().any(|r| r.contains("did not open")),
+        "no alarm for the unreadable fallback files: {reasons:?}"
+    );
+}
+
+/// Silence that began while the station was quiet on purpose counts as dead air once the
+/// station is in `Auto` again and still has nothing to play.
+#[test]
+fn silence_from_manual_mode_is_dead_air_after_the_switch_to_auto() {
+    let gone = file_item(1, "Gone", "/nonexistent/gone.wav", 3.0, 2.5, 0.5);
+    let backup = wav("s-backup", 5.0, Side::Both);
+    let folder = std::path::Path::new(&backup)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let mut engine = engine_with(vec![gone]);
+    engine
+        .dispatch(radio_engine::Command::ModeSet {
+            mode: radio_engine::Mode::Manual,
+        })
+        .unwrap();
+    let (p, clock) = offline(engine, |cfg| {
+        cfg.mixer.silence.after = Duration::from_millis(500);
+        cfg.fallback_folder = Some(folder);
+    });
+    run(&p, &clock, 1.5);
+    assert!(!p.snapshot().emergency, "Manual mode is quiet on purpose");
+    let _ = p
+        .send(radio_engine::Command::ModeSet {
+            mode: radio_engine::Mode::Auto,
+        })
+        .unwrap();
+    let program = run(&p, &clock, 3.0);
+
+    assert!(
+        p.snapshot()
+            .alarms
+            .iter()
+            .any(|a| a.alarm == Alarm::DeadAir),
+        "no dead air alarm after the switch to Auto"
+    );
+    assert!(
+        first_audible(&program, 0, 0).is_some(),
+        "the fallback never played"
+    );
+}
+
+/// An operator start after a long quiet time in `Assist` mode is not dead air: the item
+/// plays on, and no alarm comes.
+#[test]
+fn an_operator_start_after_a_quiet_time_is_not_dead_air() {
+    let one = file_item(1, "One", &wav("a-one", 4.0, Side::Left), 4.0, 3.5, 0.5);
+    let backup = wav("a-backup", 5.0, Side::Right);
+    let folder = std::path::Path::new(&backup)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let mut engine = engine_with(vec![one]);
+    engine
+        .dispatch(radio_engine::Command::ModeSet {
+            mode: radio_engine::Mode::Assist,
+        })
+        .unwrap();
+    let (p, clock) = offline(engine, |cfg| {
+        cfg.mixer.silence.after = Duration::from_millis(500);
+        cfg.fallback_folder = Some(folder);
+    });
+    run(&p, &clock, 1.5);
+    let deck = p
+        .snapshot()
+        .decks
+        .iter()
+        .position(|d| d.item == Some(radio_model::ItemId(1)))
+        .expect("item one waits on a deck");
+    let _ = p
+        .send(radio_engine::Command::DeckPlay {
+            deck: deck as u8,
+            expect_item: Some(radio_model::ItemId(1)),
+            fade_in: Duration::ZERO,
+        })
+        .unwrap();
+    let program = run(&p, &clock, 2.0);
+
+    assert!(
+        peak(&program, 0, SR, 2 * SR) > 0.1,
+        "the item the operator started did not stay on air"
+    );
+    let view = p.snapshot();
+    assert!(!view.emergency);
+    assert!(view.alarms.iter().all(|a| a.alarm != Alarm::DeadAir));
+}
