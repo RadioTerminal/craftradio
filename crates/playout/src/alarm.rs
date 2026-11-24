@@ -72,6 +72,9 @@ pub enum Alarm {
     OutputFallback { reason: String },
     /// Writing the as-played log failed.
     LogFailed { reason: String },
+    /// A picture (the station logo or an item's picture) does not load, so listeners do
+    /// not get it.
+    PictureFailed { path: String, reason: String },
     /// An item or command needs something this build does not do yet.
     Unsupported { what: String },
 }

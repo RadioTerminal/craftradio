@@ -337,6 +337,35 @@ impl Core {
         self.webrtc = Some(server);
         self.webrtc_bind = Some(bind);
     }
+
+    /// Gives the running WebRTC server the station name and logo when they change, and
+    /// raises an alarm for each picture it could not load.
+    pub(crate) fn sync_brand(&mut self, now: Timestamp) {
+        let Some(server) = &self.webrtc else {
+            self.brand_sent = None;
+            return;
+        };
+        let state = self.engine.state();
+        let brand = (
+            state
+                .station_name()
+                .unwrap_or_else(|| self.cfg.station_name.clone()),
+            state.station_logo(),
+        );
+        if self.brand_sent.as_ref() != Some(&brand) {
+            server.set_brand(brand.0.clone(), brand.1.clone());
+            self.brand_sent = Some(brand);
+        }
+        for error in server.take_picture_errors() {
+            self.alarms.raise(
+                now,
+                Alarm::PictureFailed {
+                    path: error.path.to_string_lossy().into_owned(),
+                    reason: error.reason,
+                },
+            );
+        }
+    }
 }
 
 /// What plays now, as WebRTC listeners see it.

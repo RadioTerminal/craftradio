@@ -104,3 +104,85 @@ fn webrtc_meter_is_silent_with_no_listeners() {
         "no sound card"
     );
 }
+
+/// The body of `GET path` on the listener server.
+fn http_get(port: u16, path: &str) -> String {
+    use std::io::{Read, Write};
+    let mut conn = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        conn,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut reply = String::new();
+    conn.read_to_string(&mut reply).unwrap();
+    reply
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn set_branding(p: &Playout, key: &str, value: &str) {
+    p.dispatch(Command::SettingsSet {
+        part: radio_model::BRANDING_PART.into(),
+        key: key.into(),
+        value: value.into(),
+    })
+    .unwrap();
+}
+
+fn branded_station() -> (u16, Playout, radio_playout::ManualClock) {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (p, clock) = offline(engine_with(Vec::new()), |cfg| {
+        let mut w = WebRtcConfig::new(([127, 0, 0, 1], port).into());
+        w.stun.clear();
+        w.trackers.clear();
+        cfg.webrtc = Some(w);
+        cfg.webrtc_always = true;
+    });
+    until(&p, &clock, listening);
+    (port, p, clock)
+}
+
+/// The brand that listeners get follows the station name in the settings.
+#[test]
+fn the_brand_follows_the_settings() {
+    let (port, p, clock) = branded_station();
+    for name in ["Radio Lipa", "Radio Hrast"] {
+        set_branding(&p, radio_model::BRANDING_NAME_KEY, name);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !http_get(port, "/brand").contains(name) {
+            assert!(Instant::now() < deadline, "the brand never became {name}");
+            run(&p, &clock, 0.05);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// A logo that is not a picture raises an alarm that names the file.
+#[test]
+fn a_logo_that_does_not_load_raises_an_alarm() {
+    let (_port, p, clock) = branded_station();
+    let alarms = p.alarms().unwrap();
+    let logo = std::env::temp_dir().join("craftradio-not-a-picture.txt");
+    std::fs::write(&logo, "this is text, not a picture").unwrap();
+    let logo = logo.to_string_lossy().into_owned();
+    set_branding(&p, radio_model::BRANDING_LOGO_KEY, &logo);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        run(&p, &clock, 0.05);
+        let found = alarms.try_iter().any(
+            |a| matches!(&a.alarm, radio_playout::Alarm::PictureFailed { path, .. } if *path == logo),
+        );
+        if found {
+            return;
+        }
+        assert!(Instant::now() < deadline, "no picture alarm was raised");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

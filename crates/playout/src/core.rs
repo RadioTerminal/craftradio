@@ -435,6 +435,8 @@ pub(crate) struct Core {
     pub(crate) output_meters: crate::OutputMeters,
     /// The address of the running server.
     pub(crate) webrtc_bind: Option<std::net::SocketAddr>,
+    /// The name and logo that the running server has, so a change is sent once.
+    pub(crate) brand_sent: Option<(String, Option<std::path::PathBuf>)>,
     /// The thread that stops the last server and frees its ports.
     pub(crate) webrtc_stopping: Option<std::thread::JoinHandle<()>>,
     /// What plays now, for a server that starts later.
@@ -579,6 +581,7 @@ impl Core {
             webrtc_tap,
             output_meters: meters,
             webrtc_bind: None,
+            brand_sent: None,
             webrtc_stopping: None,
             webrtc_now: None,
             webrtc_played: std::collections::VecDeque::new(),
@@ -825,6 +828,7 @@ impl Core {
             self.alarms.raise(now, Alarm::DeviceLost { name: reason });
         }
         self.sync_webrtc();
+        self.sync_brand(now);
         self.ticks += 1;
         if self.ticks == 1 {
             self.seed_history(now);
