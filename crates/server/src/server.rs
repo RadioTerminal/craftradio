@@ -13,7 +13,7 @@ use crate::lockout::Lockout;
 use crate::mount::{ListenError, Mount, Received};
 use crate::stats::status_json;
 use rustls::ServerConfig;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,9 +40,8 @@ const RESERVED_PER_STATION: usize = 2;
 const HEADS_PER_ADDRESS: usize = 8;
 /// How long [`ServerHandle::stop`] waits for connection threads to finish.
 const STOP_WAIT: Duration = Duration::from_secs(2);
-/// After a refusal, how long the rest of the request is read and thrown away, so that
-/// closing with unread bytes does not reset the connection before the reply is read.
-const LINGER: Duration = Duration::from_millis(500);
+/// The most of a refused request's rest that is read and thrown away (see
+/// [`Timeouts::linger`]).
 const LINGER_BYTES: usize = 64 << 10;
 /// The shortest socket timeout; a zero timeout is an error to the OS.
 const MIN_TIMEOUT: Duration = Duration::from_millis(1);
@@ -68,6 +67,10 @@ pub struct Timeouts {
     pub source_silence: Duration,
     /// For a listener to take the next write before it counts as gone.
     pub listener_write: Duration,
+    /// After a refusal, how long the rest of the request is read and thrown away, so that
+    /// closing with unread bytes does not reset the connection before the reply is read.
+    /// A connection doing this is answered: at the cap it is the first to be cut off.
+    pub linger: Duration,
 }
 
 impl Default for Timeouts {
@@ -76,6 +79,7 @@ impl Default for Timeouts {
             head: Duration::from_secs(5),
             source_silence: Duration::from_secs(10),
             listener_write: Duration::from_secs(10),
+            linger: Duration::from_millis(500),
         }
     }
 }
@@ -252,8 +256,12 @@ struct Connections {
     in_head: BTreeMap<u64, Option<IpAddr>>,
     /// How many of `in_head` each address has (the trusted proxy left out).
     heads: HashMap<IpAddr, usize>,
-    /// Connections whose head was cut off to make room: their sockets are shut and their
-    /// threads about to end. They count toward no limit and are never let on.
+    /// Connections that were refused and answered, and are only reading what is left of
+    /// the request before closing, oldest first. They hold a thread, but nothing else.
+    lingering: BTreeSet<u64>,
+    /// Connections cut off to make room (a head still arriving, or a refusal lingering):
+    /// their sockets are shut and their threads about to end. They count toward no limit
+    /// and are never let on.
     evicted: HashSet<u64>,
     /// The connections holding a station's reserved place: id to station slug.
     reserved: HashMap<u64, String>,
@@ -265,13 +273,17 @@ impl Connections {
         self.open.len().saturating_sub(self.evicted.len())
     }
 
-    /// Whether connection `id`, its head read, fits in the public part of the pool.
+    /// Whether connection `id`, its head read, fits in the public part of the pool. A
+    /// refusal that lingers does not hold a public place: it has been answered.
     fn public_room(&self, id: u64, public_connections: usize) -> bool {
         let public = self
             .open
             .keys()
             .filter(|open| {
-                **open != id && !self.reserved.contains_key(*open) && !self.evicted.contains(*open)
+                **open != id
+                    && !self.reserved.contains_key(*open)
+                    && !self.evicted.contains(*open)
+                    && !self.lingering.contains(*open)
             })
             .count();
         public < public_connections
@@ -300,20 +312,34 @@ impl Connections {
         !self.evicted.contains(&id)
     }
 
-    /// Makes room for a new connection at the cap by cutting off the oldest head still
-    /// arriving, one from a client address before one from the trusted proxy. A
-    /// connection whose head is read is never cut off. False if no head is arriving.
-    fn evict_oldest_head(&mut self) -> bool {
-        let oldest = self
-            .in_head
-            .iter()
-            .find(|(_, addr)| addr.is_some())
-            .or_else(|| self.in_head.iter().next())
-            .map(|(id, _)| *id);
+    /// Connection `id` was refused and answered, and lingers: it gives up any reserved
+    /// place it held. False if it was cut off meanwhile.
+    fn begin_linger(&mut self, id: u64) -> bool {
+        if self.evicted.contains(&id) {
+            return false;
+        }
+        self.reserved.remove(&id);
+        self.lingering.insert(id);
+        true
+    }
+
+    /// Makes room for a new connection at the cap by cutting off, oldest first, a refusal
+    /// that lingers, else a head still arriving from a client address, else one from the
+    /// trusted proxy. A connection whose head is read and that was not refused is never
+    /// cut off. False if there is nothing to cut off.
+    fn evict_one(&mut self) -> bool {
+        let oldest = self.lingering.first().copied().or_else(|| {
+            self.in_head
+                .iter()
+                .find(|(_, addr)| addr.is_some())
+                .or_else(|| self.in_head.iter().next())
+                .map(|(id, _)| *id)
+        });
         let Some(id) = oldest else {
             return false;
         };
         self.end_head(id);
+        self.lingering.remove(&id);
         self.evicted.insert(id);
         if let Some(stream) = self.open.get(&id) {
             // Its read fails at once, and its thread ends.
@@ -337,9 +363,10 @@ impl Shared {
     }
 
     /// Gives an accepted connection its thread, or closes it when stopping or when its
-    /// address already has as many heads coming as it may. At the cap, the oldest head
-    /// still arriving is cut off to make room, so a source always gets the chance to show
-    /// its key; with no head arriving, the new connection is closed.
+    /// address already has as many heads coming as it may. At the cap, the oldest refusal
+    /// still lingering, or else the oldest head still arriving, is cut off to make room, so
+    /// a source always gets the chance to show its key; with neither, the new connection
+    /// is closed.
     fn admit(self: &Arc<Self>, stream: TcpStream, peer: SocketAddr) {
         let stream = Arc::new(stream);
         let head_from = (self.config.trusted_proxy != Some(peer.ip())).then_some(peer.ip());
@@ -355,7 +382,7 @@ impl Shared {
             {
                 return;
             }
-            if connections.counted() >= self.max_connections && !connections.evict_oldest_head() {
+            if connections.counted() >= self.max_connections && !connections.evict_one() {
                 return;
             }
             if let Some(addr) = head_from {
@@ -395,6 +422,12 @@ impl ConnectionGuard {
     fn end_head(&self) -> bool {
         self.shared.connections().end_head(self.id)
     }
+
+    /// The connection was refused and answered; from now on it may be cut off to make
+    /// room. False if it was cut off already.
+    fn begin_linger(&self) -> bool {
+        self.shared.connections().begin_linger(self.id)
+    }
 }
 
 impl Drop for ConnectionGuard {
@@ -403,6 +436,7 @@ impl Drop for ConnectionGuard {
             let mut connections = self.shared.connections();
             connections.end_head(self.id);
             connections.open.remove(&self.id);
+            connections.lingering.remove(&self.id);
             connections.evicted.remove(&self.id);
             connections.reserved.remove(&self.id);
         }
@@ -451,14 +485,28 @@ fn serve(guard: &ConnectionGuard, peer: SocketAddr, tcp: Arc<TcpStream>) {
     {
         return;
     }
+    answer(shared, guard.id, &mut stream, peer.ip(), read);
+    if stream.write_shut() {
+        linger(guard, &mut stream);
+    }
+}
+
+/// Answers a request whose head has been read (or failed to parse).
+fn answer(
+    shared: &Shared,
+    id: u64,
+    stream: &mut Conn,
+    peer: IpAddr,
+    read: Result<Request, HttpError>,
+) {
     let request = match read {
         Ok(request) => request,
         Err(HttpError::Malformed) => {
-            return refuse(&mut stream, 400, "Bad Request", &[], b"bad request");
+            return refuse(stream, 400, "Bad Request", &[], b"bad request");
         }
         Err(HttpError::TooLarge) => {
             return refuse(
-                &mut stream,
+                stream,
                 431,
                 "Request Header Fields Too Large",
                 &[],
@@ -468,8 +516,8 @@ fn serve(guard: &ConnectionGuard, peer: SocketAddr, tcp: Arc<TcpStream>) {
         // Too slow, or gone: there is no one to answer.
         Err(HttpError::Timeout | HttpError::Io(_)) => return,
     };
-    if gate(shared, guard.id, &mut stream, peer.ip(), &request) {
-        route(shared, stream, peer.ip(), &request);
+    if gate(shared, id, stream, peer, &request) {
+        route(shared, stream, peer, &request);
     }
 }
 
@@ -509,13 +557,13 @@ fn keyed_station<'a>(shared: &'a Shared, request: &Request) -> Option<&'a Statio
     .map(|(station, _)| station)
 }
 
-fn route(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) {
+fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     let method = request.method.as_str();
     match method {
         "GET" | "PUT" | "SOURCE" => {}
         "OPTIONS" => {
             let _ = respond(
-                &mut stream,
+                stream,
                 204,
                 "No Content",
                 &[CORS, ("Access-Control-Allow-Methods", "GET, OPTIONS")],
@@ -525,7 +573,7 @@ fn route(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) {
         }
         _ => {
             return refuse(
-                &mut stream,
+                stream,
                 405,
                 "Method Not Allowed",
                 &[("Allow", "GET, PUT, SOURCE, OPTIONS")],
@@ -540,7 +588,7 @@ fn route(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) {
         return stats(shared, stream);
     }
     let Some((station, mount)) = station_at(shared, &request.path) else {
-        return refuse(&mut stream, 404, "Not Found", &[CORS], b"not found");
+        return refuse(stream, 404, "Not Found", &[CORS], b"not found");
     };
     if method == "GET" {
         listen(shared, stream, mount);
@@ -565,13 +613,13 @@ fn stream_slug(path: &str) -> Option<&str> {
 
 fn source(
     shared: &Shared,
-    mut stream: Conn,
+    stream: &mut Conn,
     peer: IpAddr,
     request: &Request,
     station: &Station,
     mount: &Arc<Mount>,
 ) {
-    if !authorized(shared, &mut stream, peer, request, station) {
+    if !authorized(shared, stream, peer, request, station) {
         return;
     }
     let Some(format) = request
@@ -579,7 +627,7 @@ fn source(
         .and_then(Format::from_content_type)
     else {
         return refuse(
-            &mut stream,
+            stream,
             415,
             "Unsupported Media Type",
             &[],
@@ -595,7 +643,7 @@ fn source(
     // finds the source live.
     let Some(mut guard) = mount.begin(format, name) else {
         return refuse(
-            &mut stream,
+            stream,
             403,
             "Forbidden",
             &[],
@@ -666,10 +714,10 @@ fn authorized(
 
 /// `GET /admin/metadata?mount=/<slug>/stream&mode=updinfo&song=<title>`: an MP3 source's
 /// title, which its stream does not carry.
-fn metadata(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) {
+fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     let Some(path) = request.param("mount") else {
         return refuse(
-            &mut stream,
+            stream,
             400,
             "Bad Request",
             &[],
@@ -677,14 +725,14 @@ fn metadata(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) 
         );
     };
     let Some((station, mount)) = station_at(shared, path) else {
-        return refuse(&mut stream, 404, "Not Found", &[], b"not found");
+        return refuse(stream, 404, "Not Found", &[], b"not found");
     };
-    if !authorized(shared, &mut stream, peer, request, station) {
+    if !authorized(shared, stream, peer, request, station) {
         return;
     }
     if request.param("mode") != Some("updinfo") {
         return refuse(
-            &mut stream,
+            stream,
             400,
             "Bad Request",
             &[],
@@ -692,18 +740,12 @@ fn metadata(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) 
         );
     }
     let Some(song) = request.param("song") else {
-        return refuse(
-            &mut stream,
-            400,
-            "Bad Request",
-            &[],
-            b"the request has no song",
-        );
+        return refuse(stream, 400, "Bad Request", &[], b"the request has no song");
     };
     // The mount cuts it to 512 characters.
     if !mount.set_title(song.to_owned()) {
         return refuse(
-            &mut stream,
+            stream,
             400,
             "Bad Request",
             &[],
@@ -711,7 +753,7 @@ fn metadata(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) 
         );
     }
     let _ = respond(
-        &mut stream,
+        stream,
         200,
         "OK",
         &[("Content-Type", "text/xml")],
@@ -720,7 +762,7 @@ fn metadata(shared: &Shared, mut stream: Conn, peer: IpAddr, request: &Request) 
 }
 
 /// `GET /status-json.xsl`: public and unkeyed, for the listener page's "now playing".
-fn stats(shared: &Shared, mut stream: Conn) {
+fn stats(shared: &Shared, stream: &mut Conn) {
     let mounts: Vec<_> = shared
         .config
         .stations
@@ -735,7 +777,7 @@ fn stats(shared: &Shared, mut stream: Conn) {
         .collect();
     let body = status_json(&shared.config.public_url, &mounts);
     let _ = respond(
-        &mut stream,
+        stream,
         200,
         "OK",
         &[
@@ -747,12 +789,12 @@ fn stats(shared: &Shared, mut stream: Conn) {
     );
 }
 
-fn listen(shared: &Shared, mut stream: Conn, mount: &Arc<Mount>) {
+fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>) {
     let listener = match mount.listen() {
         Ok(listener) => listener,
         Err(ListenError::NoSource) => {
             return refuse(
-                &mut stream,
+                stream,
                 404,
                 "Not Found",
                 &[CORS],
@@ -761,7 +803,7 @@ fn listen(shared: &Shared, mut stream: Conn, mount: &Arc<Mount>) {
         }
         Err(ListenError::Full) => {
             return refuse(
-                &mut stream,
+                stream,
                 503,
                 "Service Unavailable",
                 &[CORS],
@@ -794,18 +836,23 @@ fn listen(shared: &Shared, mut stream: Conn, mount: &Arc<Mount>) {
     }
 }
 
-/// Answers with an error and closes gently: the write side first, then whatever the
-/// client still sends is read for a moment, so its unread bytes don't reset the
-/// connection and lose the reply.
+/// Answers with an error and ends the write side. [`serve`] then lingers (see [`linger`]).
 fn refuse(stream: &mut Conn, status: u16, reason: &str, headers: &[(&str, &str)], body: &[u8]) {
-    if respond(stream, status, reason, headers, body).is_err() {
-        return;
+    if respond(stream, status, reason, headers, body).is_ok() {
+        let _ = stream.shutdown_write();
     }
-    if stream.shutdown_write().is_err() || stream.set_read_timeout(LINGER).is_err() {
+}
+
+/// Closes a refused connection gently: whatever the client still sends is read for a
+/// moment, so its unread bytes don't reset the connection and lose the reply. Meanwhile
+/// the connection may be cut off to make room for a newcomer.
+fn linger(guard: &ConnectionGuard, stream: &mut Conn) {
+    let linger = guard.shared.timeouts.linger.max(MIN_TIMEOUT);
+    if !guard.begin_linger() || stream.set_read_timeout(linger).is_err() {
         return;
     }
     let until = Instant::now()
-        .checked_add(LINGER)
+        .checked_add(linger)
         .unwrap_or_else(Instant::now);
     let mut thrown = 0;
     let mut buffer = [0; READ_BUFFER];

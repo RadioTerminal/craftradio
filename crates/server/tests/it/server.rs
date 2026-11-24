@@ -620,6 +620,17 @@ fn stop_ends_live_sources_and_listeners_at_once() {
 /// A server with one station, "morning", whose every request comes through the trusted
 /// proxy at 127.0.0.1, so no limit per address applies; heads wait `head`.
 fn behind_proxy(max_stream_listeners: usize, head: Duration) -> ServerHandle {
+    behind_proxy_with(
+        max_stream_listeners,
+        Timeouts {
+            head,
+            ..Timeouts::default()
+        },
+    )
+}
+
+/// As [`behind_proxy`], with every timeout given.
+fn behind_proxy_with(max_stream_listeners: usize, timeouts: Timeouts) -> ServerHandle {
     let config = Config::parse(&format!(
         "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\
          trusted_proxy = \"127.0.0.1\"\n\n\
@@ -627,14 +638,7 @@ fn behind_proxy(max_stream_listeners: usize, head: Duration) -> ServerHandle {
         hash_key(MORNING_KEY),
     ))
     .unwrap();
-    Server::start_with(
-        config,
-        Timeouts {
-            head,
-            ..Timeouts::default()
-        },
-    )
-    .unwrap()
+    Server::start_with(config, timeouts).unwrap()
 }
 
 /// Clients that send part of a head and nothing more; each holds a connection thread.
@@ -753,8 +757,10 @@ fn a_source_still_gets_in_when_the_public_connections_are_full() {
     assert_eq!(read_head(&mut keyless).status, 401);
     drop(keyless);
 
-    // The source that drops and comes back gets in, by a place kept for it.
+    // The source that drops and comes back gets in, by a place kept for it: one more idle
+    // head takes the public place it leaves. (Refusals that linger hold no public place.)
     drop(first);
+    let _one_more = idle_clients(addr, 1);
     let mut back = push_when_free(addr, "morning", MORNING_KEY, "audio/mpeg");
     back.write_all(&mp3_frames(4)).unwrap();
     // And still nobody else does.
@@ -808,6 +814,39 @@ fn a_source_still_gets_in_when_idle_heads_fill_every_connection() {
         Some(ErrorKind::WouldBlock),
         "the live source was cut off"
     );
+}
+
+#[test]
+fn refusals_that_linger_make_room_for_a_source_and_a_listener() {
+    // A cap of 1 listener: 33 public connection threads and 2 for the source. Refusals
+    // linger for the whole test unless the server cuts them off.
+    let server = behind_proxy_with(
+        1,
+        Timeouts {
+            head: Duration::from_secs(600),
+            linger: Duration::from_secs(600),
+            ..Timeouts::default()
+        },
+    );
+    let addr = server.local_addr();
+    // Whole requests, answered and then held open without a byte more: every connection
+    // thread is taken by a refusal that lingers, and no head is still arriving.
+    let lingering: Vec<TcpStream> = (0..35)
+        .map(|_| {
+            let (stream, head) = get(addr, "noon");
+            assert!(matches!(head.status, 404 | 503), "{}", head.status);
+            stream
+        })
+        .collect();
+
+    // The source with its key still gets in, and is answered.
+    let mut source = send_push(addr, "morning", Some(MORNING_KEY), "audio/mpeg", "");
+    assert_eq!(read_head_bytes(&mut source), b"HTTP/1.0 200 OK\r\n\r\n");
+    source.write_all(&mp3_frames(4)).unwrap();
+    // An answered refusal holds no public place, so a listener gets in too.
+    let (_listener, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    drop(lingering);
 }
 
 #[test]
