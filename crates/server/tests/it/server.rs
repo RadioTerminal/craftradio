@@ -1,7 +1,10 @@
 use crate::framing::{OggSource, granule, pages};
 use base64::Engine;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use radio_server::{Config, Server, ServerHandle, Timeouts, hash_key};
+use radio_server::{
+    Config, Format, MountStats, Server, ServerHandle, Timeouts, hash_key, status_json,
+};
+use serde_json::Value;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
@@ -200,6 +203,57 @@ fn read_to_end_within(stream: &mut TcpStream, limit: Duration) -> Vec<u8> {
             Err(e) if e.kind() == ErrorKind::ConnectionReset => return out,
             Err(e) => panic!("reading: {e}"),
         }
+    }
+}
+
+/// The public stats document, checked to be served as JSON to any origin.
+fn stats(addr: SocketAddr) -> Value {
+    let (mut stream, head) = request(addr, "GET", "/status-json.xsl");
+    assert_eq!(head.status, 200);
+    assert_eq!(head.header("Content-Type"), Some("application/json"));
+    assert_eq!(head.header("Access-Control-Allow-Origin"), Some("*"));
+    let body = read_to_end_within(&mut stream, PATIENCE);
+    serde_json::from_slice(&body).expect("the stats are JSON")
+}
+
+/// The stats' list of live mounts, which is always an array.
+fn sources(stats: &Value) -> &Vec<Value> {
+    stats["icestats"]["source"]
+        .as_array()
+        .expect("icestats.source is an array")
+}
+
+/// The stats entry of `/<slug>/stream`, found as the listener page finds it.
+fn source_entry(stats: &Value, slug: &str) -> Option<Value> {
+    let path = format!("/{slug}/stream");
+    sources(stats)
+        .iter()
+        .find(|source| {
+            source["listenurl"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with(&path)
+        })
+        .cloned()
+}
+
+/// Polls the stats until `slug`'s entry satisfies `done`, and returns that entry.
+fn wait_for_entry(
+    addr: SocketAddr,
+    slug: &str,
+    done: impl Fn(Option<&Value>) -> bool,
+) -> Option<Value> {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let entry = source_entry(&stats(addr), slug);
+        if done(entry.as_ref()) {
+            return entry;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stats never showed it: {entry:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -705,4 +759,179 @@ fn connections_over_the_thread_cap_are_closed_at_once() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn stats_list_live_mounts_with_their_titles() {
+    let server = start();
+    let addr = server.local_addr();
+    assert!(sources(&stats(addr)).is_empty(), "no station is live yet");
+
+    // An Ogg source's title and artist come from its tags.
+    let (mut ogg_source, head) = push(addr, "morning", MORNING_KEY, "audio/ogg");
+    assert_eq!(head.status, 200);
+    let mut ogg = OggSource::new("Cloud Signal", Some("Echo"));
+    ogg.audio(200);
+    ogg_source.write_all(&ogg.take()).unwrap();
+    let morning = wait_for_entry(addr, "morning", |entry| {
+        entry.is_some_and(|entry| entry["title"] == "Cloud Signal")
+    })
+    .unwrap();
+    assert_eq!(morning["artist"], "Echo");
+    assert_eq!(
+        morning["listenurl"],
+        "https://radio.example.test/morning/stream"
+    );
+    assert_eq!(morning["server_name"], "Cloud Signal FM");
+    assert_eq!(morning["server_type"], "audio/ogg");
+    assert_eq!(morning["listeners"], 0);
+    let mut keys: Vec<&str> = morning
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "artist",
+            "listeners",
+            "listenurl",
+            "server_name",
+            "server_type",
+            "title"
+        ],
+        "the public stats show nothing else"
+    );
+    assert!(
+        source_entry(&stats(addr), "evening").is_none(),
+        "a station with no source is absent"
+    );
+
+    // An MP3 source's title comes from its title update; with no Ice-Name the station's
+    // own name stands in.
+    let mut mp3_source = client(addr);
+    write!(
+        mp3_source,
+        "PUT /evening/stream HTTP/1.0\r\n{}Content-Type: audio/mpeg\r\n\r\n",
+        basic(EVENING_KEY)
+    )
+    .unwrap();
+    assert_eq!(read_head(&mut mp3_source).status, 200);
+    let evening = source_entry(&stats(addr), "evening").expect("a live station is listed");
+    assert_eq!(evening["title"], "");
+    assert_eq!(
+        status_of(set_title(
+            addr,
+            "evening",
+            "Paper Lanterns",
+            Some(EVENING_KEY)
+        )),
+        200
+    );
+    let evening = source_entry(&stats(addr), "evening").unwrap();
+    assert_eq!(evening["title"], "Paper Lanterns");
+    assert_eq!(evening["artist"], "");
+    assert_eq!(evening["server_name"], "Evening Station");
+    assert_eq!(evening["server_type"], "audio/mpeg");
+    assert_eq!(sources(&stats(addr)).len(), 2);
+
+    let (_listener, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    let before = morning["listeners"].as_u64().unwrap();
+    let after = source_entry(&stats(addr), "morning").unwrap()["listeners"]
+        .as_u64()
+        .unwrap();
+    assert!(after > before, "a listener who joined is counted");
+
+    // A source that leaves takes its entry with it.
+    drop(mp3_source);
+    wait_for_entry(addr, "evening", |entry| entry.is_none());
+}
+
+#[test]
+fn a_title_with_quotes_and_control_characters_keeps_the_json_valid() {
+    let server = start();
+    let addr = server.local_addr();
+    let (_source, _) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+
+    let title = "He said \"hi\"\u{1}\n";
+    assert_eq!(
+        status_of(set_title(addr, "morning", title, Some(MORNING_KEY))),
+        200
+    );
+    assert_eq!(
+        source_entry(&stats(addr), "morning").unwrap()["title"],
+        title
+    );
+
+    // Bytes that are not UTF-8 still give a title, and the stats still parse.
+    let query = "mount=%2Fmorning%2Fstream&mode=updinfo&song=%FF%FE";
+    assert_eq!(
+        status_of(metadata_query(addr, query, Some(MORNING_KEY))),
+        200
+    );
+    let entry = source_entry(&stats(addr), "morning").unwrap();
+    let replaced = entry["title"].as_str().expect("the title is a string");
+    assert_ne!(replaced, title, "the update was taken");
+
+    // So does the document built by hand, and a public URL's trailing slash is not doubled.
+    let mounts = [(
+        "morning".to_owned(),
+        MountStats {
+            live: true,
+            format: Some(Format::Ogg),
+            listeners: 3,
+            name: "Morning \"Station\"\u{7f}".to_owned(),
+            title: title.to_owned(),
+            artist: "Echo\\".to_owned(),
+        },
+    )];
+    let built: Value =
+        serde_json::from_str(&status_json("https://radio.example.test/", &mounts)).unwrap();
+    let entry = &sources(&built)[0];
+    assert_eq!(
+        entry["listenurl"],
+        "https://radio.example.test/morning/stream"
+    );
+    assert_eq!(entry["title"], title);
+    assert_eq!(entry["server_name"], "Morning \"Station\"\u{7f}");
+    assert_eq!(entry["artist"], "Echo\\");
+}
+
+#[test]
+fn a_title_is_cut_to_512_characters() {
+    let server = start();
+    let addr = server.local_addr();
+    let (_source, _) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    // Two-byte characters, so a cut counted in bytes shows.
+    let long: String = "Wölkenlied ".repeat(100);
+    assert_eq!(
+        status_of(set_title(addr, "morning", &long, Some(MORNING_KEY))),
+        200
+    );
+    let entry = source_entry(&stats(addr), "morning").unwrap();
+    let title = entry["title"].as_str().unwrap();
+    // The cap is the spec's value.
+    assert_eq!(title.chars().count(), 512);
+    assert!(long.starts_with(title), "the title is cut, not changed");
+}
+
+#[test]
+fn stats_built_for_a_mount_with_no_source_leave_it_out() {
+    let idle = MountStats {
+        live: false,
+        format: None,
+        listeners: 0,
+        name: "Evening Station".to_owned(),
+        title: String::new(),
+        artist: String::new(),
+    };
+    let built: Value = serde_json::from_str(&status_json(
+        "https://radio.example.test",
+        &[("evening".to_owned(), idle)],
+    ))
+    .unwrap();
+    assert!(sources(&built).is_empty());
 }

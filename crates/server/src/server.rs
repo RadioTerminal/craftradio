@@ -1,6 +1,6 @@
 //! The server: a TCP port, one thread per connection, and the routes of a mount — a
 //! station's keyed source push in, its public listeners out, and the keyed title update
-//! an MP3 source sends as it would to Icecast.
+//! an MP3 source sends as it would to Icecast — and the public stats of every live mount.
 
 use crate::ServerError;
 use crate::config::{Config, Station};
@@ -9,6 +9,7 @@ use crate::http::{HttpError, Request, client_addr, read_request, respond};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
 use crate::mount::{ListenError, Mount, Received};
+use crate::stats::status_json;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -354,6 +355,9 @@ fn route(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Request
     if method == "GET" && request.path == "/admin/metadata" {
         return metadata(shared, stream, peer, request);
     }
+    if method == "GET" && request.path == "/status-json.xsl" {
+        return stats(shared, stream);
+    }
     let Some((station, mount)) = station_at(shared, &request.path) else {
         return refuse(&mut stream, 404, "Not Found", &[CORS], b"not found");
     };
@@ -531,6 +535,34 @@ fn metadata(shared: &Shared, mut stream: TcpStream, peer: IpAddr, request: &Requ
         "OK",
         &[("Content-Type", "text/xml")],
         METADATA_OK,
+    );
+}
+
+/// `GET /status-json.xsl`: public and unkeyed, for the listener page's "now playing".
+fn stats(shared: &Shared, mut stream: TcpStream) {
+    let mounts: Vec<_> = shared
+        .config
+        .stations
+        .iter()
+        .filter_map(|station| {
+            let mut stats = shared.mounts.get(&station.slug)?.stats();
+            if stats.name.is_empty() {
+                stats.name.clone_from(&station.name);
+            }
+            Some((station.slug.clone(), stats))
+        })
+        .collect();
+    let body = status_json(&shared.config.public_url, &mounts);
+    let _ = respond(
+        &mut stream,
+        200,
+        "OK",
+        &[
+            ("Content-Type", "application/json"),
+            ("Cache-Control", "no-cache, no-store"),
+            CORS,
+        ],
+        body.as_bytes(),
     );
 }
 
