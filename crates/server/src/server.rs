@@ -65,7 +65,8 @@ pub struct Timeouts {
     pub head: Duration,
     /// For a source's next byte before the source counts as gone.
     pub source_silence: Duration,
-    /// For a listener to take the next write before it counts as gone.
+    /// For a listener to take the whole of each chunk (page or frame) before it counts as
+    /// gone, however slowly it reads.
     pub listener_write: Duration,
     /// After a refusal, how long the rest of the request is read and thrown away, so that
     /// closing with unread bytes does not reset the connection before the reply is read.
@@ -789,6 +790,9 @@ fn stats(shared: &Shared, stream: &mut Conn) {
     );
 }
 
+/// A listener's stream. Each chunk must reach the client within
+/// [`Timeouts::listener_write`]; a listener that falls further behind than its queue holds
+/// is dropped by the mount and ended at once, so a slow reader frees its connection thread.
 fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>) {
     let listener = match mount.listen() {
         Ok(listener) => listener,
@@ -816,13 +820,14 @@ fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>) {
          Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
         listener.format().content_type()
     );
-    if stream.write_all(head.as_bytes()).is_err() {
+    let write = shared.timeouts.listener_write.max(MIN_TIMEOUT);
+    if stream.write_all_within(head.as_bytes(), write).is_err() {
         return;
     }
     loop {
         match listener.recv(LISTENER_POLL) {
             Received::Chunk(chunk) => {
-                if stream.write_all(&chunk).is_err() {
+                if stream.write_all_within(&chunk, write).is_err() {
                     break;
                 }
             }
