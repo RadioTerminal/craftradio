@@ -34,7 +34,28 @@ const MAX_EDGE: u32 = 512;
 /// The JPEG quality of a picture without alpha.
 const JPEG_QUALITY: u8 = 85;
 
+/// An encoded picture is at most this large, so that it passes on between listener pages.
+const MAX_ENCODED: usize = 120 * 1024;
+/// A picture that is too detailed shrinks, but not below this long edge.
+const MIN_EDGE: u32 = 64;
+/// A source picture has at most this many pixels on an edge.
+const MAX_SOURCE_EDGE: u32 = 8192;
+/// Decoding allocates at most this much.
+const MAX_ALLOC: u64 = 256 * 1024 * 1024;
+/// The error list keeps this many entries, the newest.
+const MAX_ERRORS: usize = 32;
+
 const NOT_A_PICTURE: &str = "the file is not a PNG, JPEG or WebP picture";
+
+/// Adds an error to the list. When the list is full, the oldest goes.
+pub(crate) fn record(errors: &PictureErrors, error: PictureError) {
+    if let Ok(mut list) = errors.lock() {
+        if list.len() >= MAX_ERRORS {
+            list.remove(0);
+        }
+        list.push(error);
+    }
+}
 
 /// The brand as listeners get it, with a revision that grows on each change.
 #[derive(Default)]
@@ -75,8 +96,10 @@ pub(crate) fn set(
             let picture = match load_picture(&path) {
                 Ok(p) => Some(p),
                 Err(reason) => {
-                    if let Ok(mut list) = errors.lock() {
-                        list.push(PictureError { path, reason });
+                    // A newer brand replaced this one, and its logo is no one's concern.
+                    let current = brand.lock().is_ok_and(|b| b.generation == generation);
+                    if current {
+                        record(&errors, PictureError { path, reason });
                     }
                     None
                 }
@@ -121,11 +144,40 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
     ) {
         return Err(NOT_A_PICTURE.into());
     }
-    let mut picture = image::load_from_memory_with_format(&bytes, format)
-        .map_err(|_| NOT_A_PICTURE.to_owned())?;
-    if picture.width() > MAX_EDGE || picture.height() > MAX_EDGE {
-        picture = picture.resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Lanczos3);
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SOURCE_EDGE);
+    limits.max_image_height = Some(MAX_SOURCE_EDGE);
+    limits.max_alloc = Some(MAX_ALLOC);
+    reader.limits(limits);
+    let picture = reader.decode().map_err(|e| match e {
+        image::ImageError::Limits(_) => {
+            format!("the picture is larger than {MAX_SOURCE_EDGE} pixels")
+        }
+        _ => NOT_A_PICTURE.to_owned(),
+    })?;
+    // A page that passes the logo on sends it in one burst, so it has to stay small. A
+    // picture that is too detailed shrinks until it fits.
+    let mut edge = MAX_EDGE.min(picture.width().max(picture.height()));
+    loop {
+        let scaled = if edge < picture.width().max(picture.height()) {
+            picture.resize(edge, edge, image::imageops::FilterType::Lanczos3)
+        } else {
+            picture.clone()
+        };
+        let encoded = encode(&scaled)?;
+        if encoded.data.len() <= MAX_ENCODED {
+            return Ok(encoded);
+        }
+        edge = edge * 3 / 4;
+        if edge < MIN_EDGE {
+            return Err("the picture is too detailed to send to listeners".into());
+        }
     }
+}
+
+fn encode(picture: &image::DynamicImage) -> Result<Picture, String> {
+    let failed = |_| "the picture could not be encoded".to_owned();
     let mut data = Vec::new();
     let mime = if picture.color().has_alpha() {
         picture
@@ -134,12 +186,12 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
                 &mut std::io::Cursor::new(&mut data),
                 image::ImageFormat::Png,
             )
-            .map_err(|_| "the picture could not be encoded".to_owned())?;
+            .map_err(failed)?;
         "image/png"
     } else {
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut data, JPEG_QUALITY)
             .encode_image(&picture.to_rgb8())
-            .map_err(|_| "the picture could not be encoded".to_owned())?;
+            .map_err(failed)?;
         "image/jpeg"
     };
     Ok(Picture {
@@ -330,5 +382,64 @@ mod tests {
         assert!(image::load_from_memory(&data).is_ok());
         let bad = dir.file("bad.webp", b"nope");
         assert!(crate::now::read_cover(&bad).is_err());
+    }
+
+    #[test]
+    fn a_detailed_picture_with_alpha_fits_the_limit() {
+        let dir = Scratch::new("noise");
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut noise = RgbaImage::new(700, 700);
+        for p in noise.pixels_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let b = state.to_le_bytes();
+            *p = image::Rgba([b[0], b[1], b[2], b[3] | 1]);
+        }
+        let path = dir.file("noise.png", &encode_png(&DynamicImage::ImageRgba8(noise)));
+        let picture = load_picture(&path).unwrap();
+        assert!(picture.data.len() <= 120 * 1024, "{}", picture.data.len());
+        assert!(image::load_from_memory(&picture.data).is_ok());
+    }
+
+    fn encode_png(image: &DynamicImage) -> Vec<u8> {
+        encode(image, ImageFormat::Png)
+    }
+
+    #[test]
+    fn a_newer_brand_wins_over_a_slow_one() {
+        let dir = Scratch::new("newer");
+        let brand = SharedBrand::default();
+        let errors = PictureErrors::default();
+        set(
+            &brand,
+            &errors,
+            "First".into(),
+            Some(dir.0.join("none.png")),
+        );
+        set(&brand, &errors, "Second".into(), None);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let b = brand.lock().unwrap();
+        assert_eq!(b.name.as_deref(), Some("Second"));
+        assert!(b.logo.is_none());
+        assert!(b.messages[0].contains("Second"), "{:?}", b.messages);
+        assert!(errors.lock().unwrap().len() <= 1);
+    }
+
+    #[test]
+    fn the_error_list_keeps_the_newest() {
+        let errors = PictureErrors::default();
+        for i in 0..40 {
+            record(
+                &errors,
+                PictureError {
+                    path: PathBuf::from(format!("{i}.png")),
+                    reason: "no".into(),
+                },
+            );
+        }
+        let list = errors.lock().unwrap();
+        assert!(list.len() <= 32);
+        assert_eq!(list.last().unwrap().path, PathBuf::from("39.png"));
     }
 }

@@ -5,7 +5,7 @@
 //! listener each. The cover on air follows in `cover` messages of [`PART`] bytes each,
 //! because browsers refuse large messages.
 
-use crate::brand::{PictureError, PictureErrors, load_picture};
+use crate::brand::{PictureError, PictureErrors, load_picture, record};
 use base64::Engine;
 use serde_json::json;
 use std::collections::HashMap;
@@ -153,12 +153,13 @@ pub(crate) fn set(
             let cover = file.as_deref().and_then(|f| match read_cover(f) {
                 Ok(cover) => cover,
                 Err(reason) => {
-                    if let Ok(mut list) = errors.lock() {
-                        list.push(PictureError {
+                    record(
+                        &errors,
+                        PictureError {
                             path: f.to_path_buf(),
                             reason,
-                        });
-                    }
+                        },
+                    );
                     None
                 }
             });
