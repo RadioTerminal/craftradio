@@ -193,18 +193,20 @@ fn transcode(
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
+        let now = pushed.stats();
+        if !now.live {
+            return Ok(());
+        }
+        let artist = Some(now.artist.as_str()).filter(|artist| !artist.is_empty());
         let listening: Vec<bool> = outputs
             .each()
             .zip(encoders.iter())
             .map(|((_, mount), encoder)| encoder.is_some() && mount.stats().listeners > 0)
             .collect();
+        pause(encoders, &mut started, &listening, &now.title, artist);
         if !listening.contains(&true) {
-            // A pause: what was decoded before it must not play after it.
+            // What was decoded before the pause must not play after it.
             active = None;
-            started.fill(false);
-            if !pushed.stats().live {
-                return Ok(());
-            }
             std::thread::sleep(IDLE);
             continue;
         }
@@ -220,9 +222,7 @@ fn transcode(
             continue;
         };
 
-        let now = pushed.stats();
         let retitled = (&now.title, &now.artist) != (&seen.0, &seen.1);
-        let artist = Some(now.artist.as_str()).filter(|artist| !artist.is_empty());
         for ((encoder, started), &listening) in
             encoders.iter_mut().zip(started.iter_mut()).zip(&listening)
         {
@@ -230,7 +230,6 @@ fn transcode(
                 continue;
             };
             let done = if !listening {
-                *started = false;
                 Ok(())
             } else if !*started {
                 *started = true;
@@ -283,6 +282,31 @@ fn transcode(
             }
         }
         samples.drain(..BLOCK);
+    }
+}
+
+/// Each started output that has no listener now ends its stretch of audio: it starts a
+/// new one at once, while nobody hears the end of the old one, so whoever joins before
+/// it gains a listener again hears nothing from before the pause. An output that fails
+/// to ends.
+fn pause(
+    encoders: &mut [Option<OutputEncoder>],
+    started: &mut [bool],
+    listening: &[bool],
+    title: &str,
+    artist: Option<&str>,
+) {
+    for ((encoder, started), &listening) in encoders.iter_mut().zip(started).zip(listening) {
+        if !*started || listening {
+            continue;
+        }
+        *started = false;
+        if encoder
+            .as_mut()
+            .is_some_and(|output| output.start(title, artist).is_err())
+        {
+            *encoder = None;
+        }
     }
 }
 

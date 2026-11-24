@@ -1,5 +1,5 @@
 use crate::decode::{heard, stop};
-use crate::framing::OggSource;
+use crate::framing::{OggSource, granule};
 use crate::support::PATIENCE;
 use craft_audio::mp3::{Config, Encoder};
 use radio_server::{
@@ -431,13 +431,15 @@ fn a_pause_drops_what_was_decoded_before_it() {
     eventually("the outputs went live", || station.outputs_live());
     let opus = station.output("opus");
     let mut ear = Ear::join(opus);
-    assert!(ear.hears());
+    // A second of audio, so the chain before the pause is well under way.
+    assert!(ear.hears_for(SECOND));
     drop(ear);
     // The tone goes on during the pause, then the source goes quiet.
     station.settle(&pusher);
     pusher.quiet();
     pusher.wait_packets(SECOND);
 
+    let pages = opus.listen().unwrap();
     let mut ear = Ear::join(opus);
     for _ in 0..SECOND / 2 {
         let samples = ear.next().expect("the output plays");
@@ -446,6 +448,19 @@ fn a_pause_drops_what_was_decoded_before_it() {
             "audio from before the pause was played after it"
         );
     }
+    // Header pages carry no position; the first page of audio a listener joining in a
+    // pause gets is the start of a chain, not the tail of the one before the pause.
+    let first_audio = loop {
+        match pages.recv(PATIENCE) {
+            Received::Chunk(page) if granule(&page) > 0 => break granule(&page),
+            Received::Chunk(_) => {}
+            other => panic!("the output stopped: {other:?}"),
+        }
+    };
+    assert!(
+        first_audio <= 2 * 960,
+        "the first audio page is at sample {first_audio} of its chain"
+    );
     finish_promptly(transcoder);
 }
 
