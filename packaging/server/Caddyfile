@@ -6,10 +6,12 @@
 
 radio.example.org {
 	reverse_proxy 127.0.0.1:8080 {
-		# Pass each piece of a stream on as it comes, instead of buffering the reply.
+		# Meant to pass each piece of a stream on as it comes instead of buffering the
+		# reply. Not checked.
 		flush_interval -1
-		# Request bodies (the app's endless source push) must not be buffered either.
-		# Caddy buffers them only when `request_buffers` is set, so it is left out here;
-		# do not add it.
+		# The app's source push is an endless request body that must reach the server
+		# unbuffered, while the server's 200 reaches the app at once. Caddy's own docs say
+		# it buffers request bodies only when `request_buffers` is set, so it is left out
+		# here; whether Caddy passes such an upload through has not been checked.
 	}
 }
