@@ -56,13 +56,24 @@ impl RadioApp {
         {
             actions.push(a);
         }
-        // The On air switch: the first press arms and says so, as the button does.
-        if p.air {
-            let on_air = self.view.on_air;
-            match self.air.press(on_air, now) {
-                Some(a) => actions.push(a),
-                None => actions.push(Action::Toast(crate::on_air::arm_note(on_air).to_owned())),
-            }
+        // The On air switch: the first press arms and says so, as the button does. A key press
+        // counts only after the key came up since the last one; a menu click always counts.
+        let on_air = self.view.on_air;
+        if p.air_up_before {
+            self.air.key_up();
+        }
+        let pressed = if p.air {
+            self.air.press_key(on_air, now)
+        } else {
+            p.air_menu.then(|| self.air.press(on_air, now))
+        };
+        match pressed {
+            Some(Some(a)) => actions.push(a),
+            Some(None) => actions.push(Action::Toast(crate::on_air::arm_note(on_air).to_owned())),
+            None => {}
+        }
+        if p.air_up_after {
+            self.air.key_up();
         }
         let deck = self.decks.focused();
         let Some(dv) = self.view.decks.get(deck) else {

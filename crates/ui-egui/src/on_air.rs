@@ -28,6 +28,11 @@ pub(crate) fn arm_note(on_air: bool) -> &'static str {
 pub(crate) struct State {
     /// The state a second press switches to, and the egui time of the first press.
     armed: Option<(bool, f64)>,
+    /// While the shortcut's key is down: the egui time of its last press. A press before its
+    /// key comes up is the key held down (AppKit sends one on each autorepeat), not a second
+    /// press. Without a key-up it lapses after the arm time, so a lost key-up never blocks
+    /// the key for long.
+    key_down: Option<f64>,
 }
 
 impl State {
@@ -50,6 +55,22 @@ impl State {
             self.armed = Some((to, now));
             None
         }
+    }
+
+    /// A key press of the shortcut. It returns `None` while the key is held down: such a press
+    /// neither arms nor switches. Otherwise it returns what [`State::press`] returns.
+    pub(crate) fn press_key(&mut self, on_air: bool, now: f64) -> Option<Option<Action>> {
+        let held = self.key_down.is_some_and(|at| now - at <= size::ARM_S);
+        self.key_down = Some(now);
+        if held {
+            return None;
+        }
+        Some(self.press(on_air, now))
+    }
+
+    /// The shortcut's key came up.
+    pub(crate) fn key_up(&mut self) {
+        self.key_down = None;
     }
 
     /// The part of the arm time that is left, while the switch is armed for the way it can go.

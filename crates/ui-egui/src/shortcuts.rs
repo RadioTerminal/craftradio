@@ -177,8 +177,14 @@ pub(crate) struct Pressed {
     pub fade: bool,
     pub play_pause: bool,
     pub stop_carts: bool,
-    /// The On air switch: one press arms it.
+    /// A key press of the On air shortcut: one press arms it.
     pub air: bool,
+    /// The On air shortcut's key came up before its press of this frame (or in a frame
+    /// without one), and after it. A held key sends presses with no key-up between them.
+    pub air_up_before: bool,
+    pub air_up_after: bool,
+    /// On Air chosen from a menu with the pointer: a press that no key-up follows.
+    pub air_menu: bool,
     pub focus_deck: Option<usize>,
     /// The cart key, as a number from 0 on the page on show.
     pub cart: Option<usize>,
@@ -205,6 +211,9 @@ impl Pressed {
             play_pause: self.play_pause | other.play_pause,
             stop_carts: self.stop_carts | other.stop_carts,
             air: self.air | other.air,
+            air_up_before: self.air_up_before | other.air_up_before,
+            air_up_after: self.air_up_after | other.air_up_after,
+            air_menu: self.air_menu | other.air_menu,
             focus_deck: self.focus_deck.or(other.focus_deck),
             cart: self.cart.or(other.cart),
             step: if self.step == 0 {
@@ -217,15 +226,59 @@ impl Pressed {
 }
 
 /// Read the shortcuts of this frame, once. A focused text field keeps all keys for itself.
+/// Where the On air shortcut's key came up in this frame's events: before its first press
+/// (or anywhere, when it was not pressed) and after its last press. It reads the order of the
+/// events, not egui's repeat flag, which a press from the native menu never sets.
+fn air_ups(ctx: &egui::Context) -> (bool, bool) {
+    let shortcuts = shortcuts_of(ctx, &AIR_TOGGLE.into());
+    ctx.input(|i| {
+        let presses: Vec<usize> = i
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                shortcuts.iter().any(|s| {
+                    matches!(e, Event::Key { key, modifiers, pressed: true, .. }
+                        if *key == s.logical_key && modifiers.matches_logically(s.modifiers))
+                })
+            })
+            .map(|(n, _)| n)
+            .collect();
+        let ups: Vec<usize> = i
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                shortcuts.iter().any(|s| {
+                    matches!(e, Event::Key { key, pressed: false, .. } if *key == s.logical_key)
+                })
+            })
+            .map(|(n, _)| n)
+            .collect();
+        match (presses.first(), presses.last()) {
+            (Some(first), Some(last)) => {
+                (ups.iter().any(|u| u < first), ups.iter().any(|u| u > last))
+            }
+            _ => (!ups.is_empty(), false),
+        }
+    })
+}
+
 pub(crate) fn read(ctx: &egui::Context) -> Pressed {
+    // A key-up counts whoever else holds the keys, so a held switch is never stuck.
+    let (air_up_before, air_up_after) = air_ups(ctx);
+    let ups = Pressed {
+        air_up_before: air_up_before || air_up_after,
+        ..Pressed::default()
+    };
     if ctx.egui_wants_keyboard_input() {
-        return Pressed::default();
+        return ups;
     }
     // The in-window menu bar holds the keys while a menu is open or it has the keyboard (an
     // Alt tap); a command shortcut takes the keyboard off it first and runs.
     craft_menu::bar::leave_for_shortcut(ctx);
     if craft_menu::bar::is_open(ctx) || craft_menu::bar::is_focused(ctx) {
-        return Pressed::default();
+        return ups;
     }
     // Space and the arrows belong to a focused button, slider or list, when there is one.
     let free = ctx.memory(|m| m.focused().is_none());
@@ -246,7 +299,11 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
             .fold(false, |hit, s| i.consume_shortcut(s) | hit)
     };
     ctx.input_mut(|i| {
-        let mut p = Pressed::default();
+        let mut p = Pressed {
+            air_up_before,
+            air_up_after,
+            ..Pressed::default()
+        };
         for e in &i.events {
             match e {
                 Event::Cut => p.cut = true,
@@ -262,20 +319,7 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.preferences = take(i, &PREFERENCES.into());
         p.find = take(i, &FIND.into());
         p.fade = take(i, &FADE.into());
-        // A held key repeats; going on or off air takes two real presses, so a repeat only
-        // goes away here.
-        let fresh = map
-            .bindings(&AIR_TOGGLE.into())
-            .into_iter()
-            .filter(|b| !b.trigger.double)
-            .map(|b| b.trigger.chord.to_egui_shortcut())
-            .any(|s| {
-                i.events.iter().any(|e| {
-                    matches!(e, Event::Key { key, modifiers, pressed: true, repeat: false, .. }
-                        if *key == s.logical_key && modifiers.matches_logically(s.modifiers))
-                })
-            });
-        p.air = take(i, &AIR_TOGGLE.into()) && fresh;
+        p.air = take(i, &AIR_TOGGLE.into());
         p.duplicate = take(i, &DUPLICATE.into());
         p.delete = take(i, &DELETE.into());
         p.select_all = take(i, &SELECT_ALL.into());

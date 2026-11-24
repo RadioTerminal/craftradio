@@ -239,6 +239,54 @@ fn a_held_key_is_not_a_second_press() {
     assert!(switches(&edits).is_empty(), "a held Enter only arms");
 }
 
+/// The shortcut's key press as the native macOS menu sends it: AppKit takes the key
+/// equivalent, on each autorepeat too, and craft-menu hands it on as a press that never says
+/// repeat. Only the key-up comes from the keyboard itself.
+fn native_press(h: &mut Harness<'_, RadioApp>) {
+    let chord = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+    h.event(egui::Event::Key {
+        key: egui::Key::O,
+        physical_key: Some(egui::Key::O),
+        pressed: true,
+        repeat: false,
+        modifiers: chord,
+    });
+    h.run_steps(FRAMES);
+}
+
+fn native_release(h: &mut Harness<'_, RadioApp>) {
+    h.event(egui::Event::Key {
+        key: egui::Key::O,
+        physical_key: Some(egui::Key::O),
+        pressed: false,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    });
+    h.run_steps(FRAMES);
+}
+
+#[test]
+fn a_held_shortcut_from_the_native_menu_does_not_switch() {
+    let edits = Arc::default();
+    let mut h = harness(&edits, Vec::new(), false);
+    native_press(&mut h);
+    native_press(&mut h);
+    assert!(
+        switches(&edits).is_empty(),
+        "a second press with no key-up between is the key held down"
+    );
+}
+
+#[test]
+fn the_shortcut_switches_after_its_key_comes_up() {
+    let edits = Arc::default();
+    let mut h = harness(&edits, Vec::new(), false);
+    native_press(&mut h);
+    native_release(&mut h);
+    native_press(&mut h);
+    assert_eq!(switches(&edits), vec![false], "two real presses switch");
+}
+
 #[test]
 fn the_menu_item_and_shortcut_arm_too() {
     let edits = Arc::default();

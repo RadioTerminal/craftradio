@@ -146,7 +146,7 @@ pub(crate) fn run(command: &CommandRef) -> Run {
         shortcuts::FADE => p.fade = true,
         shortcuts::PLAY_PAUSE => p.play_pause = true,
         shortcuts::STOP_CARTS => p.stop_carts = true,
-        shortcuts::AIR_TOGGLE => p.air = true,
+        shortcuts::AIR_TOGGLE => p.air_menu = true,
         shortcuts::FOCUS_DECK => p.focus_deck = param("deck"),
         shortcuts::FIRE_CART => p.cart = param("cart"),
         SHORTCUTS => return Run::Shortcuts,
