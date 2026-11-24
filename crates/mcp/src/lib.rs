@@ -15,7 +15,9 @@ const INSTRUCTIONS: &str = "CraftRadio runs a radio station: four decks, a main 
 named playlists woven in by rules, fixed-time events, a cartwall, and local and Icecast output. \
 Each tool is one engine command and runs on the station that is on air now, as a panel of the \
 app would. Tools marked on-air change what the station plays: confirm with the person first. \
-Read the state with station_get; history_list and history_export_csv read the as-played log. \
+Read the state with station_get; history_list and history_export_csv read the as-played log, \
+history_plays_csv gives the plays per title for royalty reporting, and history_airings_csv \
+gives every airing with its real start and end as proof of airing. \
 screenshot shows the app's main window, when the station runs with one.";
 
 /// The tool that is no engine command: a picture of the app's main window.

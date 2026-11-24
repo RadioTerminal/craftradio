@@ -647,6 +647,22 @@ impl Core {
         Ok(out)
     }
 
+    /// Answers a command with the CSV that `read` gives, off the playout thread.
+    fn csv_query(
+        &self,
+        reply: Reply,
+        read: impl FnOnce() -> Result<String, radio_engine::EngineError> + Send + 'static,
+    ) {
+        self.work.run_query(move || {
+            let result = read().map(|csv| radio_engine::Outcome {
+                data: Some(serde_json::Value::String(csv)),
+                ..Default::default()
+            });
+            let _ = reply.send(result);
+            Done::Query
+        });
+    }
+
     pub(crate) fn dispatch(&mut self, cmd: Command, reply: Reply) {
         fn has_script(c: &Command) -> bool {
             match c {
@@ -692,15 +708,29 @@ impl Core {
             }
             Command::HistoryExportCsv { since, until } => {
                 let log = self.log.clone();
-                self.work.run_query(move || {
-                    let result = log
-                        .export_csv(since, until)
-                        .map(|csv| radio_engine::Outcome {
-                            data: Some(serde_json::Value::String(csv)),
-                            ..Default::default()
-                        });
-                    let _ = reply.send(result);
-                    Done::Query
+                self.csv_query(reply, move || log.export_csv(since, until));
+                return;
+            }
+            Command::HistoryPlaysCsv {
+                since,
+                until,
+                playlist,
+            } => {
+                let log = self.log.clone();
+                self.csv_query(reply, move || {
+                    log.plays_csv(since, until, playlist.as_deref())
+                });
+                return;
+            }
+            Command::HistoryAiringsCsv {
+                since,
+                until,
+                playlist,
+            } => {
+                let log = self.log.clone();
+                let zone = self.engine.state().station.tz.clone();
+                self.csv_query(reply, move || {
+                    log.airings_csv(since, until, playlist.as_deref(), &zone)
                 });
                 return;
             }

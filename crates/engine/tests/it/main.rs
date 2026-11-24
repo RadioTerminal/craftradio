@@ -192,13 +192,99 @@ fn csv_has_header_and_one_row_per_aired_item() {
     assert!(body.iter().all(|l| l.ends_with(",aired")));
 }
 
+/// Logs an airing of `title` by `artist` on `playlist` from `start` for `secs` seconds.
+fn air(e: &Engine, start: i64, secs: i64, playlist: &str, artist: &str, title: &str) {
+    let mut entry = entry(start, title);
+    entry.playlist = playlist.into();
+    entry.artist = Some(artist.into());
+    let row = e.log_start(&entry).unwrap();
+    let end = Timestamp::from_second(start + secs).unwrap();
+    e.log_end(row, end, LogStatus::Aired).unwrap();
+}
+
+#[test]
+fn plays_report_counts_each_title_once_per_airing_and_sums_its_air_time() {
+    let mut e = Engine::open_in_memory().unwrap();
+    air(&e, 1_000, 180, "Main", "Velka Thrun", "Glints of Varnholt");
+    air(&e, 2_000, 60, "Main", "Velka Thrun", "Glints of Varnholt");
+    air(&e, 3_000, 200, "Main", "Orlo Fenn", "Embers of Sorvik");
+    // another playlist
+    air(&e, 4_000, 30, "Ads", "Kesten Bakery", "Spot A");
+    // outside the range
+    air(&e, 9_000, 200, "Main", "Orlo Fenn", "Embers of Sorvik");
+    let csv = e
+        .dispatch(Command::HistoryPlaysCsv {
+            since: Timestamp::from_second(0).unwrap(),
+            until: Timestamp::from_second(5_000).unwrap(),
+            playlist: Some("Main".into()),
+        })
+        .unwrap()
+        .data
+        .unwrap();
+    let lines: Vec<&str> = csv.as_str().unwrap().lines().collect();
+    assert_eq!(lines[0], "artist,title,plays,air_seconds");
+    assert!(lines.contains(&"Velka Thrun,Glints of Varnholt,2,240"));
+    assert!(lines.contains(&"Orlo Fenn,Embers of Sorvik,1,200"));
+    assert_eq!(lines.len(), 3);
+}
+
+#[test]
+fn airings_report_keeps_one_playlist_and_gives_station_local_times() {
+    let e = Engine::open_in_memory().unwrap();
+    // 2026-01-15 23:30:00 UTC is 00:30 the next day in Ljubljana.
+    let start: Timestamp = "2026-01-15T23:30:00Z".parse().unwrap();
+    air(&e, start.as_second(), 30, "Ads", "Kesten Bakery", "Spot A");
+    air(
+        &e,
+        start.as_second() + 60,
+        180,
+        "Main",
+        "Velka Thrun",
+        "Glints of Varnholt",
+    );
+    let cut = e
+        .log_start(&LogEntry {
+            playlist: "Ads".into(),
+            ..entry(start.as_second() + 300, "Spot B")
+        })
+        .unwrap();
+    let end = Timestamp::from_second(start.as_second() + 310).unwrap();
+    e.log_end(cut, end, LogStatus::Interrupted).unwrap();
+    let csv = e
+        .log_handle()
+        .unwrap()
+        .airings_csv(
+            Timestamp::UNIX_EPOCH,
+            Timestamp::MAX,
+            Some("Ads"),
+            "Europe/Ljubljana",
+        )
+        .unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(
+        lines[0],
+        "date,start,end,seconds,playlist,title,artist,rule,status"
+    );
+    assert_eq!(lines.len(), 3, "only the Ads airings: {lines:?}");
+    assert!(lines[1].starts_with("2026-01-16,00:30:00,00:30:30,30,Ads,Spot A,"));
+    assert!(lines[1].ends_with(",aired"));
+    assert!(lines[2].ends_with(",interrupted"));
+}
+
 #[test]
 fn registry_ids_unique_and_onair_marked() {
     let specs = registry();
     let unique: BTreeSet<&str> = specs.iter().map(|s| s.id).collect();
     assert_eq!(unique.len(), specs.len());
 
-    let read_only: BTreeSet<&str> = ["station.get", "history.list", "history.export_csv"].into();
+    let read_only: BTreeSet<&str> = [
+        "station.get",
+        "history.list",
+        "history.export_csv",
+        "history.plays_csv",
+        "history.airings_csv",
+    ]
+    .into();
     for s in &specs {
         let expected = if read_only.contains(s.id) {
             Tier::ReadOnly
@@ -220,6 +306,16 @@ fn registry_ids_unique_and_onair_marked() {
         Command::StationGet,
         Command::HistoryList { since: t, limit: 1 },
         Command::HistoryExportCsv { since: t, until: t },
+        Command::HistoryPlaysCsv {
+            since: t,
+            until: t,
+            playlist: None,
+        },
+        Command::HistoryAiringsCsv {
+            since: t,
+            until: t,
+            playlist: None,
+        },
     ];
     for c in sample {
         let spec = specs.iter().find(|s| s.id == c.id()).expect("registered");
