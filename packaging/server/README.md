@@ -1,12 +1,14 @@
 # Running craftradio-server on a host
 
 `craftradio-server` takes the radio app's Icecast push for each station and serves it to
-listeners at `/<slug>/stream`, with Icecast-shaped stats at `/status-json.xsl`. All names,
-hosts and addresses below are invented; use your own.
+listeners at `/<slug>/stream`, with Icecast-shaped stats at `/status-json.xsl`. It can
+also serve each station in other formats and bitrates (see "Outputs"). All names, hosts
+and addresses below are invented; use your own.
 
 Files here:
 
-- `craftradio-server.example.toml`: a config with two stations and a comment for every key.
+- `craftradio-server.example.toml`: a config with two stations, two outputs and a comment
+  for every key.
 - `craftradio-server.service`: a systemd unit.
 - `Caddyfile`: Caddy in front of the server, for one host.
 
@@ -147,9 +149,41 @@ In the app's Icecast output settings for the station:
 A wrong key shows in the app as refused with HTTP 401, never as connected. Listeners
 open `https://radio.example.org/morning/stream`.
 
+## Outputs
+
+An output is the station's broadcast in another format or bitrate, which the server
+re-encodes from what the app pushes. `/<slug>/stream` stays exactly what the app sends.
+Add one `[[station.output]]` block per output under its station:
+
+```toml
+[[station.output]]
+mount = "stream.mp3"   # served at /morning/stream.mp3
+format = "mp3"         # "mp3" or "opus"
+kbps = 192
+```
+
+- **Mount:** 1–32 of `a-z`, `0-9`, `-`, `.` and `_`, not starting with `-` or `.`, and
+  not `stream`, `live`, `signal` or `feed`. Two outputs of a station can't share one.
+- **Bitrate:** MP3 takes 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256 or 320;
+  Opus takes 6 to 510. Anything else stops the server at start with a message. A bitrate
+  above the app's is allowed but sounds no better.
+- **The source must be 48 kHz stereo**, which the app's Icecast output always is. For any
+  other source the outputs are off: a listener gets 503 with the reason, and
+  `/<slug>/stream` still plays.
+- **Cost:** while someone listens to an output, the server decodes the station's stream
+  once and encodes once per output in use, however many listen to it. An output nobody
+  listens to costs nothing. A listener of an idle output waits a moment for it to start.
+- **Listener limit:** `max_stream_listeners` counts `/<slug>/stream` and all the station's
+  outputs together.
+- **Titles:** every output carries the titles the app sends. MP3 players that ask for
+  titles (ICY) get them in the stream, on MP3 outputs and on `/<slug>/stream` when the app
+  pushes MP3.
+- The stats list each output while it plays, with its format and bitrate, after the
+  station's `/<slug>/stream`.
+
 ## Not yet available
 
-`media`, `public_ip`, `guest_key`, `max_webrtc_listeners` and `[[station.output]]` are
+`media`, `public_ip`, `guest_key`, `max_webrtc_listeners` and an output's `default` are
 later phases; the server refuses a config that has them.
 
 ## Checked
@@ -159,4 +193,6 @@ checks ran on, so neither the Caddyfile nor the nginx lines were run. What was c
 by `crates/server/tests/it/e2e.rs`: the app's own Icecast output pushing to the server
 directly, plain HTTP (Opus and MP3, heard back, titles in the stats, a wrong key reported
 as HTTP 401) and over the server's own TLS (MP3, heard back over https by the app's
-stream input).
+stream input). Outputs (phase 1b), plain HTTP: the app's Opus push heard as MP3 by the
+app's own stream input with the titles it set, on a lower Opus output, and the app's MP3
+push heard on an Opus output.

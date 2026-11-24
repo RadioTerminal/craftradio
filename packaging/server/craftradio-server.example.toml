@@ -11,7 +11,7 @@ listen = "127.0.0.1:8080"
 
 # The address listeners reach the server at: the bare origin, scheme and host (and port if
 # it is not the default), with no path after it. The stats at /status-json.xsl list each
-# stream as <public_url>/<slug>/stream.
+# stream as <public_url>/<slug>/stream, and each output as <public_url>/<slug>/<mount>.
 public_url = "https://radio.example.org"
 
 # The proxy whose X-Forwarded-For header is believed: one IP address, not a range. Set it
@@ -33,8 +33,25 @@ name = "Morning Station"
 # The hash of the station key, from `craftradio-server key`. The key itself never goes in
 # this file. This one is a placeholder that no key matches; each station needs its own.
 key_hash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-# How many people may listen to /morning/stream at once; one more gets 503. Default 200.
+# How many people may listen to the station at once, on /morning/stream and all its
+# outputs together; one more gets 503. Default 200.
 max_stream_listeners = 200
+
+# Outputs: the same broadcast in another format or bitrate, re-encoded by the server while
+# someone listens. Any number; each is served at /<slug>/<mount>. See README.md.
+[[station.output]]
+# 1–32 of a-z, 0-9, -, . and _, not starting with - or . ("stream", "live", "signal" and
+# "feed" are the server's own). This one is /morning/stream.mp3.
+mount = "stream.mp3"
+# "mp3" or "opus".
+format = "mp3"
+# kbit/s. MP3: 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256 or 320. Opus: 6–510.
+kbps = 192
+
+[[station.output]]
+mount = "low"
+format = "opus"
+kbps = 64
 
 [[station]]
 slug = "night-shift"

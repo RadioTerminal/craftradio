@@ -1,7 +1,7 @@
 # Station server: design
 
-**Status (2026-11-24):** approved by the operator. Phase 1 (server core) is built:
-`crates/server`, `apps/radio-server`, `packaging/server`. Phases 1b–5 are not.
+**Status (2026-11-24):** approved by the operator. Phases 1 (server core) and 1b (outputs)
+are built: `crates/server`, `apps/radio-server`, `packaging/server`. Phases 2–5 are not.
 
 **Open after phase 1:** the app's push through a reverse proxy is not checked (Caddy was not
 installed where it was built); the server's own TLS is the route checked with the app. The
@@ -9,6 +9,14 @@ server logs nothing after "listening", so an operator can't tell a wrong key fro
 problem; logging of source connects, refusals and lockouts is a follow-up. A client that
 opens connections fast enough can still keep cutting off a source that is mid-connect;
 closing that needs a rate limit, which is a new decision.
+
+**Open after phase 1b:** there is no resampler, so a source that is not 48 kHz stereo gets
+no outputs (§5.6). A transcoder thread that panics marks no output failed: its listeners
+get "starting" (503) after 2 s instead of the reason. The transcoder's burst test
+(`outputs_recover_from_a_burst`) passes whether or not its listener was dropped for falling
+behind, so it does not prove that path ran. The push through a reverse proxy is still not
+checked (as after phase 1). Phase 1b's done check (§7) ran with the app's own stream input
+hearing the MP3 output and its titles, from a 96 kbit/s Opus push, not with a browser.
 
 **Related:** `docs/superpowers/plans/2026-11-22-p2p-listener-relay.md` (the signed listener
 relay this builds on; its §6 item 2, "the station as its own tracker", was dropped because a
@@ -96,8 +104,8 @@ page (phase 4), then the relay (phase 5), so each phase is usable on its own.
 ## 5. The server
 
 A new binary, `craftradio-server`. Call: its logic lives in a new crate `crates/server`
-(depends on `radio-stream` and `codecs` only, tests in `tests/it/main.rs`), with a thin `apps/radio-server`
-around it. It reuses `OggMuxer`, `packets`, the tracker message shapes and the `str0m` code
+(a layer 2 crate that depends on `codecs` only, with `radio-stream` a dev-dependency of its
+tests in `tests/it/main.rs`), with a thin `apps/radio-server` around it. It reuses `OggMuxer`, `packets`, the tracker message shapes and the `str0m` code
 from `radio-stream`, moving shared pieces rather than copying them (moves are their own
 commits, rule 3).
 
@@ -249,7 +257,8 @@ Per-connection and per-address limits on offers follow the ones in `relay.rs`
 - The server decodes the pushed stream once per station (48 kHz stereo) and encodes once
   per output, whatever the number of listeners on it. It uses what the workspace already
   has: the decoders of `crates/codecs` (Symphonia, native Opus) and the Opus and MP3
-  encoders of `radio-stream`. No FFmpeg and no new codec crate.
+  encoders, which moved from `radio-stream` to `radio-codecs` for it. No FFmpeg and no new
+  codec crate.
 - `/<slug>/stream` stays the pushed bytes, untouched. An output is never an "upscale" in
   quality, but the server does not refuse a bitrate above the source's; that is the
   operator's choice.
@@ -266,6 +275,27 @@ Per-connection and per-address limits on offers follow the ones in `relay.rs`
 - The pairing document lists the outputs with their public addresses, so the app can show
   them. Call: the app's `public_stream`, which the listener page falls back to, stays the
   pushed mount unless one output has `default = true`.
+
+Calls made while building phase 1b:
+
+- **48 kHz stereo only.** There is no resampler. A source of any other rate or channel
+  count turns the station's outputs off; their listeners get 503 with the reason in words,
+  and `/<slug>/stream` plays on. The app's Icecast output is always 48 kHz stereo.
+- **ICY on every MP3 mount**, the pushed `/<slug>/stream` too, not only outputs, for
+  listeners that send `Icy-MetaData: 1` (`icy-metaint: 16000`).
+- **An output's title is the pushed mount's**, whatever the source format carries it in
+  (`/admin/metadata` for MP3, Ogg tags for Opus).
+- **`default = true` is left to phase 2**, with pairing, which is what reads it. Until
+  then the config refuses it as an unknown key.
+- **Bitrates are the encoders' to judge:** MP3 32–320 kbit/s in the steps MPEG-1 Layer III
+  allows at 48 kHz, Opus 6–510. The config check builds the encoder, so no second table can
+  drift from it.
+- **Mount names** are 1–32 of `a-z`, `0-9`, `-`, `.` and `_`, not starting with `-` or `.`.
+- **Refusals in words:** an output answers 404 while the station is off the air, and 503
+  with the reason when its outputs are off, when it failed for this broadcast (until the
+  source reconnects), when the station is full, or when it is still starting after 2 s.
+  The stats list the pushed mount first, then each output that is playing, with the
+  `bitrate` of the pushed mount taken from the app's `Ice-Bitrate`.
 
 ## 6. The app
 
