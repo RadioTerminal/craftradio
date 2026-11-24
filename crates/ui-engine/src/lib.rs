@@ -1177,7 +1177,7 @@ impl ViewSource for EngineSource {
             self.revision = Some(pv.revision);
         }
         // After `with_secrets`, so the start asks with the keychain of the app.
-        self.refetch_at_start();
+        self.watch_pairing();
         self.take_done(now);
         self.poll_pending();
         self.poll_watches();

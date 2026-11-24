@@ -398,3 +398,91 @@ fn the_key_never_reaches_settings_or_the_snapshot() {
         assert!(!stored.contains(DAWN_KEY), "{part}");
     }
 }
+
+/// A server on this computer that answers every request with `status` and `body`.
+fn answering(status: &'static str, body: &'static str) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            let mut head = Vec::new();
+            let mut byte = [0];
+            while !head.ends_with(b"\r\n\r\n") && conn.read_exact(&mut byte).is_ok() {
+                head.push(byte[0]);
+            }
+            let _ = write!(
+                conn,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    address
+}
+
+/// A server of a newer version is refused in words and changes nothing; a server that locks
+/// this computer out says it refuses for a while.
+#[test]
+fn a_newer_document_is_refused_in_words_and_changes_nothing() {
+    let newer = answering("200 OK", r#"{"version": 2, "station": {"slug": "dawn"}}"#);
+    let (mut source, clock, store) = station();
+    assert_eq!(pair(&mut source, &newer, DAWN_KEY), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        matches!(v.pairing.state, PairState::Refused(_))
+    });
+    let PairState::Refused(reason) = &view.pairing.state else {
+        panic!("not refused: {:?}", view.pairing);
+    };
+    assert!(reason.contains("newer CraftRadio"), "{reason}");
+    assert!(!view.pairing.paired);
+    assert_eq!(setting(&view, "server", "address"), None);
+    assert_eq!(setting(&view, "icecast", "host"), None);
+    assert_eq!(store.get(&dawn_entry(&newer)), Ok(None), "no key stored");
+
+    let locked = answering("429 Too Many Requests", "too many wrong keys");
+    assert_eq!(pair(&mut source, &locked, DAWN_KEY), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        matches!(v.pairing.state, PairState::Unreachable(_))
+    });
+    let PairState::Unreachable(reason) = &view.pairing.state else {
+        panic!("not unreachable: {:?}", view.pairing);
+    };
+    assert!(reason.contains("for a while"), "{reason}");
+}
+
+/// The CLI or MCP unpairs while the window shows Paired: the window says not paired.
+#[test]
+fn an_unpair_by_another_client_says_not_paired() {
+    let (_server, address) = server();
+    let (mut source, clock, _store) = station();
+    assert_eq!(pair(&mut source, &address, DAWN_KEY), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired
+    });
+    source.playout().dispatch(Command::ServerUnpair).unwrap();
+    let view = wait_for(&mut source, &clock, |v| !v.pairing.paired);
+    assert_eq!(view.pairing.state, PairState::NotPaired);
+    assert_eq!(view.pairing.label(), "Not paired");
+}
+
+/// After a refused first try here, another client pairs the station (the key already in the
+/// keychain): the source asks that server once, says Paired, and the push connects.
+#[test]
+fn a_pairing_by_another_client_is_asked_once_and_connects() {
+    let (_server, address) = server();
+    let (mut source, clock, store) = station();
+    assert_eq!(pair(&mut source, &address, WRONG_KEY), Ok(1));
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::KeyRefused
+    });
+    store.set(&dawn_entry(&address), DAWN_KEY).unwrap();
+    paired_with(&mut source, &address, document_for(&address));
+    let view = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired && v.output.icecast == Status::Connected
+    });
+    assert_eq!(view.pairing.state, PairState::Paired);
+    assert_eq!(view.output.icecast, Status::Connected);
+    assert!(wait_live(&mut source, &clock, &address, true));
+}

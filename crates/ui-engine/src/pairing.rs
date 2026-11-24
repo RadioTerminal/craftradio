@@ -283,8 +283,13 @@ pub(crate) struct Pairing {
     state: PairState,
     /// The last try sent to the background lane. Older answers are dropped.
     asked: u64,
-    /// True once the paired server was asked: by the start, or by a person.
-    started: bool,
+    /// The paired address that the last snapshot saw in the settings.
+    seen: Option<String>,
+    /// The address this source last asked, so its own pairing is not asked again when the
+    /// settings show it.
+    asked_for: Option<String>,
+    /// True while the paired server refused the key: the push stays closed.
+    held: bool,
 }
 
 /// The address of the paired server, from the settings.
@@ -304,17 +309,33 @@ impl EngineSource {
             .map(|_| crate::icecast::secret_key(&crate::icecast_view(&self.state)))
     }
 
-    /// Asks the paired server again, once, when a snapshot first sees the station paired (at
-    /// start, as soon as playout shows the saved state): the settings it hands out overwrite
-    /// hand edits. A down server leaves the last paired settings as they are. It never asks
-    /// twice by itself, so a refused key is not tried again.
-    pub(crate) fn refetch_at_start(&mut self) {
-        if self.pairing.started {
+    /// Follows the paired address in the settings, whoever changed it (this window, the CLI,
+    /// MCP or a script). A paired address that this source did not just ask, as at start, is
+    /// asked once with the stored key: the settings it hands out overwrite hand edits, and a
+    /// down server leaves the last paired settings as they are. It never asks the same address
+    /// twice by itself, so a refused key is not tried again. Unpaired by anyone, the state
+    /// says not paired.
+    pub(crate) fn watch_pairing(&mut self) {
+        let now = paired_address(&self.state);
+        if now == self.pairing.seen {
             return;
         }
-        if let Some(address) = paired_address(&self.state) {
-            self.pairing.started = true;
-            self.ask_server(address, None);
+        let before = std::mem::replace(&mut self.pairing.seen, now.clone());
+        match now {
+            None => {
+                if before.is_some() {
+                    self.pairing.asked += 1;
+                    self.pairing.address.clear();
+                    self.pairing.state = PairState::NotPaired;
+                    self.pairing.asked_for = None;
+                    self.pairing.held = false;
+                }
+            }
+            Some(address) => {
+                if self.pairing.asked_for.as_deref() != Some(address.as_str()) {
+                    self.ask_server(address, None);
+                }
+            }
         }
     }
 
@@ -322,6 +343,7 @@ impl EngineSource {
     fn ask_server(&mut self, address: String, key: Option<Secret>) {
         self.pairing.asked += 1;
         self.pairing.address.clone_from(&address);
+        self.pairing.asked_for = Some(address.clone());
         let job = crate::bg::Job::Pair {
             seq: self.pairing.asked,
             address,
@@ -356,8 +378,6 @@ impl EngineSource {
         if self.worker.is_none() {
             return Err("The background lane could not start".into());
         }
-        // A person asked: the start needs not ask again.
-        self.pairing.started = true;
         self.ask_server(address, key);
         Ok(1)
     }
@@ -379,6 +399,8 @@ impl EngineSource {
         self.pairing.asked += 1;
         self.pairing.address.clear();
         self.pairing.state = PairState::NotPaired;
+        self.pairing.asked_for = None;
+        self.pairing.held = false;
         self.secret_known = None;
         Ok(1)
     }
@@ -388,8 +410,12 @@ impl EngineSource {
         if answer.seq != self.pairing.asked {
             return;
         }
-        let was_refused = self.pairing.state == PairState::KeyRefused;
         self.pairing.address.clone_from(&answer.address);
+        // Only a pairing this source wrote is not asked again when the settings show it; after
+        // a failed try, another client's pairing of the same server is asked once.
+        if answer.result.is_err() {
+            self.pairing.asked_for = None;
+        }
         match answer.result {
             Ok(document) => {
                 let sent = self.send(
@@ -404,14 +430,18 @@ impl EngineSource {
                     Err(e) => PairState::Refused(format!("the settings were not written: {e}")),
                 };
                 // The key is stored: the snapshot asks the keychain again, and a rotated key
-                // for an unchanged mount applies at once.
+                // for an unchanged mount applies at once (the same settings keep a working
+                // connection).
+                self.pairing.held = false;
                 self.secret_known = None;
                 self.sync_icecast(true);
             }
             Err(PairError::KeyRefused) => {
                 self.pairing.state = PairState::KeyRefused;
-                // The push would walk the server's lockout with the same key: it waits.
-                if paired_address(&self.state).is_some() {
+                // The paired server refused the stored key: the push would walk its lockout
+                // with that key, so it waits for a new one.
+                if paired_address(&self.state).as_deref() == Some(answer.address.as_str()) {
+                    self.pairing.held = true;
                     self.sync_icecast(true);
                 }
             }
@@ -420,15 +450,12 @@ impl EngineSource {
             }
             Err(PairError::Refused(reason)) => self.pairing.state = PairState::Refused(reason),
         }
-        if was_refused && self.pairing.state != PairState::KeyRefused {
-            self.sync_icecast(true);
-        }
     }
 
     /// True while the paired server refused the key: the Icecast push then stays closed, so
     /// it does not walk the server's lockout.
     pub(crate) fn push_held(&self) -> bool {
-        self.pairing.state == PairState::KeyRefused && paired_address(&self.state).is_some()
+        self.pairing.held
     }
 
     /// The pairing for the snapshot. The key is not in it.
@@ -439,10 +466,16 @@ impl EngineSource {
         } else {
             self.pairing.address.clone()
         };
+        // Paired is said only while the settings hold that pairing: until the engine took
+        // it, the try is still on its way.
+        let state = match &self.pairing.state {
+            PairState::Paired if paired.as_deref() != Some(address.as_str()) => PairState::Pairing,
+            state => state.clone(),
+        };
         PairingView {
             address,
             paired: paired.is_some(),
-            state: self.pairing.state.clone(),
+            state,
         }
     }
 }
