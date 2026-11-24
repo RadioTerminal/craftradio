@@ -337,18 +337,27 @@ impl Core {
             return;
         };
         let state = self.engine.state();
-        let brand = (
-            state
-                .station_name()
-                .unwrap_or_else(|| self.cfg.station_name.clone()),
-            state.station_logo(),
-        );
+        let logo = state.station_logo();
+        // The modified time makes a logo file that changes at the same path count as new.
+        let modified = logo
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        let brand = (state.station_name().unwrap_or_default(), logo, modified);
         if self.brand_sent.as_ref() != Some(&brand) {
+            // The alarms of the logo that goes out of use go with it.
+            if let Some(before) = self.brand_sent.take().and_then(|(_, logo, _)| logo) {
+                let before = before.to_string_lossy().into_owned();
+                self.alarms.clear(
+                    now,
+                    |a| matches!(a, Alarm::PictureFailed { path, .. } if *path == before),
+                );
+            }
             server.set_brand(brand.0.clone(), brand.1.clone());
             self.brand_sent = Some(brand);
         }
         for error in server.take_picture_errors() {
-            self.alarms.raise(
+            self.alarms.raise_once(
                 now,
                 Alarm::PictureFailed {
                     path: error.path.to_string_lossy().into_owned(),

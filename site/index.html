@@ -319,7 +319,8 @@ function setCover(url) {
 function showPicture() {
   const url = coverUrl || brand.logo;
   if (url) {
-    if (art.getAttribute("src") !== url) { art.onload = () => art.classList.add("shown"); art.src = url; }
+    // A picture that does not load leaves the app icon showing, not a broken image.
+    if (art.getAttribute("src") !== url) { art.onload = () => art.classList.add("shown"); art.onerror = () => art.classList.remove("shown"); art.src = url; }
   } else { art.classList.remove("shown"); art.removeAttribute("src"); }
   // The blurred backdrop follows the item's cover only.
   if (coverUrl) { backdrop.style.setProperty("--art", `url("${coverUrl}")`); backdrop.classList.add("art"); }
@@ -327,9 +328,11 @@ function showPicture() {
   updateSession();
 }
 // The logo is a URL: a blob URL from parts, or a data URL from storage or /brand.
+// A name is at most 200 characters, shown or kept.
+const clipName = (name) => (typeof name === "string" ? name : "").slice(0, 200);
 function setBrand(name, logo) {
   if (brand.logo && brand.logo !== logo && brand.logo.startsWith("blob:")) URL.revokeObjectURL(brand.logo);
-  brand = { name: name || "", logo: logo || null };
+  brand = { name: clipName(name), logo: logo || null };
   brandRev++;
   showTitle();
   showPicture();
@@ -343,12 +346,28 @@ function updateSession() {
   });
 }
 // The brand of each station is kept in this browser, so the page shows it before Listen.
+// Only the station's own word is kept, never a brand that came through a relaying listener,
+// and at most 8 stations: the oldest goes.
+const KEPT_BRANDS = 8;
+function fromStationItself() { const src = primary(); return !!src && !src.peer; }
 function saveBrand(name, dataUrl) {
   if (!station) return;
+  name = clipName(name);
+  const saved = Date.now();
   try {
-    let text = JSON.stringify({ name, logo: dataUrl || null });
-    if (text.length > 300000) text = JSON.stringify({ name, logo: null });
+    let text = JSON.stringify({ name, logo: dataUrl || null, saved });
+    if (text.length > 300000) text = JSON.stringify({ name, logo: null, saved });
     localStorage.setItem("brand:" + station.label, text);
+    const kept = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith("brand:")) continue;
+      let at = 0;
+      try { at = Number(JSON.parse(localStorage.getItem(key)).saved) || 0; } catch (_) {}
+      kept.push({ key, at });
+    }
+    kept.sort((a, b) => a.at - b.at);
+    for (const old of kept.slice(0, Math.max(0, kept.length - KEPT_BRANDS))) localStorage.removeItem(old.key);
   } catch (_) {}
 }
 function dataUrlOf(mime, parts) {
@@ -448,10 +467,12 @@ function onMessage(text) {
   if (m.type === "brand") {
     const l = m.logo, name = typeof m.name === "string" ? m.name : "";
     const ok = l && Number.isInteger(l.parts) && l.parts > 0 && l.parts <= 256 && /^image\/(png|jpeg|webp)$/.test(l.mime);
-    brandIn = ok ? { id: l.id, mime: l.mime, name, parts: new Array(l.parts), left: l.parts } : null;
+    // Only a brand from the station itself is kept, and that is known now, not when it ends.
+    const keep = fromStationItself();
+    brandIn = ok ? { id: l.id, mime: l.mime, name: clipName(name), parts: new Array(l.parts), left: l.parts, keep } : null;
     // A logo on its way keeps the old one until it is whole.
     setBrand(name, ok ? brand.logo : null);
-    if (!ok) saveBrand(name, null);
+    if (!ok && keep) saveBrand(name, null);
     return;
   }
   if (m.type === "logo") {
@@ -462,7 +483,7 @@ function onMessage(text) {
     const got = brandIn; brandIn = null;
     setBrand(got.name, URL.createObjectURL(new Blob(got.parts, { type: got.mime })));
     // A logo too big for storage is left out; the name is kept.
-    saveBrand(got.name, got.parts.reduce((n, p) => n + p.length, 0) < 200000 ? dataUrlOf(got.mime, got.parts) : null);
+    if (got.keep) saveBrand(got.name, got.parts.reduce((n, p) => n + p.length, 0) < 200000 ? dataUrlOf(got.mime, got.parts) : null);
     return;
   }
   gotMeta = true;
@@ -871,7 +892,8 @@ async function answerChild(m, ws, infoHash, peerId) {
     if (ch.label !== "now") return;
     c.now = ch;
     const greet = () => {
-      for (const text of [metaHello, ...metaBrand, metaHistory, ...metaThumbs.values(), ...metaNow]) if (text) sendTo(ch, text);
+      // What plays now goes first, then the brand, the history and its thumbnails.
+      for (const text of [metaHello, ...metaNow, ...metaBrand, metaHistory, ...metaThumbs.values()]) if (text) sendTo(ch, text);
     };
     if (ch.readyState === "open") greet(); else ch.onopen = greet;
     ch.onmessage = (ev) => {

@@ -436,7 +436,11 @@ pub(crate) struct Core {
     /// The address of the running server.
     pub(crate) webrtc_bind: Option<std::net::SocketAddr>,
     /// The name and logo that the running server has, so a change is sent once.
-    pub(crate) brand_sent: Option<(String, Option<std::path::PathBuf>)>,
+    pub(crate) brand_sent: Option<(
+        String,
+        Option<std::path::PathBuf>,
+        Option<std::time::SystemTime>,
+    )>,
     /// The thread that stops the last server and frees its ports.
     pub(crate) webrtc_stopping: Option<std::thread::JoinHandle<()>>,
     /// What plays now, for a server that starts later.

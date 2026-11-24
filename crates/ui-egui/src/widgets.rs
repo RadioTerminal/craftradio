@@ -425,7 +425,7 @@ pub(crate) fn picture_field(
             };
             if button(ui, "Browse…", true).clicked()
                 && let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Pictures", &["png", "jpg", "jpeg", "webp"])
+                    .add_filter("Pictures", &crate::view::PICTURE_EXTENSIONS)
                     .pick_file()
             {
                 *path = file.display().to_string();

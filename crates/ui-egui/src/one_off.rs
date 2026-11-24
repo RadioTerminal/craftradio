@@ -679,19 +679,24 @@ mod tests {
     #[test]
     fn editing_a_one_off_fills_the_fields_back() {
         let view = view_at("2026-11-21T13:58:30Z", "Europe/Ljubljana");
+        let file =
+            std::env::temp_dir().join(format!("craftradio-one-off-{}.png", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        let picture = file.to_string_lossy().into_owned();
         let (o, _) = {
             let mut d = url_dialog(&view);
             d.hard = false;
             d.tolerance_s = 2.5;
             d.repeat = OneOffRepeat::Weekly;
-            d.picture = "/art/show.png".to_owned();
+            d.picture.clone_from(&picture);
             d.check(&view).unwrap()
         };
         let mut o = o;
         o.id = 9;
         let back = OneOffDialog::edit(&o, &view).check(&view).unwrap().0;
         assert_eq!(back, o);
-        assert_eq!(back.picture, "/art/show.png", "the picture comes back");
+        assert_eq!(back.picture, picture, "the picture comes back");
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

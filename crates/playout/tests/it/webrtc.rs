@@ -132,7 +132,46 @@ fn set_branding(p: &Playout, key: &str, value: &str) {
     .unwrap();
 }
 
+/// A file that goes away with the test. Its name is unique to the process and the test.
+struct Temp(std::path::PathBuf);
+
+impl Temp {
+    fn new(test: &str, ext: &str, bytes: &[u8]) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "craftradio-webrtc-it-{test}-{}.{ext}",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).unwrap();
+        Self(path)
+    }
+
+    fn text(&self) -> String {
+        self.0.to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// A 1 by 1 PNG picture.
+const PNG: [u8; 69] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x38, 0x11, 0xb5, 0x00,
+    0x00, 0x03, 0xb0, 0x01, 0xc3, 0x1a, 0x0f, 0x0d, 0x28, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
 fn branded_station() -> (u16, Playout, radio_playout::ManualClock) {
+    branded_station_with(|_| {})
+}
+
+fn branded_station_with(
+    tune: impl FnOnce(&mut radio_playout::PlayoutConfig),
+) -> (u16, Playout, radio_playout::ManualClock) {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -144,6 +183,7 @@ fn branded_station() -> (u16, Playout, radio_playout::ManualClock) {
         w.trackers.clear();
         cfg.webrtc = Some(w);
         cfg.webrtc_always = true;
+        tune(cfg);
     });
     until(&p, &clock, listening);
     (port, p, clock)
@@ -169,9 +209,8 @@ fn the_brand_follows_the_settings() {
 fn a_logo_that_does_not_load_raises_an_alarm() {
     let (_port, p, clock) = branded_station();
     let alarms = p.alarms().unwrap();
-    let logo = std::env::temp_dir().join("craftradio-not-a-picture.txt");
-    std::fs::write(&logo, "this is text, not a picture").unwrap();
-    let logo = logo.to_string_lossy().into_owned();
+    let file = Temp::new("not-a-picture", "txt", b"this is text, not a picture");
+    let logo = file.text();
     set_branding(&p, radio_model::BRANDING_LOGO_KEY, &logo);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -192,11 +231,9 @@ fn a_logo_that_does_not_load_raises_an_alarm() {
 fn station_with_picture(
     name: &str,
     publish: radio_model::PublishMode,
-) -> (String, Playout, radio_playout::ManualClock) {
-    let picture =
-        std::env::temp_dir().join(format!("craftradio-item-{name}-{}.png", std::process::id()));
-    std::fs::write(&picture, "text, not a picture").unwrap();
-    let picture = picture.to_string_lossy().into_owned();
+) -> (Temp, Playout, radio_playout::ManualClock) {
+    let file = Temp::new(name, "png", b"text, not a picture");
+    let picture = file.text();
     let mut item = file_item(1, "Show", &wav(name, 2.0, Side::Left), 2.0, 2.0, 0.0);
     item.meta.title = "Show".into();
     item.meta.publish = publish;
@@ -214,7 +251,7 @@ fn station_with_picture(
         cfg.webrtc = Some(w);
         cfg.webrtc_always = true;
     });
-    (picture, p, clock)
+    (file, p, clock)
 }
 
 /// True when an alarm about `picture` arrives while 1.5 s of the station play.
@@ -233,11 +270,11 @@ fn picture_alarm(p: &Playout, clock: &radio_playout::ManualClock, picture: &str)
     false
 }
 
-/// An item's own picture is its cover when it shows its tags or its own text, and a hidden
-/// item never reads it. A picture that cannot load raises an alarm, so the alarm shows
-/// which items the station read the picture of.
+/// An item's own picture is read when it shows its tags or its own text, and a hidden item
+/// never reads it. A picture that cannot load raises an alarm, so the alarm shows which
+/// items the station read the picture of.
 #[test]
-fn an_item_picture_is_its_cover() {
+fn a_broken_item_picture_is_reported_in_the_modes_that_show_it() {
     use radio_model::PublishMode::{Custom, FromTags, Hide};
     for (name, mode, read) in [
         ("pic-tags", FromTags, true),
@@ -245,7 +282,7 @@ fn an_item_picture_is_its_cover() {
         ("pic-hide", Hide, false),
     ] {
         let (picture, p, clock) = station_with_picture(name, mode);
-        assert_eq!(picture_alarm(&p, &clock, &picture), read, "{name}");
+        assert_eq!(picture_alarm(&p, &clock, &picture.text()), read, "{name}");
     }
 }
 
@@ -253,5 +290,123 @@ fn an_item_picture_is_its_cover() {
 #[test]
 fn a_broken_item_picture_raises_an_alarm() {
     let (picture, p, clock) = station_with_picture("pic-broken", radio_model::PublishMode::Custom);
-    assert!(picture_alarm(&p, &clock, &picture), "no picture alarm");
+    assert!(
+        picture_alarm(&p, &clock, &picture.text()),
+        "no picture alarm"
+    );
+}
+
+/// The open picture alarms of `path`, from the snapshot.
+fn open_picture_alarms(p: &Playout, path: &str) -> usize {
+    p.snapshot()
+        .alarms
+        .iter()
+        .filter(|a| {
+            a.cleared.is_none()
+                && matches!(&a.alarm, radio_playout::Alarm::PictureFailed { path: x, .. } if x == path)
+        })
+        .count()
+}
+
+/// Ticks playout until `check` holds, up to a bound.
+fn tick_until(
+    p: &Playout,
+    clock: &radio_playout::ManualClock,
+    what: &str,
+    check: impl Fn() -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !check() {
+        assert!(Instant::now() < deadline, "never: {what}");
+        run(p, clock, 0.05);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A logo file that is overwritten at the same path is read again.
+#[test]
+fn a_logo_file_that_changes_on_disk_is_sent_again() {
+    let (port, p, clock) = branded_station();
+    let file = Temp::new("logo-changes", "png", b"this is text, not a picture");
+    let logo = file.text();
+    set_branding(&p, radio_model::BRANDING_LOGO_KEY, &logo);
+    tick_until(&p, &clock, "the alarm for the text file", || {
+        open_picture_alarms(&p, &logo) > 0
+    });
+    assert!(http_get(port, "/brand").contains("\"logo\":null"));
+    std::fs::write(&file.0, PNG).unwrap();
+    tick_until(&p, &clock, "a logo after the file changed", || {
+        http_get(port, "/brand").contains("data:image/")
+    });
+}
+
+/// The same broken picture on air twice leaves one open alarm.
+#[test]
+fn the_same_broken_picture_airing_twice_raises_one_alarm() {
+    let file = Temp::new("twice", "png", b"text, not a picture");
+    let picture = file.text();
+    let items: Vec<_> = (1..=2)
+        .map(|n| {
+            let mut item = file_item(
+                n,
+                "Show",
+                &wav(&format!("twice-{n}"), 1.0, Side::Left),
+                1.0,
+                1.0,
+                0.0,
+            );
+            item.meta.title = format!("Show {n}");
+            item.meta.publish = radio_model::PublishMode::FromTags;
+            item.meta.picture.clone_from(&picture);
+            item
+        })
+        .collect();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (p, clock) = offline(engine_with(items), |cfg| {
+        let mut w = WebRtcConfig::new(([127, 0, 0, 1], port).into());
+        w.stun.clear();
+        w.trackers.clear();
+        cfg.webrtc = Some(w);
+        cfg.webrtc_always = true;
+    });
+    // Both items air, and the picture is read for each.
+    run(&p, &clock, 3.0);
+    tick_until(&p, &clock, "the picture alarm", || {
+        open_picture_alarms(&p, &picture) > 0
+    });
+    run(&p, &clock, 1.0);
+    std::thread::sleep(Duration::from_millis(300));
+    run(&p, &clock, 0.1);
+    assert_eq!(open_picture_alarms(&p, &picture), 1);
+}
+
+/// Putting a working logo in place of a broken one clears the alarm of the broken one.
+#[test]
+fn a_fixed_logo_clears_its_alarm() {
+    let (_port, p, clock) = branded_station();
+    let bad = Temp::new("fix-bad", "png", b"this is text, not a picture");
+    let good = Temp::new("fix-good", "png", &PNG);
+    set_branding(&p, radio_model::BRANDING_LOGO_KEY, &bad.text());
+    tick_until(&p, &clock, "the alarm for the broken logo", || {
+        open_picture_alarms(&p, &bad.text()) > 0
+    });
+    set_branding(&p, radio_model::BRANDING_LOGO_KEY, &good.text());
+    tick_until(&p, &clock, "the alarm cleared", || {
+        open_picture_alarms(&p, &bad.text()) == 0
+    });
+}
+
+/// With no name set, the brand has an empty name, so the page shows its own fallback.
+#[test]
+fn the_brand_has_no_name_until_one_is_set() {
+    let (port, p, clock) = branded_station_with(|cfg| cfg.station_name = "Radio Config".into());
+    tick_until(&p, &clock, "a brand", || {
+        http_get(port, "/brand").contains("\"name\"")
+    });
+    let brand: serde_json::Value = serde_json::from_str(&http_get(port, "/brand")).unwrap();
+    assert_eq!(brand["name"], "");
 }

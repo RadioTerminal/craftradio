@@ -797,6 +797,80 @@ fn a_changed_brand_reaches_a_connected_listener_once() {
     assert_eq!(got[0]["name"], "Radio Hrast");
 }
 
+/// The logo of the last `brand` message of `texts`, as bytes, once all its parts are there.
+fn whole_logo(texts: &[String]) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let brand = brands(texts).into_iter().last()?;
+    let id = brand["logo"]["id"].as_u64()?;
+    let parts = brand["logo"]["parts"].as_u64()? as usize;
+    let mut got: Vec<(u64, String)> = messages_of(texts, "logo")
+        .into_iter()
+        .filter(|c| c["id"].as_u64() == Some(id))
+        .map(|c| {
+            (
+                c["part"].as_u64().unwrap(),
+                c["data"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    got.sort();
+    got.dedup();
+    if got.len() != parts {
+        return None;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD;
+    Some(
+        got.iter()
+            .flat_map(|(_, d)| b64.decode(d).unwrap())
+            .collect(),
+    )
+}
+
+#[test]
+fn a_good_logo_reaches_a_listener_and_the_brand_address() {
+    use base64::Engine;
+    let dir = Scratch::new("good-logo");
+    let path = dir.file("logo.png", &png(120));
+    let (server, running, feed) = relay_station(false);
+    let addr = server.local_addr().unwrap();
+    server.set_brand("Radio Lipa".into(), Some(path));
+    // The logo loads on a thread: the address has it once it is read.
+    let until = Instant::now() + Duration::from_secs(10);
+    let body = loop {
+        let (code, _, body) = http(addr, "GET", "/brand", "");
+        assert_eq!(code, 200, "{body}");
+        let brand: serde_json::Value = serde_json::from_str(&body).unwrap();
+        if !brand["logo"].is_null() {
+            break brand;
+        }
+        assert!(Instant::now() < until, "the logo was never read");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let url = body["logo"].as_str().unwrap();
+    let data = url
+        .split_once(";base64,")
+        .map(|(_, d)| d)
+        .expect("a data URL");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .unwrap();
+    assert!(
+        image::load_from_memory(&bytes).is_ok(),
+        "the address gives a picture"
+    );
+    let mut page = Page::connect(addr);
+    let texts = page.until("the logo", |_, texts| whole_logo(texts).is_some());
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let brand = brands(&texts).into_iter().last().unwrap();
+    assert!(!brand["logo"].is_null(), "the brand message has a logo");
+    let bytes = whole_logo(&texts).unwrap();
+    assert!(
+        image::load_from_memory(&bytes).is_ok(),
+        "the parts join to a picture"
+    );
+}
+
 #[test]
 fn a_bad_logo_sends_the_name_and_reports_why() {
     let dir = Scratch::new("bad-logo");

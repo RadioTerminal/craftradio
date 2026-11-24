@@ -1362,7 +1362,12 @@ pub fn check_stream_url(url: &str) -> Result<String, String> {
     Ok(host.to_owned())
 }
 
-/// Check the extension of a picture path. An empty path is fine: it means no picture.
+/// The file extensions that count as a picture.
+pub const PICTURE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
+
+/// Check a picture path: its extension, and that the file exists. An empty path is fine: it
+/// means no picture. It runs while a row shows, so it makes one `metadata` call and reads
+/// nothing.
 pub fn check_picture(path: &str) -> Result<(), &'static str> {
     let path = path.trim();
     if path.is_empty() {
@@ -1372,9 +1377,15 @@ pub fn check_picture(path: &str) -> Result<(), &'static str> {
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_lowercase);
-    match ext.as_deref() {
-        Some("png" | "jpg" | "jpeg" | "webp") => Ok(()),
-        _ => Err("Pick a PNG, JPEG or WebP picture."),
+    if !ext
+        .as_deref()
+        .is_some_and(|e| PICTURE_EXTENSIONS.contains(&e))
+    {
+        return Err("Pick a PNG, JPEG or WebP picture.");
+    }
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(()),
+        _ => Err("The file does not exist."),
     }
 }
 
@@ -1493,10 +1504,23 @@ mod tests {
 
     #[test]
     fn a_picture_path_needs_a_picture_extension() {
+        let dir = std::env::temp_dir().join(format!("craftradio-picture-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("a.png");
+        let jpg = dir.join("Logo.JPG");
+        let mp3 = dir.join("a.mp3");
+        for file in [&png, &jpg, &mp3] {
+            std::fs::write(file, b"x").unwrap();
+        }
+        let ok = |p: &std::path::Path| check_picture(&p.to_string_lossy());
         assert!(check_picture("").is_ok(), "no logo is fine");
-        assert!(check_picture("a.png").is_ok());
-        assert!(check_picture("/x/Logo.JPG").is_ok());
-        assert!(check_picture("a.mp3").is_err());
+        assert!(ok(&png).is_ok());
+        assert!(ok(&jpg).is_ok(), "the extension is not case sensitive");
+        assert!(ok(&mp3).is_err());
         assert!(check_picture("a").is_err());
+        let missing = ok(&dir.join("missing.png")).unwrap_err();
+        assert!(missing.contains("does not exist"), "{missing}");
+        assert!(ok(&dir).is_err(), "a folder is not a picture");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

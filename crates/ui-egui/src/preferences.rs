@@ -210,6 +210,25 @@ impl State {
         self.page = page;
         self.search.clear();
     }
+
+    /// Saves a draft of the Branding page that is still being typed. It runs when
+    /// Preferences closes or the person moves to another page, where the field is no longer
+    /// drawn and so never sees itself lose the focus.
+    pub(crate) fn flush_drafts(&mut self, view: &StationView, actions: &mut Vec<Action>) {
+        use crate::parts;
+        let draft = &mut self.branding;
+        let Some(key) = draft.editing.take() else {
+            return;
+        };
+        let typed = if key == radio_model::BRANDING_NAME_KEY {
+            &draft.name
+        } else {
+            &draft.logo
+        };
+        if typed.as_str() != parts::text(view, parts::BRANDING, key) {
+            actions.push(parts::set(parts::BRANDING, key, typed.clone()));
+        }
+    }
 }
 
 /// The windows whose drafts the pages edit.
@@ -280,6 +299,9 @@ pub(crate) fn show(
     );
     state.search = nav.search;
     if let Some(&p) = Page::ALL.get(nav.selected) {
+        if p != state.page {
+            state.flush_drafts(view, actions);
+        }
         state.page = p;
     }
     if out.restore {
@@ -591,7 +613,7 @@ fn branding_page(
             };
             if button(ui, "Browse…", true).clicked()
                 && let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Pictures", &["png", "jpg", "jpeg", "webp"])
+                    .add_filter("Pictures", &crate::view::PICTURE_EXTENSIONS)
                     .pick_file()
             {
                 actions.push(parts::set(

@@ -4,7 +4,7 @@
 use egui::accesskit::Toggled;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use radio_ui_egui::{MockSource, RadioApp};
+use radio_ui_egui::{MockSource, RadioApp, ToolWindow};
 
 const FRAMES: usize = 6;
 
@@ -212,4 +212,28 @@ fn the_branding_page_says_that_no_logo_means_the_app_icon() {
         h.get_by_label("Clear").accesskit_node().is_disabled(),
         "there is no logo to clear"
     );
+}
+
+/// What the Station name field holds.
+fn name_field(h: &Harness<'_, RadioApp>) -> String {
+    h.query_all_by_label("Station name")
+        .filter_map(|n| n.accesskit_node().value())
+        .next_back()
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_name_typed_in_branding_is_saved_when_preferences_closes_with_the_field_still_focused() {
+    let mut h = preferences();
+    click(&mut h, "Branding");
+    h.get_by_label("Station name").type_text("Radio Lipa");
+    h.run_steps(FRAMES);
+    assert!(focused(&h, "Station name"), "the person is still typing");
+    h.state_mut().set_window(ToolWindow::Preferences, false);
+    h.run_steps(FRAMES);
+    assert!(!shows(&h, "Station name"), "Preferences closed");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    h.run_steps(FRAMES);
+    click(&mut h, "Branding");
+    assert_eq!(name_field(&h), "Radio Lipa", "the name was saved");
 }
