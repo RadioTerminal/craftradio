@@ -1025,6 +1025,7 @@ fn icecast_status(view: &StationView, t: &Tokens) -> IceStatus {
             false,
         ),
         Status::Failed(e) => s(Icon::Circle, &format!("Icecast down: {e}"), t.danger, false),
+        Status::OffAir => s(Icon::Circle, "Icecast off air", t.text_muted, false),
         Status::NotConnected | Status::Preview => {
             s(Icon::Circle, "Icecast not connected", t.text_muted, false)
         }

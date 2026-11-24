@@ -134,6 +134,36 @@ fn a_tool_call_runs_on_the_running_station() {
     );
 }
 
+/// The station that `station_get` prints says when it is off air, in the settings the
+/// engine keeps, and a station that never chose has no such line.
+#[test]
+fn the_printed_station_says_off_air() {
+    let (_playout, control) = station();
+    let running = Running::new(Some(control.port()), Some(TOKEN.into()));
+    let replies = session(
+        running,
+        &[
+            call(1, "station_get", json!({})),
+            call(
+                2,
+                "settings_set",
+                json!({"part": "air", "key": "on_air", "value": false}),
+            ),
+            call(3, "station_get", json!({})),
+        ],
+    );
+    let before: Value = serde_json::from_str(&text(&replies[0])).expect("JSON state");
+    assert_ne!(before["data"]["settings"]["air"]["on_air"], json!(false));
+    assert_ne!(
+        replies[1]["result"]["isError"],
+        true,
+        "{}",
+        text(&replies[1])
+    );
+    let after: Value = serde_json::from_str(&text(&replies[2])).expect("JSON state");
+    assert_eq!(after["data"]["settings"]["air"]["on_air"], json!(false));
+}
+
 #[test]
 fn without_a_running_station_a_call_is_an_error_result() {
     let free = TcpListener::bind("127.0.0.1:0")

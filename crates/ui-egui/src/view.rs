@@ -654,6 +654,11 @@ pub struct StationView {
     /// Loudness normalisation on the decks.
     pub loudness: radio_model::LoudnessSettings,
     pub output: OutputStatus,
+    /// The On air setting. Off air, neither Icecast nor WebRTC sends anything.
+    pub on_air: bool,
+    /// True while the station is on air again after being off air and Icecast has not
+    /// connected yet (for up to thirty seconds). Not a fault: the switch is still working.
+    pub going_on_air: bool,
     /// Folders in the library.
     pub folders: Vec<FolderView>,
     /// Settings of each part of the app, by part and key.
@@ -978,6 +983,8 @@ pub enum Status {
     /// The preview shows the output, but no sound goes out.
     Preview,
     NotConnected,
+    /// Off air on purpose (the On air setting): nothing is sent, and that is not a fault.
+    OffAir,
     Connected,
     /// The connection dropped; the output tries again.
     Reconnecting {

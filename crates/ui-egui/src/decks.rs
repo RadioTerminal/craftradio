@@ -1106,6 +1106,7 @@ fn live_chip(
         Status::Connected => "connected",
         Status::Reconnecting { .. } => "reconnecting",
         Status::Failed(_) => "failed",
+        Status::OffAir => "off air",
         Status::Preview | Status::NotConnected => "not connected",
     };
     let click = match view.output.streaming {

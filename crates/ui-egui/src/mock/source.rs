@@ -144,6 +144,8 @@ impl ViewSource for MockSource {
                 forwarded: None,
                 streaming: Some(self.streaming),
             },
+            on_air: true,
+            going_on_air: false,
             folders: self.folder_views(),
             settings: self.settings.clone(),
             alarms,

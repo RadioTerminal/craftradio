@@ -356,6 +356,7 @@ fn headless(
     let view = playout.snapshot();
     println!("radio: output {:?}", view.outputs.local);
     let mut webrtc = None;
+    let mut air = None;
     let mut source = EngineSource::new(
         playout,
         SourceOptions {
@@ -374,6 +375,12 @@ fn headless(
         let _ = source.snapshot(Timestamp::now());
         for notice in source.take_notices() {
             println!("radio: {notice}");
+        }
+        // Off air stops Icecast and WebRTC; say so, and say when they come back.
+        let now_air = source.playout().snapshot().outputs.on_air;
+        if air != Some(now_air) {
+            println!("radio: {}", air_line(now_air));
+            air = Some(now_air);
         }
         let now_webrtc = source.playout().snapshot().outputs.webrtc;
         if now_webrtc != webrtc {
@@ -457,6 +464,15 @@ fn station_identity(dir: &std::path::Path) -> Option<Vec<u8>> {
             );
             Some(key)
         }
+    }
+}
+
+/// The headless status line for the On air setting.
+fn air_line(on_air: bool) -> &'static str {
+    if on_air {
+        "on air (Icecast and WebRTC send)"
+    } else {
+        "off air (Icecast and WebRTC are stopped; the decks play on)"
     }
 }
 

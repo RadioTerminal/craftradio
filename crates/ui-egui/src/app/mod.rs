@@ -1049,6 +1049,8 @@ fn status_line(
                     t.ok,
                 ),
                 Status::Preview => (Icon::Circle, "preview (no audio)".to_owned(), t.text_muted),
+                // Off air on purpose: in words, neither the success colour nor a fault.
+                Status::OffAir => (Icon::Circle, "off air".to_owned(), t.text_muted),
                 Status::NotConnected => (Icon::Circle, "not connected".to_owned(), t.text_muted),
                 Status::Reconnecting { attempt } => (
                     Icon::RefreshCw,

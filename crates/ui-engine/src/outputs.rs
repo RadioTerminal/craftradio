@@ -26,6 +26,27 @@ pub(crate) fn local_status(local: &LocalOutput, card_wanted: bool) -> Status {
     }
 }
 
+/// How long after the switch to on air the station says it is going on air while Icecast
+/// has not connected. After that, a mount that is still not connected is a fault.
+const GOING_ON_AIR: jiff::SignedDuration = jiff::SignedDuration::from_secs(30);
+
+/// True while on air and Icecast is still connecting, within [`GOING_ON_AIR`] of `since`,
+/// the moment the adapter saw the station go on air.
+pub(crate) fn going_on_air(
+    out: &OutputStatus,
+    since: Option<jiff::Timestamp>,
+    now: jiff::Timestamp,
+) -> bool {
+    out.on_air
+        && matches!(
+            out.icecast,
+            Some(StreamStatus::Connecting | StreamStatus::Retrying { .. })
+        )
+        && since
+            .and_then(|s| s.checked_add(GOING_ON_AIR).ok())
+            .is_some_and(|end| now < end)
+}
+
 /// The output strips in mixer order: the Program device, Icecast, WebRTC. An output is live
 /// only while it really sends: a sound card is open, Icecast is connected, or somebody
 /// listens over WebRTC.
@@ -37,8 +58,10 @@ pub(crate) fn output_meter_views(out: &OutputStatus, card_wanted: bool) -> Vec<O
         LocalOutput::Null | LocalOutput::Offline if card_wanted => (false, "Not open".to_owned()),
         LocalOutput::Null | LocalOutput::Offline => (false, "No device".to_owned()),
     };
+    // Off air nothing is sent, whatever a source still reports while it closes.
     let icecast = match &out.icecast {
         None => (false, "Not set up"),
+        Some(_) if !out.on_air => (false, "Off air"),
         Some(StreamStatus::Connected { .. }) => (true, "Connected"),
         Some(StreamStatus::Connecting) => (false, "Connecting"),
         Some(StreamStatus::Retrying { .. }) => (false, "Not connected"),
@@ -46,6 +69,7 @@ pub(crate) fn output_meter_views(out: &OutputStatus, card_wanted: bool) -> Vec<O
         Some(StreamStatus::OffAir) => (false, "Off air"),
     };
     let webrtc = match &out.webrtc {
+        _ if !out.on_air => (false, "Off air".to_owned()),
         None | Some(WebRtcStatus::Stopped) => (false, "Off".to_owned()),
         Some(WebRtcStatus::Starting) => (false, "Starting".to_owned()),
         Some(WebRtcStatus::Failed(e)) => (false, format!("Failed: {e}")),

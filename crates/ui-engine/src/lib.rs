@@ -165,6 +165,10 @@ pub struct EngineSource {
     next_ready: Option<usize>,
     /// The rows on air in the last snapshot.
     on_air_rows: HashSet<u64>,
+    /// Whether the last snapshot was on air (the setting), once there was one.
+    air_seen: Option<bool>,
+    /// When a snapshot first saw the station go back on air after being off air.
+    on_air_since: Option<Timestamp>,
     /// The fixed rows of the last snapshot.
     fixed_rows: HashSet<u64>,
     history: Arc<Vec<Row>>,
@@ -286,6 +290,8 @@ impl EngineSource {
             deck_states: [DeckState::Empty; 4],
             next_ready: None,
             on_air_rows: HashSet::new(),
+            air_seen: None,
+            on_air_since: None,
             fixed_rows: HashSet::new(),
             history: Arc::default(),
             history_more: false,
@@ -854,8 +860,11 @@ impl EngineSource {
 
     fn output(pv: &PlayoutView, card_wanted: bool) -> OutputStatus {
         let local = outputs::local_status(&pv.outputs.local, card_wanted);
+        let off_air = !pv.outputs.on_air;
         let icecast = match &pv.outputs.icecast {
-            None | Some(StreamStatus::Stopped | StreamStatus::OffAir) => Status::NotConnected,
+            None | Some(StreamStatus::Stopped) => Status::NotConnected,
+            Some(_) if off_air => Status::OffAir,
+            Some(StreamStatus::OffAir) => Status::OffAir,
             Some(StreamStatus::Connecting) => Status::Reconnecting { attempt: 0 },
             Some(StreamStatus::Connected { .. }) => Status::Connected,
             Some(StreamStatus::Retrying { last_error, .. }) => Status::Failed(last_error.clone()),
@@ -865,6 +874,8 @@ impl EngineSource {
             _ => None,
         };
         let (webrtc, webrtc_listeners, webrtc_reported) = match &pv.outputs.webrtc {
+            // WebRTC is stopped while off air; say why, not "off".
+            _ if off_air => (Status::OffAir, None, None),
             None | Some(WebRtcStatus::Stopped) => (Status::NotConnected, None, None),
             Some(WebRtcStatus::Starting) => (Status::Reconnecting { attempt: 0 }, None, None),
             Some(WebRtcStatus::Listening {
@@ -1174,6 +1185,14 @@ impl ViewSource for EngineSource {
             != Some(radio_engine::NO_DEVICE);
         let alarms = self.alarm_views(&pv, card_wanted, now);
         self.output_views = outputs::output_meter_views(&pv.outputs, card_wanted);
+        let on_air = pv.outputs.on_air;
+        if !on_air {
+            self.on_air_since = None;
+        } else if self.air_seen == Some(false) {
+            self.on_air_since = Some(now);
+        }
+        self.air_seen = Some(on_air);
+        let going_on_air = outputs::going_on_air(&pv.outputs, self.on_air_since, now);
         StationView {
             now: self.zoned(now),
             mode: if pv.emergency {
@@ -1228,6 +1247,8 @@ impl ViewSource for EngineSource {
             dynamics: self.state.dynamics.unwrap_or_default(),
             loudness: self.state.loudness,
             output: Self::output(&pv, card_wanted),
+            on_air,
+            going_on_air,
             folders: self.folder_views(),
             settings: self.settings(),
             branding_logo: self.branding_logo(),
