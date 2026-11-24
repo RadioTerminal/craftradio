@@ -156,6 +156,22 @@ fn the_cap_refuses_one_listener_too_many() {
 }
 
 #[test]
+fn a_tap_takes_no_listener_place() {
+    let mount = Mount::new(1);
+    assert!(mount.tap().is_none(), "no tap without a source");
+    let mut guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    let _listener = mount.listen().unwrap();
+    assert!(matches!(mount.listen(), Err(ListenError::Full)));
+    let tap = mount.tap().expect("a mount at its limit still gives a tap");
+    assert_eq!(mount.stats().listeners, 1, "the tap is not counted");
+    // The tap hears the stream like a listener.
+    guard.write(&mp3_frames(2));
+    assert!(matches!(tap.recv(WAIT), Received::Chunk(_)));
+    drop(tap);
+    assert_eq!(mount.stats().listeners, 1);
+}
+
+#[test]
 fn ending_the_source_ends_every_listener() {
     let mount = Mount::new(10);
     let mut guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();

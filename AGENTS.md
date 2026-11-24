@@ -64,8 +64,8 @@ output. Spec: `docs/2026-11-21-radio-station-manager-design.md`. Roadmap and pla
 |---|---|---|
 | L0 | `model` | plain serde data; no I/O, no clock |
 | L1 | `timing`, `codecs` | time arithmetic, DST-safe local time; the decoders (Symphonia and native Opus) |
-| L1 | `server` | the public station server: keyed Icecast pushes in, listeners out; uses no workspace crate (`radio-stream` and `radio-codecs` are dev-dependencies of its tests) |
 | L2 | `scheduler`, `library` | playlists, rules, fitting; media library |
+| L2 | `server` | the public station server: keyed Icecast pushes in, listeners out; decodes a push with `codecs` for its re-encoded outputs (`radio-stream` is a dev-dependency of its tests) |
 | L3 | `audio`, `script` | decks / mixer / outputs; JS runtime |
 | L4 | `engine` | state, the command registry, persistence, as-played log |
 | L5 | `control`, `mcp` | local control socket, MCP server |

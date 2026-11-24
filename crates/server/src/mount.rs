@@ -80,6 +80,8 @@ struct Live {
     /// Sent to each new listener before the stream.
     headers: Vec<Arc<[u8]>>,
     listeners: Vec<Slot>,
+    /// The server's own readers (see [`Mount::tap`]): not counted as listeners.
+    taps: Vec<Slot>,
 }
 
 #[derive(Debug)]
@@ -116,6 +118,7 @@ impl Mount {
             format,
             headers: Vec::new(),
             listeners: Vec::new(),
+            taps: Vec::new(),
         });
         state.name = capped(name);
         state.title.clear();
@@ -138,6 +141,25 @@ impl Mount {
         if live.listeners.len() >= self.max_listeners {
             return Err(ListenError::Full);
         }
+        let (slot, listener) = self.join(live, next_id);
+        live.listeners.push(slot);
+        Ok(listener)
+    }
+
+    /// Joins the stream as [`listen`](Self::listen) does, for the server's own use (its
+    /// re-encoded outputs): a tap is not held to the listener limit and is not counted in
+    /// [`MountStats::listeners`]. `None` with no live source.
+    pub fn tap(self: &Arc<Self>) -> Option<Listener> {
+        let mut state = self.state();
+        let State { live, next_id, .. } = &mut *state;
+        let live = live.as_mut()?;
+        let (slot, listener) = self.join(live, next_id);
+        live.taps.push(slot);
+        Some(listener)
+    }
+
+    /// A new place on the live stream, queued with the header pages.
+    fn join(self: &Arc<Self>, live: &Live, next_id: &mut u64) -> (Slot, Listener) {
         let id = *next_id;
         *next_id += 1;
         let (queue, receiver) = sync_channel(QUEUE);
@@ -146,18 +168,19 @@ impl Mount {
             let _ = queue.try_send(Arc::clone(page));
         }
         let dropped = Arc::new(AtomicBool::new(false));
-        live.listeners.push(Slot {
+        let slot = Slot {
             id,
             queue,
             dropped: Arc::clone(&dropped),
-        });
-        Ok(Listener {
+        };
+        let listener = Listener {
             mount: Arc::clone(self),
             id,
             format: live.format,
             queue: receiver,
             dropped,
-        })
+        };
+        (slot, listener)
     }
 
     /// Sets the title of an MP3 source, whose stream carries none. An Ogg source's next
@@ -218,7 +241,7 @@ impl SourceGuard {
             return;
         };
         let chunks = &self.chunks;
-        live.listeners.retain(|slot| {
+        let send = |slot: &Slot| {
             let kept = chunks
                 .iter()
                 .all(|chunk| slot.queue.try_send(Arc::clone(chunk)).is_ok());
@@ -226,7 +249,9 @@ impl SourceGuard {
                 slot.dropped.store(true, Ordering::Release);
             }
             kept
-        });
+        };
+        live.listeners.retain(send);
+        live.taps.retain(send);
         // Under the same lock as the sends, so a listener joining now gets either these
         // chunks or the headers they set, never neither.
         if changed {
@@ -267,6 +292,12 @@ impl Listener {
         self.format
     }
 
+    /// Whether the mount dropped this listener for falling behind, as opposed to the
+    /// source ending: both make [`recv`](Self::recv) give [`Received::Ended`].
+    pub fn fell_behind(&self) -> bool {
+        self.dropped.load(Ordering::Acquire)
+    }
+
     /// The next page or frame, waiting at most `timeout`. Once the mount has dropped this
     /// listener for falling behind, [`Received::Ended`] at once: what is still queued is
     /// not worth a slow client's time.
@@ -287,6 +318,7 @@ impl Drop for Listener {
         let mut state = self.mount.state();
         if let Some(live) = state.live.as_mut() {
             live.listeners.retain(|slot| slot.id != self.id);
+            live.taps.retain(|slot| slot.id != self.id);
         }
     }
 }

@@ -4977,6 +4977,7 @@ name = "radio-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "craft-audio",
  "percent-encoding",
  "radio-codecs",
  "radio-stream",

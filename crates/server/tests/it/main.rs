@@ -1,4 +1,5 @@
 mod config;
+mod decode;
 mod e2e;
 mod framing;
 mod http;
