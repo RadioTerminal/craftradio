@@ -287,6 +287,59 @@ fn the_shortcut_switches_after_its_key_comes_up() {
     assert_eq!(switches(&edits), vec![false], "two real presses switch");
 }
 
+/// The app with the Library's search field holding the keys. The native menu then sends the
+/// shortcut as a click of the On Air item, not as a key press.
+fn typing(edits: &Arc<Mutex<Vec<Edit>>>) -> Harness<'static, RadioApp> {
+    let mut h = harness(edits, Vec::new(), false);
+    h.get_by_label("Library").click();
+    h.run_steps(FRAMES);
+    h.get_by_label("Search").focus();
+    h.run_steps(FRAMES);
+    h
+}
+
+/// A click of the On Air menu item as the native menu reports it.
+fn menu_click(h: &mut Harness<'_, RadioApp>) {
+    h.state_mut().menu_click("air.toggle");
+    h.run_steps(FRAMES);
+}
+
+fn modifiers(h: &mut Harness<'_, RadioApp>, m: egui::Modifiers) {
+    h.event(egui::Event::ModifiersChanged(m));
+    h.run_steps(FRAMES);
+}
+
+#[test]
+fn a_held_shortcut_while_typing_does_not_switch() {
+    let edits = Arc::default();
+    let mut h = typing(&edits);
+    modifiers(&mut h, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+    menu_click(&mut h);
+    menu_click(&mut h);
+    assert!(
+        switches(&edits).is_empty(),
+        "an autorepeat of the held shortcut is not a second press"
+    );
+    native_release(&mut h);
+    menu_click(&mut h);
+    assert_eq!(
+        switches(&edits),
+        vec![false],
+        "after the key came up, the next press switches"
+    );
+}
+
+#[test]
+fn a_pointer_click_of_the_menu_item_still_counts_while_typing() {
+    let edits = Arc::default();
+    let mut h = typing(&edits);
+    menu_click(&mut h);
+    assert!(switches(&edits).is_empty(), "the first click arms");
+    assert!(shows(&h, "Press again to go off air"));
+    menu_click(&mut h);
+    assert_eq!(switches(&edits), vec![false], "the second click switches");
+}
+
 #[test]
 fn the_menu_item_and_shortcut_arm_too() {
     let edits = Arc::default();

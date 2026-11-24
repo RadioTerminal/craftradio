@@ -57,12 +57,15 @@ impl RadioApp {
             actions.push(a);
         }
         // The On air switch: the first press arms and says so, as the button does. A key press
-        // counts only after the key came up since the last one; a menu click always counts.
+        // counts only after the key came up since the last one. A menu click with the
+        // shortcut's modifiers held is that key press (the native menu's key equivalent while a
+        // text field has the keys); a click without them is the pointer, and always counts.
         let on_air = self.view.on_air;
         if p.air_up_before {
             self.air.key_up();
         }
-        let pressed = if p.air {
+        let by_key = p.air || (p.air_menu && shortcuts::air_chord_held(ctx));
+        let pressed = if by_key {
             self.air.press_key(on_air, now)
         } else {
             p.air_menu.then(|| self.air.press(on_air, now))

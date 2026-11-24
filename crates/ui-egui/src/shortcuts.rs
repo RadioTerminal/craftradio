@@ -225,7 +225,17 @@ impl Pressed {
     }
 }
 
-/// Read the shortcuts of this frame, once. A focused text field keeps all keys for itself.
+/// True while the modifiers of an On air shortcut (⌘⇧ by default) are held. A menu click of
+/// On Air then stands for that shortcut: with a text field focused the native menu reports
+/// a key equivalent, each autorepeat too, as a click.
+pub(crate) fn air_chord_held(ctx: &egui::Context) -> bool {
+    let shortcuts = shortcuts_of(ctx, &AIR_TOGGLE.into());
+    let held = ctx.input(|i| i.modifiers);
+    shortcuts
+        .iter()
+        .any(|s| !s.modifiers.is_none() && held.contains(s.modifiers))
+}
+
 /// Where the On air shortcut's key came up in this frame's events: before its first press
 /// (or anywhere, when it was not pressed) and after its last press. It reads the order of the
 /// events, not egui's repeat flag, which a press from the native menu never sets.
@@ -264,6 +274,7 @@ fn air_ups(ctx: &egui::Context) -> (bool, bool) {
     })
 }
 
+/// Read the shortcuts of this frame, once. A focused text field keeps all keys for itself.
 pub(crate) fn read(ctx: &egui::Context) -> Pressed {
     // A key-up counts whoever else holds the keys, so a held switch is never stuck.
     let (air_up_before, air_up_after) = air_ups(ctx);

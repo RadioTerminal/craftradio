@@ -448,6 +448,12 @@ impl RadioApp {
         }
     }
 
+    /// A click of the menu item `command`, as the native menu reports one. For tests.
+    #[doc(hidden)]
+    pub fn menu_click(&mut self, command: &str) {
+        self.run_menu(&command.into());
+    }
+
     /// Runs a menu command as its shortcut would: in this frame's keys, or on a window.
     fn run_menu(&mut self, command: &craft_keymap::CommandRef) {
         match crate::menus::run(command) {
