@@ -1,7 +1,7 @@
 //! The radio app's own Icecast output and stream input against the station server: the
 //! real client, not a hand-written one.
 
-use crate::support::{PATIENCE, request, source_entry, stats, tls_files};
+use crate::support::{PATIENCE, read_to_end_within, request, source_entry, stats, tls_files};
 use radio_server::{Config, Server, ServerHandle, hash_key};
 use radio_stream::{
     IcecastClient, IcecastConfig, IcecastHandle, StreamFormat, StreamInput, StreamInputHandle,
@@ -202,8 +202,21 @@ fn assert_opus_heard(addr: SocketAddr, mount: &str) {
 
     let deadline = Instant::now() + AUDIO_PATIENCE;
     // The client's read timeout fails a stream that stops, instead of hanging the test.
-    let (stream, head) = request(addr, "GET", &format!("/{SLUG}/{mount}"));
-    assert_eq!(head.status, 200, "/{SLUG}/{mount} plays");
+    // An output still starting answers 503 and says so; ask again until it plays.
+    let (stream, head) = loop {
+        let (mut stream, head) = request(addr, "GET", &format!("/{SLUG}/{mount}"));
+        if head.status != 503 {
+            assert_eq!(head.status, 200, "/{SLUG}/{mount} plays");
+            break (stream, head);
+        }
+        let body = read_to_end_within(&mut stream, PATIENCE);
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("starting"), "/{SLUG}/{mount} refused: {body}");
+        assert!(
+            Instant::now() < deadline,
+            "/{SLUG}/{mount} was still starting after {AUDIO_PATIENCE:?}"
+        );
+    };
     assert_eq!(head.header("Content-Type"), Some("audio/ogg"));
 
     let source = MediaSourceStream::new(Box::new(ReadOnlySource::new(stream)), Default::default());
