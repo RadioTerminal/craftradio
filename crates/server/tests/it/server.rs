@@ -259,6 +259,8 @@ fn a_title_update_needs_the_key_of_that_station() {
     let server = start();
     let addr = server.local_addr();
     let (_source, _) = push(addr, "morning", MORNING_KEY, "audio/mpeg");
+    let title = || source_entry(&stats(addr), "morning").unwrap()["title"].clone();
+    assert_eq!(title(), "");
 
     let (_other, head) = set_title(addr, "morning", "Cloud Signal", Some(EVENING_KEY));
     assert_eq!(head.status, 401);
@@ -266,6 +268,7 @@ fn a_title_update_needs_the_key_of_that_station() {
         head.header("WWW-Authenticate"),
         Some("Basic realm=\"craftradio\"")
     );
+    assert_eq!(title(), "", "a refused update changed the title");
     assert_eq!(
         status_of(set_title(
             addr,
@@ -275,6 +278,7 @@ fn a_title_update_needs_the_key_of_that_station() {
         )),
         401
     );
+    assert_eq!(title(), "", "a refused update changed the title");
     assert_eq!(
         status_of(set_title(
             addr,
@@ -284,6 +288,7 @@ fn a_title_update_needs_the_key_of_that_station() {
         )),
         200
     );
+    assert_eq!(title(), "Cloud Signal");
 }
 
 #[test]
@@ -463,6 +468,22 @@ fn five_wrong_keys_then_the_right_key_is_429() {
     let other = "X-Forwarded-For: 192.0.2.7\r\n";
     let (_other, head) = push_with(addr, "morning", MORNING_KEY, "audio/ogg", other);
     assert_eq!(head.status, 200, "another address is not locked");
+}
+
+#[test]
+fn a_forwarded_address_is_ignored_without_a_trusted_proxy() {
+    let server = start();
+    let addr = server.local_addr();
+    for _ in 0..5 {
+        assert_eq!(
+            status_of(push(addr, "morning", "invented-wrong-key", "audio/ogg")),
+            401
+        );
+    }
+    // A client cannot step out of its lockout by naming another address.
+    let forged = "X-Forwarded-For: 192.0.2.7\r\n";
+    let (_forged, head) = push_with(addr, "morning", MORNING_KEY, "audio/ogg", forged);
+    assert_eq!(head.status, 429);
 }
 
 #[test]
@@ -701,7 +722,7 @@ fn connections_over_the_thread_cap_cut_off_the_oldest_head() {
 }
 
 #[test]
-fn connections_over_the_limit_are_closed_and_the_rest_are_served() {
+fn idle_heads_do_not_keep_a_listener_out_for_good() {
     // A cap of 1 listener: 33 public connection threads and 2 for the source.
     let server = behind_proxy(1, Duration::from_millis(300));
     let addr = server.local_addr();
