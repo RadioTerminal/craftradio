@@ -1093,6 +1093,7 @@ fn a_title_with_quotes_and_control_characters_keeps_the_json_valid() {
             name: "Morning \"Station\"\u{7f}".to_owned(),
             title: title.to_owned(),
             artist: "Echo\\".to_owned(),
+            kbps: None,
         },
     )];
     let built: Value =
@@ -1175,6 +1176,7 @@ fn stats_built_for_a_mount_with_no_source_leave_it_out() {
         name: "Evening Station".to_owned(),
         title: String::new(),
         artist: String::new(),
+        kbps: None,
     };
     let built: Value = serde_json::from_str(&status_json(
         "https://radio.example.test",

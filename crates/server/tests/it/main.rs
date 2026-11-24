@@ -1,6 +1,7 @@
 mod config;
 mod decode;
 mod e2e;
+mod encode;
 mod framing;
 mod http;
 mod lockout;

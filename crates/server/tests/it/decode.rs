@@ -24,7 +24,7 @@ fn feed(mut guard: SourceGuard, bytes: Vec<u8>) -> JoinHandle<()> {
 }
 
 /// Decodes until the decoder says the stream is over, within [`PATIENCE`].
-fn decode_all(decoder: &mut SourceDecoder) -> (Vec<f32>, Decoded) {
+pub(crate) fn decode_all(decoder: &mut SourceDecoder) -> (Vec<f32>, Decoded) {
     let deadline = Instant::now() + PATIENCE;
     let mut samples = Vec::new();
     while Instant::now() < deadline {
@@ -36,7 +36,7 @@ fn decode_all(decoder: &mut SourceDecoder) -> (Vec<f32>, Decoded) {
     panic!("the decoder did not reach the end within {PATIENCE:?}");
 }
 
-fn heard(samples: &[f32]) -> bool {
+pub(crate) fn heard(samples: &[f32]) -> bool {
     samples.iter().any(|sample| sample.abs() > 0.01)
 }
 
@@ -52,14 +52,16 @@ fn mp3_tone(rate: u32, ms: usize) -> Vec<u8> {
     bytes
 }
 
-fn stop() -> Arc<AtomicBool> {
+pub(crate) fn stop() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
 #[test]
 fn opus_is_decoded_across_title_changes() {
     let mount = Mount::new(ListenerCap::new(10));
-    let guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
+    let guard = mount
+        .begin(Format::Ogg, "Morning Station".into(), None)
+        .unwrap();
     let tap = mount.tap().unwrap();
     let mut source = OggSource::new("Cloud Signal", Some("Echo"));
     source.audio(PACKETS * 20);
@@ -91,7 +93,9 @@ fn opus_is_decoded_across_title_changes() {
 #[test]
 fn mp3_is_decoded() {
     let mount = Mount::new(ListenerCap::new(10));
-    let guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    let guard = mount
+        .begin(Format::Mp3, "Morning Station".into(), None)
+        .unwrap();
     let tap = mount.tap().unwrap();
     let feeder = feed(guard, mp3_tone(48_000, 1000));
 
@@ -105,7 +109,9 @@ fn mp3_is_decoded() {
 #[test]
 fn a_44_1_khz_source_is_refused() {
     let mount = Mount::new(ListenerCap::new(10));
-    let guard = mount.begin(Format::Mp3, "Morning Station".into()).unwrap();
+    let guard = mount
+        .begin(Format::Mp3, "Morning Station".into(), None)
+        .unwrap();
     let tap = mount.tap().unwrap();
     let feeder = feed(guard, mp3_tone(44_100, 1000));
 
@@ -129,7 +135,9 @@ fn a_44_1_khz_source_is_refused() {
 /// A mount with a tap whose decoder has opened on the first chain's start.
 fn opened() -> (Arc<Mount>, SourceGuard, OggSource, SourceDecoder) {
     let mount = Mount::new(ListenerCap::new(10));
-    let mut guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
+    let mut guard = mount
+        .begin(Format::Ogg, "Morning Station".into(), None)
+        .unwrap();
     let tap = mount.tap().unwrap();
     let mut source = OggSource::new("Cloud Signal", None);
     source.audio(200);
@@ -160,7 +168,9 @@ fn an_overrun_is_told_apart_from_the_end() {
 #[test]
 fn stop_ends_a_decoder_waiting_on_a_silent_source() {
     let mount = Mount::new(ListenerCap::new(10));
-    let _guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
+    let _guard = mount
+        .begin(Format::Ogg, "Morning Station".into(), None)
+        .unwrap();
     let tap = mount.tap().unwrap();
     let flag = stop();
     let (done, opened) = mpsc::channel();

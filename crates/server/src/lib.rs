@@ -4,6 +4,7 @@ mod addr;
 mod config;
 mod conn;
 mod decode;
+mod encode;
 mod framing;
 mod http;
 mod key;
@@ -14,6 +15,7 @@ mod stats;
 
 pub use config::{Config, Output, OutputFormat, Station};
 pub use decode::{BLOCK, DecodeError, Decoded, RATE, SourceDecoder};
+pub use encode::OutputEncoder;
 pub use framing::{Format, Framer};
 pub use http::{HttpError, Request, client_addr, read_request, respond};
 pub use key::{hash_key, key_matches, new_key};

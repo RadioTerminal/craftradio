@@ -648,7 +648,7 @@ fn source(
         .to_owned();
     // Taken before the reply, so a listener who comes the moment the source has its 200
     // finds the source live.
-    let Some(mut guard) = mount.begin(format, name) else {
+    let Some(mut guard) = mount.begin(format, name, None) else {
         return refuse(
             stream,
             403,

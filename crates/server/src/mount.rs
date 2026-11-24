@@ -55,6 +55,8 @@ pub struct MountStats {
     pub name: String,
     pub title: String,
     pub artist: String,
+    /// The bitrate the source gave, in kbit/s, if it gave one.
+    pub kbps: Option<u32>,
 }
 
 /// A station's listener limit, shared by every mount made with it: its pushed stream and
@@ -119,6 +121,7 @@ struct State {
 #[derive(Debug)]
 struct Live {
     format: Format,
+    kbps: Option<u32>,
     /// Sent to each new listener before the stream.
     headers: Vec<Arc<[u8]>>,
     listeners: Vec<Slot>,
@@ -150,15 +153,21 @@ impl Mount {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Starts a source, whose name is cut to 512 characters. `None` while another source
-    /// is live.
-    pub fn begin(self: &Arc<Self>, format: Format, name: String) -> Option<SourceGuard> {
+    /// Starts a source, whose name is cut to 512 characters, at `kbps` kbit/s when the
+    /// source says. `None` while another source is live.
+    pub fn begin(
+        self: &Arc<Self>,
+        format: Format,
+        name: String,
+        kbps: Option<u32>,
+    ) -> Option<SourceGuard> {
         let mut state = self.state();
         if state.live.is_some() {
             return None;
         }
         state.live = Some(Live {
             format,
+            kbps,
             headers: Vec::new(),
             listeners: Vec::new(),
             taps: Vec::new(),
@@ -249,6 +258,7 @@ impl Mount {
             name: state.name.clone(),
             title: state.title.clone(),
             artist: state.artist.clone(),
+            kbps: state.live.as_ref().and_then(|live| live.kbps),
         }
     }
 }
