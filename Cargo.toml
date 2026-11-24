@@ -66,7 +66,8 @@ radio-stream = { path = "crates/stream", default-features = false }
 rusqlite = { version = "0.43", features = ["bundled"] }
 schemars = "1"
 # "clipboard": without it, copy buttons copy nothing to the system clipboard.
-eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow", "wayland", "x11"] }
+# "links": without it, nothing opens in the browser (Download and What's new in the update prompt).
+eframe = { version = "0.37", default-features = false, features = ["clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
 # The emoji fonts were part of the default fonts until egui 0.37; titles and the UI use them.
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 egui_extras = "0.37"
