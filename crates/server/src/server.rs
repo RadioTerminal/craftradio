@@ -10,6 +10,7 @@ use crate::config::{Config, Output, Station};
 use crate::conn::{Conn, server_config};
 use crate::framing::Format;
 use crate::http::{HttpError, Request, client_addr, read_request, respond};
+use crate::icy::{IcyWriter, METAINT};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
 use crate::mount::{ListenError, Listener, ListenerCap, Mount, Received, SourceGuard};
@@ -643,7 +644,8 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     }
     if let Some((station, mounts)) = station_at(shared, &request.path) {
         return if method == "GET" {
-            listen(shared, stream, &mounts.pushed);
+            let titles = Titles::asked(request, station, &mounts.pushed);
+            listen(shared, stream, &mounts.pushed, titles);
         } else {
             source(shared, stream, peer, request, station, mounts);
         };
@@ -652,7 +654,11 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     if method == "GET"
         && let Some((slug, mounts, output, mount)) = output_at(shared, &request.path)
     {
-        return listen_output(shared, stream, slug, mounts, output, mount);
+        let titles = shared
+            .config
+            .station(slug)
+            .and_then(|station| Titles::asked(request, station, &mounts.pushed));
+        return listen_output(shared, stream, slug, mounts, output, mount, titles);
     }
     refuse(stream, 404, "Not Found", &[CORS], b"not found")
 }
@@ -906,9 +912,9 @@ fn stats(shared: &Shared, stream: &mut Conn) {
 }
 
 /// A listener of a station's pushed stream.
-fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>) {
+fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>, titles: Option<Titles>) {
     match mount.listen() {
-        Ok(listener) => play(shared, stream, &listener),
+        Ok(listener) => play(shared, stream, &listener, titles),
         Err(ListenError::NoSource) => off_air(stream),
         Err(ListenError::Full) => full(stream),
     }
@@ -925,6 +931,7 @@ fn listen_output(
     mounts: &StationMounts,
     output: &Output,
     mount: &Arc<Mount>,
+    titles: Option<Titles>,
 ) {
     let deadline = Instant::now()
         .checked_add(OUTPUT_START_WAIT)
@@ -950,7 +957,7 @@ fn listen_output(
             return refuse(stream, 503, "Service Unavailable", &[CORS], body.as_bytes());
         }
         match mount.listen() {
-            Ok(listener) => return play(shared, stream, &listener),
+            Ok(listener) => return play(shared, stream, &listener, titles),
             Err(ListenError::Full) => return full(stream),
             Err(ListenError::NoSource) => {}
         }
@@ -1007,13 +1014,58 @@ fn full(stream: &mut Conn) {
     );
 }
 
+/// Where an MP3 listener who asked for ICY titles gets them: the station's pushed mount,
+/// whose title and artist its outputs carry too.
+struct Titles<'a> {
+    pushed: &'a Mount,
+    /// For `icy-name`: the source's name, else the station's.
+    name: String,
+}
+
+impl<'a> Titles<'a> {
+    /// Set when the request asks with `Icy-MetaData: 1`.
+    fn asked(request: &Request, station: &Station, pushed: &'a Mount) -> Option<Titles<'a>> {
+        if request.header("Icy-MetaData").map(str::trim) != Some("1") {
+            return None;
+        }
+        let mut name = pushed.stats().name;
+        if name.is_empty() {
+            name.clone_from(&station.name);
+        }
+        // A header value holds no line breaks or other control characters.
+        let name = name
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        Some(Titles { pushed, name })
+    }
+
+    /// `artist - title`, or the title alone with no artist.
+    fn now(&self) -> String {
+        let stats = self.pushed.stats();
+        if stats.artist.is_empty() {
+            stats.title
+        } else {
+            format!("{} - {}", stats.artist, stats.title)
+        }
+    }
+}
+
 /// A listener's stream. Each chunk must reach the client within
 /// [`Timeouts::listener_write`]; a listener that falls further behind than its queue holds
 /// is dropped by the mount and ended at once, so a slow reader frees its connection thread.
-fn play(shared: &Shared, stream: &mut Conn, listener: &Listener) {
+/// An MP3 listener who asked for titles gets them interleaved (see [`crate::icy`]); any
+/// other listener gets the bytes as they are.
+fn play(shared: &Shared, stream: &mut Conn, listener: &Listener, titles: Option<Titles>) {
+    let mut titles = titles
+        .filter(|_| listener.format() == Format::Mp3)
+        .map(|titles| (titles, IcyWriter::new(), Vec::new()));
+    let icy = titles.as_ref().map_or_else(String::new, |(titles, _, _)| {
+        format!("icy-metaint: {METAINT}\r\nicy-name: {}\r\n", titles.name)
+    });
     let head = format!(
         "HTTP/1.0 200 OK\r\nContent-Type: {}\r\nCache-Control: no-cache, no-store\r\n\
-         Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+         Access-Control-Allow-Origin: *\r\nConnection: close\r\n{icy}\r\n",
         listener.format().content_type()
     );
     let write = shared.timeouts.listener_write.max(MIN_TIMEOUT);
@@ -1023,7 +1075,15 @@ fn play(shared: &Shared, stream: &mut Conn, listener: &Listener) {
     loop {
         match listener.recv(LISTENER_POLL) {
             Received::Chunk(chunk) => {
-                if stream.write_all_within(&chunk, write).is_err() {
+                let bytes = match &mut titles {
+                    Some((titles, writer, out)) => {
+                        out.clear();
+                        writer.write(&chunk, &titles.now(), out);
+                        out.as_slice()
+                    }
+                    None => &chunk[..],
+                };
+                if stream.write_all_within(bytes, write).is_err() {
                     break;
                 }
             }

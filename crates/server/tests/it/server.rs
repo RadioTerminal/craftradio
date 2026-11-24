@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-const MORNING_KEY: &str = "invented-morning-key-4Hq8";
+pub(crate) const MORNING_KEY: &str = "invented-morning-key-4Hq8";
 const EVENING_KEY: &str = "invented-evening-key-9Zt3";
 
 /// A server with the stations "morning" and "evening".
@@ -105,7 +105,12 @@ fn metadata_query(addr: SocketAddr, query: &str, key: Option<&str>) -> (TcpStrea
 }
 
 /// A title update for `/<slug>/stream`, encoded as the app encodes it.
-fn set_title(addr: SocketAddr, slug: &str, title: &str, key: Option<&str>) -> (TcpStream, Head) {
+pub(crate) fn set_title(
+    addr: SocketAddr,
+    slug: &str,
+    title: &str,
+    key: Option<&str>,
+) -> (TcpStream, Head) {
     let query = format!(
         "mount={}&mode=updinfo&song={}",
         utf8_percent_encode(&format!("/{slug}/stream"), NON_ALPHANUMERIC),
@@ -1483,11 +1488,11 @@ fn a_missing_certificate_file_is_a_start_error() {
 }
 
 /// How long a listener of an output may take to hear the tone.
-const EAR_PATIENCE: Duration = Duration::from_secs(20);
+pub(crate) const EAR_PATIENCE: Duration = Duration::from_secs(20);
 
 /// A server whose station "morning" has an Opus output at `/morning/opus` (64 kbit/s) and
 /// an MP3 one at `/morning/mp3` (128 kbit/s), and whose station "evening" has none.
-fn with_outputs(max_stream_listeners: usize) -> ServerHandle {
+pub(crate) fn with_outputs(max_stream_listeners: usize) -> ServerHandle {
     let config = Config::parse(&format!(
         "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\n\
          [[station]]\nslug = \"morning\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\nmax_stream_listeners = {max_stream_listeners}\n\n\
@@ -1503,7 +1508,7 @@ fn with_outputs(max_stream_listeners: usize) -> ServerHandle {
 
 /// What a [`Pusher`] sends.
 #[derive(Clone, Copy)]
-enum Tone {
+pub(crate) enum Tone {
     /// Ogg/Opus, as the app sends it, titled "Cloud Signal" by "Echo".
     Ogg,
     /// MP3 at this sample rate, stereo.
@@ -1513,7 +1518,7 @@ enum Tone {
 /// Sends a tone down a source connection whose push was taken, 20 ms at a time in real
 /// time, from a thread, keeping a copy of every byte sent. Dropping it closes the
 /// connection, which ends the source.
-struct Pusher {
+pub(crate) struct Pusher {
     stop: Arc<AtomicBool>,
     packets: Arc<AtomicUsize>,
     sent: Arc<Mutex<Vec<u8>>>,
@@ -1603,7 +1608,7 @@ impl Drop for Pusher {
 }
 
 /// Pushes `tone` to `slug` and keeps pushing it.
-fn on_air(addr: SocketAddr, slug: &str, key: &str, tone: Tone) -> Pusher {
+pub(crate) fn on_air(addr: SocketAddr, slug: &str, key: &str, tone: Tone) -> Pusher {
     let content_type = match tone {
         Tone::Ogg => "audio/ogg",
         Tone::Mp3 { .. } => "audio/mpeg",

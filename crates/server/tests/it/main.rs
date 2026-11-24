@@ -4,6 +4,7 @@ mod e2e;
 mod encode;
 mod framing;
 mod http;
+mod icy;
 mod lockout;
 mod mount;
 mod server;
