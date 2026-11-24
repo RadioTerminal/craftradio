@@ -41,16 +41,24 @@ fn a_listener_who_joins_late_gets_a_decodable_stream() {
     let mount = Mount::new(10);
     let mut guard = mount.begin(Format::Ogg, "Morning Station".into()).unwrap();
     let mut source = OggSource::new("Cloud Signal", Some("Echo"));
-    source.audio(2000);
+    source.audio(1000);
+    // A title change before the join: the listener needs the new stream's headers.
+    source.restart("Dawn", None);
+    source.audio(1000);
     let before = source.take();
-    let header_pages: Vec<Vec<u8>> = pages(&before)
+    let before_pages = pages(&before);
+    let last_bos = before_pages.iter().rposition(|p| is_bos(p)).unwrap();
+    assert!(last_bos > 0, "the stream has a second logical stream");
+    let header_pages: Vec<Vec<u8>> = before_pages[last_bos..]
         .iter()
         .take_while(|p| granule(p) == 0)
         .map(|p| p.to_vec())
         .collect();
     // The join comes in the middle of a page, as a TCP read would cut it.
     let cut = before.len() - 10;
-    guard.write(&before[..cut]);
+    for read in before[..cut].chunks(4096) {
+        guard.write(read);
+    }
     let last_before_join = granule(pages(&before[..cut]).last().unwrap());
 
     let listener = mount.listen().unwrap();
