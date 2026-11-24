@@ -1,5 +1,6 @@
 //! Pure serde data model for the radio station: items, playlists, rules and constraints.
 
+mod air;
 mod branding;
 mod decks;
 mod dynamics;
@@ -11,6 +12,7 @@ mod playlist;
 mod rule;
 mod station;
 
+pub use air::{AIR_PART, ON_AIR_KEY, on_air};
 pub use branding::{BRANDING_LOGO_KEY, BRANDING_NAME_KEY, BRANDING_PART, DEFAULT_STATION_NAME};
 pub use decks::{DECK_COUNT_KEY, DECKS_PART, DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, deck_count};
 pub use dynamics::{

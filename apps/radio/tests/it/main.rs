@@ -258,3 +258,36 @@ fn headless_watches_files_added_after_startup() {
     assert!(engine.state().station.playlists.iter().flat_map(|p| &p.items)
         .any(|i| matches!(&i.source, radio_model::Source::File { path } if path.ends_with("after-start.wav"))));
 }
+
+/// The headless status line says whether the station is on air, and says off air when the
+/// saved setting is off.
+#[test]
+fn the_headless_status_line_says_off_air() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let run = || {
+        let out = radio()
+            .args(["--headless", "--null-output", "--run-for", "300ms"])
+            .arg("--data-dir")
+            .arg(&data)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let on = run();
+    assert!(on.contains("radio: on air"), "{on}");
+    assert!(!on.contains("off air"), "{on}");
+
+    let mut engine = radio_engine::Engine::open(data.join("station.db")).unwrap();
+    engine
+        .dispatch(radio_engine::Command::SettingsSet {
+            part: radio_model::AIR_PART.into(),
+            key: radio_model::ON_AIR_KEY.into(),
+            value: false.into(),
+        })
+        .unwrap();
+    drop(engine);
+    let off = run();
+    assert!(off.contains("radio: off air"), "{off}");
+}

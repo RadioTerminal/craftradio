@@ -4,6 +4,7 @@ mod folders;
 mod history;
 mod icecast;
 mod meters;
+mod off_air;
 mod one_off;
 mod pick_orders;
 mod snapshot;

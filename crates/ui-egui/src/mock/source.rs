@@ -107,9 +107,17 @@ impl ViewSource for MockSource {
         let alarms = alarms::sample(&local, &rows, &self.acked_alarms);
         self.last_decks = Some((decks.clone(), std::time::Instant::now()));
 
+        // The preview keeps the On air switch, and its outputs say off air as the station's do.
+        let stored = self
+            .settings
+            .get(radio_model::AIR_PART)
+            .and_then(|s| s.get(radio_model::ON_AIR_KEY))
+            .and_then(serde_json::Value::as_bool);
+        let on_air = radio_model::on_air(stored);
+        let off = |s: Status| if on_air { s } else { Status::OffAir };
         StationView {
             monitor_open: false,
-            output_meters: super::decks::output_meters(),
+            output_meters: super::decks::output_meters(on_air),
             now: local,
             mode: self.play_mode.label().to_uppercase(),
             play_mode: self.play_mode,
@@ -134,9 +142,9 @@ impl ViewSource for MockSource {
             loudness: self.loudness,
             output: OutputStatus {
                 local: Status::Preview,
-                icecast: Status::NotConnected,
+                icecast: off(Status::NotConnected),
                 listeners: None,
-                webrtc: Status::NotConnected,
+                webrtc: off(Status::NotConnected),
                 webrtc_listeners: None,
                 webrtc_reported: None,
                 listen_link: None,
@@ -144,6 +152,8 @@ impl ViewSource for MockSource {
                 forwarded: None,
                 streaming: Some(self.streaming),
             },
+            on_air,
+            going_on_air: false,
             folders: self.folder_views(),
             settings: self.settings.clone(),
             alarms,

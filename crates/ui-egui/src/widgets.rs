@@ -120,21 +120,38 @@ pub(crate) fn guard_button_sized(
         );
         // The ring: a part of a circle around the button, as long as the time left.
         let r = rect.width() / 2.0 + size::HAIRLINE * 2.0;
-        let steps = size::RING_STEPS;
         let sweep = std::f32::consts::TAU * left.clamp(0.0, 1.0);
-        let points: Vec<egui::Pos2> = (0..=steps)
-            .map(|k| {
-                let a = -std::f32::consts::FRAC_PI_2 + sweep * k as f32 / steps as f32;
-                rect.center() + egui::vec2(a.cos(), a.sin()) * r
-            })
-            .collect();
-        p.add(egui::Shape::line(
-            points,
+        ring(
+            p,
+            rect.center(),
+            r,
+            -std::f32::consts::FRAC_PI_2,
+            sweep,
             Stroke::new(size::HAIRLINE * 2.0, t.danger),
-        ));
+        );
     }
     resp.show_tooltip_text(note);
     resp
+}
+
+/// A part of a circle of radius `r` around `centre`: from the angle `from`, `sweep` radians
+/// clockwise on the screen.
+pub(crate) fn ring(
+    p: &egui::Painter,
+    centre: egui::Pos2,
+    r: f32,
+    from: f32,
+    sweep: f32,
+    stroke: Stroke,
+) {
+    let steps = size::RING_STEPS;
+    let points: Vec<egui::Pos2> = (0..=steps)
+        .map(|k| {
+            let a = from + sweep * k as f32 / steps as f32;
+            centre + egui::vec2(a.cos(), a.sin()) * r
+        })
+        .collect();
+    p.add(egui::Shape::line(points, stroke));
 }
 
 /// A label on one line. A long text ends with "…", and the tooltip then shows all of it.

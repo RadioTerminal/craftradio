@@ -279,16 +279,31 @@ impl Core {
         self.webrtc_played.truncate(PLAYED_MAX);
     }
 
-    /// Starts or stops the WebRTC server to match its setting. A server that stops frees
-    /// its ports on its own thread, and the next one starts after that.
+    /// Takes Icecast off air or puts it on air when the On air setting changed. WebRTC
+    /// follows the same setting in [`Core::sync_webrtc`].
+    pub(crate) fn sync_air(&mut self) {
+        let on = on_air(self.engine.state());
+        if on == self.on_air {
+            return;
+        }
+        if let Some(ice) = &self.icecast {
+            ice.set_on_air(on);
+        }
+        self.on_air = on;
+    }
+
+    /// Starts or stops the WebRTC server to match its setting. Off air stops it whatever
+    /// the setting or the config says. A server that stops frees its ports on its own
+    /// thread, and the next one starts after that.
     pub(crate) fn sync_webrtc(&mut self) {
         let Some(base) = &self.cfg.webrtc else { return };
         let settings = self.engine.state().settings(WEBRTC_PART);
-        let on = self.cfg.webrtc_always
-            || settings
-                .and_then(|s| s.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+        let on = self.on_air
+            && (self.cfg.webrtc_always
+                || settings
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false));
         let port = settings
             .and_then(|s| s.get("port"))
             .and_then(|v| v.as_u64())
@@ -381,6 +396,15 @@ impl Core {
             self.brand_sent = Some(brand);
         }
     }
+}
+
+/// The On air setting of `state`: on air unless it is stored as `false`.
+pub(crate) fn on_air(state: &radio_engine::State) -> bool {
+    let stored = state
+        .settings(radio_model::AIR_PART)
+        .and_then(|s| s.get(radio_model::ON_AIR_KEY))
+        .and_then(|v| v.as_bool());
+    radio_model::on_air(stored)
 }
 
 /// What the logo watch has been asked about and what it saw.

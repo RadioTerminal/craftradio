@@ -429,6 +429,8 @@ pub(crate) struct Core {
     pub(crate) dead_air: DeadAir,
     pub(crate) next_bed: usize,
     pub(crate) icecast: Option<IcecastHandle>,
+    /// The On air setting as Icecast and WebRTC last followed it.
+    pub(crate) on_air: bool,
     pub(crate) webrtc: Option<WebRtcHandle>,
     /// Program for the WebRTC server, kept while the server is off.
     pub(crate) webrtc_tap: Option<TapSlot>,
@@ -509,12 +511,15 @@ impl Core {
             None => open_output(&cfg.output, cfg.mixer, cfg.dynamics, tap, &meters.device)?,
         };
         let mut taps = std::mem::take(&mut opened.taps).into_iter();
+        // A station saved off air does not dial Icecast until it goes on air.
+        let on_air = crate::streams::on_air(engine.state());
         let icecast = cfg.icecast.clone().and_then(|ice| {
-            Some(IcecastClient::start_metered(
-                ice,
-                taps.next()?,
-                meters.icecast.clone(),
-            ))
+            let start = if on_air {
+                IcecastClient::start_metered
+            } else {
+                IcecastClient::start_metered_off_air
+            };
+            Some(start(ice, taps.next()?, meters.icecast.clone()))
         });
         let webrtc_tap = cfg
             .webrtc
@@ -540,6 +545,7 @@ impl Core {
                 icecast: None,
                 webrtc: None,
                 webrtc_available: cfg.webrtc.is_some(),
+                on_air,
             },
             stream_states: Vec::new(),
             alarms: Vec::new(),
@@ -585,6 +591,7 @@ impl Core {
             dead_air: DeadAir::default(),
             next_bed: 0,
             icecast,
+            on_air,
             webrtc: None,
             webrtc_tap,
             output_meters: meters,
@@ -837,6 +844,7 @@ impl Core {
         for reason in self.cue.errors.try_iter() {
             self.alarms.raise(now, Alarm::DeviceLost { name: reason });
         }
+        self.sync_air();
         self.sync_webrtc();
         self.sync_brand(now);
         self.ticks += 1;
@@ -1800,6 +1808,7 @@ impl Core {
         view.alarms_dropped = self.alarms.dropped;
         view.stream_states = self.stream_states();
         view.outputs.icecast = self.icecast.as_ref().map(IcecastHandle::status);
+        view.outputs.on_air = self.on_air;
         view.outputs.webrtc = self.webrtc.as_ref().map(WebRtcHandle::status);
         if self.timeline_changed {
             view.timeline = self.timeline.clone();

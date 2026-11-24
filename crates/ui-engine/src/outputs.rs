@@ -26,10 +26,36 @@ pub(crate) fn local_status(local: &LocalOutput, card_wanted: bool) -> Status {
     }
 }
 
+/// How long after the switch to on air the station says it is going on air while Icecast
+/// has not connected. After that, a mount that is still not connected is a fault.
+const GOING_ON_AIR: jiff::SignedDuration = jiff::SignedDuration::from_secs(30);
+
+/// True while on air and Icecast is still connecting, within [`GOING_ON_AIR`] of `since`,
+/// the moment the adapter saw the station go on air.
+pub(crate) fn going_on_air(
+    out: &OutputStatus,
+    since: Option<jiff::Timestamp>,
+    now: jiff::Timestamp,
+) -> bool {
+    out.on_air
+        && matches!(
+            out.icecast,
+            Some(StreamStatus::Connecting | StreamStatus::Retrying { .. })
+        )
+        && since
+            .and_then(|s| s.checked_add(GOING_ON_AIR).ok())
+            .is_some_and(|end| now < end)
+}
+
 /// The output strips in mixer order: the Program device, Icecast, WebRTC. An output is live
 /// only while it really sends: a sound card is open, Icecast is connected, or somebody
-/// listens over WebRTC.
-pub(crate) fn output_meter_views(out: &OutputStatus, card_wanted: bool) -> Vec<OutputMeterView> {
+/// listens over WebRTC. While `going` on air (see [`going_on_air`]), Icecast says so rather
+/// than "Connecting" or "Not connected", as the status bar does.
+pub(crate) fn output_meter_views(
+    out: &OutputStatus,
+    card_wanted: bool,
+    going: bool,
+) -> Vec<OutputMeterView> {
     let device = match &out.local {
         LocalOutput::Device { name } => (true, name.clone()),
         LocalOutput::Lost { name } => (false, format!("Lost: {name}")),
@@ -37,14 +63,21 @@ pub(crate) fn output_meter_views(out: &OutputStatus, card_wanted: bool) -> Vec<O
         LocalOutput::Null | LocalOutput::Offline if card_wanted => (false, "Not open".to_owned()),
         LocalOutput::Null | LocalOutput::Offline => (false, "No device".to_owned()),
     };
+    // Off air nothing is sent, whatever a source still reports while it closes.
     let icecast = match &out.icecast {
         None => (false, "Not set up"),
+        Some(_) if !out.on_air => (false, "Off air"),
         Some(StreamStatus::Connected { .. }) => (true, "Connected"),
+        Some(StreamStatus::Connecting | StreamStatus::Retrying { .. }) if going => {
+            (false, "Going on air…")
+        }
         Some(StreamStatus::Connecting) => (false, "Connecting"),
         Some(StreamStatus::Retrying { .. }) => (false, "Not connected"),
         Some(StreamStatus::Stopped) => (false, "Off"),
+        Some(StreamStatus::OffAir) => (false, "Off air"),
     };
     let webrtc = match &out.webrtc {
+        _ if !out.on_air => (false, "Off air".to_owned()),
         None | Some(WebRtcStatus::Stopped) => (false, "Off".to_owned()),
         Some(WebRtcStatus::Starting) => (false, "Starting".to_owned()),
         Some(WebRtcStatus::Failed(e)) => (false, format!("Failed: {e}")),
@@ -116,11 +149,12 @@ mod tests {
             icecast: None,
             webrtc: None,
             webrtc_available: true,
+            on_air: true,
         }
     }
 
     fn view(out: &OutputStatus, kind: OutputKind) -> OutputMeterView {
-        output_meter_views(out, false)
+        output_meter_views(out, false, false)
             .into_iter()
             .find(|v| v.kind == kind)
             .unwrap()
@@ -155,10 +189,13 @@ mod tests {
     #[test]
     fn a_wanted_card_that_is_not_open_does_not_read_as_no_device() {
         let out = status(LocalOutput::Null);
-        let v = output_meter_views(&out, true).remove(0);
+        let v = output_meter_views(&out, true, false).remove(0);
         assert!(!v.live);
         assert_eq!(v.note, "Not open");
-        assert_eq!(output_meter_views(&out, false).remove(0).note, "No device");
+        assert_eq!(
+            output_meter_views(&out, false, false).remove(0).note,
+            "No device"
+        );
     }
 
     #[test]
@@ -237,8 +274,39 @@ mod tests {
             name: "Studio out".into(),
         });
         out.icecast = Some(StreamStatus::Connecting);
-        let views = output_meter_views(&out, false);
+        let views = output_meter_views(&out, false, false);
         let levels = gated_levels(&views, &[[-6.0, -6.0], [-6.0, -6.0], [-6.0, -6.0]]);
         assert_eq!(levels, vec![[-6.0, -6.0], [FLOOR, FLOOR], [FLOOR, FLOOR]]);
+    }
+
+    /// While going on air, the Icecast strip says so, as the status bar does, not a fault.
+    #[test]
+    fn the_icecast_strip_says_going_on_air_while_it_connects() {
+        let mut out = status(LocalOutput::Null);
+        for icecast in [
+            StreamStatus::Connecting,
+            StreamStatus::Retrying {
+                in_secs: 2,
+                last_error: "refused".into(),
+            },
+        ] {
+            out.icecast = Some(icecast);
+            let views = output_meter_views(&out, false, true);
+            let ice = views
+                .iter()
+                .find(|v| v.kind == OutputKind::Icecast)
+                .unwrap();
+            assert_eq!(ice.note, "Going on air…");
+            assert!(!ice.live);
+            let later = output_meter_views(&out, false, false);
+            let ice = later
+                .iter()
+                .find(|v| v.kind == OutputKind::Icecast)
+                .unwrap();
+            assert_ne!(
+                ice.note, "Going on air…",
+                "after the window it says what it is"
+            );
+        }
     }
 }

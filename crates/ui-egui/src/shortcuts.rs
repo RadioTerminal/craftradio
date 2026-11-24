@@ -26,6 +26,8 @@ pub(crate) const FADE: &str = "deck.fade_out";
 /// Space plays the focused deck, or pauses it when it is on air.
 pub(crate) const PLAY_PAUSE: &str = "deck.play_pause";
 pub(crate) const STOP_CARTS: &str = "cart.stop_all";
+/// The On air switch: it arms first, and a second press within the arm time switches.
+pub(crate) const AIR_TOGGLE: &str = "air.toggle";
 /// Preferences, as in every Craft app.
 pub(crate) const PREFERENCES: &str = "app.preferences";
 /// The search field of Preferences takes the focus.
@@ -81,6 +83,7 @@ pub(crate) fn catalog() -> Vec<Bindable> {
         entry(FADE.into(), "Fade Out", "Playout", &["Cmd+Shift+F"]),
         entry(PLAY_PAUSE.into(), "Play or Pause", "Playout", &["Space"]),
         entry(STOP_CARTS.into(), "Stop All Carts", "Playout", &["Escape"]),
+        entry(AIR_TOGGLE.into(), "On Air", "Playout", &["Cmd+Shift+O"]),
         entry(UP.into(), "Previous Row", "Lists", &["Up"]),
         entry(DOWN.into(), "Next Row", "Lists", &["Down"]),
     ];
@@ -174,6 +177,14 @@ pub(crate) struct Pressed {
     pub fade: bool,
     pub play_pause: bool,
     pub stop_carts: bool,
+    /// A key press of the On air shortcut: one press arms it.
+    pub air: bool,
+    /// The On air shortcut's key came up before its press of this frame (or in a frame
+    /// without one), and after it. A held key sends presses with no key-up between them.
+    pub air_up_before: bool,
+    pub air_up_after: bool,
+    /// On Air chosen from a menu with the pointer: a press that no key-up follows.
+    pub air_menu: bool,
     pub focus_deck: Option<usize>,
     /// The cart key, as a number from 0 on the page on show.
     pub cart: Option<usize>,
@@ -199,6 +210,10 @@ impl Pressed {
             fade: self.fade | other.fade,
             play_pause: self.play_pause | other.play_pause,
             stop_carts: self.stop_carts | other.stop_carts,
+            air: self.air | other.air,
+            air_up_before: self.air_up_before | other.air_up_before,
+            air_up_after: self.air_up_after | other.air_up_after,
+            air_menu: self.air_menu | other.air_menu,
             focus_deck: self.focus_deck.or(other.focus_deck),
             cart: self.cart.or(other.cart),
             step: if self.step == 0 {
@@ -210,16 +225,72 @@ impl Pressed {
     }
 }
 
+/// True while the modifiers of an On air shortcut (⌘⇧ by default) are held. A menu click of
+/// On Air then stands for that shortcut: with a text field focused the native menu reports
+/// a key equivalent, each autorepeat too, as a click.
+pub(crate) fn air_chord_held(ctx: &egui::Context) -> bool {
+    let shortcuts = shortcuts_of(ctx, &AIR_TOGGLE.into());
+    let held = ctx.input(|i| i.modifiers);
+    shortcuts
+        .iter()
+        // A shortcut without modifiers has nothing to hold: a click is then the pointer's.
+        .any(|s| !s.modifiers.is_none() && held.contains(s.modifiers))
+}
+
+/// Where the On air shortcut's key came up in this frame's events: before its first press
+/// (or anywhere, when it was not pressed) and after its last press. It reads the order of the
+/// events, not egui's repeat flag, which a press from the native menu never sets.
+fn air_ups(ctx: &egui::Context) -> (bool, bool) {
+    let shortcuts = shortcuts_of(ctx, &AIR_TOGGLE.into());
+    ctx.input(|i| {
+        let presses: Vec<usize> = i
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                shortcuts.iter().any(|s| {
+                    matches!(e, Event::Key { key, modifiers, pressed: true, .. }
+                        if *key == s.logical_key && modifiers.matches_logically(s.modifiers))
+                })
+            })
+            .map(|(n, _)| n)
+            .collect();
+        let ups: Vec<usize> = i
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                shortcuts.iter().any(|s| {
+                    matches!(e, Event::Key { key, pressed: false, .. } if *key == s.logical_key)
+                })
+            })
+            .map(|(n, _)| n)
+            .collect();
+        match (presses.first(), presses.last()) {
+            (Some(first), Some(last)) => {
+                (ups.iter().any(|u| u < first), ups.iter().any(|u| u > last))
+            }
+            _ => (!ups.is_empty(), false),
+        }
+    })
+}
+
 /// Read the shortcuts of this frame, once. A focused text field keeps all keys for itself.
 pub(crate) fn read(ctx: &egui::Context) -> Pressed {
+    // A key-up counts whoever else holds the keys, so a held switch is never stuck.
+    let (air_up_before, air_up_after) = air_ups(ctx);
+    let ups = Pressed {
+        air_up_before: air_up_before || air_up_after,
+        ..Pressed::default()
+    };
     if ctx.egui_wants_keyboard_input() {
-        return Pressed::default();
+        return ups;
     }
     // The in-window menu bar holds the keys while a menu is open or it has the keyboard (an
     // Alt tap); a command shortcut takes the keyboard off it first and runs.
     craft_menu::bar::leave_for_shortcut(ctx);
     if craft_menu::bar::is_open(ctx) || craft_menu::bar::is_focused(ctx) {
-        return Pressed::default();
+        return ups;
     }
     // Space and the arrows belong to a focused button, slider or list, when there is one.
     let free = ctx.memory(|m| m.focused().is_none());
@@ -240,7 +311,11 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
             .fold(false, |hit, s| i.consume_shortcut(s) | hit)
     };
     ctx.input_mut(|i| {
-        let mut p = Pressed::default();
+        let mut p = Pressed {
+            air_up_before,
+            air_up_after,
+            ..Pressed::default()
+        };
         for e in &i.events {
             match e {
                 Event::Cut => p.cut = true,
@@ -256,6 +331,7 @@ pub(crate) fn read(ctx: &egui::Context) -> Pressed {
         p.preferences = take(i, &PREFERENCES.into());
         p.find = take(i, &FIND.into());
         p.fade = take(i, &FADE.into());
+        p.air = take(i, &AIR_TOGGLE.into());
         p.duplicate = take(i, &DUPLICATE.into());
         p.delete = take(i, &DELETE.into());
         p.select_all = take(i, &SELECT_ALL.into());
@@ -295,6 +371,7 @@ mod tests {
             (FIND, "Cmd+F"),
             (PLAY_PAUSE, "Space"),
             (STOP_CARTS, "Escape"),
+            (AIR_TOGGLE, "Cmd+Shift+O"),
             (SELECT_ALL, "Cmd+A"),
         ] {
             let want = craft_keymap::Chord::parse(text)

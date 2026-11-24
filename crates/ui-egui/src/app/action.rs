@@ -35,6 +35,8 @@ pub(crate) enum Action {
     /// An edit that shows a message only when it fails, for faders and settings.
     EditQuiet(Edit),
     Toast(String),
+    /// A toast that shows for this many seconds, not the usual time.
+    ToastFor(String, f64),
     /// Show this range of the as-played log in History, or the last hours for `None`.
     HistoryRange(Option<(jiff::Timestamp, jiff::Timestamp)>),
     /// Copy library items.
@@ -361,6 +363,7 @@ impl RadioApp {
             Action::Edit(edit) => self.run_edit(ctx, edit, true),
             Action::EditQuiet(edit) => self.run_edit(ctx, edit, false),
             Action::Toast(text) => self.toast(ctx, text),
+            Action::ToastFor(text, secs) => self.toast_for(ctx, text, secs),
             Action::CopyItems(items) => {
                 let n = items.len();
                 self.clip = Clipboard {

@@ -18,8 +18,6 @@ use radio_model::{Clamp, GainSource, ItemGain};
 
 /// The part setting that switches the second press on the deck on air.
 const CONFIRM_KEY: &str = "confirm_on_air";
-/// While a button is armed, the strip draws again at this interval, in seconds.
-const ARM_REPAINT_S: f32 = 0.1;
 /// The fade-out time of a new deck, in seconds.
 const DEFAULT_FADE_S: f32 = 3.0;
 /// The fade-in of a new deck when it plays before its turn, in seconds.
@@ -214,7 +212,7 @@ pub(crate) fn show(
     }
     if state.armed.is_some() {
         // The ring counts down, so the deck strip draws again soon.
-        ui.ctx().request_repaint_after_secs(ARM_REPAINT_S);
+        ui.ctx().request_repaint_after_secs(size::ARM_REPAINT_S);
     }
     state.next = next_ranks(&view.decks);
     let avail = ui.available_width();
@@ -1099,13 +1097,20 @@ fn live_chip(
             "OFF AIR",
             t.text_muted,
             t.field,
-            "not streaming to listeners".to_owned(),
+            if view.on_air {
+                "not streaming to listeners"
+            } else {
+                "the station is off air: nothing goes to listeners"
+            }
+            .to_owned(),
         ),
     };
     let icecast = match &view.output.icecast {
+        Status::Failed(_) | Status::Reconnecting { .. } if view.going_on_air => "going on air",
         Status::Connected => "connected",
         Status::Reconnecting { .. } => "reconnecting",
         Status::Failed(_) => "failed",
+        Status::OffAir => "off air",
         Status::Preview | Status::NotConnected => "not connected",
     };
     let click = match view.output.streaming {

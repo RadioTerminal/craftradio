@@ -204,12 +204,14 @@ fn strip_label(strip: &str) -> String {
 }
 
 /// The output strips of the preview: it plays nothing, so no output is live.
-pub(super) fn output_meters() -> Vec<crate::view::OutputMeterView> {
+/// The output strips of the preview. Off air, Icecast and WebRTC say so, as the station's do.
+pub(super) fn output_meters(on_air: bool) -> Vec<crate::view::OutputMeterView> {
     use crate::view::{OutputKind, OutputMeterView};
+    let air = |note| if on_air { note } else { "Off air" };
     [
         (OutputKind::Device, "Sound card", "Preview — no audio"),
-        (OutputKind::Icecast, "Icecast", "Not connected"),
-        (OutputKind::WebRtc, "WebRTC", "Off"),
+        (OutputKind::Icecast, "Icecast", air("Not connected")),
+        (OutputKind::WebRtc, "WebRTC", air("Off")),
     ]
     .into_iter()
     .map(|(kind, label, note)| OutputMeterView {

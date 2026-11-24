@@ -94,6 +94,9 @@ pub struct OutputStatus {
     pub webrtc: Option<WebRtcStatus>,
     /// The configuration has a WebRTC server, so the setting can turn it on.
     pub webrtc_available: bool,
+    /// The On air setting. Off air, neither Icecast nor WebRTC sends anything; the decks
+    /// and the sound card go on.
+    pub on_air: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

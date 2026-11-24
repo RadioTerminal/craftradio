@@ -1018,6 +1018,10 @@ fn icecast_status(view: &StationView, t: &Tokens) -> IceStatus {
             false,
         ),
         Status::Connected => s(Icon::CircleDot, "Icecast connected", t.ok, true),
+        // Going on air, a mount that still connects is not a fault yet.
+        Status::Failed(_) | Status::Reconnecting { .. } if view.going_on_air => {
+            s(Icon::RefreshCw, "Icecast going on air…", t.warn, false)
+        }
         Status::Reconnecting { attempt } => s(
             Icon::RefreshCw,
             &format!("Icecast connecting, try {attempt}"),
@@ -1025,6 +1029,7 @@ fn icecast_status(view: &StationView, t: &Tokens) -> IceStatus {
             false,
         ),
         Status::Failed(e) => s(Icon::Circle, &format!("Icecast down: {e}"), t.danger, false),
+        Status::OffAir => s(Icon::Circle, "Icecast off air", t.text_muted, false),
         Status::NotConnected | Status::Preview => {
             s(Icon::Circle, "Icecast not connected", t.text_muted, false)
         }

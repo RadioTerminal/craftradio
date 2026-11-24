@@ -56,6 +56,34 @@ impl RadioApp {
         {
             actions.push(a);
         }
+        // The On air switch: the first press arms and says so in a toast, for as long as the
+        // arm lasts. A key press counts only after the key came up since the last one.
+        let on_air = self.view.on_air;
+        // A menu click is the shortcut's key (the native menu's key equivalent while a text
+        // field has the keys, each autorepeat too) while that key is down or its modifiers are
+        // held; otherwise it is the pointer, and always counts. Its frame does not order the
+        // click against a key-up, so a key-up there counts after it: the safe way round.
+        let click_as_key =
+            !p.air && p.air_menu && (self.air.key_held(now) || shortcuts::air_chord_held(ctx));
+        if p.air_up_before && !click_as_key {
+            self.air.key_up();
+        }
+        let pressed = if p.air || click_as_key {
+            self.air.press_key(on_air, now)
+        } else {
+            p.air_menu.then(|| self.air.press(on_air, now))
+        };
+        match pressed {
+            Some(Some(a)) => actions.push(a),
+            Some(None) => {
+                let note = crate::on_air::arm_note(on_air).to_owned();
+                actions.push(Action::ToastFor(note, size::ARM_S));
+            }
+            None => {}
+        }
+        if p.air_up_after || (click_as_key && p.air_up_before) {
+            self.air.key_up();
+        }
         let deck = self.decks.focused();
         let Some(dv) = self.view.decks.get(deck) else {
             return;

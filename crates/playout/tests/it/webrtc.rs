@@ -446,3 +446,36 @@ fn the_brand_has_no_name_until_one_is_set() {
     let brand: serde_json::Value = serde_json::from_str(&http_get(port, "/brand")).unwrap();
     assert_eq!(brand["name"], "");
 }
+
+/// Off air stops the listener server even when the config runs it in any case, and on
+/// air starts it again.
+#[test]
+fn off_air_stops_webrtc_even_when_always_on() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let (p, clock) = offline(engine_with(Vec::new()), |cfg| {
+        let mut w = WebRtcConfig::new(([127, 0, 0, 1], port).into());
+        w.stun.clear();
+        w.trackers.clear();
+        cfg.webrtc = Some(w);
+        cfg.webrtc_always = true;
+    });
+    until(&p, &clock, listening);
+
+    let air = |on: bool| {
+        p.dispatch(Command::SettingsSet {
+            part: radio_model::AIR_PART.into(),
+            key: radio_model::ON_AIR_KEY.into(),
+            value: on.into(),
+        })
+        .unwrap();
+    };
+    air(false);
+    until(&p, &clock, |s| s.is_none());
+
+    air(true);
+    until(&p, &clock, listening);
+}
