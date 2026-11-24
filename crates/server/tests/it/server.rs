@@ -1,16 +1,21 @@
 use crate::framing::{OggSource, granule, pages};
 use crate::support::{
-    Head, PATIENCE, client, read_head, read_head_bytes, read_to_end_within, request, source_entry,
-    sources, stats, tls_files,
+    Head, PATIENCE, client, entry, hears, read_head, read_head_bytes, read_to_end_within, request,
+    source_entry, sources, stats, tls_files,
 };
 use base64::Engine;
+use craft_audio::mp3::{Config as Mp3Config, Encoder};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use radio_server::{
-    Config, Format, MountStats, Server, ServerError, ServerHandle, Timeouts, hash_key, status_json,
+    Config, Format, MountStats, Server, ServerError, ServerHandle, StatsEntry, Timeouts, hash_key,
+    status_json,
 };
 use serde_json::Value;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const MORNING_KEY: &str = "invented-morning-key-4Hq8";
@@ -992,6 +997,8 @@ fn stats_list_live_mounts_with_their_titles() {
     assert_eq!(morning["server_name"], "Cloud Signal FM");
     assert_eq!(morning["server_type"], "audio/ogg");
     assert_eq!(morning["listeners"], 0);
+    // The source's Ice-Bitrate.
+    assert_eq!(morning["bitrate"], 96);
     let mut keys: Vec<&str> = morning
         .as_object()
         .unwrap()
@@ -1003,6 +1010,7 @@ fn stats_list_live_mounts_with_their_titles() {
         keys,
         [
             "artist",
+            "bitrate",
             "listeners",
             "listenurl",
             "server_name",
@@ -1042,6 +1050,10 @@ fn stats_list_live_mounts_with_their_titles() {
     assert_eq!(evening["artist"], "");
     assert_eq!(evening["server_name"], "Evening Station");
     assert_eq!(evening["server_type"], "audio/mpeg");
+    assert!(
+        evening.get("bitrate").is_none(),
+        "a source that gives no bitrate is listed without one"
+    );
     assert_eq!(sources(&stats(addr)).len(), 2);
 
     let (_listener, head) = get(addr, "morning");
@@ -1084,9 +1096,9 @@ fn a_title_with_quotes_and_control_characters_keeps_the_json_valid() {
     assert_ne!(replaced, title, "the update was taken");
 
     // So does the document built by hand, and a public URL's trailing slash is not doubled.
-    let mounts = [(
-        "morning".to_owned(),
-        MountStats {
+    let mounts = [StatsEntry {
+        path: "morning/stream".to_owned(),
+        stats: MountStats {
             live: true,
             format: Some(Format::Ogg),
             listeners: 3,
@@ -1095,7 +1107,7 @@ fn a_title_with_quotes_and_control_characters_keeps_the_json_valid() {
             artist: "Echo\\".to_owned(),
             kbps: None,
         },
-    )];
+    }];
     let built: Value =
         serde_json::from_str(&status_json("https://radio.example.test/", &mounts)).unwrap();
     let entry = &sources(&built)[0];
@@ -1180,7 +1192,10 @@ fn stats_built_for_a_mount_with_no_source_leave_it_out() {
     };
     let built: Value = serde_json::from_str(&status_json(
         "https://radio.example.test",
-        &[("evening".to_owned(), idle)],
+        &[StatsEntry {
+            path: "evening/stream".to_owned(),
+            stats: idle,
+        }],
     ))
     .unwrap();
     assert!(sources(&built).is_empty());
@@ -1465,4 +1480,504 @@ fn a_missing_certificate_file_is_a_start_error() {
         .err()
         .unwrap();
     assert!(!error.to_string().contains(body), "{error}");
+}
+
+/// How long a listener of an output may take to hear the tone.
+const EAR_PATIENCE: Duration = Duration::from_secs(20);
+
+/// A server whose station "morning" has an Opus output at `/morning/opus` (64 kbit/s) and
+/// an MP3 one at `/morning/mp3` (128 kbit/s), and whose station "evening" has none.
+fn with_outputs(max_stream_listeners: usize) -> ServerHandle {
+    let config = Config::parse(&format!(
+        "listen = \"127.0.0.1:0\"\npublic_url = \"https://radio.example.test\"\n\n\
+         [[station]]\nslug = \"morning\"\nname = \"Morning Station\"\nkey_hash = \"{}\"\nmax_stream_listeners = {max_stream_listeners}\n\n\
+         [[station.output]]\nmount = \"opus\"\nformat = \"opus\"\nkbps = 64\n\n\
+         [[station.output]]\nmount = \"mp3\"\nformat = \"mp3\"\nkbps = 128\n\n\
+         [[station]]\nslug = \"evening\"\nname = \"Evening Station\"\nkey_hash = \"{}\"\n",
+        hash_key(MORNING_KEY),
+        hash_key(EVENING_KEY),
+    ))
+    .unwrap();
+    Server::start(config).unwrap()
+}
+
+/// What a [`Pusher`] sends.
+#[derive(Clone, Copy)]
+enum Tone {
+    /// Ogg/Opus, as the app sends it, titled "Cloud Signal" by "Echo".
+    Ogg,
+    /// MP3 at this sample rate, stereo.
+    Mp3 { rate: u32 },
+}
+
+/// Sends a tone down a source connection whose push was taken, 20 ms at a time in real
+/// time, from a thread, keeping a copy of every byte sent. Dropping it closes the
+/// connection, which ends the source.
+struct Pusher {
+    stop: Arc<AtomicBool>,
+    packets: Arc<AtomicUsize>,
+    sent: Arc<Mutex<Vec<u8>>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Pusher {
+    fn start(mut source: TcpStream, tone: Tone) -> Pusher {
+        let stop = Arc::new(AtomicBool::new(false));
+        let packets = Arc::new(AtomicUsize::new(0));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let thread = {
+            let (stop, packets, sent) =
+                (Arc::clone(&stop), Arc::clone(&packets), Arc::clone(&sent));
+            std::thread::spawn(move || {
+                let mut ogg = OggSource::new("Cloud Signal", Some("Echo"));
+                let mut mp3 = match tone {
+                    Tone::Mp3 { rate } => {
+                        Some((Encoder::new(Mp3Config::cbr(rate, 2, 128)).unwrap(), rate))
+                    }
+                    Tone::Ogg => None,
+                };
+                let started = Instant::now();
+                let mut frames = 0usize;
+                let mut ticks = 0u32;
+                while !stop.load(Ordering::Acquire) {
+                    let bytes = match &mut mp3 {
+                        None => {
+                            ogg.audio(20);
+                            ogg.take()
+                        }
+                        Some((encoder, rate)) => {
+                            let count = *rate as usize / 50;
+                            let tone: Vec<f32> = (frames..frames + count)
+                                .map(|i| {
+                                    (i as f32 / *rate as f32 * 440.0 * std::f32::consts::TAU).sin()
+                                        * 0.2
+                                })
+                                .collect();
+                            frames += count;
+                            encoder.encode(&[&tone, &tone])
+                        }
+                    };
+                    // Recorded first, so a listener can never hear a byte not in the copy.
+                    sent.lock().unwrap().extend_from_slice(&bytes);
+                    if source.write_all(&bytes).is_err() {
+                        break;
+                    }
+                    packets.fetch_add(1, Ordering::AcqRel);
+                    ticks += 1;
+                    let next = started + Duration::from_millis(20) * ticks;
+                    std::thread::sleep(next.saturating_duration_since(Instant::now()));
+                }
+            })
+        };
+        Pusher {
+            stop,
+            packets,
+            sent,
+            thread: Some(thread),
+        }
+    }
+
+    /// Waits until `more` packets more have been sent.
+    fn wait_packets(&self, more: usize) {
+        let target = self.packets.load(Ordering::Acquire) + more;
+        let deadline = Instant::now() + PATIENCE + Duration::from_millis(20 * more as u64);
+        while self.packets.load(Ordering::Acquire) < target {
+            assert!(Instant::now() < deadline, "the pusher fell behind");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Every byte sent so far.
+    fn sent(&self) -> Vec<u8> {
+        self.sent.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Pusher {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Pushes `tone` to `slug` and keeps pushing it.
+fn on_air(addr: SocketAddr, slug: &str, key: &str, tone: Tone) -> Pusher {
+    let content_type = match tone {
+        Tone::Ogg => "audio/ogg",
+        Tone::Mp3 { .. } => "audio/mpeg",
+    };
+    let (source, head) = push(addr, slug, key, content_type);
+    assert_eq!(head.status, 200);
+    let pusher = Pusher::start(source, tone);
+    pusher.wait_packets(5);
+    pusher
+}
+
+/// Reads and throws away what a listener is sent, from a thread, until dropped; counts the
+/// bytes.
+struct Drain {
+    bytes: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drain {
+    fn start(mut stream: TcpStream) -> Drain {
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (bytes, stop) = (Arc::clone(&bytes), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                let mut buf = [0; 4096];
+                while !stop.load(Ordering::Acquire) {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            bytes.fetch_add(n, Ordering::AcqRel);
+                        }
+                        Err(e)
+                            if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+        Drain {
+            bytes,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Drain {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Polls the stats until they list `count` mounts, and returns them.
+fn wait_for_sources(addr: SocketAddr, count: usize) -> Vec<Value> {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let listed = sources(&stats(addr)).clone();
+        if listed.len() == count {
+            return listed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stats never listed {count} mounts: {listed:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn get_output(addr: SocketAddr, slug: &str, mount: &str) -> (TcpStream, Head) {
+    request(addr, "GET", &format!("/{slug}/{mount}"))
+}
+
+#[test]
+fn an_output_is_served_at_its_mount() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    for (mount, content_type, format) in [
+        ("opus", "audio/ogg", Format::Ogg),
+        ("mp3", "audio/mpeg", Format::Mp3),
+    ] {
+        let (stream, head) = get_output(addr, "morning", mount);
+        assert_eq!(head.status, 200, "/morning/{mount}");
+        assert_eq!(head.header("Content-Type"), Some(content_type));
+        assert_eq!(head.header("Access-Control-Allow-Origin"), Some("*"));
+        assert!(
+            hears(stream, format, EAR_PATIENCE),
+            "the {mount} output plays the tone"
+        );
+    }
+}
+
+#[test]
+fn an_output_of_a_station_off_air_is_404() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    assert_eq!(status_of(get_output(addr, "morning", "opus")), 404);
+    // A mount no station has is 404 on the air or off it, as is an output of another
+    // station.
+    let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    let _evening = on_air(addr, "evening", EVENING_KEY, Tone::Ogg);
+    assert_eq!(status_of(get_output(addr, "morning", "low")), 404);
+    assert_eq!(status_of(get_output(addr, "evening", "opus")), 404);
+}
+
+#[test]
+fn the_pushed_mount_is_served_as_pushed() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    let pusher = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    let (opus, head) = get_output(addr, "morning", "opus");
+    assert_eq!(head.status, 200);
+    let opus = Drain::start(opus);
+
+    let (mut listener, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    let deadline = Instant::now() + PATIENCE;
+    let mut heard = Vec::new();
+    let mut buf = [0; 4096];
+    while pages(&heard).len() < 100 {
+        assert!(Instant::now() < deadline, "the stream stalled");
+        let n = listener.read(&mut buf).unwrap();
+        assert!(n > 0, "the stream ended early");
+        heard.extend_from_slice(&buf[..n]);
+    }
+    let sent = pusher.sent();
+    for page in pages(&heard) {
+        assert!(
+            sent.windows(page.len()).any(|window| window == page),
+            "a /stream listener got a page the source never sent"
+        );
+    }
+    assert!(opus.bytes() > 0, "the output was transcoded meanwhile");
+}
+
+#[test]
+fn the_stats_list_the_pushed_mount_first_then_the_outputs() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Mp3 { rate: 48_000 });
+    // The outputs are listed once they have begun.
+    wait_for_sources(addr, 3);
+    let (stream, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    let _pushed = Drain::start(stream);
+    let (stream, head) = get_output(addr, "morning", "opus");
+    assert_eq!(head.status, 200);
+    let _opus = Drain::start(stream);
+    assert_eq!(
+        status_of(set_title(
+            addr,
+            "morning",
+            "Paper Lanterns",
+            Some(MORNING_KEY)
+        )),
+        200
+    );
+
+    let listed = wait_for_sources(addr, 3);
+    let urls: Vec<&str> = listed
+        .iter()
+        .map(|source| source["listenurl"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://radio.example.test/morning/stream",
+            "https://radio.example.test/morning/opus",
+            "https://radio.example.test/morning/mp3",
+        ]
+    );
+    // The bitrates: the source's Ice-Bitrate, then each output's own.
+    let bitrates: Vec<u64> = listed
+        .iter()
+        .map(|source| source["bitrate"].as_u64().expect("a bitrate"))
+        .collect();
+    assert_eq!(bitrates, [96, 64, 128]);
+    let listeners: Vec<u64> = listed
+        .iter()
+        .map(|source| source["listeners"].as_u64().unwrap())
+        .collect();
+    assert_eq!(listeners, [1, 1, 0]);
+    let types: Vec<&str> = listed
+        .iter()
+        .map(|source| source["server_type"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, ["audio/mpeg", "audio/ogg", "audio/mpeg"]);
+    for source in &listed {
+        assert_eq!(source["title"], "Paper Lanterns", "{source}");
+        assert_eq!(source["server_name"], "Cloud Signal FM", "{source}");
+    }
+    // The listener page still finds the pushed mount.
+    assert_eq!(
+        source_entry(&stats(addr), "morning").unwrap()["listenurl"],
+        "https://radio.example.test/morning/stream"
+    );
+    assert_eq!(
+        entry(&stats(addr), "morning", "mp3").unwrap()["bitrate"],
+        128
+    );
+}
+
+#[test]
+fn a_station_s_limit_covers_its_outputs() {
+    let server = with_outputs(2);
+    let addr = server.local_addr();
+    let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    wait_for_sources(addr, 3);
+    let (opus, head) = get_output(addr, "morning", "opus");
+    assert_eq!(head.status, 200);
+    let _opus = Drain::start(opus);
+    let (pushed, head) = get(addr, "morning");
+    assert_eq!(head.status, 200);
+    let _pushed = Drain::start(pushed);
+
+    for mount in ["stream", "opus", "mp3"] {
+        let (mut refused, head) = get_output(addr, "morning", mount);
+        assert_eq!(head.status, 503, "a third listener on /morning/{mount}");
+        let body = read_to_end_within(&mut refused, PATIENCE);
+        assert!(
+            String::from_utf8_lossy(&body).contains("as many listeners"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+}
+
+#[test]
+fn outputs_of_a_44_1_khz_source_say_why_they_are_off() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Mp3 { rate: 44_100 });
+    for mount in ["opus", "mp3"] {
+        let (mut refused, head) = get_output(addr, "morning", mount);
+        assert_eq!(head.status, 503, "/morning/{mount}");
+        let body = String::from_utf8(read_to_end_within(&mut refused, PATIENCE)).unwrap();
+        assert!(body.contains("44100"), "{body}");
+        assert!(body.contains("48000"), "{body}");
+        assert!(!body.to_lowercase().contains("ok"), "{body}");
+    }
+    let listed = sources(&stats(addr)).clone();
+    assert_eq!(
+        listed.len(),
+        1,
+        "only the pushed mount is listed: {listed:?}"
+    );
+    assert_eq!(
+        listed[0]["listenurl"],
+        "https://radio.example.test/morning/stream"
+    );
+    // The pushed stream is still served.
+    assert_eq!(status_of(get(addr, "morning")), 200);
+}
+
+#[test]
+fn an_output_that_has_not_begun_says_so() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    // A source that sends nothing: its outputs never begin.
+    let (_source, head) = push(addr, "morning", MORNING_KEY, "audio/ogg");
+    assert_eq!(head.status, 200);
+    let started = Instant::now();
+    let (mut waiting, head) = get_output(addr, "morning", "opus");
+    assert_eq!(head.status, 503);
+    let body = String::from_utf8(read_to_end_within(&mut waiting, PATIENCE)).unwrap();
+    assert!(body.contains("starting"), "{body}");
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "the output was given time to begin"
+    );
+    let listed = sources(&stats(addr)).clone();
+    assert_eq!(
+        listed.len(),
+        1,
+        "only the pushed mount is listed: {listed:?}"
+    );
+}
+
+/// Sends a keyed request with `method` to `path`, with `key`, and gives its status.
+fn keyed(addr: SocketAddr, method: &str, path: &str, key: &str) -> u16 {
+    let mut stream = client(addr);
+    write!(
+        stream,
+        "{method} {path} HTTP/1.0\r\nHost: radio.example.test\r\n{}Content-Type: audio/ogg\r\n\r\n",
+        basic(key)
+    )
+    .unwrap();
+    read_head(&mut stream).status
+}
+
+#[test]
+fn a_push_to_an_output_path_is_not_a_keyed_request() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    for _ in 0..6 {
+        assert_eq!(
+            keyed(addr, "PUT", "/morning/opus", "invented-wrong-key"),
+            404
+        );
+        assert_eq!(
+            keyed(addr, "SOURCE", "/morning/mp3", "invented-wrong-key"),
+            404
+        );
+        let query = "mount=%2Fmorning%2Fopus&mode=updinfo&song=Echo";
+        assert_eq!(
+            status_of(metadata_query(addr, query, Some("invented-wrong-key"))),
+            404
+        );
+    }
+    // Not even the right key makes an output path a source route.
+    assert_eq!(keyed(addr, "PUT", "/morning/opus", MORNING_KEY), 404);
+    assert_eq!(
+        status_of(push(addr, "morning", MORNING_KEY, "audio/ogg")),
+        200
+    );
+}
+
+#[test]
+fn a_new_source_right_after_the_old_one_is_heard_on_the_outputs() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    let old = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    let (stream, head) = get_output(addr, "morning", "mp3");
+    assert_eq!(head.status, 200);
+    assert!(hears(stream, Format::Mp3, EAR_PATIENCE));
+
+    // The old source leaves and a new one, in another format, comes at once.
+    drop(old);
+    let source = push_when_free(addr, "morning", MORNING_KEY, "audio/mpeg");
+    let _new = Pusher::start(source, Tone::Mp3 { rate: 48_000 });
+    for (mount, format) in [("opus", Format::Ogg), ("mp3", Format::Mp3)] {
+        let (stream, head) = get_output(addr, "morning", mount);
+        assert_eq!(
+            head.status, 200,
+            "/morning/{mount} after the new source came"
+        );
+        assert!(
+            hears(stream, format, EAR_PATIENCE),
+            "the {mount} output plays the new source"
+        );
+    }
+}
+
+#[test]
+fn stop_returns_with_outputs_being_listened_to() {
+    let server = with_outputs(10);
+    let addr = server.local_addr();
+    let _pusher = on_air(addr, "morning", MORNING_KEY, Tone::Ogg);
+    let mut listeners = Vec::new();
+    for mount in ["opus", "mp3"] {
+        let (mut stream, head) = get_output(addr, "morning", mount);
+        assert_eq!(head.status, 200);
+        let mut byte = [0];
+        stream.read_exact(&mut byte).expect("the output sends");
+        listeners.push(stream);
+    }
+
+    let started = Instant::now();
+    server.stop();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "stop took too long"
+    );
+    for listener in &mut listeners {
+        read_to_end_within(listener, Duration::from_secs(2));
+    }
 }

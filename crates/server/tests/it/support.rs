@@ -1,10 +1,13 @@
 //! Helpers the integration tests share: plain HTTP requests and replies, the public stats,
-//! and TLS certificate files.
+//! decoding a served stream, and TLS certificate files.
 
 use base64::Engine;
+use radio_server::{Decoded, Format, ListenerCap, Mount, SourceDecoder};
 use serde_json::Value;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long a test waits for something that should happen at once.
@@ -110,7 +113,12 @@ pub(crate) fn sources(stats: &Value) -> &Vec<Value> {
 
 /// The stats entry of `/<slug>/stream`, found as the listener page finds it.
 pub(crate) fn source_entry(stats: &Value, slug: &str) -> Option<Value> {
-    let path = format!("/{slug}/stream");
+    entry(stats, slug, "stream")
+}
+
+/// The stats entry of `/<slug>/<mount>`, found by the end of its `listenurl`.
+pub(crate) fn entry(stats: &Value, slug: &str, mount: &str) -> Option<Value> {
+    let path = format!("/{slug}/{mount}");
     sources(stats)
         .iter()
         .find(|source| {
@@ -120,6 +128,53 @@ pub(crate) fn source_entry(stats: &Value, slug: &str) -> Option<Value> {
                 .ends_with(&path)
         })
         .cloned()
+}
+
+/// Decodes a stream a server sends on `stream` (its reply head already read) with the
+/// server's own decoder, until the tone is heard: true if it is within `limit`, false if
+/// the stream ends or the time runs out first.
+pub(crate) fn hears(stream: TcpStream, format: Format, limit: Duration) -> bool {
+    // A mount of the test's own relays the bytes, as the server's transcoder reads them.
+    let mount = Mount::new(ListenerCap::new(1));
+    let mut guard = mount
+        .begin(format, "Morning Station".into(), None)
+        .expect("a fresh mount takes a source");
+    let listener = mount.listen().expect("the relay is live");
+    let stop = Arc::new(AtomicBool::new(false));
+    let relay = {
+        let stop = Arc::clone(&stop);
+        let mut stream = stream;
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + limit;
+            let mut buf = [0; 4096];
+            // Dropping the guard at the end ends the decoder below.
+            while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => guard.write(&buf[..n]),
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                    Err(_) => break,
+                }
+            }
+        })
+    };
+    let heard = match SourceDecoder::open(listener, Arc::clone(&stop)) {
+        Ok(mut decoder) => {
+            let mut samples = Vec::new();
+            loop {
+                samples.clear();
+                match decoder.next(&mut samples) {
+                    Ok(Decoded::Audio) if samples.iter().any(|s| s.abs() > 0.01) => break true,
+                    Ok(Decoded::Audio) => {}
+                    Ok(_) | Err(_) => break false,
+                }
+            }
+        }
+        Err(_) => false,
+    };
+    stop.store(true, Ordering::Release);
+    relay.join().unwrap();
+    heard
 }
 
 /// A certificate for 127.0.0.1 and its key, written as PEM files in a directory of their

@@ -23,7 +23,7 @@ pub use key::{hash_key, key_matches, new_key};
 pub use lockout::Lockout;
 pub use mount::{ListenError, Listener, ListenerCap, Mount, MountStats, Received, SourceGuard};
 pub use server::{Server, ServerHandle, Timeouts};
-pub use stats::status_json;
+pub use stats::{StatsEntry, status_json};
 pub use transcode::{Outputs, Refusal, Transcoder, spawn};
 
 /// Why the server could not start or do what it was asked.

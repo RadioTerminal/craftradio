@@ -1,18 +1,20 @@
 //! The server: a TCP port, one thread per connection, and the routes of a mount — a
 //! station's keyed source push in, its public listeners out, and the keyed title update
-//! an MP3 source sends as it would to Icecast — and the public stats of every live mount.
+//! an MP3 source sends as it would to Icecast — the station's re-encoded outputs, and the
+//! public stats of every live mount.
 //! With a certificate and key in the config every connection is TLS (see [`crate::conn`]).
 
 use crate::ServerError;
 use crate::addr::{canonical, limit_key};
-use crate::config::{Config, Station};
+use crate::config::{Config, Output, Station};
 use crate::conn::{Conn, server_config};
 use crate::framing::Format;
 use crate::http::{HttpError, Request, client_addr, read_request, respond};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
-use crate::mount::{ListenError, ListenerCap, Mount, Received};
-use crate::stats::status_json;
+use crate::mount::{ListenError, Listener, ListenerCap, Mount, Received, SourceGuard};
+use crate::stats::{StatsEntry, status_json};
+use crate::transcode::{Outputs, Refusal, Transcoder, spawn};
 use rustls::ServerConfig;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
@@ -39,6 +41,10 @@ const RESERVED_PER_STATION: usize = 2;
 /// How many connections from one address may be still sending their request head (or
 /// TLS handshake) at a time. Not applied to the trusted proxy, which every client shares.
 const HEADS_PER_ADDRESS: usize = 8;
+/// How long a listener of an output waits for it to begin, once its station is on the air.
+const OUTPUT_START_WAIT: Duration = Duration::from_secs(2);
+/// How often that listener looks.
+const OUTPUT_START_POLL: Duration = Duration::from_millis(20);
 /// How long [`ServerHandle::stop`] waits for connection threads to finish.
 const STOP_WAIT: Duration = Duration::from_secs(2);
 /// The most of a refused request's rest that is read and thrown away (see
@@ -112,12 +118,7 @@ impl Server {
         let mounts = config
             .stations
             .iter()
-            .map(|station| {
-                (
-                    station.slug.clone(),
-                    Mount::new(ListenerCap::new(station.max_stream_listeners)),
-                )
-            })
+            .map(|station| (station.slug.clone(), StationMounts::new(station)))
             .collect();
         let public_connections = config
             .stations
@@ -234,7 +235,7 @@ struct Shared {
     timeouts: Timeouts,
     /// Set when the config names a certificate: every connection is then TLS.
     tls: Option<Arc<ServerConfig>>,
-    mounts: HashMap<String, Arc<Mount>>,
+    mounts: HashMap<String, StationMounts>,
     lockout: Lockout,
     stopping: AtomicBool,
     connections: Mutex<Connections>,
@@ -244,6 +245,42 @@ struct Shared {
     max_connections: usize,
     /// How many of them may hold anything but a station's reserved place.
     public_connections: usize,
+}
+
+/// A station's mounts: the stream it pushes and its re-encoded outputs, all under the
+/// station's one listener limit.
+struct StationMounts {
+    pushed: Arc<Mount>,
+    outputs: Arc<Outputs>,
+}
+
+impl StationMounts {
+    fn new(station: &Station) -> StationMounts {
+        let cap = ListenerCap::new(station.max_stream_listeners);
+        StationMounts {
+            pushed: Mount::new(Arc::clone(&cap)),
+            outputs: Outputs::new(&station.outputs, &cap),
+        }
+    }
+}
+
+/// A live source: the pushed mount's guard and the transcoder reading it. The transcoder
+/// is a field before the guard, so on every way out of [`source`] (unwinding included) it
+/// is finished, and its outputs ended, before the guard frees the mount for a new source.
+struct OnAir {
+    transcoder: Option<Transcoder>,
+    guard: SourceGuard,
+}
+
+impl OnAir {
+    /// Ends the outputs, then the pushed stream.
+    fn end(self) {
+        let OnAir { transcoder, guard } = self;
+        if let Some(transcoder) = transcoder {
+            transcoder.finish();
+        }
+        drop(guard);
+    }
 }
 
 /// The open connections, so `stop` can close them, and what limits them.
@@ -594,28 +631,51 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     if method == "GET" && request.path == "/status-json.xsl" {
         return stats(shared, stream);
     }
-    let Some((station, mount)) = station_at(shared, &request.path) else {
-        return refuse(stream, 404, "Not Found", &[CORS], b"not found");
-    };
-    if method == "GET" {
-        listen(shared, stream, mount);
-    } else {
-        source(shared, stream, peer, request, station, mount);
+    if let Some((station, mounts)) = station_at(shared, &request.path) {
+        return if method == "GET" {
+            listen(shared, stream, &mounts.pushed);
+        } else {
+            source(shared, stream, peer, request, station, mounts);
+        };
     }
+    // Only a listener may name an output: no key is looked at for one.
+    if method == "GET"
+        && let Some((mounts, output, mount)) = output_at(shared, &request.path)
+    {
+        return listen_output(shared, stream, mounts, output, mount);
+    }
+    refuse(stream, 404, "Not Found", &[CORS], b"not found")
 }
 
-/// The station and mount whose stream is at `path`.
-fn station_at<'a>(shared: &'a Shared, path: &str) -> Option<(&'a Station, &'a Arc<Mount>)> {
-    let slug = stream_slug(path)?;
+/// The station whose pushed stream is at `path`, and its mounts. The one place a key is
+/// taken: an output's path is never a station's here.
+fn station_at<'a>(shared: &'a Shared, path: &str) -> Option<(&'a Station, &'a StationMounts)> {
+    let (slug, "stream") = split_path(path)? else {
+        return None;
+    };
     let station = shared.config.station(slug)?;
-    let mount = shared.mounts.get(slug)?;
-    Some((station, mount))
+    let mounts = shared.mounts.get(slug)?;
+    Some((station, mounts))
 }
 
-/// The slug of `/<slug>/stream`.
-fn stream_slug(path: &str) -> Option<&str> {
-    let (slug, rest) = path.strip_prefix('/')?.split_once('/')?;
-    (rest == "stream" && !slug.is_empty()).then_some(slug)
+/// The output at `path`, `/<slug>/<mount>`, with its station's mounts and its own mount.
+fn output_at<'a>(
+    shared: &'a Shared,
+    path: &str,
+) -> Option<(&'a StationMounts, &'a Output, &'a Arc<Mount>)> {
+    let (slug, name) = split_path(path)?;
+    let mounts = shared.mounts.get(slug)?;
+    let (output, mount) = mounts
+        .outputs
+        .each()
+        .find(|(output, _)| output.mount == name)?;
+    Some((mounts, output, mount))
+}
+
+/// The slug and mount of `/<slug>/<mount>`, both one non-empty path segment.
+fn split_path(path: &str) -> Option<(&str, &str)> {
+    let (slug, mount) = path.strip_prefix('/')?.split_once('/')?;
+    (!slug.is_empty() && !mount.is_empty() && !mount.contains('/')).then_some((slug, mount))
 }
 
 fn source(
@@ -624,7 +684,7 @@ fn source(
     peer: IpAddr,
     request: &Request,
     station: &Station,
-    mount: &Arc<Mount>,
+    mounts: &StationMounts,
 ) {
     if !authorized(shared, stream, peer, request, station) {
         return;
@@ -646,9 +706,13 @@ fn source(
         .filter(|name| !name.is_empty())
         .unwrap_or(&station.name)
         .to_owned();
+    // Only a whole number: anything else gives no bitrate.
+    let kbps = request
+        .header("Ice-Bitrate")
+        .and_then(|kbps| kbps.parse::<u32>().ok());
     // Taken before the reply, so a listener who comes the moment the source has its 200
     // finds the source live.
-    let Some(mut guard) = mount.begin(format, name, None) else {
+    let Some(guard) = mounts.pushed.begin(format, name, kbps) else {
         return refuse(
             stream,
             403,
@@ -656,6 +720,11 @@ fn source(
             &[],
             b"this mount already has a source",
         );
+    };
+    let mut on_air = OnAir {
+        transcoder: (!mounts.outputs.is_empty())
+            .then(|| spawn(Arc::clone(&mounts.pushed), Arc::clone(&mounts.outputs))),
+        guard,
     };
     if stream.write_all(b"HTTP/1.0 200 OK\r\n\r\n").is_err()
         || stream.flush().is_err()
@@ -669,14 +738,14 @@ fn source(
     while !shared.stopping() {
         match stream.read(&mut buffer) {
             Ok(0) => break,
-            Ok(read) => guard.write(buffer.get(..read).unwrap_or_default()),
+            Ok(read) => on_air.guard.write(buffer.get(..read).unwrap_or_default()),
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             // A read timeout is the source's silence: it is gone.
             Err(_) => break,
         }
     }
-    // Dropping the guard ends the stream for every listener and frees the mount.
-    drop(guard);
+    // Ends the outputs, then the stream for every listener, and frees the mount.
+    on_air.end();
 }
 
 /// Checks the station key of a keyed request, and answers the request itself when it is
@@ -731,7 +800,7 @@ fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request)
             b"the request names no mount",
         );
     };
-    let Some((station, mount)) = station_at(shared, path) else {
+    let Some((station, mounts)) = station_at(shared, path) else {
         return refuse(stream, 404, "Not Found", &[], b"not found");
     };
     if !authorized(shared, stream, peer, request, station) {
@@ -750,7 +819,7 @@ fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request)
         return refuse(stream, 400, "Bad Request", &[], b"the request has no song");
     };
     // The mount cuts it to 512 characters.
-    if !mount.set_title(song.to_owned()) {
+    if !mounts.pushed.set_title(song.to_owned()) {
         return refuse(
             stream,
             400,
@@ -769,20 +838,46 @@ fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request)
 }
 
 /// `GET /status-json.xsl`: public and unkeyed, for the listener page's "now playing".
+/// Each station's pushed mount comes first, then its outputs in config order, so the page,
+/// which falls back to the first entry, finds the pushed stream. An output carries the
+/// pushed mount's title and artist; one whose source is refused is left out.
 fn stats(shared: &Shared, stream: &mut Conn) {
-    let mounts: Vec<_> = shared
-        .config
-        .stations
-        .iter()
-        .filter_map(|station| {
-            let mut stats = shared.mounts.get(&station.slug)?.stats();
-            if stats.name.is_empty() {
-                stats.name.clone_from(&station.name);
-            }
-            Some((station.slug.clone(), stats))
-        })
-        .collect();
-    let body = status_json(&shared.config.public_url, &mounts);
+    let mut entries = Vec::new();
+    for station in &shared.config.stations {
+        let Some(mounts) = shared.mounts.get(&station.slug) else {
+            continue;
+        };
+        let mut pushed = mounts.pushed.stats();
+        if pushed.name.is_empty() {
+            pushed.name.clone_from(&station.name);
+        }
+        let outputs: Vec<StatsEntry> = if mounts.outputs.refusal().is_some() {
+            Vec::new()
+        } else {
+            mounts
+                .outputs
+                .each()
+                .map(|(output, mount)| {
+                    let mut stats = mount.stats();
+                    if stats.name.is_empty() {
+                        stats.name.clone_from(&pushed.name);
+                    }
+                    stats.title.clone_from(&pushed.title);
+                    stats.artist.clone_from(&pushed.artist);
+                    StatsEntry {
+                        path: format!("{}/{}", station.slug, output.mount),
+                        stats,
+                    }
+                })
+                .collect()
+        };
+        entries.push(StatsEntry {
+            path: format!("{}/stream", station.slug),
+            stats: pushed,
+        });
+        entries.extend(outputs);
+    }
+    let body = status_json(&shared.config.public_url, &entries);
     let _ = respond(
         stream,
         200,
@@ -796,31 +891,100 @@ fn stats(shared: &Shared, stream: &mut Conn) {
     );
 }
 
-/// A listener's stream. Each chunk must reach the client within
-/// [`Timeouts::listener_write`]; a listener that falls further behind than its queue holds
-/// is dropped by the mount and ended at once, so a slow reader frees its connection thread.
+/// A listener of a station's pushed stream.
 fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>) {
-    let listener = match mount.listen() {
-        Ok(listener) => listener,
-        Err(ListenError::NoSource) => {
-            return refuse(
-                stream,
-                404,
-                "Not Found",
-                &[CORS],
-                b"this station is not on the air",
-            );
-        }
-        Err(ListenError::Full) => {
+    match mount.listen() {
+        Ok(listener) => play(shared, stream, &listener),
+        Err(ListenError::NoSource) => off_air(stream),
+        Err(ListenError::Full) => full(stream),
+    }
+}
+
+/// A listener of one of a station's outputs. With the station on the air but the output
+/// not begun yet (its transcoder is still reading the source's first audio), it waits up
+/// to [`OUTPUT_START_WAIT`] for it. Outputs that can't run are refused with the reason.
+fn listen_output(
+    shared: &Shared,
+    stream: &mut Conn,
+    mounts: &StationMounts,
+    output: &Output,
+    mount: &Arc<Mount>,
+) {
+    let deadline = Instant::now()
+        .checked_add(OUTPUT_START_WAIT)
+        .unwrap_or_else(Instant::now);
+    loop {
+        if let Some(refusal) = mounts.outputs.refusal() {
             return refuse(
                 stream,
                 503,
                 "Service Unavailable",
                 &[CORS],
-                b"this station has as many listeners as it allows",
+                refused(refusal).as_bytes(),
             );
         }
-    };
+        match mount.listen() {
+            Ok(listener) => return play(shared, stream, &listener),
+            Err(ListenError::Full) => return full(stream),
+            Err(ListenError::NoSource) => {}
+        }
+        if !mounts.pushed.stats().live {
+            return off_air(stream);
+        }
+        // Stopping has closed the connection already.
+        if shared.stopping() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let body = format!(
+                "the {} output ({} kbit/s) is starting and not playing yet; try again in a moment",
+                output.format.name(),
+                output.kbps
+            );
+            return refuse(stream, 503, "Service Unavailable", &[CORS], body.as_bytes());
+        }
+        std::thread::sleep(OUTPUT_START_POLL);
+    }
+}
+
+/// Why a station's outputs are off, in words.
+fn refused(refusal: Refusal) -> String {
+    match refusal {
+        Refusal::Unsupported { rate, channels } => format!(
+            "this station's outputs are off: its source sends {rate} Hz audio in {channels} \
+             channel(s), and the outputs need 48000 Hz stereo; the stream it pushes is still \
+             at its stream path"
+        ),
+        Refusal::Unreadable => "this station's outputs are off: its source's audio can't be \
+                                decoded; the stream it pushes is still at its stream path"
+            .to_owned(),
+    }
+}
+
+fn off_air(stream: &mut Conn) {
+    refuse(
+        stream,
+        404,
+        "Not Found",
+        &[CORS],
+        b"this station is not on the air",
+    );
+}
+
+fn full(stream: &mut Conn) {
+    refuse(
+        stream,
+        503,
+        "Service Unavailable",
+        &[CORS],
+        b"this station has as many listeners as it allows",
+    );
+}
+
+/// A listener's stream. Each chunk must reach the client within
+/// [`Timeouts::listener_write`]; a listener that falls further behind than its queue holds
+/// is dropped by the mount and ended at once, so a slow reader frees its connection thread.
+fn play(shared: &Shared, stream: &mut Conn, listener: &Listener) {
     let head = format!(
         "HTTP/1.0 200 OK\r\nContent-Type: {}\r\nCache-Control: no-cache, no-store\r\n\
          Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
