@@ -78,22 +78,33 @@ pub(crate) fn set(
     name: String,
     logo: Option<PathBuf>,
 ) {
+    let _ = set_with(brand, errors, name, logo, load_picture);
+}
+
+/// [`set`] with the step that loads the logo given. Returns the thread that loads it.
+fn set_with(
+    brand: &SharedBrand,
+    errors: &PictureErrors,
+    name: String,
+    logo: Option<PathBuf>,
+    load: impl FnOnce(&Path) -> Result<Picture, String> + Send + 'static,
+) -> Option<std::thread::JoinHandle<()>> {
     let generation = {
-        let Ok(mut b) = brand.lock() else { return };
+        let Ok(mut b) = brand.lock() else { return None };
         b.generation += 1;
         b.name = Some(name.clone());
         b.generation
     };
     let Some(path) = logo else {
         store(brand, generation, name, None);
-        return;
+        return None;
     };
     let brand = brand.clone();
     let errors = errors.clone();
-    let _ = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("webrtc-brand".into())
         .spawn(move || {
-            let picture = match load_picture(&path) {
+            let picture = match load(&path) {
                 Ok(p) => Some(p),
                 Err(reason) => {
                     // A newer brand replaced this one, and its logo is no one's concern.
@@ -105,7 +116,8 @@ pub(crate) fn set(
                 }
             };
             store(&brand, generation, name, picture);
-        });
+        })
+        .ok()
 }
 
 fn store(brand: &SharedBrand, generation: u64, name: String, logo: Option<Picture>) {
@@ -156,8 +168,12 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
         }
         _ => NOT_A_PICTURE.to_owned(),
     })?;
-    // A page that passes the logo on sends it in one burst, so it has to stay small. A
-    // picture that is too detailed shrinks until it fits.
+    fit(&picture, MAX_ENCODED)
+}
+
+/// Encodes the picture in at most `max_bytes`. A picture that is too detailed shrinks until
+/// it fits, because a page that passes the logo on sends it in one burst.
+fn fit(picture: &image::DynamicImage, max_bytes: usize) -> Result<Picture, String> {
     let mut edge = MAX_EDGE.min(picture.width().max(picture.height()));
     loop {
         let scaled = if edge < picture.width().max(picture.height()) {
@@ -166,7 +182,7 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
             picture.clone()
         };
         let encoded = encode(&scaled)?;
-        if encoded.data.len() <= MAX_ENCODED {
+        if encoded.data.len() <= max_bytes {
             return Ok(encoded);
         }
         edge = edge * 3 / 4;
@@ -406,24 +422,68 @@ mod tests {
         encode(image, ImageFormat::Png)
     }
 
+    /// Sets a brand with a logo that loads when the test says so. Returns the thread and the
+    /// sender that releases the loader with its answer.
+    fn slow_brand(
+        brand: &SharedBrand,
+        errors: &PictureErrors,
+        name: &str,
+    ) -> (
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Sender<Result<Picture, String>>,
+    ) {
+        let (release, wait) = std::sync::mpsc::channel();
+        let thread = set_with(
+            brand,
+            errors,
+            name.into(),
+            Some(PathBuf::from("slow.png")),
+            move |_| wait.recv().unwrap(),
+        )
+        .unwrap();
+        (thread, release)
+    }
+
     #[test]
-    fn a_newer_brand_wins_over_a_slow_one() {
-        let dir = Scratch::new("newer");
+    fn a_newer_brand_wins_over_a_slow_one_that_fails() {
         let brand = SharedBrand::default();
         let errors = PictureErrors::default();
-        set(
-            &brand,
-            &errors,
-            "First".into(),
-            Some(dir.0.join("none.png")),
-        );
+        let (thread, release) = slow_brand(&brand, &errors, "First");
         set(&brand, &errors, "Second".into(), None);
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        release.send(Err("slow".into())).unwrap();
+        thread.join().unwrap();
         let b = brand.lock().unwrap();
         assert_eq!(b.name.as_deref(), Some("Second"));
         assert!(b.logo.is_none());
         assert!(b.messages[0].contains("Second"), "{:?}", b.messages);
-        assert!(errors.lock().unwrap().len() <= 1);
+        assert!(errors.lock().unwrap().is_empty(), "the old logo's error");
+    }
+
+    #[test]
+    fn a_newer_brand_wins_over_a_slow_one_that_loads() {
+        let brand = SharedBrand::default();
+        let errors = PictureErrors::default();
+        let (thread, release) = slow_brand(&brand, &errors, "First");
+        set(&brand, &errors, "Second".into(), None);
+        let old = Picture {
+            mime: "image/png".into(),
+            data: vec![1, 2, 3],
+        };
+        release.send(Ok(old)).unwrap();
+        thread.join().unwrap();
+        let b = brand.lock().unwrap();
+        assert_eq!(b.name.as_deref(), Some("Second"));
+        assert!(b.logo.is_none(), "the old logo came back");
+        assert!(b.messages[0].contains("Second"), "{:?}", b.messages);
+    }
+
+    #[test]
+    fn a_picture_that_cannot_fit_says_so() {
+        let noise = DynamicImage::ImageRgb8(RgbImage::from_fn(300, 300, |x, y| {
+            image::Rgb([(x * 7 + y * 13) as u8, (x ^ y) as u8, (x * y) as u8])
+        }));
+        let reason = fit(&noise, 100).unwrap_err();
+        assert_eq!(reason, "the picture is too detailed to send to listeners");
     }
 
     #[test]
