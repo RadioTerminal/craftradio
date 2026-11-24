@@ -696,3 +696,139 @@ fn a_station_link_carries_the_public_stream_the_page_falls_back_to() {
         "the stream address is escaped as one value: {value}"
     );
 }
+
+fn brands(texts: &[String]) -> Vec<serde_json::Value> {
+    texts
+        .iter()
+        .filter_map(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .filter(|v| v["type"] == "brand")
+        .collect()
+}
+
+/// A file in a folder of its own that goes away with the test.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(test: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("radio-stream-it-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn file(&self, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = self.0.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn brand_is_served_before_anything_plays() {
+    let (server, running, feed) = relay_station(false);
+    let addr = server.local_addr().unwrap();
+    let (code, _, _) = http(addr, "GET", "/brand", "");
+    assert_eq!(code, 404, "no brand before set_brand");
+    server.set_brand("Radio Lipa".into(), None);
+    let (code, head, body) = http(addr, "GET", "/brand", "");
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert_eq!(code, 200, "{body}");
+    assert!(head.to_ascii_lowercase().contains("application/json"));
+    let brand: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(brand["name"], "Radio Lipa");
+    assert!(brand["logo"].is_null());
+    let (code, _, _) = http(addr, "POST", "/brand", "");
+    assert_eq!(code, 405);
+}
+
+#[test]
+fn a_listener_of_an_idle_station_gets_the_brand() {
+    let (server, running, feed) = relay_station(false);
+    server.set_brand("Radio Lipa".into(), None);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    let texts = page.until("the brand", |_, texts| !brands(texts).is_empty());
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let brand = &brands(&texts)[0];
+    assert_eq!(brand["name"], "Radio Lipa");
+    assert!(brand["logo"].is_null());
+}
+
+#[test]
+fn a_changed_brand_reaches_a_connected_listener_once() {
+    let (server, running, feed) = relay_station(false);
+    server.set_brand("Radio Lipa".into(), None);
+    let mut page = Page::connect(server.local_addr().unwrap());
+    page.until("the first brand", |_, texts| !brands(texts).is_empty());
+    server.set_brand("Radio Hrast".into(), None);
+    let until = Instant::now() + Duration::from_millis(600);
+    let texts = page.until("the changed brand", |_, texts| {
+        !brands(texts).is_empty() && Instant::now() >= until
+    });
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let got = brands(&texts);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["name"], "Radio Hrast");
+}
+
+#[test]
+fn a_bad_logo_sends_the_name_and_reports_why() {
+    let dir = Scratch::new("bad-logo");
+    let path = dir.file("logo.png", b"this is not a picture");
+    let (server, running, feed) = relay_station(false);
+    server.set_brand("Radio Lipa".into(), Some(path.clone()));
+    let mut page = Page::connect(server.local_addr().unwrap());
+    let texts = page.until("the brand", |_, texts| !brands(texts).is_empty());
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    let brand = &brands(&texts)[0];
+    assert_eq!(brand["name"], "Radio Lipa");
+    assert!(brand["logo"].is_null(), "a bad logo is not sent");
+    let errors = server.take_picture_errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].path, path);
+    assert!(!errors[0].reason.is_empty());
+    assert!(
+        server.take_picture_errors().is_empty(),
+        "taking drains the list"
+    );
+}
+
+#[test]
+fn a_bad_item_picture_is_reported_once_for_one_set() {
+    let dir = Scratch::new("bad-cover");
+    let path = dir.file("cover.png", b"this is not a picture");
+    let (server, running, feed) = relay_station(false);
+    // The picture is on air and in the history too, which also asks for its thumbnail.
+    let played = Played {
+        title: "Paper Boats".into(),
+        artist: "The Quiet Few".into(),
+        at: jiff::Timestamp::now(),
+        file: Some(path.clone()),
+    };
+    server.set_now(
+        "Paper Boats".into(),
+        "The Quiet Few".into(),
+        Some(path.clone()),
+        &[played],
+    );
+    let mut errors = Vec::new();
+    let until = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < until {
+        errors.extend(server.take_picture_errors());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    running.store(false, Ordering::Relaxed);
+    feed.join().unwrap();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].path, path);
+}

@@ -6,6 +6,7 @@
 //! NAT, for remote listeners. Without one, a public STUN server tells it.
 //! There is no TURN, so a listener behind a strict NAT does not connect.
 
+use crate::brand::{PictureErrors, SharedBrand};
 use crate::now::SharedNow;
 use crate::{OpusEncoder, StreamError};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -169,6 +170,8 @@ pub struct WebRtcHandle {
     control: mpsc::Sender<Control>,
     status: Arc<Mutex<WebRtcStatus>>,
     now: SharedNow,
+    brand: SharedBrand,
+    errors: PictureErrors,
     http: Option<SocketAddr>,
     threads: Vec<thread::JoinHandle<()>>,
 }
@@ -182,7 +185,7 @@ impl WebRtcHandle {
     }
     /// Sets the title that `GET /now` gives to the listener page.
     pub fn set_title(&self, title: String) {
-        crate::now::set(&self.now, title, String::new(), None, &[]);
+        crate::now::set(&self.now, title, String::new(), None, &[], &self.errors);
     }
 
     /// Sets what plays now, and what played before it, newest first. Listeners get the
@@ -194,7 +197,22 @@ impl WebRtcHandle {
         file: Option<std::path::PathBuf>,
         history: &[crate::now::Played],
     ) {
-        crate::now::set(&self.now, title, artist, file, history);
+        crate::now::set(&self.now, title, artist, file, history, &self.errors);
+    }
+
+    /// Sets the station name and logo that listeners get in `brand` messages and from
+    /// `GET /brand`. A thread reads the logo file. A logo that cannot be used goes to
+    /// [`take_picture_errors`](Self::take_picture_errors), and the brand goes out without it.
+    pub fn set_brand(&self, name: String, logo: Option<std::path::PathBuf>) {
+        crate::brand::set(&self.brand, &self.errors, name, logo);
+    }
+
+    /// The pictures that could not be used since the last call: the logo and item pictures.
+    pub fn take_picture_errors(&self) -> Vec<crate::PictureError> {
+        self.errors
+            .lock()
+            .map(|mut e| std::mem::take(&mut *e))
+            .unwrap_or_default()
     }
     /// The bound TCP address, when the server could bind it.
     pub fn local_addr(&self) -> Option<SocketAddr> {
@@ -267,10 +285,14 @@ impl WebRtcServer {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(WebRtcStatus::Starting));
         let title: SharedNow = Arc::default();
+        let brand: SharedBrand = Arc::default();
+        let errors: PictureErrors = Arc::default();
         let mut handle = WebRtcHandle {
             control: tx.clone(),
             status: status.clone(),
             now: title.clone(),
+            brand: brand.clone(),
+            errors,
             http: None,
             threads: Vec::new(),
         };
@@ -308,6 +330,7 @@ impl WebRtcServer {
             taken: taken.clone(),
             pending: pending.clone(),
             title: title.clone(),
+            brand: brand.clone(),
             relays: relays.clone(),
             blocks: crate::packets::Blocks::new(
                 cfg.identity
@@ -351,6 +374,7 @@ impl WebRtcServer {
         let http_state = Http {
             gate,
             title,
+            brand,
             public_stream: cfg.public_stream.clone(),
             busy: Arc::new(AtomicUsize::new(0)),
         };
@@ -397,6 +421,10 @@ struct Listener {
     channel: Option<ChannelId>,
     /// The revision of [`Now`](crate::now::Now) in the outbox.
     sent_rev: u64,
+    /// The revision of the brand that went to the outbox.
+    sent_brand: u64,
+    /// Brand messages that wait for room in the data channel. They go before the outbox.
+    brand_out: VecDeque<String>,
     /// Messages that wait for room in the data channel.
     outbox: VecDeque<crate::now::Message>,
     /// Keys of the thumbnails that the listener has. Each goes out once.
@@ -467,6 +495,7 @@ struct Media {
     taken: Arc<AtomicUsize>,
     pending: Pending,
     title: SharedNow,
+    brand: SharedBrand,
     relays: Arc<AtomicUsize>,
     blocks: crate::packets::Blocks,
     hello: String,
@@ -631,8 +660,13 @@ impl Media {
                 .lock()
                 .map(|n| (n.rev, n.messages.clone()))
                 .unwrap_or_default();
+            let (brand_rev, brand_messages) = self
+                .brand
+                .lock()
+                .map(|b| (b.rev, b.messages.clone()))
+                .unwrap_or_default();
             for l in &mut listeners {
-                l.send_now(&self.hello, rev, &messages);
+                l.send_now(&self.hello, rev, &messages, brand_rev, &brand_messages);
             }
             let now_mapped = mapped.lock().ok().and_then(|m| *m);
             if now_mapped != forwarded {
@@ -772,8 +806,19 @@ impl Listener {
     }
 
     /// Queues what plays now when it changed, and sends as much as the channel takes.
-    fn send_now(&mut self, hello: &str, rev: u64, messages: &[crate::now::Message]) {
+    fn send_now(
+        &mut self,
+        hello: &str,
+        rev: u64,
+        messages: &[crate::now::Message],
+        brand_rev: u64,
+        brand: &[String],
+    ) {
         let Some(id) = self.channel else { return };
+        if self.sent_brand != brand_rev {
+            self.sent_brand = brand_rev;
+            self.brand_out = brand.iter().cloned().collect();
+        }
         if self.sent_rev != rev {
             self.sent_rev = rev;
             self.outbox = messages
@@ -797,20 +842,32 @@ impl Listener {
             }
             self.blocks_out.pop_front();
         }
-        while let Some(m) = self.outbox.front() {
+        loop {
+            let from_brand = !self.brand_out.is_empty();
+            let (text, key) = match self.brand_out.front() {
+                Some(t) => (t.as_str(), None),
+                None => match self.outbox.front() {
+                    Some(m) => (m.text.as_str(), m.key.as_ref()),
+                    None => break,
+                },
+            };
             // All channels of a connection share one send buffer (128 KiB in str0m). What
             // plays now waits while it holds half of it, so the audio still finds room.
             let held = ch.buffered_amount();
-            if self.audio.is_some() && held > 0 && held + m.text.len() > NOW_BUFFERED {
+            if self.audio.is_some() && held > 0 && held + text.len() > NOW_BUFFERED {
                 break;
             }
-            if !ch.write(false, m.text.as_bytes()).unwrap_or(false) {
+            if !ch.write(false, text.as_bytes()).unwrap_or(false) {
                 break;
             }
-            if let Some(key) = &m.key {
+            if let Some(key) = key {
                 self.sent_thumbs.insert(key.clone());
             }
-            self.outbox.pop_front();
+            if from_brand {
+                self.brand_out.pop_front();
+            } else {
+                self.outbox.pop_front();
+            }
         }
     }
 
@@ -845,6 +902,8 @@ impl Listener {
                         self.channel = Some(id);
                         self.greeted = false;
                         self.sent_rev = 0;
+                        self.sent_brand = 0;
+                        self.brand_out.clear();
                         self.sent_thumbs.clear();
                     }
                     Event::ChannelClose(id) if self.channel == Some(id) => {
@@ -1057,6 +1116,7 @@ pub(crate) struct Gate {
 struct Http {
     gate: Gate,
     title: SharedNow,
+    brand: SharedBrand,
     public_stream: Option<String>,
     /// HTTP requests in progress.
     busy: Arc<AtomicUsize>,
@@ -1136,6 +1196,15 @@ impl Http {
                     .unwrap_or_default();
                 Response::text(200, &title)
             }
+            ("GET", "/brand") => match crate::brand::brand_json(&self.brand) {
+                Some(body) => Response {
+                    code: 200,
+                    content_type: "application/json",
+                    location: None,
+                    body: body.into_bytes(),
+                },
+                None => Response::text(404, "no brand"),
+            },
             // The public Icecast stream, for the page this station serves.
             ("GET", "/stream") => match &self.public_stream {
                 Some(url) => Response::text(200, url),
@@ -1150,7 +1219,9 @@ impl Http {
                 let _ = self.gate.control.send(Control::Remove(token.to_owned()));
                 Response::text(200, "")
             }
-            (_, "/" | "/now" | "/stream" | "/whep") => Response::text(405, "method not allowed"),
+            (_, "/" | "/now" | "/brand" | "/stream" | "/whep") => {
+                Response::text(405, "method not allowed")
+            }
             _ => Response::text(404, "not found"),
         }
     }
@@ -1296,6 +1367,8 @@ impl Gate {
                     greeted: false,
                     reported: 0,
                     sent_rev: 0,
+                    sent_brand: 0,
+                    brand_out: VecDeque::new(),
                     outbox: VecDeque::new(),
                     sent_thumbs: HashSet::new(),
                 };

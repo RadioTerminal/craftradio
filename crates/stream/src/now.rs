@@ -5,6 +5,7 @@
 //! listener each. The cover on air follows in `cover` messages of [`PART`] bytes each,
 //! because browsers refuse large messages.
 
+use crate::brand::{PictureError, PictureErrors, load_picture};
 use base64::Engine;
 use serde_json::json;
 use std::collections::HashMap;
@@ -14,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Raw cover bytes per message. In base64 one part stays far below 256 KiB.
-const PART: usize = 48 * 1024;
+pub(crate) const PART: usize = 48 * 1024;
 /// The station sends no cover that is larger than this.
 const MAX_COVER: usize = 2 * 1024 * 1024;
 /// The edge of a history thumbnail, in pixels.
@@ -123,6 +124,7 @@ pub(crate) fn set(
     artist: String,
     file: Option<PathBuf>,
     history: &[Played],
+    errors: &PictureErrors,
 ) {
     let history = history.to_vec();
     let (rev, missing) = {
@@ -144,10 +146,22 @@ pub(crate) fn set(
         return;
     }
     let now = now.clone();
+    let errors = errors.clone();
     let _ = thread::Builder::new()
         .name("webrtc-cover".into())
         .spawn(move || {
-            let cover = file.as_deref().and_then(read_cover);
+            let cover = file.as_deref().and_then(|f| match read_cover(f) {
+                Ok(cover) => cover,
+                Err(reason) => {
+                    if let Ok(mut list) = errors.lock() {
+                        list.push(PictureError {
+                            path: f.to_path_buf(),
+                            reason,
+                        });
+                    }
+                    None
+                }
+            });
             let made: Vec<(PathBuf, Option<Thumb>)> = missing
                 .into_iter()
                 .map(|f| (f.clone(), thumb(&f)))
@@ -191,7 +205,8 @@ pub fn cover_messages(title: &str, artist: &str, id: u64, mime: &str, data: &[u8
 
 /// A small JPEG of the cover of `path`, for the history. `None` when it has no cover.
 fn thumb(path: &Path) -> Option<Thumb> {
-    let (_, data) = read_cover(path)?;
+    // The cover thread reports a picture file that fails, so this stays quiet.
+    let (_, data) = read_cover(path).ok()??;
     let image = image::load_from_memory(&data).ok()?;
     let small = image.thumbnail(THUMB_PX, THUMB_PX).to_rgb8();
     let mut jpeg = Vec::new();
@@ -206,8 +221,23 @@ fn thumb(path: &Path) -> Option<Thumb> {
     })
 }
 
+/// The cover of `path`. A PNG, JPEG or WebP file is its own cover. An audio file gives its
+/// front cover, or its first picture, and `Ok(None)` when it has none. An image file that
+/// cannot be used gives the reason.
+pub(crate) fn read_cover(path: &Path) -> Result<Option<(String, Vec<u8>)>, String> {
+    let is_image = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["png", "jpg", "jpeg", "webp"]
+            .iter()
+            .any(|i| e.eq_ignore_ascii_case(i))
+    });
+    if is_image {
+        return load_picture(path).map(|p| Some((p.mime, p.data)));
+    }
+    Ok(read_tag_cover(path))
+}
+
 /// The front cover of an audio file, or its first picture.
-pub(crate) fn read_cover(path: &Path) -> Option<(String, Vec<u8>)> {
+fn read_tag_cover(path: &Path) -> Option<(String, Vec<u8>)> {
     use lofty::file::TaggedFileExt;
     use lofty::picture::PictureType;
     let file = lofty::read_from_path(path).ok()?;

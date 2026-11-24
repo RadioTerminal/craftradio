@@ -1,4 +1,5 @@
 //! Threaded MP3 and Ogg/Opus output, WebRTC listening, and HTTP radio input. All samples use interleaved stereo at 48 kHz.
+mod brand;
 mod input;
 mod meter;
 #[cfg(feature = "mp3")]
@@ -9,6 +10,7 @@ mod packets;
 mod relay;
 mod upnp;
 mod webrtc;
+pub use brand::{Picture, PictureError, brand_messages, load_picture};
 pub use input::*;
 pub use meter::{LEVEL_FLOOR_DB, LevelMeter};
 pub use now::{Played, cover_messages, history_message};
