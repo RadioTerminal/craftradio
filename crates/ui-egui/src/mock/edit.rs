@@ -700,6 +700,7 @@ impl MockSource {
                 if let Some(l) = self.library.iter_mut().find(|l| l.id == id) {
                     l.meta.keep_alive = Some(keep_alive);
                     l.meta.gain_trim_db = None;
+                    l.meta.markers = None;
                 }
                 self.add_to(&playlist, &[id], at)
             }

@@ -84,3 +84,29 @@ fn the_metadata_editor_has_a_gain_trim() {
     harness.run_steps(FRAMES);
     assert!(shows(&harness, "Gain trim"));
 }
+
+/// The metadata editor of one file has its intro and outro markers, and says who set them.
+#[test]
+fn the_metadata_editor_has_the_intro_and_outro_markers() {
+    let mut harness = harness();
+    let row = harness
+        .query_all_by_label_contains(ROW)
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the row");
+    row.click_secondary();
+    harness.run_steps(FRAMES);
+    harness
+        .query_all_by_label_contains("Edit metadata")
+        .next()
+        .expect("menu row")
+        .click();
+    harness.run_steps(FRAMES);
+    assert!(
+        harness.query_by_label("Intro ends").is_some(),
+        "no intro field"
+    );
+    assert!(
+        harness.query_by_label("Outro starts").is_some(),
+        "no outro field"
+    );
+}

@@ -755,6 +755,22 @@ impl EngineSource {
                 {
                     cmds.push(Command::ItemSetGainTrim { item, db });
                 }
+                let timing = self.items.get(&item).and_then(|(_, i)| i.timing.clone());
+                if let (Some(m), Some(t)) = (meta.markers.filter(|m| m.by_hand && file), timing) {
+                    let secs = |s: Option<f32>| s.map(std::time::Duration::from_secs_f32);
+                    let (intro_end, outro_start) = (secs(m.intro_end_s), secs(m.outro_start_s));
+                    if t.markers != radio_model::MarkerSource::ByHand
+                        || t.intro_end != intro_end
+                        || t.outro_start != outro_start
+                    {
+                        cmds.push(Command::ItemSetMarkers {
+                            item,
+                            intro_end,
+                            outro_start,
+                            markers: radio_model::MarkerSource::ByHand,
+                        });
+                    }
+                }
             }
         }
         self.run_batch(cmds)?;

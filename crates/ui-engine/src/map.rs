@@ -77,6 +77,14 @@ pub(crate) fn view_meta(item: &Item, m: &radio_model::ItemMeta, trim: Option<f32
             Source::File { .. } => trim,
             _ => None,
         },
+        markers: match (&item.source, &item.timing) {
+            (Source::File { .. }, Some(t)) => Some(radio_ui_egui::view::Markers {
+                intro_end_s: t.intro_end.map(|d| d.as_secs_f32()),
+                outro_start_s: t.outro_start.map(|d| d.as_secs_f32()),
+                by_hand: t.markers == radio_model::MarkerSource::ByHand,
+            }),
+            _ => None,
+        },
     }
 }
 

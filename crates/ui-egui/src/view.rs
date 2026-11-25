@@ -267,6 +267,19 @@ pub struct ItemMeta {
     /// For a file of the station: the manual gain trim in dB, on top of the loudness gain.
     /// `None` for other items.
     pub gain_trim_db: Option<f32>,
+    /// For a file with cue points: where its intro ends and its outro starts. `None` for
+    /// other items.
+    pub markers: Option<Markers>,
+}
+
+/// Where a song's intro ends and its outro starts, in seconds from the file start. An item
+/// of a playlist that plays over the music lies on one of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Markers {
+    pub intro_end_s: Option<f32>,
+    pub outro_start_s: Option<f32>,
+    /// A person set them; otherwise the analysis found them (or has not run yet).
+    pub by_hand: bool,
 }
 
 /// Who starts the next item: the schedule, the operator with help, or the operator alone.

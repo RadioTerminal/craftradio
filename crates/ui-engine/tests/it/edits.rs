@@ -333,3 +333,32 @@ fn a_trim_from_the_metadata_editor_reaches_the_engine() {
     });
     assert_eq!(view.rows[0].meta.gain_trim_db, Some(-2.5));
 }
+
+/// Markers set in the metadata editor go to the engine as set by hand, and read back.
+#[test]
+fn markers_from_the_metadata_editor_reach_the_engine_as_set_by_hand() {
+    use radio_ui_egui::view::Markers;
+    let dir = dir();
+    let path = wav(&dir, "marked", 20.0);
+    let (mut source, clock) = source(vec![track(1, "Amber Wire", &path, 20.0)]);
+    let view = wait_for(&mut source, &clock, |v| !v.rows.is_empty());
+    let row = view.rows[0].clone();
+    let before = row.meta.markers.expect("a file row has markers to edit");
+    assert!(!before.by_hand);
+    let mut meta = row.meta.clone();
+    meta.markers = Some(Markers {
+        intro_end_s: Some(4.0),
+        outro_start_s: Some(15.0),
+        by_hand: true,
+    });
+    let target = radio_ui_egui::view::MetaTarget::Row(row.id);
+    assert_eq!(source.edit(Edit::SetMeta(vec![(target, meta)])), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        v.rows
+            .first()
+            .and_then(|r| r.meta.markers)
+            .is_some_and(|m| m.by_hand)
+    });
+    let m = view.rows[0].meta.markers.unwrap();
+    assert_eq!((m.intro_end_s, m.outro_start_s), (Some(4.0), Some(15.0)));
+}
