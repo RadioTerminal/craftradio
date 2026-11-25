@@ -55,8 +55,9 @@ My calls, from the builder check:
   jingle never runs into the next song.
 - **A trimmed host** (`trim > 0`, cut before a fixed event) takes no outro jingle: its end
   is not its outro.
-- **Fixed and locked entries** of an Over playlist play in sequence, as today. Their time is
-  what matters; laying them over music is a later step.
+- **Fixed entries** of an Over playlist play in sequence, as today. Their time is what
+  matters; laying them over music is a later step. Locked entries (every item added by hand
+  is locked) still lie over the music, at the handover where the plan put them.
 - **Rules and constraints.** If pulling an item out of the flow would make two neighbours
   break a `NotAdjacent…` constraint, the item stays in sequence. Rules keep counting an over
   item as played, as today.
@@ -96,8 +97,8 @@ My calls, from the builder check:
   plan where fixed events still fit).
   Rules keep counting an over item as played for between-tracks rules and separation
   constraints, as today.
-- **Audio.** Reserve the last cart slot for playlist over items (the cartwall gets one
-  fewer; the config value stays the total). Firing a cart or an over item with a duck below
+- **Audio.** The mixer gets one cart slot past the wall's for playlist over items (the
+  wall keeps all its slots). Firing a cart or an over item with a duck below
   0 dB sends `Duck { db, attack, release }` at the same frame and `Unduck` when the last
   ducking cart on the bus ends (a count in the mixer, not one per cart). When ducking carts
   overlap, the deepest duck of those still playing wins (my call). Attack and release
