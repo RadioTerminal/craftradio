@@ -452,7 +452,7 @@ pub(crate) struct Core {
     pub(crate) history: PlayHistory,
     pub(crate) slots: [Option<Slot>; 4],
     next_deck: usize,
-    next_tag: u64,
+    pub(crate) next_tag: u64,
     pub(crate) next_seek: u64,
     /// Items that failed to load, with the time of the failure.
     pub(crate) broken: BTreeMap<ItemId, Timestamp>,
@@ -516,7 +516,8 @@ pub(crate) struct Core {
     pub(crate) log: LogHandle,
     pub(crate) work: Workers,
     /// Rows of items that ended before the writer returned their row id.
-    ended: BTreeMap<u64, (Timestamp, LogStatus)>,
+    pub(crate) ended: BTreeMap<u64, (Timestamp, LogStatus)>,
+    pub(crate) over: crate::over::OverPlayer,
     /// Hard entries seen within the preload time. The planner drops a late one from the
     /// timeline, but playout still finds it here.
     hard_seen: Vec<Entry>,
@@ -551,7 +552,8 @@ impl Core {
     pub(crate) fn new(mut engine: Engine, cfg: PlayoutConfig) -> Result<Core, PlayoutError> {
         let engine_rx = engine.events();
         let log = engine.log_handle()?;
-        let carts = Carts::new(cfg.mixer.cart_slots);
+        // The last cart slot plays over items; the cartwall has the others.
+        let carts = Carts::new(cfg.mixer.cart_slots.saturating_sub(1));
         let meters = crate::OutputMeters::default();
         // Icecast always has a tap, so settings that come while playout runs can use it.
         let tap = 1 + usize::from(cfg.webrtc.is_some());
@@ -676,6 +678,7 @@ impl Core {
             log,
             work: Workers::new(),
             ended: BTreeMap::new(),
+            over: crate::over::OverPlayer::default(),
             hard_seen: Vec::new(),
             blocked: Vec::new(),
             last_station: None,
@@ -940,6 +943,7 @@ impl Core {
         self.make_room_for_soft();
         self.load_ahead(now);
         self.cue_starts(now);
+        self.sync_over(now);
         self.cue_ends(now);
         self.check_streams(now);
         self.check_dead_air(now);
@@ -2083,6 +2087,11 @@ impl Core {
                 Done::Folder(files) => self.on_folder(files, now),
                 Done::Analysed(id, timing) => self.on_analysed(id, timing),
                 Done::Measured(id, measured) => self.on_measured(id, measured),
+                Done::Cart(i, item, result)
+                    if crate::over::over_slot(self.cfg.mixer.cart_slots) == Some(i) =>
+                {
+                    self.on_over_clip(i, item, result)
+                }
                 Done::Cart(i, item, result) => self.on_cart(i, item, result, now),
             }
         }

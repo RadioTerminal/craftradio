@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 /// Where on its host an over item lies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Side {
     /// From the host's start, over its intro.
     Intro,
@@ -61,7 +61,9 @@ impl<'a> Lookup<'a> {
 
     /// The duck depth of an entry that may play over the music.
     fn over_duck(&self, e: &Entry) -> Option<i16> {
-        if e.fixed.is_some() || e.locked {
+        // A fixed entry keeps its time in sequence. A locked one (added by hand) still lies
+        // over the music at the handover where the plan put it.
+        if e.fixed.is_some() {
             return None;
         }
         match self.playlists.get(&e.playlist)?.plays {
@@ -220,6 +222,53 @@ pub(crate) fn settle(
         tl.entries.insert(at, e);
     }
     (keep, went_back)
+}
+
+/// Nothing is woven between pinned entries (the songs on the decks), so the over items
+/// that the previous plan laid on a pinned song carry over to this plan. Playout moves a
+/// pinned song to where it really starts (after a pause, say), so the host is the pinned
+/// entry of the same item, and the over item follows its start.
+pub(crate) fn keep_pinned(tl: &mut Timeline, prev: &Timeline, pinned: &[Entry]) {
+    for o in &prev.over {
+        let Some(host) = pinned
+            .iter()
+            .filter(|p| p.item == o.over.host)
+            .min_by_key(|p| p.start.duration_since(o.over.host_start).unsigned_abs())
+        else {
+            continue;
+        };
+        // The pinned entry must be the airing the over item lay on, not a later one of the
+        // same song: of the previous plan's airings, the one nearest the pinned entry.
+        let airing = prev
+            .entries
+            .iter()
+            .filter(|e| e.item == host.item)
+            .min_by_key(|e| e.start.duration_since(host.start).unsigned_abs());
+        if airing.is_none_or(|a| a.start != o.over.host_start) {
+            continue;
+        }
+        let taken = tl.over.iter().any(|n| {
+            n.over.host == host.item
+                && n.over.side == o.over.side
+                && n.over.host_start == host.start
+        });
+        if taken
+            || !tl
+                .entries
+                .iter()
+                .any(|e| e.item == host.item && e.start == host.start)
+        {
+            continue;
+        }
+        let mut kept = o.clone();
+        kept.over.host_start = host.start;
+        kept.entry.start = host.start + kept.over.offset;
+        // A fresh placement on the same host and side gives way to the one that stays.
+        tl.over
+            .retain(|n| !(n.over.host == host.item && n.over.side == o.over.side));
+        tl.over.push(kept);
+    }
+    tl.over.sort_by_key(|o| o.entry.start);
 }
 
 /// Sets each over entry's start from its host's final start.

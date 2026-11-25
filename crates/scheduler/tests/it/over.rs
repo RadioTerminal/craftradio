@@ -223,6 +223,17 @@ fn a_trimmed_song_takes_no_outro_id() {
 }
 
 #[test]
+fn a_locked_id_still_lies_over_the_music() {
+    let mut locked = ids(8, 1);
+    for i in &mut locked.items {
+        i.locked = true;
+    }
+    let tl = run(&station("UTC", vec![songs(Some(15), Some(160)), locked]));
+    assert!(!tl.over.is_empty());
+    assert_eq!(in_sequence(&tl), 0);
+}
+
+#[test]
 fn a_fixed_id_plays_in_sequence_at_its_time() {
     let mut fixed = ids(8, 1);
     fixed.rules = vec![Rule {
@@ -245,4 +256,37 @@ fn a_fixed_id_plays_in_sequence_at_its_time() {
         .find(|e| e.playlist == IDS)
         .expect("the id is planned");
     assert!(id.fixed.is_some());
+}
+
+/// Songs on the decks are pinned, and nothing is woven between pinned entries. An over
+/// item that the previous plan laid on a pinned song stays on it.
+#[test]
+fn an_id_on_a_pinned_song_stays_in_the_next_plan() {
+    let st = station("UTC", vec![songs(Some(15), Some(160)), ids(8, 1)]);
+    let first = run(&st);
+    let o = first.over.first().expect("an id over the music").clone();
+    let host_at = first
+        .entries
+        .iter()
+        .position(|e| e.item == o.over.host && e.start == o.over.host_start)
+        .unwrap();
+    let pinned: Vec<Entry> = first.entries[..=host_at].to_vec();
+    let history = PlayHistory::new();
+    let next = plan(
+        &PlanInput {
+            station: &st,
+            history: &history,
+            now: now(),
+            horizon: Duration::from_secs(3600),
+            pinned: &pinned,
+        },
+        &PlanOptions::default(),
+        Some(&first),
+    );
+    assert!(
+        next.over
+            .iter()
+            .any(|n| n.over.host == o.over.host && n.over.host_start == o.over.host_start),
+        "the id on the pinned song is gone"
+    );
 }

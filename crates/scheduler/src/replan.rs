@@ -131,7 +131,7 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         return plan_flow(input, opts, prev);
     }
     // The previous plan's over entries count where they were for keeping its order.
-    let prev = prev.map(|p| {
+    let folded = prev.map(|p| {
         let mut p = p.clone();
         for o in std::mem::take(&mut p.over) {
             let at = p.entries.partition_point(|x| x.start <= o.entry.start);
@@ -139,18 +139,20 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         }
         p
     });
-    let mut tl = plan_flow(input, opts, prev.as_ref());
+    let mut tl = plan_flow(input, opts, folded.as_ref());
     let look = over::Lookup::new(input.station);
     let placed = over::place(&mut tl, &look);
-    if placed.is_empty() {
-        return tl;
-    }
-    refit(&mut tl, input);
-    let (keep, went_back) = over::settle(&mut tl, &look, placed);
-    if went_back {
+    if !placed.is_empty() {
         refit(&mut tl, input);
+        let (keep, went_back) = over::settle(&mut tl, &look, placed);
+        if went_back {
+            refit(&mut tl, input);
+        }
+        tl.over = keep;
     }
-    tl.over = keep;
+    if let Some(prev) = prev {
+        over::keep_pinned(&mut tl, prev, input.pinned);
+    }
     over::anchor(&mut tl);
     tl
 }

@@ -389,9 +389,15 @@ impl Core {
         self.dirty = true;
     }
 
-    /// Gives file items without cue points the timing that analysis found. It queues
-    /// analysis on the workers for each new file item without timing.
+    /// Gives file items without cue points the timing that analysis found, and items with
+    /// cue points but no markers the markers it found. It queues analysis on the workers
+    /// for each such item it has not asked for yet.
     pub(crate) fn apply_analysis(&mut self, station: &mut radio_model::Station) {
+        // Markers matter only to a playlist that plays over the music.
+        let wants_markers = station
+            .playlists
+            .iter()
+            .any(|p| matches!(p.plays, radio_model::PlayMode::Over { .. }));
         for item in station
             .playlists
             .iter_mut()
@@ -400,6 +406,32 @@ impl Core {
             let Source::File { path } = &item.source else {
                 continue;
             };
+            let unmarked = wants_markers
+                && item
+                    .timing
+                    .as_ref()
+                    .is_some_and(|t| t.markers == radio_model::MarkerSource::NotAnalysed);
+            if unmarked {
+                // Only the markers: the item keeps the cue points it has. They live in the
+                // plan's copy of the station, like the timing of a file without cue points.
+                match self.analysis.done.entry(item.id) {
+                    std::collections::btree_map::Entry::Occupied(found) => {
+                        if let (Some(found), Some(t)) = (found.get(), item.timing.as_mut()) {
+                            t.intro_end = found.intro_end;
+                            t.outro_start = found.outro_start;
+                            t.markers = found.markers;
+                        }
+                    }
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(None);
+                        let (id, path) = (item.id, path.clone());
+                        let analyse = self.cfg.analyse;
+                        self.work
+                            .run_slow(move || Done::Analysed(id, analyse(Path::new(&path))));
+                    }
+                }
+                continue;
+            }
             if item.timing.is_some() {
                 continue;
             }
