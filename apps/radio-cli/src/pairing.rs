@@ -11,8 +11,8 @@ use std::path::Path;
 use radio_engine::{Command, Engine};
 use radio_model::{OutputSpec, PairingOutput, SERVER_ADDRESS_KEY, SERVER_OUTPUTS_KEY, SERVER_PART};
 use radio_ui_engine::{
-    KEYCHAIN_SERVICE, KeyringStore, PairError, PutError, SecretStore, check_address, fetch_pairing,
-    mount_entry, paired_entry, put_outputs, server_entry,
+    KEYCHAIN_SERVICE, KeyringStore, PUSH_CHANGED, PairError, PutError, SecretStore, check_address,
+    fetch_pairing, mount_entry, paired_entry, put_outputs, server_entry,
 };
 
 /// The environment variable that may hold the station key.
@@ -338,6 +338,13 @@ pub(crate) fn set_outputs(db: &Path, typed: &[String]) -> Result<u8, String> {
         PutError::Unreachable(reason) => format!("unreachable: {reason}"),
         PutError::Refused(reason) => reason,
     })?;
+    // The key is stored only for the paired push: an answer naming another push would move
+    // the settings to a push with no key, so it is not applied.
+    let ice = &document.icecast;
+    let answered = mount_entry(&ice.user, &ice.host, ice.port, &ice.mount);
+    if paired_entry(engine.state()).as_deref() != Some(answered.as_str()) {
+        return Err(PUSH_CHANGED.to_owned());
+    }
     let listed = document.outputs.clone();
     engine
         .dispatch(Command::ServerPair { address, document })

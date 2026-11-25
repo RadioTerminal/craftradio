@@ -1171,10 +1171,10 @@ fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request)
 }
 
 /// `GET /status-json.xsl`: public and unkeyed, for the listener page's "now playing".
-/// Each station's pushed mount comes first, then its outputs in the order they were set, so the page,
-/// which falls back to the first entry, finds the pushed stream. An output carries the
-/// pushed mount's title and artist; one whose source is refused, or that failed, is left
-/// out.
+/// Each station's pushed mount comes first, then its outputs in the order they were set,
+/// so the page, which falls back to the first entry, finds the pushed stream. An output
+/// carries the pushed mount's title and artist; one whose source is refused, or that
+/// failed, is left out.
 fn stats(shared: &Shared, stream: &mut Conn) {
     let mut entries = Vec::new();
     for station in &shared.config.stations {

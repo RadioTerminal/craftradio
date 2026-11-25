@@ -53,6 +53,7 @@ config, `listen` must be `"0.0.0.0:8080"` (or another port you publish), not loo
 docker run --rm ghcr.io/radioterminal/craftradio-server key
 docker run -d --name craftradio-server --restart unless-stopped -p 8080:8080 \
   -v /etc/craftradio-server/config.toml:/etc/craftradio-server/config.toml:ro \
+  -v craftradio-state:/var/lib/craftradio-server \
   ghcr.io/radioterminal/craftradio-server
 ```
 
@@ -63,9 +64,9 @@ server's own TLS, mount the certificate and key read-only and point `tls_cert`/`
 at them inside the container. `packaging/server/Dockerfile` builds the same image locally.
 
 To let the app change outputs (see "Change outputs from the app"), set
-`state_dir = "/var/lib/craftradio-server"` in the config and add
-`-v craftradio-state:/var/lib/craftradio-server` to `docker run`. The image makes that
-directory writable by its user, and a named volume keeps it across container updates.
+`state_dir = "/var/lib/craftradio-server"` in the config; the
+`-v craftradio-state:/var/lib/craftradio-server` line above keeps that directory. The image
+makes it writable by its user, and the named volume keeps it across container updates.
 
 ## Make a station key
 
@@ -270,8 +271,8 @@ Server › Outputs, or `craftradio-cli outputs`). The server saves them as
   file to go back to the config. A saved file the server can't read, or a `state_dir` that
   is not a directory, stops the server at start with a message naming it.
 - **Who may change them:** only the holder of the station's key, for that station only.
-  The same limits as in the config apply (at most 8 outputs, the mount and bitrate rules
-  above); a list that breaks them is refused with the reason and nothing changes.
+  The config's mount and bitrate rules above apply, and a list has at most 8 outputs; a
+  list that breaks them is refused with the reason and nothing changes.
 - **Listeners of a changed output reconnect.** The push and `/<slug>/stream` keep playing.
   Listeners of the outputs are cut off when the list changes, and a player that reconnects
   gets the new list.

@@ -534,6 +534,16 @@ pub(crate) struct Rotating {
 
 impl Rotating {
     pub(crate) fn start(key: &str) -> Self {
+        Self::serving(key, false)
+    }
+
+    /// [`Rotating::start`] for a server that keeps a `state_dir`: its document says the
+    /// station may set its outputs.
+    pub(crate) fn editable(key: &str) -> Self {
+        Self::serving(key, true)
+    }
+
+    fn serving(key: &str, outputs_editable: bool) -> Self {
         use std::io::{Read, Write};
         use std::sync::atomic::Ordering;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -553,7 +563,9 @@ impl Rotating {
             me.refused.clone(),
             me.open.clone(),
         );
-        let document = serde_json::to_string(&document_for(&address)).unwrap();
+        let mut document = document_for(&address);
+        document.outputs_editable = outputs_editable;
+        let document = serde_json::to_string(&document).unwrap();
         std::thread::spawn(move || {
             for mut conn in listener.incoming().flatten() {
                 connections.fetch_add(1, Ordering::SeqCst);

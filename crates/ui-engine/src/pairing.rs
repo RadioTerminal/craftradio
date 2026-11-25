@@ -24,6 +24,9 @@ use crate::{EngineSource, SecretStore};
 /// What the strip, the status bar and the alarm say while the paired server refuses the key.
 pub(crate) const KEY_REFUSED: &str =
     "the server refused the station key; pair again with the new key";
+/// Why a save's answer is not applied when the server answered with another push than the
+/// paired one: its key is not stored, so the station pairs again.
+pub const PUSH_CHANGED: &str = "the server's push changed; pair again";
 /// The whole fetch of the pairing document, connection included, takes at most this long.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A connection to the server takes at most this long.
@@ -862,6 +865,13 @@ impl EngineSource {
         let document = match answer.result {
             Ok(document) => document,
             Err(e) => {
+                if matches!(e, PutError::KeyRefused) {
+                    // The paired server refused the stored key, as a pairing try would: the
+                    // page says so, and neither the push nor another Save walks its lockout.
+                    self.pairing.state = PairState::KeyRefused;
+                    self.pairing.hold = Hold::Refused;
+                    self.sync_icecast(true);
+                }
                 self.pairing.outputs_state = OutputsState::Failed(match e {
                     PutError::KeyRefused => KEY_REFUSED.to_owned(),
                     PutError::Unreachable(reason) => format!("server unreachable: {reason}"),
@@ -870,6 +880,14 @@ impl EngineSource {
                 return;
             }
         };
+        // The key is stored only for the paired push: an answer naming another push would
+        // move the settings to a push with no key, so it is not applied.
+        let ice = &document.icecast;
+        let answered = crate::icecast::mount_entry(&ice.user, &ice.host, ice.port, &ice.mount);
+        if paired_entry(&self.state).as_deref() != Some(answered.as_str()) {
+            self.pairing.outputs_state = OutputsState::Failed(PUSH_CHANGED.to_owned());
+            return;
+        }
         let outputs = serde_json::to_value(&document.outputs).unwrap_or_default();
         let cmd = Command::ServerPair {
             address: answer.address,

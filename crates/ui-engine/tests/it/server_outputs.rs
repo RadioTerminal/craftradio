@@ -8,10 +8,11 @@ use crate::pairing::{
 };
 use radio_engine::Command;
 use radio_playout::Clock;
+use radio_server::{Config, Server, hash_key};
 use radio_ui_egui::view::{
     Edit, OUTPUTS_READ_ONLY, OutputRow, OutputsState, PairState, StreamFormat, ViewSource,
 };
-use radio_ui_engine::EngineSource;
+use radio_ui_engine::{EngineSource, PUSH_CHANGED, SecretStore, server_entry};
 use std::time::Duration;
 
 fn save(source: &mut EngineSource, rows: &[OutputRow]) -> Result<usize, String> {
@@ -236,5 +237,84 @@ fn save_is_refused_mid_pairing_and_after_a_refused_key() {
         rotated.refused(),
         refused,
         "the refused key was not sent again"
+    );
+}
+
+/// The server refuses the stored key to a Save: the page says the key was refused, not
+/// Paired, and a second Save sends nothing toward the server's lockout.
+#[test]
+fn a_save_the_server_refuses_the_key_to_stops_further_saves() {
+    let server = Rotating::editable(DAWN_KEY);
+    let (mut source, clock, store) = station();
+    assert_eq!(pair(&mut source, &server.address, DAWN_KEY), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired
+    });
+    assert!(view.pairing.outputs_editable);
+    // The key the server knows is no longer the one the station keeps for its address.
+    store
+        .set(&server_entry(&server.address), "invented-stale-key-7Kp3")
+        .unwrap();
+
+    let refused = server.refused();
+    assert_eq!(save(&mut source, &low_opus()), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        matches!(v.pairing.outputs_state, OutputsState::Failed(_))
+    });
+    assert!(server.refused() > refused, "the server refused the key");
+    assert_eq!(view.pairing.state, PairState::KeyRefused, "not Paired");
+
+    // Only the refusals are counted: the push, with the key it keeps, may still connect.
+    let refused = server.refused();
+    let reason = save(&mut source, &low_opus()).unwrap_err();
+    assert!(reason.contains("refused the station key"), "{reason}");
+    keep_snapshotting(&mut source, &clock, Duration::from_secs(1));
+    assert_eq!(
+        server.refused(),
+        refused,
+        "the refused key was not sent again"
+    );
+}
+
+/// The server answers a Save with another push than the one the station paired with (its
+/// public URL changed): the settings keep the paired push, whose key is stored, and the page
+/// says to pair again.
+#[test]
+fn a_save_answered_with_another_push_is_not_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let (server, address) = server_with(Some(dir.path()));
+    let (mut source, clock, _store) = station();
+    assert_eq!(pair(&mut source, &address, DAWN_KEY), Ok(1));
+    let before = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Paired
+    });
+    let port = server.local_addr().port();
+    drop(server);
+    // The same server on the same port, now naming its push by another host.
+    let config = format!(
+        "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://localhost:{port}\"\n\
+         state_dir = {:?}\n[[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\n\
+         key_hash = \"{}\"\n",
+        dir.path().display().to_string(),
+        hash_key(DAWN_KEY),
+    );
+    let _server = Server::start(Config::parse(&config).unwrap()).unwrap();
+
+    assert_eq!(save(&mut source, &low_opus()), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        v.pairing.outputs_state != OutputsState::Saving
+    });
+    assert_eq!(
+        view.pairing.outputs_state,
+        OutputsState::Failed(PUSH_CHANGED.to_owned())
+    );
+    assert_eq!(
+        setting(&view, "server", "push"),
+        setting(&before, "server", "push"),
+        "the settings keep the paired push"
+    );
+    assert_eq!(
+        setting(&view, "server", "outputs"),
+        setting(&before, "server", "outputs")
     );
 }
