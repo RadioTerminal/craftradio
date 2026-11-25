@@ -122,3 +122,46 @@ fn a_seek_for_another_item_fails() {
     let answer = reply.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(answer.is_err(), "the seek was taken: {answer:?}");
 }
+
+/// A seek forward by more than the item has played puts its start before a hard event
+/// that aired before it. That event is over: it must not cut the item again.
+#[test]
+fn a_seek_past_an_aired_hard_event_does_not_cut_the_item() {
+    let main: Vec<_> = (1..=3)
+        .map(|i| {
+            let path = wav(&format!("s-hard{i}"), 8.0, Side::Left);
+            file_item(i, &format!("Song {i}"), &path, 8.0, 7.5, 0.5)
+        })
+        .collect();
+    let mut engine = engine_with(main);
+    let mut news = file_item(10, "News", &wav("s-news", 1.0, Side::Right), 1.0, 1.0, 0.0);
+    news.movable = false;
+    news.trimmable = false;
+    add_playlist(
+        &mut engine,
+        "News",
+        vec![news],
+        r#"rule({at: {date: "2026-11-21", time: "13:00:02", repeat: "once"},
+                place: {fixed: "hard", tolerance: 1}, take: 1, constraints: []});"#,
+    );
+    let (p, clock) = offline(engine, |_| {});
+    // The event airs from 2 s to 3 s, then a song starts. At 4 s it has played for 1 s.
+    run(&p, &clock, 4.0);
+    let view = p.snapshot();
+    let (deck, item) = (0..4)
+        .find_map(|i| {
+            let d = &view.decks[i];
+            let on_air = d.phase == radio_playout::DeckPhase::Playing;
+            d.item.filter(|id| on_air && id.0 != 10).map(|id| (i, id.0))
+        })
+        .expect("a song is on air after the event");
+    let reply = p.send(seek(deck as u8, item, 4.0)).unwrap();
+    let after = run(&p, &clock, 2.0);
+    reply.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+
+    // The song has 3.5 s to its segue after the seek.
+    let quiet = (0..2 * SR - SR / 100)
+        .step_by(SR / 100)
+        .find(|&f| peak(&after, 0, f, f + SR / 100) < 0.01);
+    assert_eq!(quiet, None, "the song was cut after the seek");
+}

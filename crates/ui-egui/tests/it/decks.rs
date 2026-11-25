@@ -90,17 +90,23 @@ fn a_click_on_the_position_bar_moves_the_deck_on_air() {
     );
 }
 
-/// The Left key on the focused position bar moves the deck back.
+/// Left and Right on the focused position bar move the deck, and the bar keeps the focus.
 #[test]
-fn the_left_key_on_the_position_bar_moves_the_deck_back() {
+fn the_arrow_keys_on_the_position_bar_move_the_deck_and_keep_the_focus() {
     let mut h = app(Some(4));
     h.get_by_label("Deck A position").focus();
     h.run_steps(FRAMES);
-    h.key_press(egui::Key::ArrowLeft);
-    h.run_steps(FRAMES);
+    for key in [egui::Key::ArrowLeft, egui::Key::ArrowRight] {
+        h.key_press(key);
+        h.run_steps(FRAMES);
+        assert!(
+            h.get_by_label("Deck A position").is_focused(),
+            "{key:?} moved the focus off the bar"
+        );
+    }
     assert!(
         h.query_by_label_contains("deck A is at").is_some(),
-        "the key did not move deck A"
+        "the keys did not move deck A"
     );
 }
 

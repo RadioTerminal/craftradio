@@ -110,7 +110,11 @@ impl Core {
             Check::Fading { deck, tag } => slot(deck, tag).is_none_or(|s| s.fading),
             Check::Gone { deck, tag } => slot(deck, tag).is_none(),
             Check::Seeked { deck, tag, id } => {
-                slot(deck, tag).is_none_or(|s| s.seek.is_none_or(|(want, _)| want != id))
+                // The item left the deck, or its file did not open: the seek did not happen.
+                let Some(s) = slot(deck, tag).filter(|s| s.seek_failed != Some(id)) else {
+                    return Some(false);
+                };
+                s.seek.is_none_or(|(want, _)| want != id)
             }
         };
         yes.then_some(true)

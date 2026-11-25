@@ -792,6 +792,10 @@ fn progress(
     {
         state.scrub = None;
     }
+    // A deck that cannot seek any more lets go of the bar.
+    if !seekable && state.scrub.is_some_and(|s| s.deck == i) {
+        state.scrub = None;
+    }
     if seekable {
         let grab = rect.expand2(egui::vec2(0.0, size::PROGRESS_GRAB));
         let id = egui::Id::unique(("deck_position", i));
@@ -826,6 +830,12 @@ fn progress(
             actions.push(command(i, DeckCommand::Seek(to(frac))));
         }
         if resp.has_focus() {
+            // Left and Right move the position. They do not move the focus away.
+            let arrows = egui::EventFilter {
+                horizontal_arrows: true,
+                ..Default::default()
+            };
+            ui.memory_mut(|m| m.set_focus_lock_filter(id, arrows));
             let step = Duration::from_secs(SCRUB_STEP_S);
             let key = |k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
             let target = if key(egui::Key::ArrowLeft) {

@@ -218,6 +218,8 @@ pub(crate) struct Slot {
     pub(crate) offset: Duration,
     /// A seek that the mixer did not take yet: its id and its position from the cue-in.
     pub(crate) seek: Option<(u64, Duration)>,
+    /// The seek with this id did not happen: its file did not open.
+    pub(crate) seek_failed: Option<u64>,
     /// A worker still opens the file for `seek`.
     pub(crate) reopening: bool,
     /// A seek set `offset` before the start, so the entry still starts when the plan says
@@ -1712,6 +1714,7 @@ impl Core {
             capture: None,
             offset,
             seek: None,
+            seek_failed: None,
             reopening: false,
             seeked: false,
             fading: false,
@@ -1820,7 +1823,10 @@ impl Core {
                     .filter(|t| *t > start && *t < end)
                     .min()
             } else {
-                self.hard_between(&s.entry, start, end)
+                // After a seek forward the item starts, by its position, before it went on
+                // air. A hard event from before that is over, and does not cut it.
+                let from = s.aired.map_or(start, |aired| aired.max(start));
+                self.hard_between(&s.entry, from, end)
             };
             if !planned && hard.is_none() {
                 continue;
@@ -2085,6 +2091,7 @@ impl Core {
         if let Err(reason) = sent {
             if let Some(s) = &mut self.slots[i] {
                 s.seek = None;
+                s.seek_failed = Some(id);
             }
             let name = ['A', 'B', 'C', 'D'][i];
             let what = format!("Deck {name} keeps its position, the file did not open: {reason}");
