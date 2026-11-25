@@ -966,7 +966,7 @@ async function stop(message) {
   teardown();
   // The item is over: the station's name and logo show again, or what the server plays.
   cover = null; setNow("", ""); setCover(null);
-  if (watched) { serverTag = null; serverNow = { title: "", artist: "", at: 0, cover: null }; watchTick(); }
+  if (watched) { serverTag = null; serverNow = { title: "", artist: "", name: "", at: 0, cover: null }; watchTick(); }
   setIcon(false);
   say(message || "Stopped");
 }
@@ -1129,25 +1129,26 @@ async function statsTitle(url) {
     if (gotMeta || watched !== url) return;
     // Off air: the station's name, and nothing in the history.
     const title = s ? s.title || "" : "", artist = s ? s.artist || "" : "";
-    if (serverTitle(title, artist)) serverCover(url);
+    if (serverTitle(title, artist, s ? s.server_name || "" : "")) serverCover(url);
     setNow(title || (s && s.server_name) || "", artist);
   } catch (_) {}
 }
-// The history on the server's stream is made here: each title the stats name, once it gives
-// way to the next, with the cover it had. Over WebRTC the station sends its own. True when
-// the title changed.
-let serverNow = { title: "", artist: "", at: 0, cover: null };
+// The history on the server's stream is made here: each title the stats name, once another
+// title takes its place, with the cover it had. No title (the push dropped, or off air) ends
+// nothing, and an item that shows the station's name (a hidden title) stays out. Over WebRTC
+// the station sends its own. True when the title changed.
+let serverNow = { title: "", artist: "", name: "", at: 0, cover: null };
 const SERVER_PLAYED_MAX = 40;
-function serverTitle(title, artist) {
-  if (gotMeta || (title === serverNow.title && artist === serverNow.artist)) return false;
+function serverTitle(title, artist, name) {
+  if (gotMeta || !title || (title === serverNow.title && artist === serverNow.artist)) return false;
   const before = serverNow;
   // A cover first seen within the last poll (or the one there when the page opened) came
   // with this title, not the old one; an older cover goes with the old title.
   const leading = !!serverTag && (!before.title || Date.now() - serverTagSince < LEADING_COVER);
   if (leading && before.coverAt === serverTagSince) before.cover = null;
-  serverNow = { title, artist, at: Date.now(), cover: leading ? serverBlob : null, coverAt: serverTagSince };
+  serverNow = { title, artist, name, at: Date.now(), cover: leading ? serverBlob : null, coverAt: serverTagSince };
   if (!leading) { staleTag = serverTag; serverTag = serverBlob = null; if (coverUrl) setCover(null); }
-  if (!before.title) return true;
+  if (!before.title || before.title === before.name) return true;
   const entry = { title: before.title, artist: before.artist, at: before.at };
   if (before.cover) { entry.thumb = "server:" + before.at; thumbs.set(entry.thumb, URL.createObjectURL(before.cover)); }
   played.unshift(entry);

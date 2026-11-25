@@ -228,10 +228,10 @@ The routes the page and the app use:
 | `GET /<slug>/` (and `HEAD`) | no | The listener page. |
 | `GET /<slug>/stream` | no | The stream the app pushes. |
 | `GET /status-json.xsl` | no | Icecast-shaped stats: titles and listeners, CORS `*`. |
-| `GET /<slug>/cover` (and `HEAD`) | no | The cover of what plays, with its type, `Cache-Control: no-cache`, an `ETag`, new for each cover set even with the same bytes (304 to a matching `If-None-Match`), `nosniff` and CORS `*`; 404 with none. |
+| `GET /<slug>/cover` (and `HEAD`) | no | The cover of what plays, with its type, `Cache-Control: no-cache`, an `ETag`, new for each cover set even with the same bytes and across restarts (304 to a matching `If-None-Match`), `nosniff` and CORS `*`; 404 with none. |
 | `GET /api/station` | yes | The pairing document. |
 | `PUT /api/station/outputs` | yes | Replaces the outputs (see "Change outputs from the app"). |
-| `PUT /api/station/cover` | yes | Sets the cover: the image as the body, `Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB (413 above, 415 for another type, 411 without `Content-Length`); an empty body clears it. 204 when taken. |
+| `PUT /api/station/cover` | yes | Sets the cover: the image as the body, `Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB (413 above, 415 for another type, 411 without `Content-Length`, 409 while the station's push is not live); an empty body clears it. 204 when taken. |
 | `PUT` or `SOURCE /<slug>/stream` | yes | The push. |
 | `GET /admin/metadata` | yes | An MP3 push's title, as Icecast takes it. |
 

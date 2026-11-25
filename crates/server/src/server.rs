@@ -22,6 +22,7 @@ use crate::mount::{ListenError, Listener, ListenerCap, Mount, Received, SourceGu
 use crate::pairing::{Document, PublicUrl};
 use crate::stats::{StatsEntry, status_json};
 use crate::transcode::{Outputs, Refusal, Transcoder, spawn};
+use ring::rand::SecureRandom as _;
 use rustls::ServerConfig;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
@@ -70,6 +71,11 @@ const NO_STATE_DIR: &[u8] = b"this server keeps no state_dir: outputs are set in
 /// How long the body of `PUT /api/station/cover` may take to arrive: up to [`MAX_COVER`]
 /// bytes from a home uplink.
 const COVER_BODY_WAIT: Duration = Duration::from_secs(30);
+/// What `PUT /api/station/cover` answers while the station's source is not live.
+const NOT_LIVE_COVER: &[u8] =
+    b"this station is not on the air: a cover is set while its source pushes";
+/// What `GET /<slug>/cover` answers while there is none.
+const NO_COVER: &[u8] = b"this station has no cover now";
 
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
 /// The listener page, the same one GitHub Pages publishes, served at `/<slug>/` for each
@@ -269,6 +275,19 @@ impl Drop for ServerHandle {
     }
 }
 
+/// Where a station's count of covers starts: a random value, so the tags of covers set after
+/// a restart do not repeat those a page holds from before it.
+fn cover_count_start() -> u64 {
+    let mut bytes = [0; 8];
+    match ring::rand::SystemRandom::new().fill(&mut bytes) {
+        Ok(()) => u64::from_be_bytes(bytes),
+        // Without randomness, the time does it.
+        Err(_) => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs().wrapping_mul(1_000_000_007)),
+    }
+}
+
 /// Puts each station's saved outputs (see [`Shared::set_outputs`]) in place of the ones
 /// its config gives. A file that can't be read or fails the checks is an error naming it.
 fn apply_saved_outputs(config: &mut Config) -> Result<(), ServerError> {
@@ -372,7 +391,7 @@ impl StationMounts {
             cap,
             transcoder: Mutex::new(None),
             cover: Mutex::new(None),
-            covers_set: AtomicU64::new(0),
+            covers_set: AtomicU64::new(cover_count_start()),
         }
     }
 
@@ -1240,6 +1259,9 @@ fn put_cover(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request
             b"a cover must be image/jpeg, image/png or image/webp",
         );
     };
+    if !mounts.pushed.stats().live {
+        return refuse(stream, 409, "Conflict", &[], NOT_LIVE_COVER);
+    }
     let deadline = Instant::now()
         .checked_add(COVER_BODY_WAIT)
         .unwrap_or_else(Instant::now);
@@ -1252,8 +1274,16 @@ fn put_cover(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request
             b"the body did not all arrive",
         );
     };
-    let set = mounts.covers_set.fetch_add(1, Ordering::Relaxed);
-    mounts.set_cover(Some(Cover::new(mime, body, set)));
+    {
+        // Under the slot's lock, which the source's end clears the cover under, so a cover
+        // never outlives the source it came for.
+        let _slot = mounts.slot();
+        if !mounts.pushed.stats().live {
+            return refuse(stream, 409, "Conflict", &[], NOT_LIVE_COVER);
+        }
+        let set = mounts.covers_set.fetch_add(1, Ordering::Relaxed);
+        mounts.set_cover(Some(Cover::new(mime, body, set)));
+    }
     let _ = respond(stream, 204, "No Content", &[], b"");
 }
 
@@ -1261,13 +1291,12 @@ fn put_cover(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request
 /// with its type and `ETag`, a 304 when `If-None-Match` names it, a 404 when there is none.
 fn send_cover(stream: &mut Conn, request: &Request, mounts: &StationMounts) {
     let Some(cover) = mounts.cover() else {
-        return refuse(
-            stream,
-            404,
-            "Not Found",
-            &[CORS, ("Cache-Control", "no-cache")],
-            b"this station has no cover now",
-        );
+        let headers = [CORS, ("Cache-Control", "no-cache")];
+        if request.method == "HEAD" {
+            let _ = respond_head(stream, 404, "Not Found", &headers, NO_COVER.len());
+            return;
+        }
+        return refuse(stream, 404, "Not Found", &headers, NO_COVER);
     };
     let common = [
         CORS,
@@ -1279,7 +1308,8 @@ fn send_cover(stream: &mut Conn, request: &Request, mounts: &StationMounts) {
         .header("If-None-Match")
         .is_some_and(|tags| cover.matches(tags))
     {
-        let _ = respond(stream, 304, "Not Modified", &common, b"");
+        // The head a 200 would have, with no body.
+        let _ = respond_head(stream, 304, "Not Modified", &common, cover.bytes.len());
         return;
     }
     let [cors, cache, etag, nosniff] = common;

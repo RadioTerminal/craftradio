@@ -93,9 +93,14 @@ fn get(addr: SocketAddr, method: &str, if_none_match: Option<&str>) -> (Head, Ve
 fn a_cover_put_with_the_key_is_served_with_its_type_and_tag() {
     let server = Server::start(config(None)).unwrap();
     let addr = server.local_addr();
-    let (none, _) = get(addr, "GET", None);
+    let _pusher = on_air(addr, SLUG, MORNING_KEY, Tone::Ogg);
+    let (none, body) = get(addr, "GET", None);
     assert_eq!(none.status, 404, "no cover before one is set");
+    assert!(!body.is_empty(), "a GET says why");
     assert_eq!(none.header("Access-Control-Allow-Origin"), Some("*"));
+    let (none, body) = get(addr, "HEAD", None);
+    assert_eq!(none.status, 404);
+    assert!(body.is_empty(), "a HEAD gets no body");
 
     // The type is the server's own word, whatever the case and parameters sent.
     assert_eq!(
@@ -114,6 +119,12 @@ fn a_cover_put_with_the_key_is_served_with_its_type_and_tag() {
     let (same, body) = get(addr, "GET", Some(&tag));
     assert_eq!(same.status, 304, "the page's copy is the cover");
     assert!(body.is_empty());
+    assert_eq!(same.header("ETag"), Some(tag.as_str()));
+    assert_eq!(
+        same.header("Content-Length"),
+        Some(PNG.len().to_string().as_str()),
+        "a 304 has the head a 200 would have"
+    );
     let (head_only, body) = get(addr, "HEAD", None);
     assert_eq!(head_only.status, 200);
     assert!(body.is_empty(), "a HEAD gets no body");
@@ -149,6 +160,7 @@ fn a_cover_put_with_the_key_is_served_with_its_type_and_tag() {
 fn an_empty_body_clears_the_cover() {
     let server = Server::start(config(None)).unwrap();
     let addr = server.local_addr();
+    let _pusher = on_air(addr, SLUG, MORNING_KEY, Tone::Ogg);
     assert_eq!(put(addr, MORNING_KEY, "image/png", PNG), 204);
     // No type is needed to clear.
     assert_eq!(put(addr, MORNING_KEY, "application/octet-stream", b""), 204);
@@ -173,10 +185,35 @@ fn the_end_of_the_source_clears_the_cover() {
     }
 }
 
+/// Off air there is nothing for a cover to be of: it is refused with the reason, and a
+/// clear is still taken.
+#[test]
+fn a_cover_is_refused_while_the_station_is_off_air() {
+    let server = Server::start(config(None)).unwrap();
+    let addr = server.local_addr();
+    let (head, reason) = put_to(
+        addr,
+        "/api/station/cover",
+        MORNING_KEY,
+        "image/png",
+        PNG,
+        Some(PNG.len()),
+    );
+    assert_eq!(head.status, 409);
+    assert!(
+        String::from_utf8_lossy(&reason).contains("not on the air"),
+        "{}",
+        String::from_utf8_lossy(&reason)
+    );
+    assert_eq!(get(addr, "GET", None).0.status, 404);
+    assert_eq!(put(addr, MORNING_KEY, "image/png", b""), 204);
+}
+
 #[test]
 fn covers_of_another_type_too_large_or_without_a_length_are_refused() {
     let server = Server::start(config(None)).unwrap();
     let addr = server.local_addr();
+    let _pusher = on_air(addr, SLUG, MORNING_KEY, Tone::Ogg);
     assert_eq!(put(addr, MORNING_KEY, "image/png", PNG), 204);
     assert_eq!(put(addr, MORNING_KEY, "image/gif", b"GIF89a-invented"), 415);
     assert_eq!(put(addr, MORNING_KEY, "text/html", b"<p>invented</p>"), 415);

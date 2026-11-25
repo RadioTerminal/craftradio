@@ -3,7 +3,9 @@
 //! an upload that has not gone out yet, so the server ends with the latest. The key goes
 //! only to the paired address, with the agent pairing uses.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
@@ -17,6 +19,12 @@ use crate::{EngineSource, SecretStore};
 /// quickly beside the push and each listener's page fetches little. The server takes up to
 /// 1 MiB (`PUT /api/station/cover`).
 pub const SERVER_MAX_COVER: usize = 256 << 10;
+/// What a server older than covers (404 or 405 to the cover) is said to be, once a pairing.
+pub const COVERS_UNSUPPORTED: &str =
+    "this server is older than covers; update craftradio-server to show them on its page";
+/// The most pictures whose failure is told, so a long playlist of broken files says it a
+/// bounded number of times.
+const TOLD_PICTURES: usize = 32;
 
 /// Sends `cover` (its type and bytes) to `<address>/api/station/cover` with `key` as the
 /// Basic password, or clears the server's cover with an empty body when there is none. An
@@ -38,9 +46,7 @@ pub fn put_cover(address: &str, key: &str, cover: Option<(&str, &[u8])>) -> Resu
         429 => Err(PutError::Unreachable(
             "the server refuses keys from this computer for a while after wrong ones".into(),
         )),
-        404 | 405 => Err(PutError::Refused(
-            "this server takes no cover; update craftradio-server".into(),
-        )),
+        404 | 405 => Err(PutError::Refused(COVERS_UNSUPPORTED.into())),
         code => Err(PutError::Refused(format!(
             "the server refused the cover ({code})"
         ))),
@@ -61,6 +67,9 @@ pub(crate) struct Upload {
 pub(crate) struct CoverAnswer {
     pub(crate) address: String,
     pub(crate) result: Result<(), PutError>,
+    /// The item's picture and why it could not be used, when it could not (the cover was
+    /// cleared instead).
+    pub(crate) unusable: Option<(PathBuf, String)>,
 }
 
 #[derive(Default)]
@@ -74,26 +83,46 @@ struct Slot {
 /// The cover lane: one thread that sends the newest upload it was given.
 pub(crate) struct Lane {
     shared: Arc<(Mutex<Slot>, Condvar)>,
+    /// False once the lane's thread has ended, however it ended.
+    alive: Arc<AtomicBool>,
+}
+
+/// Marks the lane gone when its thread ends, unwinding included.
+struct Alive(Arc<AtomicBool>);
+impl Drop for Alive {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl Lane {
     pub(crate) fn start(done: Sender<crate::bg::Done>) -> Option<Lane> {
         let shared = Arc::new((Mutex::new(Slot::default()), Condvar::new()));
         let theirs = Arc::clone(&shared);
+        let alive = Arc::new(AtomicBool::new(true));
+        let guard = Alive(Arc::clone(&alive));
         std::thread::Builder::new()
             .name("ui-server-cover".into())
-            .spawn(move || run(&theirs, &done))
+            .spawn(move || {
+                let _alive = guard;
+                run(&theirs, &done);
+            })
             .ok()?;
-        Some(Lane { shared })
+        Some(Lane { shared, alive })
     }
 
-    /// Puts `upload` in place of any that has not gone out yet.
-    pub(crate) fn send(&self, upload: Upload) {
+    /// Puts `upload` in place of any that has not gone out yet. False when the lane's
+    /// thread has ended, so nothing will send it.
+    pub(crate) fn send(&self, upload: Upload) -> bool {
+        if !self.alive.load(Ordering::Acquire) {
+            return false;
+        }
         let (slot, wake) = &*self.shared;
         let mut slot = slot.lock().unwrap_or_else(PoisonError::into_inner);
         slot.latest = upload.seq;
         slot.next = Some(upload);
         wake.notify_one();
+        true
     }
 }
 
@@ -120,11 +149,17 @@ fn run(shared: &(Mutex<Slot>, Condvar), done: &Sender<crate::bg::Done>) {
                 guard = wake.wait(guard).unwrap_or_else(PoisonError::into_inner);
             }
         };
-        // A picture that cannot be used clears the cover, so the last item's does not stay.
+        // A picture that cannot be used clears the cover, so the last item's does not stay,
+        // and the source hears why.
+        let mut unusable = None;
         let cover = upload.file.as_deref().and_then(|f| {
-            radio_stream::server_cover(f, SERVER_MAX_COVER)
-                .ok()
-                .flatten()
+            match radio_stream::server_cover(f, SERVER_MAX_COVER) {
+                Ok(cover) => cover,
+                Err(reason) => {
+                    unusable = Some((f.to_path_buf(), reason));
+                    None
+                }
+            }
         });
         // A newer item came while the file was read: its upload goes instead.
         if slot.lock().unwrap_or_else(PoisonError::into_inner).latest != upload.seq {
@@ -144,6 +179,7 @@ fn run(shared: &(Mutex<Slot>, Condvar), done: &Sender<crate::bg::Done>) {
         let answer = CoverAnswer {
             address: upload.address,
             result,
+            unusable,
         };
         if done.send(crate::bg::Done::ServerCover(answer)).is_err() {
             return;
@@ -157,6 +193,12 @@ pub(crate) struct CoverSync {
     /// The paired address, the item's revision and when the push connected.
     sent_for: Option<(String, u64, Timestamp)>,
     seq: u64,
+    /// The paired address that answered it takes no covers: told once, and sent no more.
+    unsupported: Option<String>,
+    /// True once a lane that could not take covers was told.
+    lane_told: bool,
+    /// The pictures whose failure was told.
+    told_pictures: HashSet<PathBuf>,
 }
 
 impl EngineSource {
@@ -167,8 +209,12 @@ impl EngineSource {
     pub(crate) fn watch_cover(&mut self, outputs: &radio_playout::OutputStatus) {
         let Some(address) = crate::pairing::paired_address(&self.state) else {
             self.server_cover.sent_for = None;
+            self.server_cover.unsupported = None;
             return;
         };
+        if self.server_cover.unsupported.as_deref() == Some(address.as_str()) {
+            return;
+        }
         if self.push_held() || !outputs.on_air || !outputs.icecast_enabled {
             return;
         }
@@ -182,9 +228,9 @@ impl EngineSource {
         if self.server_cover.sent_for.as_ref() == Some(&want) {
             return;
         }
-        let Some(lane) = self.worker.as_ref().and_then(|w| w.covers.as_ref()) else {
-            return;
-        };
+        if self.worker.as_ref().is_none_or(|w| w.covers.is_none()) {
+            return self.lane_gone();
+        }
         let address = want.0.clone();
         // One try per item, sent or not.
         self.server_cover.sent_for = Some(want);
@@ -192,24 +238,62 @@ impl EngineSource {
             return;
         }
         self.server_cover.seq += 1;
-        lane.send(Upload {
+        let upload = Upload {
             seq: self.server_cover.seq,
             entry: crate::pairing::server_entry(&address),
             address,
             file: now.cover.clone(),
             store: Arc::clone(&self.secrets),
-        });
+        };
+        let sent = self
+            .worker
+            .as_ref()
+            .and_then(|w| w.covers.as_ref())
+            .is_some_and(|lane| lane.send(upload));
+        if !sent {
+            if let Some(w) = self.worker.as_mut() {
+                w.covers = None;
+            }
+            self.lane_gone();
+        }
+    }
+
+    /// The cover lane is not there, or its thread ended: said once, and no cover goes.
+    fn lane_gone(&mut self) {
+        if !std::mem::replace(&mut self.server_cover.lane_told, true) {
+            self.notices.push(
+                "Covers no longer go to the server: their lane stopped; restart the app".into(),
+            );
+        }
     }
 
     /// The server's answer to a cover. A refused key latches as a refused pairing does, so
     /// neither the push nor the next cover walks the server's lockout; other failures wait
     /// for the next item.
     pub(crate) fn cover_answer(&mut self, answer: CoverAnswer) {
-        if matches!(answer.result, Err(PutError::KeyRefused))
-            && crate::pairing::paired_address(&self.state).as_deref()
-                == Some(answer.address.as_str())
-        {
-            self.refuse_key();
+        if let Some((path, reason)) = answer.unusable {
+            let told = &mut self.server_cover.told_pictures;
+            if told.len() < TOLD_PICTURES && told.insert(path.clone()) {
+                self.notices.push(format!(
+                    "The cover of {} was not sent to the server: {reason}",
+                    path.display()
+                ));
+            }
+        }
+        let paired =
+            crate::pairing::paired_address(&self.state).as_deref() == Some(answer.address.as_str());
+        match answer.result {
+            Err(PutError::KeyRefused) if paired => self.refuse_key(),
+            Err(PutError::Refused(reason))
+                if paired
+                    && reason == COVERS_UNSUPPORTED
+                    && self.server_cover.unsupported.as_deref()
+                        != Some(answer.address.as_str()) =>
+            {
+                self.notices.push(format!("{COVERS_UNSUPPORTED}."));
+                self.server_cover.unsupported = Some(answer.address);
+            }
+            _ => {}
         }
     }
 }
