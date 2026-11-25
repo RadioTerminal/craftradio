@@ -602,6 +602,8 @@ fn native(
         ViewportId::from_hash_of(("tool_window", w.title())),
         builder,
         |ui, class| {
+            // The Edit menu's keys taken while this window had the focus.
+            crate::key_route::deliver(ui.ctx());
             let frame = theme::panel_frame(t);
             if class == ViewportClass::EmbeddedWindow {
                 // egui draws the window over the main window here.
