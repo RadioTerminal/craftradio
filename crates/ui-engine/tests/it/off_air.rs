@@ -105,3 +105,46 @@ fn a_station_that_started_on_air_is_not_going_on_air() {
     assert!(view.on_air);
     assert!(!view.going_on_air);
 }
+
+fn set_icecast_enabled(source: &mut EngineSource, on: bool) {
+    source
+        .edit(Edit::SetPartSetting {
+            part: radio_model::ICECAST_PART.into(),
+            key: radio_model::ICECAST_ENABLED_KEY.into(),
+            value: on.into(),
+        })
+        .expect("the setting is taken");
+}
+
+/// Icecast switched off on air says `Off`, never live and never off air; off air still wins.
+#[test]
+fn icecast_switched_off_says_off_and_off_air_still_wins() {
+    let (mut source, clock) = station(true);
+    set_icecast_enabled(&mut source, false);
+    let view = wait_for(&mut source, &clock, |v| v.output.icecast == Status::Off);
+    assert!(view.on_air);
+    assert!(
+        !view.going_on_air,
+        "a switched-off Icecast is not going on air"
+    );
+    let strip = view
+        .output_meters
+        .iter()
+        .find(|m| m.kind == OutputKind::Icecast)
+        .expect("the strip");
+    assert!(!strip.live);
+    assert_eq!(strip.note, "Off");
+    assert!(
+        !view.alarms.iter().any(|a| a.text.contains("Icecast")),
+        "a switched-off Icecast raises no alarm"
+    );
+
+    set_on_air(&mut source, false);
+    let view = wait_for(&mut source, &clock, |v| v.output.icecast == Status::OffAir);
+    let strip = view
+        .output_meters
+        .iter()
+        .find(|m| m.kind == OutputKind::Icecast)
+        .expect("the strip");
+    assert_eq!(strip.note, "Off air");
+}

@@ -1030,6 +1030,7 @@ fn icecast_status(view: &StationView, t: &Tokens) -> IceStatus {
         ),
         Status::Failed(e) => s(Icon::Circle, &format!("Icecast down: {e}"), t.danger, false),
         Status::OffAir => s(Icon::Circle, "Icecast off air", t.text_muted, false),
+        Status::Off => s(Icon::Circle, "Icecast off", t.text_muted, false),
         Status::NotConnected | Status::Preview => {
             s(Icon::Circle, "Icecast not connected", t.text_muted, false)
         }
@@ -1045,6 +1046,31 @@ fn icecast_tab(
     actions: &mut Vec<Action>,
     t: &Tokens,
 ) {
+    settings::section(ui, "Stream", t, |ui| {
+        // Icecast's own switch, as the WebRTC page has one. On air stays the switch of the
+        // whole station.
+        let on = parts::bool(view, parts::ICECAST, radio_model::ICECAST_ENABLED_KEY, true);
+        let mut want = on;
+        settings::form_row(ui, "Streaming", t, |ui| {
+            ui.checkbox(&mut want, "Stream to Icecast")
+        });
+        if want != on {
+            actions.push(parts::set(
+                parts::ICECAST,
+                radio_model::ICECAST_ENABLED_KEY,
+                want,
+            ));
+        }
+        settings::form_note(
+            ui,
+            RichText::new(
+                "On air is the switch of the whole station; this one stops only Icecast. \
+                 Off air, Icecast sends nothing whatever this says.",
+            )
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted),
+        );
+    });
     settings::section(ui, "Status", t, |ui| {
         let word = icons::lead(status.icon, &status.word);
         settings::form_note(

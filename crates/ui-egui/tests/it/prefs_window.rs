@@ -4,6 +4,7 @@
 use egui::accesskit::Toggled;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
+use radio_ui_egui::view::{Edit, StationView, ViewSource};
 use radio_ui_egui::{MockSource, RadioApp, ToolWindow};
 
 const FRAMES: usize = 6;
@@ -236,4 +237,88 @@ fn a_name_typed_in_branding_is_saved_when_preferences_closes_with_the_field_stil
     h.run_steps(FRAMES);
     click(&mut h, "Branding");
     assert_eq!(name_field(&h), "Radio Lipa", "the name was saved");
+}
+
+/// A station that is not the preview, paired with a server or not. It keeps each edit it
+/// is sent, so a test can see what a button asked for.
+struct Station {
+    mock: MockSource,
+    paired: bool,
+    edits: std::sync::Arc<std::sync::Mutex<Vec<Edit>>>,
+}
+
+impl ViewSource for Station {
+    fn snapshot(&mut self, now: jiff::Timestamp) -> StationView {
+        let mut v = self.mock.snapshot(now);
+        v.preview = false;
+        v.pairing.paired = self.paired;
+        v
+    }
+    fn edit(&mut self, edit: Edit) -> Result<usize, String> {
+        if let Ok(mut edits) = self.edits.lock() {
+            edits.push(edit.clone());
+        }
+        self.mock.edit(edit)
+    }
+    fn stream_title(&self, row: &radio_ui_egui::view::Row) -> String {
+        self.mock.stream_title(row)
+    }
+}
+
+/// Preferences of a [`Station`], and the edits it was sent.
+fn station_preferences(
+    paired: bool,
+) -> (
+    Harness<'static, RadioApp>,
+    std::sync::Arc<std::sync::Mutex<Vec<Edit>>>,
+) {
+    let tz = jiff::tz::TimeZone::get("Europe/Ljubljana").expect("tz");
+    let now: jiff::Timestamp = "2026-11-21T13:58:00Z".parse().expect("ts");
+    let edits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = std::sync::Arc::clone(&edits);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .build_eframe(move |_cc| {
+            let station = Station {
+                mock: MockSource::new(tz),
+                paired,
+                edits: kept,
+            };
+            RadioApp::new(Box::new(station), Box::new(move || now))
+        });
+    h.run_steps(FRAMES);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+    h.run_steps(FRAMES);
+    (h, edits)
+}
+
+/// The Icecast page has its own switch, as the WebRTC page does: it starts on, and turning it
+/// off stores the setting and says Icecast is off, in words.
+#[test]
+fn the_icecast_page_switches_icecast_off_and_says_so() {
+    let (mut h, edits) = station_preferences(false);
+    search(&mut h, "Icecast");
+    // The row names the switch, as on the WebRTC page.
+    assert!(checked(&h, "Streaming"), "Icecast starts on");
+    click(&mut h, "Streaming");
+    assert!(!checked(&h, "Streaming"), "the click turns it off");
+    let sent = edits.lock().expect("edits").clone();
+    assert!(
+        sent.iter()
+            .any(|e| matches!(e, Edit::SetPartSetting { part, key, value }
+            if part == "icecast" && key == "enabled" && *value == serde_json::json!(false))),
+        "the switch stores icecast.enabled: {sent:?}"
+    );
+    assert!(
+        h.query_all_by_label_contains("Icecast off")
+            .next()
+            .is_some(),
+        "the page says Icecast is off"
+    );
+    assert!(
+        h.query_all_by_label_contains("Icecast off air")
+            .next()
+            .is_none(),
+        "on air, a switched-off Icecast is not off air"
+    );
 }

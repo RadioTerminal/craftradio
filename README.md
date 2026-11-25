@@ -128,6 +128,11 @@ MCP server or the control channel switches it at once, with no second press:
 craftradio-cli cmd --data-dir ./station '{"id":"settings.set","args":{"part":"air","key":"on_air","value":false}}'
 ```
 
+On Air is the switch of the whole station; each output also has its own. Preferences ›
+Icecast › Streaming (part `icecast`, key `enabled`, absent means on) and Preferences › WebRTC
+› Streaming (part `webrtc`, key `enabled`, absent means off) each stop only their output, which
+then reads "Off"; off air, both read "Off air" whatever their switch says.
+
 That line edits the station file, so close the app first (a running app keeps its own copy).
 For a running station use the `settings_set` MCP tool or `station.run` on the control channel
 ([docs/control.md](docs/control.md)) with the same `id` and `args`.

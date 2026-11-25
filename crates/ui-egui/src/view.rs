@@ -1112,6 +1112,9 @@ pub enum Status {
     NotConnected,
     /// Off air on purpose (the On air setting): nothing is sent, and that is not a fault.
     OffAir,
+    /// Switched off on purpose by its own switch (Preferences › Icecast) while the station
+    /// is on air: this output sends nothing, and that is not a fault.
+    Off,
     Connected,
     /// The connection dropped; the output tries again.
     Reconnecting {

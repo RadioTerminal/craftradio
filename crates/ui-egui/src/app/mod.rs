@@ -1094,6 +1094,8 @@ fn status_line(
                 Status::Preview => (Icon::Circle, "preview (no audio)".to_owned(), t.text_muted),
                 // Off air on purpose: in words, neither the success colour nor a fault.
                 Status::OffAir => (Icon::Circle, "off air".to_owned(), t.text_muted),
+                // Switched off on its own page: in words, not a fault.
+                Status::Off => (Icon::Circle, "off".to_owned(), t.text_muted),
                 // Going on air, an Icecast mount that still connects is not a fault yet.
                 Status::Failed(_) | Status::Reconnecting { .. }
                     if name == "Icecast" && view.going_on_air =>

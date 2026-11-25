@@ -361,6 +361,7 @@ fn headless(
     println!("radio: output {:?}", view.outputs.local);
     let mut webrtc = None;
     let mut air = None;
+    let mut icecast_on = None;
     let mut source = EngineSource::new(
         playout,
         SourceOptions {
@@ -389,11 +390,18 @@ fn headless(
             println!("radio: {notice}");
         }
         // Off air stops Icecast and WebRTC; say so, and say when they come back.
-        let now_air = source.playout().snapshot().outputs.on_air;
+        let outputs = source.playout().snapshot().outputs;
+        let now_air = outputs.on_air;
         if air != Some(now_air) {
             println!("radio: {}", air_line(now_air));
             air = Some(now_air);
         }
+        // Icecast's own switch, apart from On air; said at start only when it is off.
+        let now_ice = outputs.icecast_enabled;
+        if icecast_on.is_some_and(|was| was != now_ice) || (icecast_on.is_none() && !now_ice) {
+            println!("radio: {}", icecast_line(now_ice));
+        }
+        icecast_on = Some(now_ice);
         let now_webrtc = source.playout().snapshot().outputs.webrtc;
         if now_webrtc != webrtc {
             if let Some(status) = &now_webrtc {
@@ -485,6 +493,15 @@ fn air_line(on_air: bool) -> &'static str {
         "on air"
     } else {
         "off air (Icecast and WebRTC are stopped; the decks play on)"
+    }
+}
+
+/// The headless status line for the Icecast switch (`icecast.enabled`).
+fn icecast_line(enabled: bool) -> &'static str {
+    if enabled {
+        "Icecast on (it sends while the station is on air)"
+    } else {
+        "Icecast off (its switch in Preferences › Icecast; WebRTC and the decks go on)"
     }
 }
 
