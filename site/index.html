@@ -508,22 +508,48 @@ function startMeter(stream) {
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 512;
     ctx.createMediaStreamSource(stream).connect(analyser);
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const bars = meter.children;
-    // Bands on a log scale, as the ear hears them.
-    const edges = Array.from({ length: BARS + 1 }, (_, i) => Math.min(data.length, Math.round(Math.pow(data.length, i / BARS))));
-    meter.classList.add("live");
-    const draw = () => {
-      analyser.getByteFrequencyData(data);
-      for (let i = 0; i < BARS; i++) {
-        let v = 0;
-        for (let j = edges[i]; j < Math.max(edges[i + 1], edges[i] + 1); j++) v = Math.max(v, data[j] || 0);
-        bars[i].style.height = Math.max(12, v / 255 * 100) + "%";
-      }
-      raf = requestAnimationFrame(draw);
-    };
-    draw();
+    drawMeter(analyser);
   } catch (_) { /* The meter is optional; the sound plays without it. */ }
+}
+// The meter of a stream the audio element plays from this page's own server: its sound goes
+// through Web Audio to be measured, and on to the speakers. An element can be tapped only
+// once, so the tap stays for the page's life; it is made only while Web Audio may run, since
+// a tapped element is silent while its context is suspended.
+let elementTap = null;
+async function meterElement() {
+  try {
+    if (!elementTap) {
+      const c = new AudioContext();
+      await c.resume().catch(() => {});
+      if (c.state !== "running") { c.close().catch(() => {}); return; }
+      const analyser = c.createAnalyser();
+      analyser.fftSize = 512;
+      const source = c.createMediaElementSource(audio);
+      source.connect(analyser);
+      source.connect(c.destination);
+      elementTap = { ctx: c, analyser };
+    }
+    await elementTap.ctx.resume().catch(() => {});
+    if (onIcecast) drawMeter(elementTap.analyser);
+  } catch (_) { /* The meter is optional; the sound plays without it. */ }
+}
+function drawMeter(analyser) {
+  cancelAnimationFrame(raf);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  const bars = meter.children;
+  // Bands on a log scale, as the ear hears them.
+  const edges = Array.from({ length: BARS + 1 }, (_, i) => Math.min(data.length, Math.round(Math.pow(data.length, i / BARS))));
+  meter.classList.add("live");
+  const draw = () => {
+    analyser.getByteFrequencyData(data);
+    for (let i = 0; i < BARS; i++) {
+      let v = 0;
+      for (let j = edges[i]; j < Math.max(edges[i + 1], edges[i] + 1); j++) v = Math.max(v, data[j] || 0);
+      bars[i].style.height = Math.max(12, v / 255 * 100) + "%";
+    }
+    raf = requestAnimationFrame(draw);
+  };
+  draw();
 }
 function playStream(stream) {
   stopMeter();
@@ -1058,7 +1084,7 @@ async function playIcecast(url, reason) {
   if (gen !== mine) return;
   onAir(true); say(liveText());
   // The station server's own stream: its title, cover and history come from the watch.
-  if (coverOf(url)) watchServer(url);
+  if (coverOf(url)) { watchServer(url); meterElement(); }
   else {
     titleFromServer(url);
     poll = setInterval(() => titleFromServer(url), 10000);
