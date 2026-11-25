@@ -8,7 +8,10 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::theme::Tokens;
-use radio_ui_egui::view::{Edit, MeterFrame, PairState, PairingView, Row, StationView, ViewSource};
+use radio_ui_egui::view::{
+    Edit, MeterFrame, OUTPUTS_READ_ONLY, OutputFormatView, OutputRow, OutputsState, PairState,
+    PairingView, Row, StationView, ViewSource,
+};
 use radio_ui_egui::{MockSource, RadioApp};
 
 const FRAMES: usize = 6;
@@ -266,4 +269,243 @@ fn connect_is_off_while_a_pairing_is_asked() {
     p.type_into("Station key", KEY);
     p.click("Connect");
     assert!(p.pairs().is_empty(), "no second try while one is asked");
+}
+
+fn row(mount: &str, format: OutputFormatView, kbps: u32) -> OutputRow {
+    OutputRow {
+        mount: mount.to_owned(),
+        format,
+        kbps,
+    }
+}
+
+/// A paired station whose server keeps outputs the app may change.
+fn paired_with(outputs: Vec<OutputRow>, state: OutputsState) -> PairingView {
+    PairingView {
+        address: ADDRESS.to_owned(),
+        paired: true,
+        state: PairState::Paired,
+        outputs,
+        outputs_editable: true,
+        outputs_state: state,
+    }
+}
+
+fn two_outputs() -> Vec<OutputRow> {
+    vec![
+        row("low.opus", OutputFormatView::Opus, 32),
+        row("high.mp3", OutputFormatView::Mp3, 128),
+    ]
+}
+
+impl Page {
+    fn has(&self, label: &str) -> bool {
+        self.h.query_by_label(label).is_some()
+    }
+
+    /// True when some text on the page contains `words`.
+    fn says(&self, words: &str) -> bool {
+        self.h.query_all_by_label_contains(words).any(|_| true)
+    }
+
+    fn enabled(&self, label: &str) -> bool {
+        !self.h.get_by_label(label).accesskit_node().is_disabled()
+    }
+
+    fn saves(&self) -> Vec<Vec<OutputRow>> {
+        let edits = self.edits.lock().expect("edits");
+        edits
+            .iter()
+            .filter_map(|e| match e {
+                Edit::SaveServerOutputs(rows) => Some(rows.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn outputs_show_only_when_paired() {
+    let others = [
+        (false, PairState::NotPaired),
+        (false, PairState::Pairing),
+        (true, PairState::Pairing),
+        (true, PairState::KeyRefused),
+        (
+            true,
+            PairState::Unreachable("connection refused".to_owned()),
+        ),
+        (
+            false,
+            PairState::Refused("a newer pairing document".to_owned()),
+        ),
+    ];
+    for (paired, state) in others {
+        let mut view = paired_with(two_outputs(), OutputsState::Idle);
+        view.paired = paired;
+        view.state = state.clone();
+        let p = page(view);
+        assert!(
+            !p.has("Add output") && !p.has("Save") && !p.has("Mount of output 1"),
+            "no outputs while {state:?} (paired: {paired})"
+        );
+    }
+    let p = page(paired_with(two_outputs(), OutputsState::Idle));
+    for name in [
+        "Add output",
+        "Save",
+        "Mount of output 1",
+        "Mount of output 2",
+    ] {
+        assert!(p.has(name), "the paired page has {name}");
+    }
+    assert_eq!(p.value("Mount of output 1"), "low.opus");
+}
+
+#[test]
+fn add_edit_remove_then_save_sends_the_rows() {
+    let mut p = page(paired_with(two_outputs(), OutputsState::Idle));
+    assert!(!p.enabled("Save"), "nothing changed yet, nothing to save");
+    p.click("Add output");
+    assert!(p.has("Mount of output 3"), "Add output adds a row");
+    p.type_into("Mount of output 3", "mid.opus");
+    p.click("Remove output 1");
+    assert!(!p.has("Mount of output 3"), "Remove takes a row away");
+    assert_eq!(
+        p.value("Mount of output 1"),
+        "high.mp3",
+        "the rest moves up"
+    );
+    assert!(p.enabled("Save"), "the rows changed");
+    assert!(p.saves().is_empty(), "editing alone sends nothing");
+    p.click("Save");
+    assert_eq!(
+        p.saves(),
+        vec![vec![
+            row("high.mp3", OutputFormatView::Mp3, 128),
+            row("mid.opus", OutputFormatView::Opus, 64),
+        ]],
+        "Save sends every row, once"
+    );
+}
+
+#[test]
+fn a_format_is_chosen_from_a_list() {
+    let mut p = page(paired_with(two_outputs(), OutputsState::Idle));
+    p.click("Format of output 1");
+    p.click("MP3");
+    p.click("Save");
+    assert_eq!(
+        p.saves(),
+        vec![vec![
+            row("low.opus", OutputFormatView::Mp3, 32),
+            row("high.mp3", OutputFormatView::Mp3, 128),
+        ]]
+    );
+}
+
+#[test]
+fn removing_every_row_saves_an_empty_list() {
+    let mut p = page(paired_with(two_outputs(), OutputsState::Idle));
+    p.click("Remove output 1");
+    p.click("Remove output 1");
+    p.click("Save");
+    assert_eq!(p.saves(), vec![Vec::<OutputRow>::new()]);
+}
+
+#[test]
+fn save_is_off_while_saving() {
+    let mut p = page(paired_with(two_outputs(), OutputsState::Saving));
+    p.click("Add output");
+    p.type_into("Mount of output 3", "mid.opus");
+    assert!(p.says("Saving…"), "the page says it is saving");
+    assert!(!p.enabled("Save"), "no second save while one is on its way");
+    p.click("Save");
+    assert!(p.saves().is_empty());
+}
+
+#[test]
+fn a_failed_save_shows_the_reason_and_keeps_the_rows() {
+    // After a failure the view holds the rows that were sent, so nothing typed is lost.
+    let sent = vec![
+        row("low.opus", OutputFormatView::Opus, 5),
+        row("low.opus", OutputFormatView::Mp3, 128),
+    ];
+    let reason = "the mount low.opus is used twice";
+    let mut p = page(paired_with(
+        sent.clone(),
+        OutputsState::Failed(reason.to_owned()),
+    ));
+    assert!(p.says(reason), "the page gives the server's reason");
+    assert_eq!(p.value("Mount of output 2"), "low.opus");
+    assert!(p.enabled("Save"), "a failed save can be tried again");
+    p.click("Save");
+    assert_eq!(p.saves(), vec![sent], "the same rows go again");
+}
+
+#[test]
+fn a_saved_state_says_saved() {
+    let p = page(paired_with(two_outputs(), OutputsState::Saved));
+    assert!(p.says("Saved"));
+    assert!(!p.enabled("Save"), "what the server holds is what shows");
+}
+
+#[test]
+fn not_editable_shows_read_only_with_the_hint() {
+    let mut view = paired_with(two_outputs(), OutputsState::Idle);
+    view.outputs_editable = false;
+    let p = page(view);
+    assert!(p.says(OUTPUTS_READ_ONLY), "the hint says why");
+    for name in ["Add output", "Save", "Remove output 1", "Mount of output 1"] {
+        assert!(!p.has(name), "{name} is not offered");
+    }
+    for words in ["low.opus", "high.mp3"] {
+        assert!(
+            p.h.query_all_by_label_contains(words).any(|_| true),
+            "the row {words} is listed"
+        );
+    }
+}
+
+#[test]
+fn typing_in_a_row_edits_its_mount() {
+    let mut p = page(paired_with(two_outputs(), OutputsState::Idle));
+    p.type_into("Mount of output 1", "2");
+    assert_eq!(p.value("Mount of output 1"), "low.opus2");
+}
+
+#[test]
+fn the_output_controls_are_named_by_their_labels_and_reached_by_tab() {
+    let mut p = page(paired_with(two_outputs(), OutputsState::Idle));
+    for name in [
+        "Format of output 1",
+        "Bitrate of output 1",
+        "Mount of output 1",
+        "Remove output 1",
+        "Format of output 2",
+        "Add output",
+        "Save",
+    ] {
+        assert!(p.has(name), "a control named {name}");
+    }
+    p.h.get_by_label("Mount of output 1").focus();
+    p.h.run_steps(FRAMES);
+    p.h.key_press(egui::Key::Tab);
+    p.h.run_steps(FRAMES);
+    assert!(
+        p.h.get_by_label("Remove output 1").is_focused(),
+        "Tab moves from the mount to Remove"
+    );
+    p.h.key_press(egui::Key::Tab);
+    p.h.run_steps(FRAMES);
+    assert!(
+        p.h.get_by_label("Format of output 2").is_focused(),
+        "Tab moves on to the next row"
+    );
+    p.h.key_press(egui::Key::Tab);
+    p.h.run_steps(FRAMES);
+    assert!(
+        p.h.get_by_label("Bitrate of output 2").is_focused(),
+        "Tab moves from the format to the bitrate"
+    );
 }
