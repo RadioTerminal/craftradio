@@ -195,6 +195,51 @@ fn metadata(path: &Path) -> Result<ItemMeta, LibraryError> {
 }
 /// Decodes audio in packets, with bounded sample memory. Unsupported codecs return an error.
 /// Tail levels use 100 ms RMS windows. Hash input ends with the little-endian u64 file size.
+/// The main level of a song lies this far below its loudness, in dB.
+const MAIN_LEVEL_BELOW_DB: f64 = 6.0;
+/// The energy windows that one smoothed point averages (100 ms each: one second).
+const SMOOTH_WINDOWS: usize = 10;
+/// A marker closer than this to its edge is no marker.
+const MIN_MARKER_SPAN: Duration = Duration::from_secs(1);
+
+/// Where the intro ends and the outro starts: the first and the last point between `cue_in`
+/// and `segue` where the energy, smoothed over a second, reaches the main level.
+fn markers(
+    windows: &[(u64, f64)],
+    time: &dyn Fn(u64) -> Duration,
+    loudness: f64,
+    cue_in: Duration,
+    segue: Duration,
+) -> (Option<Duration>, Option<Duration>) {
+    if !loudness.is_finite() || windows.is_empty() {
+        return (None, None);
+    }
+    let main = 10.0f64.powf((loudness - MAIN_LEVEL_BELOW_DB) / 10.0);
+    let half = SMOOTH_WINDOWS / 2;
+    let loud: Vec<(Duration, bool)> = (0..windows.len())
+        .map(|i| {
+            let around = &windows[i.saturating_sub(half)..(i + half).min(windows.len())];
+            let mean = around.iter().map(|(_, e)| e).sum::<f64>() / around.len() as f64;
+            // The point is the start of window `i`: the end of the window before it.
+            let at = i.checked_sub(1).map_or(0, |p| windows[p].0);
+            (time(at), mean >= main)
+        })
+        .filter(|(t, _)| *t >= cue_in && *t <= segue)
+        .collect();
+    let intro = loud
+        .iter()
+        .find(|(_, l)| *l)
+        .map(|(t, _)| *t)
+        .filter(|t| t.saturating_sub(cue_in) >= MIN_MARKER_SPAN);
+    let outro = loud
+        .iter()
+        .rev()
+        .find(|(_, l)| *l)
+        .map(|(t, _)| *t)
+        .filter(|t| segue.saturating_sub(*t) >= MIN_MARKER_SPAN);
+    (intro, outro)
+}
+
 pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
     let path = path.as_ref();
     let meta = metadata(path)?;
@@ -319,15 +364,16 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
         .unwrap_or_else(|| cue_out.saturating_sub(Duration::from_secs(2)))
         .max(cue_in)
         .min(cue_out);
+    let (intro_end, outro_start) = markers(&windows, &time, loudness, cue_in, segue);
     Ok(Analysis {
         len: time(frames),
         timing: Timing {
-            outro_start: None,
-            markers: radio_model::MarkerSource::NotAnalysed,
             cue_in,
             segue,
             cue_out,
-            intro_end: None,
+            intro_end,
+            outro_start,
+            markers: radio_model::MarkerSource::Detected,
             fade_in: Duration::ZERO,
             fade_out: Duration::ZERO,
         },
