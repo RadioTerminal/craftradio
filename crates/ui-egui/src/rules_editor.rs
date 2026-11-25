@@ -15,6 +15,7 @@ use crate::rules_script;
 use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{Constraint, ConstraintKind, Pick, Placement, PlaylistTab, RuleView, Trigger};
 use crate::widgets;
+use radio_model::{DEFAULT_DUCK_DB, MAX_DUCK_DB, PlayMode};
 
 const NOT_APPLIED: &str = "preview — rules are not applied to the scheduler yet";
 const SCRIPT_NOTE: &str = "Scripts are stored but not run in this build. \
@@ -185,6 +186,8 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
             });
         ui.add_space(space::S);
     }
+    plays(ui, tab, t);
+    ui.add_space(space::S);
     let mut changed = false;
     ui.add_enabled_ui(!tab.script_by_hand, |ui| {
         ui.horizontal(|ui| {
@@ -247,6 +250,50 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
     });
     if changed {
         rules_script::refresh(tab);
+    }
+}
+
+/// How the playlist's items play: in sequence, or over the music, ducked by a depth.
+fn plays(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
+    const IN_SEQUENCE: &str = "In sequence";
+    const OVER: &str = "Over the music";
+    let over = matches!(tab.plays, PlayMode::Over { .. });
+    ui.horizontal(|ui| {
+        let label = ui.label("Plays");
+        let combo = ComboBox::from_id_salt("plays")
+            .width(size::COMBO_W)
+            .selected_text(if over { OVER } else { IN_SEQUENCE })
+            .show_ui(ui, |ui| {
+                if widgets::selectable(ui, !over, IN_SEQUENCE).clicked() {
+                    tab.plays = PlayMode::InSequence;
+                }
+                if widgets::selectable(ui, over, OVER).clicked() && !over {
+                    tab.plays = PlayMode::Over {
+                        duck_db: DEFAULT_DUCK_DB,
+                    };
+                }
+            });
+        combo.response.labelled_by(label.id);
+    });
+    if let PlayMode::Over { duck_db } = &mut tab.plays {
+        ui.horizontal(|ui| {
+            let label = ui.label("Duck by");
+            let field = numbers::field(
+                ui,
+                DragValue::new(duck_db)
+                    .range(MAX_DUCK_DB..=0)
+                    .speed(0.2)
+                    .suffix(" dB"),
+            );
+            ui.add_sized([size::FIELD_W, size::CONTROL_SM], field)
+                .labelled_by(label.id);
+        });
+        caption(
+            ui,
+            "Each item plays over a song's intro or outro and lowers the music; an item \
+             that fits neither plays in sequence.",
+            t,
+        );
     }
 }
 

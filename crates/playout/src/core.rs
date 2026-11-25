@@ -359,6 +359,9 @@ fn open_output(
     taps: usize,
     device_meter: &Arc<radio_stream::LevelMeter>,
 ) -> Result<OpenedOutput, PlayoutError> {
+    // One cart slot more than the wall has: the slot of over items.
+    let mut config = config;
+    config.cart_slots += 1;
     let (mut mixer, handle, live) = Mixer::new(config);
     mixer.set_dynamics(dynamics)?;
     let (tap_tx, tap_rx) = tap_rings(taps);
@@ -452,7 +455,7 @@ pub(crate) struct Core {
     pub(crate) history: PlayHistory,
     pub(crate) slots: [Option<Slot>; 4],
     next_deck: usize,
-    next_tag: u64,
+    pub(crate) next_tag: u64,
     pub(crate) next_seek: u64,
     /// Items that failed to load, with the time of the failure.
     pub(crate) broken: BTreeMap<ItemId, Timestamp>,
@@ -516,7 +519,8 @@ pub(crate) struct Core {
     pub(crate) log: LogHandle,
     pub(crate) work: Workers,
     /// Rows of items that ended before the writer returned their row id.
-    ended: BTreeMap<u64, (Timestamp, LogStatus)>,
+    pub(crate) ended: BTreeMap<u64, (Timestamp, LogStatus)>,
+    pub(crate) over: crate::over::OverPlayer,
     /// Hard entries seen within the preload time. The planner drops a late one from the
     /// timeline, but playout still finds it here.
     hard_seen: Vec<Entry>,
@@ -540,6 +544,7 @@ pub(crate) struct Core {
 
 fn empty_timeline() -> Timeline {
     Timeline {
+        over: Vec::new(),
         entries: Vec::new(),
         fits: Vec::new(),
         warnings: Vec::new(),
@@ -550,6 +555,7 @@ impl Core {
     pub(crate) fn new(mut engine: Engine, cfg: PlayoutConfig) -> Result<Core, PlayoutError> {
         let engine_rx = engine.events();
         let log = engine.log_handle()?;
+        // The mixer has one slot past the wall's for over items.
         let carts = Carts::new(cfg.mixer.cart_slots);
         let meters = crate::OutputMeters::default();
         // Icecast always has a tap, so settings that come while playout runs can use it.
@@ -611,6 +617,7 @@ impl Core {
             alarms: Vec::new(),
             alarms_dropped: 0,
             state: Arc::new(engine.state().clone()),
+            found_markers: Default::default(),
             revision: 0,
             plans: 0,
             tick_overruns: 0,
@@ -675,6 +682,7 @@ impl Core {
             log,
             work: Workers::new(),
             ended: BTreeMap::new(),
+            over: crate::over::OverPlayer::default(),
             hard_seen: Vec::new(),
             blocked: Vec::new(),
             last_station: None,
@@ -939,6 +947,7 @@ impl Core {
         self.make_room_for_soft();
         self.load_ahead(now);
         self.cue_starts(now);
+        self.sync_over(now);
         self.cue_ends(now);
         self.check_streams(now);
         self.check_dead_air(now);
@@ -1356,6 +1365,8 @@ impl Core {
             }
             previous = Some(entry.clone());
         }
+        // The jingles over the music follow the songs that moved.
+        radio_scheduler::anchor_over(&mut tl);
         // A waiting soft event never starts before the plan says. The plan puts it after the
         // locked entries in its way, and those keep their times.
         for s in self.slots.iter_mut().flatten() {
@@ -1944,6 +1955,9 @@ impl Core {
             view.timeline = self.timeline.clone();
             self.timeline_changed = false;
         }
+        if std::mem::take(&mut self.analysis.markers_changed) {
+            view.found_markers = self.found_markers();
+        }
         view.plans = self.plans;
         view.tick_overruns = self.tick_overruns;
         if std::mem::take(&mut self.state_dirty) {
@@ -2082,6 +2096,11 @@ impl Core {
                 Done::Folder(files) => self.on_folder(files, now),
                 Done::Analysed(id, timing) => self.on_analysed(id, timing),
                 Done::Measured(id, measured) => self.on_measured(id, measured),
+                Done::Cart(i, item, result)
+                    if crate::over::over_slot(self.cfg.mixer.cart_slots) == Some(i) =>
+                {
+                    self.on_over_clip(i, item, result)
+                }
                 Done::Cart(i, item, result) => self.on_cart(i, item, result, now),
             }
         }

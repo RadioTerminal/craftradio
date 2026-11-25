@@ -1,3 +1,5 @@
+mod markers;
+
 use radio_library::{WatchEvent, Watcher, analyse, relink, scan, write_tags};
 use radio_model::{FolderSource, ItemId, ItemMeta};
 use std::{

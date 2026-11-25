@@ -80,6 +80,7 @@ pub(super) fn from_title(title: &str, publish: PublishMode) -> ItemMeta {
         artist,
         publish,
         gain_trim_db: Some(0.0),
+        markers: Some(crate::view::Markers::default()),
         ..ItemMeta::default()
     }
 }

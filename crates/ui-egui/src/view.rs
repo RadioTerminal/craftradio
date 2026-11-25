@@ -85,6 +85,34 @@ pub struct Row {
     pub one_off: Option<OneOffView>,
     /// For a row of the as-played log: how the airing went. `None` for other rows.
     pub aired: Option<Aired>,
+    /// The jingles that play over this song's intro or outro. They take no row of their own.
+    pub over: Vec<OverRow>,
+}
+
+/// A jingle that plays over a song, ducking it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverRow {
+    pub playlist: String,
+    pub color: [u8; 3],
+    pub title: String,
+    pub side: OverSide,
+    pub start: jiff::Zoned,
+}
+
+/// Where on its song a jingle plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverSide {
+    Intro,
+    Outro,
+}
+
+impl OverSide {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Intro => "over intro",
+            Self::Outro => "over outro",
+        }
+    }
 }
 
 /// How one airing of the as-played log went.
@@ -267,6 +295,19 @@ pub struct ItemMeta {
     /// For a file of the station: the manual gain trim in dB, on top of the loudness gain.
     /// `None` for other items.
     pub gain_trim_db: Option<f32>,
+    /// For a file with cue points: where its intro ends and its outro starts. `None` for
+    /// other items.
+    pub markers: Option<Markers>,
+}
+
+/// Where a song's intro ends and its outro starts, in seconds from the file start. An item
+/// of a playlist that plays over the music lies on one of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Markers {
+    pub intro_end_s: Option<f32>,
+    pub outro_start_s: Option<f32>,
+    /// A person set them; otherwise the analysis found them (or has not run yet).
+    pub by_hand: bool,
 }
 
 /// Who starts the next item: the schedule, the operator with help, or the operator alone.
@@ -395,6 +436,8 @@ pub struct PlaylistTab {
     pub weights: Vec<u32>,
     /// A stable id for each item. It has one entry per item.
     pub ids: Vec<u64>,
+    /// How the playlist's items play: in sequence, or over the music with a duck.
+    pub plays: radio_model::PlayMode,
 }
 
 /// A folder that backs a playlist.

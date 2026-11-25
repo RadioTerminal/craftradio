@@ -524,6 +524,7 @@ mod tests {
         let station = Station {
             tz: "UTC".into(),
             playlists: vec![Playlist {
+                plays: radio_model::PlayMode::InSequence,
                 id: PlaylistId(1),
                 name: "Main".into(),
                 color: [0x3b, 0x82, 0xf6],

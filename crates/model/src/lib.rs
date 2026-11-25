@@ -21,12 +21,15 @@ pub use dynamics::{
 };
 pub use error::ModelError;
 pub use ids::{ItemId, PlaylistId};
-pub use item::{Item, ItemMeta, PublishMode, Source, Timing, stream_title};
+pub use item::{Item, ItemMeta, MarkerSource, PublishMode, Source, Timing, stream_title};
 pub use loudness::{
     Clamp, GainSource, ItemGain, Loudness, LoudnessSettings, MAX_CUT_DB, PEAK_CEILING_DB,
     check_trim, range as loudness_range,
 };
-pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist, PlaylistRole};
+pub use playlist::{
+    DEFAULT_DUCK_DB, FolderSource, MAX_DUCK_DB, OnInterrupt, PickOrder, PlayMode, Playlist,
+    PlaylistRole,
+};
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
 pub use server::{
     OutputSpec, PAIRING_VERSION, PairingDocument, PairingIcecast, PairingOutput,

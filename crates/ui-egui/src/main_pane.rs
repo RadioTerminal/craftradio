@@ -524,6 +524,10 @@ fn track_row(
         if let Some(state) = r.stream {
             stream_badge(ui, state, r.meta.keep_alive.unwrap_or(false), preview, t);
         }
+        // A jingle over this song: its playlist's colour and name, never the colour alone.
+        for o in &r.over {
+            over_chip(ui, o, t);
+        }
         ui.add(egui::Label::new(if on_air { text.strong() } else { text }).truncate());
     });
     row.col(|ui| {
@@ -536,6 +540,18 @@ fn track_row(
             );
         });
     });
+}
+
+/// A jingle that plays over the song of a row: "● Jingles · Sweeper · over intro".
+fn over_chip(ui: &mut egui::Ui, o: &crate::view::OverRow, t: &Tokens) {
+    let ink = t.readable(o.color, t.canvas);
+    let text = format!("● {} · {} · {}", o.playlist, o.title, o.side.label());
+    ui.label(
+        RichText::new(text)
+            .font(theme::text(theme::CAPTION))
+            .color(ink),
+    )
+    .on_hover_text("Plays over the song and lowers it; it takes no slot of its own.");
 }
 
 /// The state badge of a stream row. It says that no real stream plays in the preview.

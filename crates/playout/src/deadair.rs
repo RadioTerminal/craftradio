@@ -48,6 +48,8 @@ pub(crate) struct Analysis {
     /// Items whose loudness is in measurement, or whose measurement failed. A failed one
     /// is not measured again until playout restarts, so a silent file costs one decode.
     pub(crate) measuring: std::collections::BTreeSet<ItemId>,
+    /// An analysis found markers since the view last took them.
+    pub(crate) markers_changed: bool,
 }
 
 fn audio_file(p: &Path) -> bool {
@@ -383,15 +385,42 @@ impl Core {
         })
     }
 
+    /// The markers the analysis found, for the view.
+    pub(crate) fn found_markers(
+        &self,
+    ) -> std::collections::BTreeMap<
+        ItemId,
+        (Option<std::time::Duration>, Option<std::time::Duration>),
+    > {
+        self.analysis
+            .done
+            .iter()
+            .filter_map(|(id, t)| {
+                let t = t.as_ref()?;
+                (t.markers == radio_model::MarkerSource::Detected)
+                    .then_some((*id, (t.intro_end, t.outro_start)))
+            })
+            .collect()
+    }
+
     /// A worker finished the analysis of an item.
     pub(crate) fn on_analysed(&mut self, id: ItemId, timing: Option<Timing>) {
+        self.analysis.markers_changed |= timing
+            .as_ref()
+            .is_some_and(|t| t.markers == radio_model::MarkerSource::Detected);
         self.analysis.done.insert(id, timing);
         self.dirty = true;
     }
 
-    /// Gives file items without cue points the timing that analysis found. It queues
-    /// analysis on the workers for each new file item without timing.
+    /// Gives file items without cue points the timing that analysis found, and items with
+    /// cue points but no markers the markers it found. It queues analysis on the workers
+    /// for each such item it has not asked for yet.
     pub(crate) fn apply_analysis(&mut self, station: &mut radio_model::Station) {
+        // Markers matter only to a playlist that plays over the music.
+        let wants_markers = station
+            .playlists
+            .iter()
+            .any(|p| matches!(p.plays, radio_model::PlayMode::Over { .. }));
         for item in station
             .playlists
             .iter_mut()
@@ -400,6 +429,32 @@ impl Core {
             let Source::File { path } = &item.source else {
                 continue;
             };
+            let unmarked = wants_markers
+                && item
+                    .timing
+                    .as_ref()
+                    .is_some_and(|t| t.markers == radio_model::MarkerSource::NotAnalysed);
+            if unmarked {
+                // Only the markers: the item keeps the cue points it has. They live in the
+                // plan's copy of the station, like the timing of a file without cue points.
+                match self.analysis.done.entry(item.id) {
+                    std::collections::btree_map::Entry::Occupied(found) => {
+                        if let (Some(found), Some(t)) = (found.get(), item.timing.as_mut()) {
+                            t.intro_end = found.intro_end;
+                            t.outro_start = found.outro_start;
+                            t.markers = found.markers;
+                        }
+                    }
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(None);
+                        let (id, path) = (item.id, path.clone());
+                        let analyse = self.cfg.analyse;
+                        self.work
+                            .run_slow(move || Done::Analysed(id, analyse(Path::new(&path))));
+                    }
+                }
+                continue;
+            }
             if item.timing.is_some() {
                 continue;
             }

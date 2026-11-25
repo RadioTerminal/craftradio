@@ -36,6 +36,10 @@ const CEILING: f32 = 0.891_250_9;
 const KNEE: f32 = CEILING * 0.75;
 /// The deepest duck, in dB. A deeper duck is the same as mute.
 const DUCK_FLOOR_DB: f32 = -120.0;
+/// The time that a ducking cart takes to lower the decks.
+const DUCK_ATTACK: Duration = Duration::from_millis(150);
+/// The time that the decks take to come back after the last ducking cart.
+const DUCK_RELEASE: Duration = Duration::from_millis(400);
 
 /// The settings of a mixer.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -304,6 +308,8 @@ struct Voice {
     slot: usize,
     pos: usize,
     active: bool,
+    /// The duck depth of the cart, in dB (0 for none).
+    duck_db: f32,
 }
 
 /// What happened to a deck in one frame.
@@ -336,6 +342,10 @@ pub struct Mixer {
     carts: Vec<Option<Clip>>,
     voices: [Voice; CART_VOICES],
     duck: Duck,
+    /// The depth of the last `Duck` command, 0 after `Unduck`.
+    duck_cmd_db: f32,
+    /// The deepest duck of the cart voices playing in the last frame.
+    duck_cart_db: f32,
     meters: MeterBank,
     silence: SilenceState,
     shared: Arc<Shared>,
@@ -392,6 +402,8 @@ impl Mixer {
             carts: vec![None; config.cart_slots],
             voices: [Voice::default(); CART_VOICES],
             duck: Duck::OFF,
+            duck_cmd_db: 0.0,
+            duck_cart_db: 0.0,
             meters: MeterBank::new(config.peak_hold),
             silence: SilenceState::new(config.silence),
             shared: Arc::clone(&shared),
@@ -848,7 +860,7 @@ impl Mixer {
                     slot.item_gain.jump(gain);
                 }
             }
-            CommandKind::FireCart { slot } => {
+            CommandKind::FireCart { slot, duck_db } => {
                 if !matches!(self.carts.get(slot), Some(Some(_))) {
                     return;
                 }
@@ -862,6 +874,11 @@ impl Mixer {
                         slot,
                         pos: 0,
                         active: true,
+                        duck_db: if duck_db.is_nan() {
+                            0.0
+                        } else {
+                            duck_db.clamp(DUCK_FLOOR_DB, 0.0)
+                        },
                     };
                 }
             }
@@ -876,12 +893,16 @@ impl Mixer {
                 release,
             } if !db.is_nan() => {
                 self.duck.release = duration_frames(release);
-                self.duck
-                    .to(db.clamp(DUCK_FLOOR_DB, 0.0), duration_frames(attack));
+                self.duck_cmd_db = db.clamp(DUCK_FLOOR_DB, 0.0);
+                self.duck.to(
+                    self.duck_cmd_db.min(self.duck_cart_db),
+                    duration_frames(attack),
+                );
             }
             CommandKind::Unduck => {
                 let release = self.duck.release;
-                self.duck.to(0.0, release);
+                self.duck_cmd_db = 0.0;
+                self.duck.to(self.duck_cart_db, release);
             }
             // A stale item tag, or a value that the handle did not check.
             _ => {}
@@ -1106,6 +1127,22 @@ impl Mixer {
             &mut mon,
         );
 
+        let cart_db = self
+            .voices
+            .iter()
+            .filter(|v| v.active)
+            .map(|v| v.duck_db)
+            .fold(0.0f32, f32::min);
+        if cart_db != self.duck_cart_db {
+            self.duck_cart_db = cart_db;
+            let target = cart_db.min(self.duck_cmd_db);
+            let ramp = if target < self.duck.current_db {
+                DUCK_ATTACK
+            } else {
+                DUCK_RELEASE
+            };
+            self.duck.to(target, duration_frames(ramp));
+        }
         let duck = self.duck.next();
         let out_gain = self.gains[Strip::Out.index()].next();
         let mix = [

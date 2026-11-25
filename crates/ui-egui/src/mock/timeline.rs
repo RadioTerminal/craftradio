@@ -206,7 +206,19 @@ impl MockSource {
                 let Ok(next) = hour.checked_add(1.hour()) else {
                     break;
                 };
+                let first = rows.len();
                 self.fill_hour(&hour, &next, &mut rows);
+                // The first song of each hour carries a sweeper over its intro, as a
+                // playlist that plays over the music would lay it.
+                if let Some(song) = rows[first..].iter_mut().find(|r| r.is_main) {
+                    song.over.push(crate::view::OverRow {
+                        playlist: "Jingles".into(),
+                        color: JINGLES,
+                        title: "Sweeper".into(),
+                        side: crate::view::OverSide::Intro,
+                        start: song.start.clone(),
+                    });
+                }
                 hour = next;
             }
             self.cache = Some((key, rows));
@@ -226,6 +238,7 @@ impl MockSource {
             let main = item.playlist == "Music";
             *t += span;
             rows.push(Row {
+                over: Vec::new(),
                 id: start.timestamp().as_millisecond().unsigned_abs(),
                 start,
                 playlist: if main {

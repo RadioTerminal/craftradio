@@ -60,6 +60,52 @@ fn the_cog_opens_the_rules_editor_with_a_script_tab() {
     );
 }
 
+/// The rules editor sets how a playlist's items play. The duck depth shows only for items
+/// that play over the music.
+#[test]
+fn the_rules_editor_sets_a_playlist_to_play_over_the_music() {
+    let mut harness = harness();
+    click(&mut harness, "Music rules");
+    assert!(
+        !shows(&harness, "Duck by"),
+        "a duck depth for items in sequence"
+    );
+    let plays = harness
+        .query_all_by_role(egui::accesskit::Role::ComboBox)
+        .find(|n| {
+            let node = n.accesskit_node();
+            [node.value(), node.label()]
+                .into_iter()
+                .flatten()
+                .any(|t| t == "In sequence")
+        })
+        .expect("the Plays picker names its setting");
+    assert!(
+        plays
+            .accesskit_node()
+            .label()
+            .is_some_and(|l| l.starts_with("Plays")),
+        "the picker's name starts with its label"
+    );
+    plays.click();
+    harness.run_steps(FRAMES);
+    click(&mut harness, "Over the music");
+    assert!(
+        shows(&harness, "Duck by"),
+        "no duck depth for items over the music"
+    );
+}
+
+/// A jingle that plays over a song shows on the song's row, named with its playlist.
+#[test]
+fn a_song_row_shows_the_jingle_that_plays_over_it() {
+    let harness = harness();
+    assert!(
+        harness.query_by_label_contains("over intro").is_some(),
+        "no song row names the jingle over its intro"
+    );
+}
+
 #[test]
 fn each_tool_window_opens_from_the_deck_strip() {
     let mut harness = harness();
@@ -621,16 +667,16 @@ fn snd_is_disabled_without_a_monitor_device() {
     assert!(snd.accesskit_node().is_disabled(), "SND A is disabled");
 }
 
-/// Cart ducking is kept but not played yet, and its controls say so instead of looking like
-/// they work.
+/// Cart ducking plays now, so its settings no longer say it is not applied; the cart
+/// modes still are not, and keep saying so.
 #[test]
-fn cart_ducking_says_it_is_not_played_yet() {
+fn cart_ducking_no_longer_says_it_is_not_played() {
     let mut harness = harness();
     click(&mut harness, "Cartwall");
     click(&mut harness, "Cartwall preferences");
     assert!(
-        shows(&harness, "Saved, but the playout does not apply this yet"),
-        "the ducking rows say they are not played yet"
+        !shows(&harness, "Saved, but the playout does not apply this yet"),
+        "the ducking rows still say they are not played"
     );
 }
 

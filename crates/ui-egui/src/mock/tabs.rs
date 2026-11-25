@@ -29,6 +29,7 @@ pub(super) fn playlist(
     items: Vec<(String, Duration)>,
 ) -> PlaylistTab {
     let mut tab = PlaylistTab {
+        plays: radio_model::PlayMode::InSequence,
         name: name.to_owned(),
         color,
         pick: String::new(),

@@ -35,6 +35,12 @@ pub struct PlayoutView {
     pub alarms_dropped: u64,
     /// The station state of the engine, as the last plan used it.
     pub state: Arc<State>,
+    /// The intro end and outro start that playout's analysis found, by item, for songs
+    /// that the engine holds no markers for. The plan uses them.
+    pub found_markers: std::collections::BTreeMap<
+        radio_model::ItemId,
+        (Option<std::time::Duration>, Option<std::time::Duration>),
+    >,
     /// Counts the changes of `state`, so a UI rebuilds what depends on it only when it
     /// changed.
     pub revision: u64,

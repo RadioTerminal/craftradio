@@ -144,10 +144,14 @@ pub enum CommandKind {
         /// The length of the ramp on a playing deck.
         over: Duration,
     },
-    /// Plays the clip of a cart slot from its start on a free cart voice.
+    /// Plays the clip of a cart slot from its start on a free cart voice. While it plays,
+    /// the decks and live input are ducked by `duck_db` (0 for none); overlapping ducks take
+    /// the deepest of the voices still playing.
     FireCart {
         /// The cartwall slot.
         slot: usize,
+        /// The duck depth in dB, 0 or lower. NaN and positive values duck nothing.
+        duck_db: f32,
     },
     /// Stops all cart voices at once.
     StopCarts,

@@ -2,7 +2,7 @@
 
 use crate::fit::drop_adjacent_clashes;
 use crate::merge::merge_with;
-use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all};
+use crate::{Entry, FitResult, Origin, PlanInput, Timeline, fit_all, over};
 use jiff::{SignedDuration, Timestamp};
 use radio_model::{Item, ItemId, PlaylistId};
 use radio_timing::{advance, item_len, start_times};
@@ -123,7 +123,54 @@ fn earlier_dup(before: &[Entry], is_dup: impl Fn(&Entry) -> bool) -> Option<usiz
 ///
 /// The improvement check compares against the error stored in `prev.fits`, not a re-fit of
 /// the old order.
+///
+/// Entries of a playlist that plays over the music then lie on a song's intro or outro
+/// (see [`crate::over`]): they leave `entries` for `over`, and the rest is fitted again.
 pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> Timeline {
+    if !over::any_over(input.station) {
+        return plan_flow(input, opts, prev);
+    }
+    // The previous plan's over entries count where they were for keeping its order.
+    let folded = prev.map(|p| {
+        let mut p = p.clone();
+        for o in std::mem::take(&mut p.over) {
+            let at = p.entries.partition_point(|x| x.start <= o.entry.start);
+            p.entries.insert(at, o.entry);
+        }
+        p
+    });
+    let mut tl = plan_flow(input, opts, folded.as_ref());
+    let look = over::Lookup::new(input.station);
+    let placed = over::place(&mut tl, &look);
+    if !placed.is_empty() {
+        refit(&mut tl, input);
+        let (keep, went_back) = over::settle(&mut tl, &look, placed);
+        if went_back {
+            refit(&mut tl, input);
+        }
+        tl.over = keep;
+    }
+    if let Some(prev) = prev {
+        over::keep_pinned(&mut tl, prev, input.pinned);
+    }
+    over::anchor(&mut tl);
+    tl
+}
+
+/// Fits `tl` again after entries left or joined its flow. The warnings of the first fit
+/// stay; its fit results are replaced.
+fn refit(tl: &mut Timeline, input: &PlanInput) {
+    let warnings = std::mem::take(&mut tl.warnings);
+    tl.fits.clear();
+    fit_all(tl, input.station, input.history);
+    for w in warnings {
+        if !tl.warnings.contains(&w) {
+            tl.warnings.push(w);
+        }
+    }
+}
+
+fn plan_flow(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> Timeline {
     let mut raw = merge_with(input, opts.resume_rotation);
     let mut tl = if prev.is_some() {
         raw.clone()
@@ -131,6 +178,7 @@ pub fn plan(input: &PlanInput, opts: &PlanOptions, prev: Option<&Timeline>) -> T
         std::mem::replace(
             &mut raw,
             Timeline {
+                over: Vec::new(),
                 entries: Vec::new(),
                 fits: Vec::new(),
                 warnings: Vec::new(),

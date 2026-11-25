@@ -18,8 +18,8 @@ use crate::theme::{self, Tokens, size, space};
 use crate::view::{CartChange, CartMode, CartSlot, DropTarget, Edit, StationView};
 use crate::windows::ToolWindow;
 
-/// Ducking and the cart modes are kept, but the playout does not play them yet (roadmap M6).
-/// Their controls say so, so a choice does not look like it works (AGENTS.md rule 7).
+/// The cart modes are kept, but the playout does not play them yet (roadmap M6). Their
+/// controls say so, so a choice does not look like it works (AGENTS.md rule 7).
 const NOT_PLAYED_YET: &str = "Saved, but the playout does not apply this yet";
 
 /// The ducking choices in the menu, in dB. Zero means off.
@@ -446,7 +446,6 @@ fn cart_menu(
         }
     });
     ui.menu_button("Ducking", |ui| {
-        not_played_yet(ui);
         for db in DUCKS {
             let label = if db == 0.0 {
                 "Off".to_owned()
@@ -468,7 +467,7 @@ fn cart_menu(
     });
 }
 
-/// The note on the ducking and mode controls: kept, not played yet.
+/// The note on the mode controls: kept, not played yet.
 fn not_played_yet(ui: &mut egui::Ui) {
     ui.label(
         RichText::new(NOT_PLAYED_YET)
@@ -552,7 +551,6 @@ fn cart_settings(
                 .font(theme::text(theme::CAPTION))
                 .color(t.text_muted),
         );
-        not_played_yet(ui);
         let first = state.page * wall.per_page;
         egui::Grid::new("cart_ducking")
             .spacing(egui::vec2(space::M, space::XS))

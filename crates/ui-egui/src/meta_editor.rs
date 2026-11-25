@@ -10,7 +10,7 @@ use egui::{RichText, TextEdit};
 use crate::chrome::{Answer, Dialog};
 use crate::icons::Icon;
 use crate::theme::{self, Tokens, size, space};
-use crate::view::{ItemMeta, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource};
+use crate::view::{ItemMeta, Markers, MetaTarget, PLACEHOLDERS, PublishMode, Row, ViewSource};
 
 const NOT_WRITTEN: &str = "preview — not written";
 const FIELDS: [&str; 6] = ["Title", "Artist", "Album", "Year", "Genre", "Comment"];
@@ -43,6 +43,9 @@ pub(crate) struct MetaEditor {
     trim_touched: bool,
     /// True when the items do not share one gain trim.
     trim_mixed: bool,
+    /// The intro end and outro start as typed (m:ss.s or seconds; empty for none).
+    marker_text: [String; 2],
+    markers_touched: bool,
     /// The row whose place in the timeline gives the preview line its context.
     base: Row,
     note: bool,
@@ -69,6 +72,18 @@ impl MetaEditor {
         }
         let first_trim = draft.gain_trim_db;
         let trim_mixed = targets.iter().any(|(_, m)| m.gain_trim_db != first_trim);
+        let marker_text = [
+            draft
+                .markers
+                .and_then(|m| m.intro_end_s)
+                .map(clock)
+                .unwrap_or_default(),
+            draft
+                .markers
+                .and_then(|m| m.outro_start_s)
+                .map(clock)
+                .unwrap_or_default(),
+        ];
         Self {
             targets,
             draft,
@@ -82,6 +97,8 @@ impl MetaEditor {
             keep_alive_touched: false,
             trim_touched: false,
             trim_mixed,
+            marker_text,
+            markers_touched: false,
             base,
             note: false,
             base_preview: true,
@@ -93,6 +110,25 @@ impl MetaEditor {
             [(_, m)] => format!("{} — metadata", m.title),
             many => format!("{} items — metadata", many.len()),
         }
+    }
+
+    /// The typed markers, or why they are refused. Only one file's markers are edited.
+    fn typed_markers(&self) -> Result<Option<Markers>, &'static str> {
+        if !self.markers_touched || self.targets.len() != 1 || self.draft.markers.is_none() {
+            return Ok(None);
+        }
+        let [intro, outro] = &self.marker_text;
+        let (intro, outro) = (parse_secs(intro)?, parse_secs(outro)?);
+        if let (Some(a), Some(b)) = (intro, outro)
+            && a >= b
+        {
+            return Err("The intro must end before the outro starts.");
+        }
+        Ok(Some(Markers {
+            intro_end_s: intro,
+            outro_start_s: outro,
+            by_hand: true,
+        }))
     }
 
     /// Why the edited picture is refused. The pictures that nobody edited are not checked.
@@ -136,6 +172,9 @@ impl MetaEditor {
         if self.trim_touched && out.gain_trim_db.is_some() {
             out.gain_trim_db = self.draft.gain_trim_db;
         }
+        if let Ok(Some(m)) = self.typed_markers() {
+            out.markers = Some(m);
+        }
         out
     }
 }
@@ -156,7 +195,7 @@ pub(crate) fn show(
         n => format!("Apply to {n} items"),
     };
     let (note_shown, base_preview) = (ed.note, ed.base_preview);
-    let can_apply = ed.picture_error().is_none();
+    let can_apply = ed.picture_error().is_none() && ed.typed_markers().is_ok();
     let mut write_pressed = false;
     let answer = Dialog::new("meta_editor", Icon::Tag, &title)
         .ok(&ok_label, can_apply)
@@ -296,6 +335,36 @@ pub(crate) fn show(
                     };
                     caption(ui, note, t);
                 }
+                if let (Some(m), [_]) = (ed.draft.markers, ed.targets.as_slice()) {
+                    ui.add_space(space::S);
+                    caption(ui, "MARKERS", t);
+                    for (i, name) in ["Intro ends", "Outro starts"].into_iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let label = ui.label(RichText::new(name).color(t.text_muted));
+                            let edit = TextEdit::singleline(&mut ed.marker_text[i])
+                                .hint_text("none")
+                                .desired_width(size::FIELD_W);
+                            if ui
+                                .add_sized([size::FIELD_W, size::CONTROL_SM], edit)
+                                .labelled_by(label.id)
+                                .changed()
+                            {
+                                ed.markers_touched = true;
+                            }
+                        });
+                    }
+                    let note = match ed.typed_markers() {
+                        Err(why) => why,
+                        Ok(_) if m.by_hand || ed.markers_touched => {
+                            "Set by hand (m:ss.s). The analysis keeps them."
+                        }
+                        Ok(_) => {
+                            "From the analysis. A jingle of a playlist that plays over \
+                                  the music lies on the intro or the outro."
+                        }
+                    };
+                    caption(ui, note, t);
+                }
                 ui.add_space(space::S);
                 caption(ui, "Cue points can't be edited in this build.", t);
             },
@@ -339,8 +408,47 @@ fn caption(ui: &mut egui::Ui, text: &str, t: &Tokens) {
     );
 }
 
+/// Seconds as m:ss.s, for a marker field.
+fn clock(secs: f32) -> String {
+    let tenths = (secs * 10.0).round() as u32;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+}
+
+/// A typed marker: empty for none, `m:ss.s` or plain seconds.
+fn parse_secs(text: &str) -> Result<Option<f32>, &'static str> {
+    const BAD: &str = "A marker is m:ss.s, seconds, or empty for none.";
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let secs = match text.split_once(':') {
+        Some((m, s)) => {
+            let m: u32 = m.parse().map_err(|_| BAD)?;
+            let s: f32 = s.parse().map_err(|_| BAD)?;
+            if !(0.0..60.0).contains(&s) {
+                return Err(BAD);
+            }
+            m as f32 * 60.0 + s
+        }
+        None => text.parse::<f32>().map_err(|_| BAD)?,
+    };
+    (secs.is_finite() && secs > 0.0)
+        .then_some(Some(secs))
+        .ok_or(BAD)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_marker_reads_as_minutes_and_seconds_or_seconds() {
+        assert_eq!(super::parse_secs("1:05.5"), Ok(Some(65.5)));
+        assert_eq!(super::parse_secs("12"), Ok(Some(12.0)));
+        assert_eq!(super::parse_secs(" "), Ok(None));
+        assert!(super::parse_secs("1:75").is_err());
+        assert!(super::parse_secs("soon").is_err());
+        assert_eq!(super::clock(65.5), "1:05.5");
+    }
+
     use super::*;
     use crate::view::ViewSource;
 

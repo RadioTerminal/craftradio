@@ -108,6 +108,9 @@ pub struct Timeline {
     pub entries: Vec<Entry>,
     pub fits: Vec<FitResult>,
     pub warnings: Vec<Warning>,
+    /// Entries that play over a song's intro or outro, in no airtime of their own.
+    #[serde(default)]
+    pub over: Vec<crate::OverEntry>,
 }
 
 pub struct PlanInput<'a> {
@@ -526,6 +529,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
         let gap = end.duration_since(now).unsigned_abs();
         w.warnings.push(Warning::DeadAir { at: now, gap });
         return Timeline {
+            over: Vec::new(),
             entries: w.entries,
             fits: Vec::new(),
             warnings: w.warnings,
@@ -734,6 +738,7 @@ pub fn merge_with(input: &PlanInput, resume: bool) -> Timeline {
     }
     w.entries.sort_by_key(|e| e.start);
     Timeline {
+        over: Vec::new(),
         entries: w.entries,
         fits: Vec::new(),
         warnings: w.warnings,

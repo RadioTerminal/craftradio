@@ -77,6 +77,14 @@ pub(crate) fn view_meta(item: &Item, m: &radio_model::ItemMeta, trim: Option<f32
             Source::File { .. } => trim,
             _ => None,
         },
+        markers: match (&item.source, &item.timing) {
+            (Source::File { .. }, Some(t)) => Some(radio_ui_egui::view::Markers {
+                intro_end_s: t.intro_end.map(|d| d.as_secs_f32()),
+                outro_start_s: t.outro_start.map(|d| d.as_secs_f32()),
+                by_hand: t.markers == radio_model::MarkerSource::ByHand,
+            }),
+            _ => None,
+        },
     }
 }
 
@@ -189,6 +197,7 @@ pub(crate) fn tab(p: &Playlist, state: &State) -> PlaylistTab {
         _ => 1,
     };
     let mut tab = PlaylistTab {
+        plays: p.plays,
         name: p.name.clone(),
         color: p.color,
         pick: String::new(),
@@ -275,6 +284,7 @@ fn describe_rule(r: &Rule) -> String {
 /// An empty tab, for a station without a main playlist.
 pub(crate) fn empty_tab(name: &str) -> PlaylistTab {
     let mut tab = PlaylistTab {
+        plays: radio_model::PlayMode::InSequence,
         name: name.to_owned(),
         color: [0x80; 3],
         pick: String::new(),

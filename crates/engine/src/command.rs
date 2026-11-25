@@ -150,6 +150,12 @@ pub enum Command {
         playlist: PlaylistId,
         on_interrupt: radio_model::OnInterrupt,
     },
+    /// How the items of a playlist play: in sequence, or over the music with a duck.
+    #[serde(rename = "playlist.set_plays")]
+    PlaylistSetPlays {
+        playlist: PlaylistId,
+        plays: radio_model::PlayMode,
+    },
     /// With `lock`, the engine locks the items, because a person placed them (spec 6.15). A
     /// folder, a watch or an import adds items with `lock` false.
     #[serde(rename = "playlist.add_items")]
@@ -233,6 +239,18 @@ pub enum Command {
     /// Sets the manual gain trim of an item, in dB, on top of its loudness gain. 0 clears it.
     #[serde(rename = "item.set_gain_trim")]
     ItemSetGainTrim { item: ItemId, db: f32 },
+    /// Sets where a song's intro ends and its outro starts, from the file start; `None`
+    /// clears a marker. `markers` says who found them: a `Detected` pair never replaces
+    /// markers set `ByHand`.
+    #[serde(rename = "item.set_markers")]
+    ItemSetMarkers {
+        item: ItemId,
+        #[serde(default)]
+        intro_end: Option<std::time::Duration>,
+        #[serde(default)]
+        outro_start: Option<std::time::Duration>,
+        markers: radio_model::MarkerSource,
+    },
     /// Keep-alive of a stream item: it reconnects until its planned end.
     #[serde(rename = "item.set_keep_alive")]
     ItemSetKeepAlive { item: ItemId, keep_alive: bool },
@@ -486,6 +504,8 @@ impl Command {
             Self::ItemUnlock { .. } => "item.unlock",
             Self::ItemSetMeta { .. } => "item.set_meta",
             Self::ItemSetKeepAlive { .. } => "item.set_keep_alive",
+            Self::ItemSetMarkers { .. } => "item.set_markers",
+            Self::PlaylistSetPlays { .. } => "playlist.set_plays",
             Self::ItemMarkMissing { .. } => "item.mark_missing",
             Self::ItemRelink { .. } => "item.relink",
             Self::ItemSetHash { .. } => "item.set_hash",
@@ -561,6 +581,8 @@ impl Command {
             | Self::ItemLock { .. }
             | Self::ItemUnlock { .. }
             | Self::ItemSetMeta { .. }
+            | Self::ItemSetMarkers { .. }
+            | Self::PlaylistSetPlays { .. }
             | Self::ItemSetKeepAlive { .. }
             | Self::ItemMarkMissing { .. }
             | Self::ItemRelink { .. }
@@ -655,6 +677,24 @@ fn with_optional_prop(mut spec: CommandSpec, name: &str, prop: Value) -> Command
     let mut schema = spec.args_schema.as_value().clone();
     if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         props.insert(name.to_string(), prop);
+    }
+    if let Ok(s) = Schema::try_from(schema) {
+        spec.args_schema = s;
+    }
+    spec
+}
+
+/// A duration as seconds and nanos, or null.
+fn duration_or_null() -> Value {
+    json!({"type": ["object", "null"], "properties": {"secs": {"type": "integer", "minimum": 0}, "nanos": {"type": "integer", "minimum": 0, "maximum": 999999999}}, "required": ["secs", "nanos"]})
+}
+
+/// Adds a required argument `name` with its own schema to a spec.
+fn with_prop(spec: CommandSpec, name: &str, prop: Value) -> CommandSpec {
+    let mut spec = with_optional_prop(spec, name, prop);
+    let mut schema = spec.args_schema.as_value().clone();
+    if let Some(req) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        req.push(json!(name));
     }
     if let Ok(s) = Schema::try_from(schema) {
         spec.args_schema = s;
@@ -797,6 +837,35 @@ pub fn registry() -> Vec<CommandSpec> {
             "Store the content hash and size of an item's file",
             A,
             &[("item", "integer"), ("hash", "string"), ("size", "integer")],
+        ),
+        with_optional_prop(
+            with_optional_prop(
+                spec(
+                    "item.set_markers",
+                    "Set where a song's intro ends and its outro starts; null clears one",
+                    A,
+                    &[("item", "integer"), ("markers", "string")],
+                ),
+                "intro_end",
+                duration_or_null(),
+            ),
+            "outro_start",
+            duration_or_null(),
+        ),
+        with_prop(
+            spec(
+                "playlist.set_plays",
+                "Play a playlist's items in sequence, or over the music ducked by duck_db",
+                A,
+                &[p],
+            ),
+            "plays",
+            json!({"oneOf": [
+                {"type": "string", "enum": ["InSequence"]},
+                {"type": "object", "properties": {"Over": {"type": "object",
+                    "properties": {"duck_db": {"type": "integer", "minimum": -40, "maximum": 0}},
+                    "required": ["duck_db"]}}, "required": ["Over"]}
+            ]}),
         ),
         spec(
             "item.set_keep_alive",

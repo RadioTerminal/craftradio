@@ -36,6 +36,8 @@ pub fn track(id: u64, title: &str, artist: &str, secs_len: u32) -> Item {
         },
     );
     item.timing = Some(Timing {
+        outro_start: None,
+        markers: radio_model::MarkerSource::NotAnalysed,
         cue_in: Duration::ZERO,
         segue: secs(secs_len.saturating_sub(2)),
         cue_out: secs(secs_len),
@@ -57,6 +59,8 @@ pub fn jingle(id: u64, secs_len: u32) -> Item {
         },
     );
     item.timing = Some(Timing {
+        outro_start: None,
+        markers: radio_model::MarkerSource::NotAnalysed,
         cue_in: Duration::ZERO,
         segue: secs(secs_len),
         cue_out: secs(secs_len),
@@ -89,6 +93,7 @@ pub fn live(id: u64, planned_secs: u32) -> Item {
 /// An enabled, non-main playlist with in-order picking and no rules.
 pub fn playlist(id: u64, name: &str, items: Vec<Item>) -> Playlist {
     Playlist {
+        plays: radio_model::PlayMode::InSequence,
         id: PlaylistId(id),
         source: None,
         name: name.to_owned(),

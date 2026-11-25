@@ -132,6 +132,7 @@ fn timeline_around_news(st: &Station, first_segue: u64) -> Timeline {
         frozen: false,
     });
     Timeline {
+        over: Vec::new(),
         entries: vec![
             entry(st, MAIN, 10, at(0), Origin::Main),
             entry(st, JINGLES, 20, at(first_segue), jingle_rule.clone()),
