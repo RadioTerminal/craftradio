@@ -215,8 +215,9 @@ the link changes as soon as the app pairs or unpairs. Unpaired, or paired with a
 than this page, the link is the GitHub Pages `#<station ID>` link, and the station's own
 WebRTC serves it as before.
 
-The paired app sends the cover of each item as it starts (`PUT /api/station/cover`), and an
-empty body when the item has none, while it pushes. The server keeps it in memory only: a
+The paired app sends the cover of each item as it starts (`PUT /api/station/cover`; one
+above 256 KiB is encoded again, smaller), and an empty body when the item has none, while it
+pushes. The server keeps it in memory only: a
 restart, or the end of the station's push, clears it, and the app sends it again when the push
 connects again.
 
@@ -227,7 +228,7 @@ The routes the page and the app use:
 | `GET /<slug>/` (and `HEAD`) | no | The listener page. |
 | `GET /<slug>/stream` | no | The stream the app pushes. |
 | `GET /status-json.xsl` | no | Icecast-shaped stats: titles and listeners, CORS `*`. |
-| `GET /<slug>/cover` (and `HEAD`) | no | The cover of what plays, with its type, `Cache-Control: no-cache`, an `ETag` (304 to a matching `If-None-Match`), `nosniff` and CORS `*`; 404 with none. |
+| `GET /<slug>/cover` (and `HEAD`) | no | The cover of what plays, with its type, `Cache-Control: no-cache`, an `ETag`, new for each cover set even with the same bytes (304 to a matching `If-None-Match`), `nosniff` and CORS `*`; 404 with none. |
 | `GET /api/station` | yes | The pairing document. |
 | `PUT /api/station/outputs` | yes | Replaces the outputs (see "Change outputs from the app"). |
 | `PUT /api/station/cover` | yes | Sets the cover: the image as the body, `Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB (413 above, 415 for another type, 411 without `Content-Length`); an empty body clears it. 204 when taken. |

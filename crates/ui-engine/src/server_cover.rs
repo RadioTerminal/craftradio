@@ -13,8 +13,10 @@ use radio_stream::StreamStatus;
 use crate::pairing::{PairError, PutError, agent, basic, check_address, describe, stored_or};
 use crate::{EngineSource, SecretStore};
 
-/// The largest cover the server takes (`PUT /api/station/cover`).
-pub const SERVER_MAX_COVER: usize = 1 << 20;
+/// The largest cover sent as it is; a larger one is encoded again, smaller, so it goes out
+/// quickly beside the push and each listener's page fetches little. The server takes up to
+/// 1 MiB (`PUT /api/station/cover`).
+pub const SERVER_MAX_COVER: usize = 256 << 10;
 
 /// Sends `cover` (its type and bytes) to `<address>/api/station/cover` with `key` as the
 /// Basic password, or clears the server's cover with an empty body when there is none. An
