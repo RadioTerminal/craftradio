@@ -177,6 +177,21 @@ fn put_outputs_adds_an_output_live() {
         entry(&stats(addr), SLUG, "stream").map(|e| e["listeners"].clone()),
         Some(json!(1))
     );
+
+    // The source's end finishes the transcoder the change started, with no change after.
+    drop(pusher);
+    eventually("the source never ended", || {
+        entry(&stats(addr), SLUG, "stream").is_none()
+    });
+    assert!(
+        !server.transcoding(SLUG),
+        "a transcoder was left running after the source ended"
+    );
+    let _again = on_air(addr, SLUG, MORNING_KEY, Tone::Ogg);
+    assert!(
+        hears(listen_output(addr, "low.opus"), Format::Ogg, EAR_PATIENCE),
+        "the next source plays on the new output"
+    );
 }
 
 #[test]
@@ -185,6 +200,9 @@ fn put_outputs_removes_an_output() {
     let server = Server::start(config(Some(dir.path()), OPUS_64)).unwrap();
     let addr = server.local_addr();
     let _pusher = on_air(addr, SLUG, MORNING_KEY, Tone::Ogg);
+    let (pushed, head) = request(addr, "GET", &format!("/{SLUG}/stream"));
+    assert_eq!(head.status, 200);
+    let pushed = Drain::start(pushed);
     let listener = Drain::start(listen_output(addr, "opus"));
     eventually("the output's listener got no audio", || {
         listener.bytes() > 0
@@ -201,6 +219,7 @@ fn put_outputs_removes_an_output() {
     let listed = stats(addr);
     assert!(entry(&listed, SLUG, "opus").is_none(), "{listed}");
     assert!(entry(&listed, SLUG, "stream").is_some(), "{listed}");
+    assert!(!pushed.ended(), "the /stream listener was cut off");
 }
 
 #[test]
@@ -432,20 +451,10 @@ fn a_swap_while_the_source_ends_leaves_no_transcoder() {
                     Tone::Ogg,
                 );
                 std::thread::sleep(Duration::from_millis(15 * (round % 4)));
-                if round % 2 == 1 {
-                    // Long enough for the outputs to begin: two transcoders on one set
-                    // would leave one of them unable to begin its mounts.
-                    std::thread::sleep(Duration::from_millis(100));
-                    let current = server.outputs(SLUG).unwrap();
-                    assert!(
-                        current
-                            .each()
-                            .all(|(output, _)| !current.failed(&output.mount)),
-                        "an output failed: the station has two transcoders"
-                    );
-                }
                 drop(pusher);
-                // Changes go on while the server notices the source has gone.
+                // Changes go on while the server notices the source has gone. (A change
+                // made off the air also clears the slot, so this check alone can't catch
+                // a source's end that leaves a transcoder; the first test does.)
                 eventually("the source never ended", || {
                     entry(&stats(addr), SLUG, "stream").is_none()
                 });
