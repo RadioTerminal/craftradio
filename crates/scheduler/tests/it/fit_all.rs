@@ -89,6 +89,7 @@ fn timeline(st: &Station, events: &[(Timestamp, FixMode)]) -> Timeline {
     }
     entries.sort_by_key(|e| e.start);
     Timeline {
+        over: Vec::new(),
         entries,
         fits: Vec::new(),
         warnings: Vec::new(),

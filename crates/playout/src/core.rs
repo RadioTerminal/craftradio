@@ -540,6 +540,7 @@ pub(crate) struct Core {
 
 fn empty_timeline() -> Timeline {
     Timeline {
+        over: Vec::new(),
         entries: Vec::new(),
         fits: Vec::new(),
         warnings: Vec::new(),

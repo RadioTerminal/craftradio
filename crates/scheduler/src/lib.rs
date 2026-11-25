@@ -2,6 +2,7 @@ pub mod constraints;
 pub mod fit;
 pub mod history;
 pub mod merge;
+pub mod over;
 pub mod pick;
 pub mod replan;
 
@@ -11,5 +12,6 @@ pub use history::{PlayHistory, Played};
 pub use merge::{
     DropReason, Entry, Fixed, Origin, PlanInput, Timeline, Warning, merge, merge_with,
 };
+pub use over::{Over, OverEntry, Side};
 pub use pick::Picker;
 pub use replan::{PlanOptions, plan};
