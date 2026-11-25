@@ -32,6 +32,7 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::PlayNext { .. }
             | Edit::SetStrip { .. }
             | Edit::SetIcecast(_)
+            | Edit::RestoreIcecast
             | Edit::Pair { .. }
             | Edit::Unpair
             | Edit::SaveServerOutputs(_)
@@ -545,6 +546,11 @@ impl MockSource {
             }
             Edit::SetIcecast(ice) => {
                 self.icecast = ice;
+                Ok(1)
+            }
+            Edit::RestoreIcecast => {
+                self.icecast = super::default_icecast();
+                self.settings.remove(radio_model::ICECAST_PART);
                 Ok(1)
             }
             // The preview reaches no server, so it never shows a pairing (rule 7).

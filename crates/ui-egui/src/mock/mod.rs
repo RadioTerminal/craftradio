@@ -109,6 +109,24 @@ pub struct MockSource {
     acked_alarms: std::collections::HashSet<u64>,
 }
 
+/// The Icecast mount of a station that set none up: the defaults Restore page defaults
+/// goes back to.
+fn default_icecast() -> IcecastView {
+    IcecastView {
+        host: String::new(),
+        port: ICECAST_PORT,
+        mount: String::new(),
+        user: "source".to_owned(),
+        password: String::new(),
+        password_set: false,
+        keychain_error: None,
+        tls: true,
+        format: StreamFormat::Opus,
+        kbps: ICECAST_KBPS,
+        public_url: String::new(),
+    }
+}
+
 impl MockSource {
     /// A mock with a longer timeline, for performance checks with many rows.
     pub fn with_hours(tz: TimeZone, hours: i64) -> Self {
@@ -225,16 +243,8 @@ impl MockSource {
             streaming: false,
             icecast: IcecastView {
                 host: "stream.example.org".to_owned(),
-                port: ICECAST_PORT,
                 mount: "/live".to_owned(),
-                user: "source".to_owned(),
-                password: String::new(),
-                password_set: false,
-                keychain_error: None,
-                tls: true,
-                format: StreamFormat::Opus,
-                kbps: ICECAST_KBPS,
-                public_url: String::new(),
+                ..default_icecast()
             },
             dynamics: radio_model::DynamicsSettings::default(),
             loudness: radio_model::LoudnessSettings::default(),

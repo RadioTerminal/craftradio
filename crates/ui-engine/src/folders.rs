@@ -160,8 +160,9 @@ impl EngineSource {
                 crate::bg::Done::PutOutputs(answer) => self.put_answer(answer),
                 crate::bg::Done::Forgot { result } => {
                     if let Err(e) = result {
-                        self.notices
-                            .push(format!("The keychain kept the station key: {e}"));
+                        self.notices.push(format!(
+                            "The keychain kept an entry it was asked to remove: {e}"
+                        ));
                     }
                 }
                 // An answer for a range that the person has left since is dropped.

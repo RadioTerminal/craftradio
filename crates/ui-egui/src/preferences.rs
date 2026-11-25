@@ -154,8 +154,10 @@ impl Page {
         }
     }
 
-    /// Ok when Restore page defaults resets this page, or why it cannot.
-    fn restore(self) -> Result<(), &'static str> {
+    /// Ok when Restore page defaults resets this page, or why it cannot. The Icecast and
+    /// Server pages depend on whether `view` is paired with a server.
+    fn restore(self, view: &StationView) -> Result<(), &'static str> {
+        let paired = view.pairing.paired;
         match self {
             Self::Decks
             | Self::Processing
@@ -167,9 +169,12 @@ impl Page {
             | Self::WebRtc
             | Self::Branding => Ok(()),
             Self::Devices => Err("The devices of this computer have no defaults to go back to."),
-            Self::Icecast => Err("The Icecast server has no default; change it field by field."),
+            Self::Icecast if paired => Err(crate::view::ICECAST_PAIRED),
+            Self::Icecast => Ok(()),
             Self::Cartwall => Err("The cart pages are the station's own and have no defaults."),
-            Self::Server => Err("Disconnect unpairs the station and sets back what pairing wrote."),
+            // As Disconnect: the pairing goes, and so do the settings it wrote and the key.
+            Self::Server if paired => Ok(()),
+            Self::Server => Err("The station is not paired with a server."),
             Self::Shortcuts => {
                 Err("Set shortcuts back to their defaults in the Keyboard Shortcuts dialog.")
             }
@@ -267,7 +272,7 @@ pub(crate) fn show(
         description: p.description(),
         keywords: p.keywords(),
         dot: (p == Page::Icecast).then(|| mixer::icecast_dot(view, t)),
-        restore: p.restore(),
+        restore: p.restore(view),
     });
     let mut nav = settings::Nav {
         selected: state.page.index(),
@@ -318,7 +323,7 @@ pub(crate) fn show(
         }
         state.page = p;
     }
-    if out.restore {
+    if out.restore && state.page.restore(view).is_ok() {
         restore_defaults(state.page, mixer_state, actions);
     }
     out.done
@@ -328,7 +333,7 @@ pub(crate) fn show(
 fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Vec<Action>) {
     match page {
         Page::Decks => decks::restore_defaults(actions),
-        Page::Processing | Page::Meters => {
+        Page::Processing | Page::Meters | Page::Icecast => {
             mixer::restore_defaults(mixer_state, page.mixer(), actions);
         }
         Page::Clock => clock_window::restore_defaults(actions),
@@ -336,6 +341,11 @@ fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Ve
         Page::Alarms => alarms::restore_defaults(actions),
         Page::Library => library::restore_defaults(actions),
         Page::WebRtc => {
+            // Streaming to listeners is off until a person turns it on: what the page's own
+            // switch sends, so the source turns it off as it does there.
+            actions.push(Action::EditQuiet(crate::view::Edit::SetStreaming(
+                STREAMING_DEFAULT,
+            )));
             for (key, value) in WEBRTC_DEFAULTS {
                 actions.push(crate::parts::set(crate::parts::WEBRTC, key, value));
             }
@@ -358,13 +368,18 @@ fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Ve
                 actions.push(crate::parts::set(crate::parts::BRANDING, key, ""));
             }
         }
+        // What Disconnect does: unpair, which removes the key too.
+        Page::Server => actions.push(Action::Edit(crate::view::Edit::Unpair)),
         // Pages without defaults show the button disabled with the reason.
-        Page::Devices | Page::Icecast | Page::Server | Page::Cartwall | Page::Shortcuts => {}
+        Page::Devices | Page::Cartwall | Page::Shortcuts => {}
     }
 }
 
 /// The defaults of the WebRTC stream, as the playout has them: port, bitrate and listeners.
 const WEBRTC_DEFAULTS: [(&str, u32); 3] = [("port", 8000), ("kbps", 96), ("max_listeners", 50)];
+/// Streaming to listeners over WebRTC, the `enabled` key, is off until a person turns it on,
+/// as the playout reads it.
+const STREAMING_DEFAULT: bool = false;
 /// Listeners pass the audio on unless the station turns it off.
 const RELAY_DEFAULT: bool = true;
 /// Of the most listeners, the slots kept for listeners who find no one to play through.
@@ -688,7 +703,13 @@ fn shortcuts_page(ui: &mut egui::Ui, actions: &mut Vec<Action>, t: &Tokens) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::Edit;
+    use crate::view::{Edit, ViewSource};
+
+    fn view() -> StationView {
+        let tz = jiff::tz::TimeZone::get("Europe/Ljubljana").expect("tz");
+        let now: jiff::Timestamp = "2026-11-21T13:58:00Z".parse().expect("ts");
+        crate::MockSource::new(tz).snapshot(now)
+    }
 
     fn tab(page: Page) -> Tab {
         Tab {
@@ -698,7 +719,7 @@ mod tests {
             description: page.description(),
             keywords: page.keywords(),
             dot: None,
-            restore: page.restore(),
+            restore: page.restore(&view()),
         }
     }
 
@@ -713,7 +734,7 @@ mod tests {
 
     #[test]
     fn restoring_branding_clears_the_name_and_the_logo() {
-        assert!(Page::Branding.restore().is_ok());
+        assert!(Page::Branding.restore(&view()).is_ok());
         let mut actions = Vec::new();
         restore_defaults(Page::Branding, &mut mixer::State::default(), &mut actions);
         let mut keys: Vec<String> = actions

@@ -162,7 +162,7 @@ pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
 }
 
 /// Restore page defaults on a mixer page: Processing goes back to the model's default loudness
-/// and dynamics, Meters to the default peak hold.
+/// and dynamics, Meters to the default peak hold, Icecast to no mount and switched on.
 pub(crate) fn restore_defaults(
     state: &mut State,
     tab: Option<SettingsTab>,
@@ -187,6 +187,12 @@ pub(crate) fn restore_defaults(
                 "peak_hold_s",
                 f64::from(DEFAULT_PEAK_HOLD_S),
             ));
+        }
+        Some(SettingsTab::Icecast) => {
+            // The draft goes too, so the form shows the defaults and Apply cannot write the
+            // old mount back. The source also takes the password out of the keychain.
+            state.icecast = None;
+            actions.push(Action::Edit(Edit::RestoreIcecast));
         }
         _ => {}
     }

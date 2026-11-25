@@ -350,8 +350,13 @@ pub(crate) fn page(
             let button = egui::Button::new(words).min_size(egui::vec2(0.0, size::CONTROL_MD));
             let r = ui.add_enabled(restore.is_ok(), button);
             // The icon is drawn in the label; the name is the words alone.
-            ui.ctx()
-                .accesskit_node_builder(r.id, |node| node.set_label("Restore page defaults"));
+            // A disabled button says why in its description too, for a screen reader.
+            ui.ctx().accesskit_node_builder(r.id, |node| {
+                node.set_label("Restore page defaults");
+                if let Err(why) = restore {
+                    node.set_description(why);
+                }
+            });
             let r = match restore {
                 Ok(()) => r.on_hover_text("Set this page's settings back to their defaults"),
                 Err(why) => r.on_disabled_hover_text(why),

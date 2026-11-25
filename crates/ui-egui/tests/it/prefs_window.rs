@@ -322,3 +322,74 @@ fn the_icecast_page_switches_icecast_off_and_says_so() {
         "on air, a switched-off Icecast is not off air"
     );
 }
+
+/// Restore page defaults: whether it can, and why not in words.
+fn restore_reason(h: &Harness<'_, RadioApp>) -> Option<String> {
+    let node = h.get_by_label("Restore page defaults");
+    let node = node.accesskit_node();
+    node.is_disabled()
+        .then(|| node.description().unwrap_or_default().to_owned())
+}
+
+fn sent(edits: &std::sync::Mutex<Vec<Edit>>) -> Vec<Edit> {
+    edits.lock().expect("edits").clone()
+}
+
+/// On the Server page, Restore page defaults is Disconnect: it unpairs, and only a paired
+/// station can.
+#[test]
+fn restore_on_the_server_page_unpairs_and_only_while_paired() {
+    let (mut h, edits) = station_preferences(false);
+    click(&mut h, "Server");
+    assert_eq!(
+        restore_reason(&h).as_deref(),
+        Some("The station is not paired with a server.")
+    );
+    click(&mut h, "Restore page defaults");
+    assert!(!sent(&edits).contains(&Edit::Unpair), "nothing to unpair");
+
+    let (mut h, edits) = station_preferences(true);
+    click(&mut h, "Server");
+    assert_eq!(restore_reason(&h), None, "a paired station can unpair");
+    click(&mut h, "Restore page defaults");
+    assert_eq!(
+        sent(&edits).iter().filter(|e| **e == Edit::Unpair).count(),
+        1,
+        "Restore unpairs once"
+    );
+}
+
+/// On the Icecast page, Restore page defaults sets Icecast back, switched on again; a paired
+/// station keeps the settings its pairing writes, and says so.
+#[test]
+fn restore_on_the_icecast_page_sets_it_back_unless_paired() {
+    let (mut h, edits) = station_preferences(false);
+    search(&mut h, "Icecast");
+    click(&mut h, "Streaming");
+    assert!(!checked(&h, "Streaming"));
+    assert_eq!(restore_reason(&h), None, "Icecast has defaults");
+    click(&mut h, "Restore page defaults");
+    assert!(sent(&edits).contains(&Edit::RestoreIcecast));
+    assert!(checked(&h, "Streaming"), "Restore switches Icecast back on");
+
+    let (mut h, edits) = station_preferences(true);
+    search(&mut h, "Icecast");
+    assert_eq!(
+        restore_reason(&h).as_deref(),
+        Some(radio_ui_egui::view::ICECAST_PAIRED)
+    );
+    click(&mut h, "Restore page defaults");
+    assert!(!sent(&edits).contains(&Edit::RestoreIcecast));
+}
+
+/// Restore page defaults on the WebRTC page turns streaming to listeners back off.
+#[test]
+fn restore_on_the_webrtc_page_turns_streaming_off() {
+    let (mut h, edits) = station_preferences(false);
+    click(&mut h, "WebRTC");
+    click(&mut h, "Streaming");
+    assert!(checked(&h, "Streaming"), "streaming is on");
+    click(&mut h, "Restore page defaults");
+    assert!(sent(&edits).contains(&Edit::SetStreaming(false)));
+    assert!(!checked(&h, "Streaming"), "Restore turns streaming off");
+}

@@ -928,6 +928,11 @@ impl StreamFormat {
     }
 }
 
+/// Why Restore page defaults leaves the Icecast settings of a paired station: the pairing
+/// writes them again at each start.
+pub const ICECAST_PAIRED: &str =
+    "Paired with a server: Disconnect on the Server page sets these back.";
+
 /// The Icecast mount settings.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct IcecastView {
@@ -1352,6 +1357,10 @@ pub enum Edit {
         change: StripChange,
     },
     SetIcecast(IcecastView),
+    /// Restore page defaults on the Icecast page: every `icecast.*` setting goes back to its
+    /// default (switched on, no mount), and the password of the mount leaves the keychain.
+    /// Refused while paired with a server, whose pairing writes them.
+    RestoreIcecast,
     /// Pair with the station server at `address` (`https://…`, or `http://` to this
     /// computer). The key goes to the keychain only; an empty key uses the one stored for
     /// the paired mount.

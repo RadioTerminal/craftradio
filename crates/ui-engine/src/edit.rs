@@ -1091,6 +1091,7 @@ impl EngineSource {
             } => self.set_weight(&playlist, index, weight),
             Edit::SetStrip { strip, change } => self.set_strip(strip, change),
             Edit::SetIcecast(ice) => self.set_icecast(ice),
+            Edit::RestoreIcecast => self.restore_icecast(),
             Edit::Pair { address, key } => self.pair(&address, &key),
             Edit::Unpair => self.unpair(),
             Edit::SaveServerOutputs(rows) => self.save_outputs(rows),

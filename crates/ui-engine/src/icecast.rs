@@ -280,6 +280,52 @@ impl EngineSource {
         }
     }
 
+    /// `Edit::RestoreIcecast`: every Icecast setting goes back to its default in one step,
+    /// switched on and with no mount, and the password of the mount it had leaves the
+    /// keychain. A paired station keeps them: its pairing writes them at each start.
+    pub(crate) fn restore_icecast(&mut self) -> Result<usize, String> {
+        if crate::pairing::is_paired(&self.state) {
+            return Err(radio_ui_egui::view::ICECAST_PAIRED.into());
+        }
+        if self.worker.is_none() {
+            return Err("The background lane could not start; nothing changed".into());
+        }
+        let key = secret_key(&icecast_view(&self.state));
+        let set = |k: &str, v: serde_json::Value| Command::SettingsSet {
+            part: ICECAST_PART.into(),
+            key: k.into(),
+            value: v,
+        };
+        self.run_batch(vec![
+            set("host", "".into()),
+            set("port", DEFAULT_PORT.into()),
+            set("mount", "".into()),
+            set("user", "source".into()),
+            set("format", "opus".into()),
+            set("kbps", DEFAULT_KBPS.into()),
+            // No value: TLS follows the host again, as on a station that never set it.
+            set("tls", serde_json::Value::Null),
+            set("public_url", "".into()),
+            set(radio_model::ICECAST_ENABLED_KEY, true.into()),
+        ])?;
+        let sent = self.worker.as_ref().is_some_and(|w| {
+            w.jobs
+                .send(crate::bg::Job::Forget {
+                    key,
+                    store: std::sync::Arc::clone(&self.secrets),
+                })
+                .is_ok()
+        });
+        if !sent {
+            self.notices.push(
+                "The background lane has stopped; the Icecast password stays in the keychain"
+                    .into(),
+            );
+        }
+        self.secret_known = None;
+        Ok(1)
+    }
+
     pub(crate) fn set_icecast(&mut self, ice: IcecastView) -> Result<usize, String> {
         let host = ice.host.trim();
         if host.contains(['/', '@', ' ']) {
