@@ -508,6 +508,7 @@ impl EngineSource {
         let (name, color, is_main) = self.playlist_look(playlist);
         let meta = effective_meta(item, self.state.item_meta(item.id));
         Row {
+            over: Vec::new(),
             id,
             start: self.zoned(start),
             playlist: name,
@@ -578,6 +579,26 @@ impl EngineSource {
                 .iter()
                 .find(|s| s.item == e.item)
                 .map(|s| stream_state(s, pv.now));
+            row.over = pv
+                .timeline
+                .over
+                .iter()
+                .filter(|o| o.over.host == e.item && o.over.host_start == e.start)
+                .filter_map(|o| {
+                    let (_, item) = self.items.get(&o.entry.item)?;
+                    let (playlist, color, _) = self.playlist_look(o.entry.playlist);
+                    Some(radio_ui_egui::view::OverRow {
+                        playlist,
+                        color,
+                        title: display_title(item),
+                        side: match o.over.side {
+                            radio_scheduler::Side::Intro => radio_ui_egui::view::OverSide::Intro,
+                            radio_scheduler::Side::Outro => radio_ui_egui::view::OverSide::Outro,
+                        },
+                        start: self.zoned(o.entry.start),
+                    })
+                })
+                .collect();
             refs.insert(
                 id,
                 RowRef {
@@ -808,6 +829,7 @@ impl EngineSource {
             title.push_str(" (cut off)");
         }
         Row {
+            over: Vec::new(),
             id: HISTORY_BIT | u64::try_from(r.id.0).unwrap_or(0),
             start: self.zoned(r.entry.start),
             playlist: r.entry.playlist.clone(),

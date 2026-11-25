@@ -362,3 +362,72 @@ fn markers_from_the_metadata_editor_reach_the_engine_as_set_by_hand() {
     let m = view.rows[0].meta.markers.unwrap();
     assert_eq!((m.intro_end_s, m.outro_start_s), (Some(4.0), Some(15.0)));
 }
+
+/// A jingle that plays over a song shows on the song's row, with its playlist and side,
+/// and takes no row of its own.
+#[test]
+fn an_over_item_shows_on_its_songs_row() {
+    use radio_engine::Command;
+    use radio_model::{MarkerSource, PlayMode, PlaylistId};
+    let dir = dir();
+    let path = wav(&dir, "over-song", 20.0);
+    let songs: Vec<_> = (1..=4)
+        .map(|i| {
+            let mut s = track(i, &format!("Song {i}"), &path, 20.0);
+            let t = s.timing.as_mut().unwrap();
+            t.intro_end = Some(std::time::Duration::from_secs(5));
+            t.markers = MarkerSource::Detected;
+            s
+        })
+        .collect();
+    let id = wav(&dir, "over-id", 2.0);
+    let mut engine = radio_engine::Engine::open_in_memory().unwrap();
+    engine
+        .dispatch(Command::PlaylistAddItems {
+            playlist: PlaylistId(1),
+            items: songs,
+            at: None,
+            lock: false,
+        })
+        .unwrap();
+    let made = engine
+        .dispatch(Command::PlaylistCreate { name: "IDs".into() })
+        .unwrap();
+    let ids = PlaylistId(made.data.and_then(|v| v.as_u64()).unwrap());
+    engine
+        .dispatch(Command::PlaylistAddItems {
+            playlist: ids,
+            items: vec![track(50, "Station ID", &id, 2.0)],
+            at: None,
+            lock: true,
+        })
+        .unwrap();
+    engine
+        .dispatch(Command::PlaylistSetRulesScript {
+            playlist: ids,
+            script: r#"rule({every: {tracks: 1}, place: "between", take: 1, constraints: []});"#
+                .into(),
+        })
+        .unwrap();
+    engine
+        .dispatch(Command::PlaylistSetPlays {
+            playlist: ids,
+            plays: PlayMode::Over { duck_db: -12 },
+        })
+        .unwrap();
+    let (mut source, clock) = source_from(engine);
+    let view = wait_for(&mut source, &clock, |v| {
+        v.rows.iter().any(|r| !r.over.is_empty())
+    });
+    let host = view.rows.iter().find(|r| !r.over.is_empty()).unwrap();
+    let o = &host.over[0];
+    assert_eq!(
+        (o.playlist.as_str(), o.title.as_str()),
+        ("IDs", "Test Artist – Station ID")
+    );
+    assert_eq!(o.side, radio_ui_egui::view::OverSide::Intro);
+    assert!(
+        !view.rows.iter().any(|r| r.title.ends_with("Station ID")),
+        "the ID has a row of its own"
+    );
+}

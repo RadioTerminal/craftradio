@@ -96,6 +96,16 @@ fn the_rules_editor_sets_a_playlist_to_play_over_the_music() {
     );
 }
 
+/// A jingle that plays over a song shows on the song's row, named with its playlist.
+#[test]
+fn a_song_row_shows_the_jingle_that_plays_over_it() {
+    let harness = harness();
+    assert!(
+        harness.query_by_label_contains("over intro").is_some(),
+        "no song row names the jingle over its intro"
+    );
+}
+
 #[test]
 fn each_tool_window_opens_from_the_deck_strip() {
     let mut harness = harness();

@@ -85,6 +85,34 @@ pub struct Row {
     pub one_off: Option<OneOffView>,
     /// For a row of the as-played log: how the airing went. `None` for other rows.
     pub aired: Option<Aired>,
+    /// The jingles that play over this song's intro or outro. They take no row of their own.
+    pub over: Vec<OverRow>,
+}
+
+/// A jingle that plays over a song, ducking it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverRow {
+    pub playlist: String,
+    pub color: [u8; 3],
+    pub title: String,
+    pub side: OverSide,
+    pub start: jiff::Zoned,
+}
+
+/// Where on its song a jingle plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverSide {
+    Intro,
+    Outro,
+}
+
+impl OverSide {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Intro => "over intro",
+            Self::Outro => "over outro",
+        }
+    }
 }
 
 /// How one airing of the as-played log went.

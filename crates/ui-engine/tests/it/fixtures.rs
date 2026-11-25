@@ -90,6 +90,11 @@ pub fn source(items: Vec<Item>) -> (EngineSource, ManualClock) {
             })
             .unwrap();
     }
+    source_from(engine)
+}
+
+/// A source over `engine` as it is.
+pub fn source_from(engine: Engine) -> (EngineSource, ManualClock) {
     let clock = ManualClock::new(t0());
     let mut cfg = PlayoutConfig::new(Arc::new(clock.clone()), OutputChoice::Null);
     cfg.horizon = Duration::from_secs(600);
