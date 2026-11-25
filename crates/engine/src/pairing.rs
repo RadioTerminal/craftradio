@@ -75,7 +75,12 @@ pub(crate) fn pair(
         outputs,
         push,
         json!(document.outputs_editable),
-        json!(document.player_url),
+        // Kept only when it is a page on the paired server itself.
+        json!(if radio_model::on_server(&address, &document.player_url) {
+            document.player_url.as_str()
+        } else {
+            ""
+        }),
     ];
     for ((part, key), value) in PAIRED.into_iter().zip(values) {
         settings

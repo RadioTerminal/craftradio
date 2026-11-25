@@ -202,11 +202,14 @@ settings back and removes the key.
 
 The server serves the WebRTC listener page (the same one as on GitHub Pages) at `/<slug>/`
 for each station it has, for example `https://radio.example.org/morning/`; any other slug
-is 404. The pairing document names it as `player_url`, and a paired app links listeners to
-it, as `<player_url>?stream=<stream>#<station ID>`: the page plays the station over WebRTC
-by its ID and falls back to the server's `/<slug>/stream` when WebRTC does not connect.
-The link changes as soon as the app pairs or unpairs. An app paired with a server older
-than this page keeps the GitHub Pages link.
+is 404. Opened as it is, the page plays the station's `/<slug>/stream`. The pairing
+document names it as `player_url`, and a paired app links listeners to it, as
+`<player_url>?stream=<stream>#<station ID>`: the page plays the station over WebRTC by its
+ID and falls back to `/<slug>/stream` when WebRTC does not connect. The app keeps a
+`player_url` only when it is on the server it paired with. The link changes as soon as the
+app pairs or unpairs; the fallback stream that the station tells listeners over WebRTC is
+taken at the app's start, so restart the app after pairing to change that. An app paired
+with a server older than this page keeps the GitHub Pages link.
 
 ## Set the app's Icecast output by hand
 

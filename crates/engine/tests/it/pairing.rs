@@ -101,6 +101,19 @@ fn the_app_reads_the_document_the_server_writes() {
 }
 
 #[test]
+fn a_player_page_on_another_host_is_not_stored() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let mut doc = document();
+    doc.player_url = "https://elsewhere.example.invalid/night-owls/".into();
+    pair(&mut e, doc).unwrap();
+    assert_eq!(
+        setting(&e, SERVER_PART, "player_url"),
+        Some(json!("")),
+        "only a page on the paired server is kept"
+    );
+}
+
+#[test]
 fn pairing_writes_icecast_webrtc_and_server_settings() {
     let mut e = Engine::open_in_memory().unwrap();
     pair(&mut e, document()).unwrap();

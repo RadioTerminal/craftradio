@@ -28,6 +28,7 @@ fn a_station_gets_the_listener_page_at_its_slug() {
         assert_eq!(head.header("Cache-Control"), Some("no-cache"), "{path}");
         assert_eq!(head.header("X-Content-Type-Options"), Some("nosniff"));
         assert_eq!(head.header("Referrer-Policy"), Some("no-referrer"));
+        assert_eq!(head.header("X-Frame-Options"), Some("DENY"), "never framed");
         let body = String::from_utf8(read_to_end_within(&mut stream, PATIENCE)).unwrap();
         assert!(body.starts_with("<!doctype html"), "an HTML page");
         // The same page GitHub Pages publishes, which plays a station by its ID.
@@ -42,5 +43,41 @@ fn an_unknown_station_has_no_page() {
     for path in ["/noon/", "/noon", "/", "/dawn/stream/"] {
         let (_stream, head) = request(addr, "GET", path);
         assert_eq!(head.status, 404, "{path}");
+    }
+}
+
+#[test]
+fn a_head_gets_the_page_headers_and_no_body() {
+    let server = start();
+    let addr = server.local_addr();
+    let (mut stream, head) = request(addr, "HEAD", "/dawn/");
+    assert_eq!(head.status, 200);
+    assert_eq!(
+        head.header("Content-Type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert_eq!(head.header("X-Content-Type-Options"), Some("nosniff"));
+    let (_get, get) = request(addr, "GET", "/dawn/");
+    assert_eq!(
+        head.header("Content-Length"),
+        get.header("Content-Length"),
+        "the length of the page a GET gets"
+    );
+    assert!(
+        read_to_end_within(&mut stream, PATIENCE).is_empty(),
+        "no body"
+    );
+}
+
+/// A push to the page's path is 404, never 405, which the app would take as "try SOURCE".
+#[test]
+fn a_push_to_the_page_is_404() {
+    let server = start();
+    let addr = server.local_addr();
+    for method in ["PUT", "SOURCE"] {
+        for path in ["/dawn", "/dawn/"] {
+            let (_stream, head) = request(addr, method, path);
+            assert_eq!(head.status, 404, "{method} {path}");
+        }
     }
 }

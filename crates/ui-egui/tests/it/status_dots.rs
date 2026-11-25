@@ -70,6 +70,17 @@ fn a_webrtc_switched_off_is_off_not_a_fault() {
     }
 }
 
+#[test]
+fn a_station_without_webrtc_has_no_webrtc_dot() {
+    let mut view = mock().snapshot(now());
+    view.preview = false;
+    view.output.streaming = None;
+    view.output.webrtc = Status::NotConnected;
+    assert_eq!(view.webrtc_page_status(), None, "no output, no dot");
+    view.output.streaming = Some(true);
+    assert!(view.webrtc_page_status().is_some(), "an output has one");
+}
+
 fn pairing(state: PairState, paired: bool) -> PairingView {
     PairingView {
         address: ADDRESS.to_owned(),

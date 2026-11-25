@@ -680,6 +680,12 @@ pub struct StationView {
 }
 
 impl StationView {
+    /// The status of the WebRTC page, for its dot and its status line: none when the station
+    /// has no WebRTC output (the preview always shows one).
+    pub fn webrtc_page_status(&self) -> Option<PageStatus> {
+        (self.preview || self.output.streaming.is_some()).then(|| self.output.webrtc_page_status())
+    }
+
     /// The text for the preview or for a real station, by the source.
     pub fn say<'a>(&self, preview: &'a str, real: &'a str) -> &'a str {
         if self.preview { preview } else { real }

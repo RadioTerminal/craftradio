@@ -360,6 +360,8 @@ fn headless(
     let view = playout.snapshot();
     println!("radio: output {:?}", view.outputs.local);
     let mut webrtc = None;
+    // The listen link last printed, printed again when pairing changes it.
+    let mut shown_link: Option<String> = None;
     let mut air = None;
     let mut icecast_on = None;
     let mut source = EngineSource::new(
@@ -404,14 +406,28 @@ fn headless(
         icecast_on = Some(now_ice);
         let snapshot = source.playout().snapshot();
         let now_webrtc = snapshot.outputs.webrtc;
-        if now_webrtc != webrtc {
-            if let Some(status) = &now_webrtc {
-                let was_listening =
-                    matches!(webrtc, Some(radio_stream::WebRtcStatus::Listening { .. }));
-                print_webrtc(status, !was_listening, &snapshot.state);
-            }
-            webrtc = now_webrtc;
+        if now_webrtc != webrtc
+            && let Some(status) = &now_webrtc
+        {
+            let was_listening =
+                matches!(webrtc, Some(radio_stream::WebRtcStatus::Listening { .. }));
+            print_webrtc(status, !was_listening);
         }
+        // The link to play from anywhere, as the settings make it now (on the paired
+        // server's page when it serves one): printed when it changes, as pairing does.
+        let link = match &now_webrtc {
+            Some(radio_stream::WebRtcStatus::Listening {
+                link: Some(link), ..
+            }) => Some(radio_ui_engine::listen_link(&snapshot.state, link)),
+            _ => None,
+        };
+        if link != shown_link {
+            if let Some(link) = &link {
+                println!("radio: listen from anywhere: {link}");
+            }
+            shown_link = link;
+        }
+        webrtc = now_webrtc;
         // The item gain that playout sent to each deck, when it changes.
         let view = source.playout().snapshot();
         for (i, d) in view.decks.iter().enumerate() {
@@ -509,10 +525,9 @@ fn icecast_line(enabled: bool, set_up: bool) -> &'static str {
     }
 }
 
-/// Prints the WebRTC state, with the addresses that listeners open: the link to play from
-/// anywhere as the settings in `state` make it (on the paired server's page when it serves
-/// one).
-fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool, state: &radio_engine::State) {
+/// Prints the WebRTC state, with the addresses on this network that listeners open. The
+/// link to play from anywhere is printed apart, whenever it changes.
+fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool) {
     use radio_stream::WebRtcStatus;
     match status {
         WebRtcStatus::Starting => {
@@ -522,7 +537,6 @@ fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool, state: &ra
             url,
             public,
             listeners,
-            link,
             relays,
             mapped,
             reported,
@@ -545,10 +559,6 @@ fn print_webrtc(status: &radio_stream::WebRtcStatus, addresses: bool, state: &ra
             }
             if !addresses {
                 return;
-            }
-            if let Some(link) = link {
-                let link = radio_ui_engine::listen_link(state, link);
-                println!("radio: listen from anywhere: {link}");
             }
             println!("radio: listen on this network: {url}");
             if public.is_none() {

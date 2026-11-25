@@ -91,3 +91,38 @@ fn a_server_that_serves_no_page_keeps_the_listener_site() {
         "with the paired stream as the public one: {link}"
     );
 }
+
+#[test]
+fn a_page_on_another_host_is_never_linked() {
+    for elsewhere in [
+        "https://elsewhere.example.invalid/night-owls/",
+        "http://radio.example.invalid/night-owls/",
+        "https://radio.example.invalid.elsewhere.invalid/night-owls/",
+        "https://radio.example.invalid/night-owls/?go=elsewhere",
+    ] {
+        let mut e = Engine::open_in_memory().unwrap();
+        pair(&mut e, document(elsewhere));
+        let link = radio_ui_engine::listen_link(e.state(), &started_link());
+        assert!(
+            link.starts_with(radio_stream::LISTEN_SITE),
+            "{elsewhere}: the listener site, not {link}"
+        );
+    }
+}
+
+#[test]
+fn a_page_setting_rewritten_to_another_host_falls_back_to_the_listener_site() {
+    let mut e = Engine::open_in_memory().unwrap();
+    pair(&mut e, document(&format!("{ADDRESS}/night-owls/")));
+    e.dispatch(Command::SettingsSet {
+        part: radio_model::SERVER_PART.into(),
+        key: radio_model::SERVER_PLAYER_URL_KEY.into(),
+        value: "https://elsewhere.example.invalid/".into(),
+    })
+    .unwrap();
+    let link = radio_ui_engine::listen_link(e.state(), &started_link());
+    assert!(
+        link.starts_with(radio_stream::LISTEN_SITE),
+        "the listener site: {link}"
+    );
+}

@@ -65,6 +65,18 @@ pub fn check_server_address(address: &str) -> Result<String, String> {
     Ok(format!("{scheme}://{rest}"))
 }
 
+/// True when `url` is a page or stream on the paired server at `address` (in
+/// [`check_server_address`]'s shape): it starts with the address and a `/`, and carries no
+/// query, fragment or space. A pairing document's links are kept only then, so a server
+/// cannot send listeners somewhere else.
+pub fn on_server(address: &str, url: &str) -> bool {
+    let prefix = format!("{}/", address.trim_end_matches('/'));
+    url.get(..prefix.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(&prefix))
+        && !url.contains(['?', '#', '@'])
+        && !url.chars().any(char::is_whitespace)
+}
+
 /// The host of `host`, `host:port`, `[v6]` or `[v6]:port`, when the port is 1–65535.
 fn host_of(authority: &str) -> Option<&str> {
     let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {

@@ -65,16 +65,23 @@ pub fn listen_link(state: &State, link: &str) -> String {
     let Some((_, id)) = link.rsplit_once('#') else {
         return link.to_owned();
     };
-    let server = |key: &str| {
+    let text = |key: &str| {
         state
             .settings(radio_model::SERVER_PART)
             .and_then(|s| s.get(key))
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
-            .filter(|url| radio_ui_egui::view::check_stream_url(url).is_ok())
     };
-    match server(radio_model::SERVER_PLAYER_URL_KEY) {
-        Some(page) => radio_stream::link_on(page, id, server("stream_url")),
+    // Only a page and a stream on the paired server itself, so a setting rewritten by
+    // hand cannot send listeners somewhere else.
+    let address = text(radio_model::SERVER_ADDRESS_KEY)
+        .and_then(|a| radio_model::check_server_address(a).ok());
+    let on_server = |key: &str| {
+        let address = address.as_deref()?;
+        text(key).filter(|url| radio_model::on_server(address, url))
+    };
+    match on_server(radio_model::SERVER_PLAYER_URL_KEY) {
+        Some(page) => radio_stream::link_on(page, id, on_server("stream_url")),
         None => radio_stream::link_for(id, public_stream(state).as_deref()),
     }
 }

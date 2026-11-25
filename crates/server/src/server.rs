@@ -11,7 +11,9 @@ use crate::config::{
 };
 use crate::conn::{Conn, server_config};
 use crate::framing::Format;
-use crate::http::{HttpError, Request, client_addr, read_body, read_request, respond};
+use crate::http::{
+    HttpError, Request, client_addr, read_body, read_request, respond, respond_head,
+};
 use crate::icy::{IcyWriter, METAINT};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
@@ -70,12 +72,15 @@ const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
 /// station.
 const PLAYER_PAGE: &str = include_str!("../../../site/index.html");
 /// The headers of the listener page: a static page, always checked again, never sniffed as
-/// anything else and sending no address of its own to the trackers and streams it reaches.
-const PLAYER_HEADERS: [(&str, &str); 4] = [
+/// anything else, never framed by another site, and sending no address of its own to the
+/// trackers and streams it reaches.
+const PLAYER_HEADERS: [(&str, &str); 6] = [
     ("Content-Type", "text/html; charset=utf-8"),
     ("Cache-Control", "no-cache"),
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "no-referrer"),
+    ("X-Frame-Options", "DENY"),
+    ("Content-Security-Policy", "frame-ancestors 'none'"),
 ];
 const LOCKED_FOR_SECS: &str = "300";
 const CHALLENGE: (&str, &str) = ("WWW-Authenticate", "Basic realm=\"craftradio\"");
@@ -789,6 +794,18 @@ fn keyed_station<'a>(shared: &'a Shared, request: &Request) -> Option<&'a Statio
 
 fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     let method = request.method.as_str();
+    // The listener page is the one thing a HEAD reaches.
+    if matches!(method, "GET" | "HEAD")
+        && player_slug(&request.path).is_some_and(|slug| shared.config.station(slug).is_some())
+    {
+        let page = PLAYER_PAGE.as_bytes();
+        let _ = if method == "HEAD" {
+            respond_head(stream, 200, "OK", &PLAYER_HEADERS, page.len())
+        } else {
+            respond(stream, 200, "OK", &PLAYER_HEADERS, page)
+        };
+        return;
+    }
     match method {
         "GET" | "PUT" | "SOURCE" => {}
         "OPTIONS" => {
@@ -822,12 +839,6 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     }
     if method == "GET" && request.path == "/status-json.xsl" {
         return stats(shared, stream);
-    }
-    if method == "GET"
-        && player_slug(&request.path).is_some_and(|slug| shared.config.station(slug).is_some())
-    {
-        let _ = respond(stream, 200, "OK", &PLAYER_HEADERS, PLAYER_PAGE.as_bytes());
-        return;
     }
     if let Some((station, mounts)) = station_at(shared, &request.path) {
         return if method == "GET" {
