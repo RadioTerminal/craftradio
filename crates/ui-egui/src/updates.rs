@@ -10,6 +10,10 @@ use craft_update::{App, CheckResultDialog, CheckResultResponse, Http, Release, v
 /// CraftRadio as its GitHub releases know it.
 pub static APP: App = App {
     developer: "RadioTerminal",
+    // The id in the app's Info.plist (packaging/macos/Info.plist.in). Without it the updater
+    // looks for `ai.storyteller.craftradio`, does not know the installed app, and offers only
+    // Download.
+    bundle_id_override: Some("io.github.radioterminal.craftradio"),
     ..App::new(
         "craftradio",
         crate::menus::APP_NAME,
@@ -185,6 +189,20 @@ mod tests {
     #[test]
     fn a_build_from_source_is_not_offered_a_prerelease() {
         assert_eq!(tag(SUFFIXED, "0.2.0-dev"), None);
+    }
+
+    /// The updater knows the installed app only by the bundle id in its Info.plist.
+    #[test]
+    fn the_updater_looks_for_the_bundle_id_the_app_ships_with() {
+        let plist = include_str!("../../../packaging/macos/Info.plist.in");
+        let key = "<key>CFBundleIdentifier</key>";
+        let after = &plist[plist.find(key).expect("the plist names its id") + key.len()..];
+        let id = after
+            .split("<string>")
+            .nth(1)
+            .and_then(|s| s.split("</string>").next())
+            .expect("the id is a string");
+        assert_eq!(APP.bundle_id(), id);
     }
 
     #[test]
