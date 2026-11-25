@@ -1078,13 +1078,15 @@ function coverOf(url) {
 // its stats and its cover, asked every 2.5 s while the page is visible. A cover or title
 // that came over the data channel is never replaced.
 const WATCH_EVERY = 2500, LEADING_COVER = WATCH_EVERY + 1000;
-let watched = null, watchTimer = null;
+let watched = null, watchTimer = null, serverHistory = null, historyAsked = 0;
 function watchServer(url) {
   if (watched === url) return;
   watched = url;
+  serverHistory = null;
   clearInterval(watchTimer);
   watchTimer = setInterval(watchTick, WATCH_EVERY);
   watchTick();
+  loadServerHistory(url);
 }
 function watchTick() {
   if (!watched || document.hidden || gotMeta) return;
@@ -1129,12 +1131,43 @@ async function statsTitle(url) {
     if (gotMeta || watched !== url) return;
     // Off air: the station's name, and nothing in the history.
     const title = s ? s.title || "" : "", artist = s ? s.artist || "" : "";
-    if (serverTitle(title, artist, s ? s.server_name || "" : "")) serverCover(url);
+    if (serverTitle(title, artist, s ? s.server_name || "" : "")) { serverCover(url); loadServerHistory(url); }
     setNow(title || (s && s.server_name) || "", artist);
+    // Before Listen, the lamp says whether the station is on the air.
+    if (!wanted) onAir(!!s);
   } catch (_) {}
 }
-// The history on the server's stream is made here: each title the stats name, once another
-// title takes its place, with the cover it had. No title (the push dropped, or off air) ends
+// What played before on the server's stream, from the server, so every listener sees the
+// same list from the moment the page opens; asked again as each title changes. A server
+// without one (404) leaves the page to make its own from the titles it sees, below.
+async function loadServerHistory(url) {
+  const at = coverOf(url);
+  if (!at) return;
+  const asked = ++historyAsked;
+  try {
+    const r = await fetch(at.replace(/\/cover$/, "/history"), { cache: "no-store" });
+    if (asked !== historyAsked || gotMeta || watched !== url) return;
+    if (r.status === 404) { serverHistory = false; return; }
+    if (!r.ok) return;
+    const items = [].concat((await r.json()).items || []);
+    if (asked !== historyAsked || gotMeta || watched !== url) return;
+    serverHistory = true;
+    const now = Date.now();
+    for (const key of [...thumbs.keys()]) if (key.startsWith("server:")) { URL.revokeObjectURL(thumbs.get(key)); thumbs.delete(key); }
+    for (const key of [...thumbs.keys()]) if (key.startsWith("url:")) thumbs.delete(key);
+    played = items.filter((i) => i && typeof i.title === "string" && i.title).map((i) => {
+      const p = { title: i.title, artist: typeof i.artist === "string" ? i.artist : "", at: now - (Number(i.ago_ms) || 0) };
+      if (typeof i.cover === "string" && /^\/[a-z0-9-]+\/cover\/[0-9a-f]+$/.test(i.cover)) {
+        p.thumb = "url:" + i.cover;
+        thumbs.set(p.thumb, location.origin + i.cover);
+      }
+      return p;
+    });
+    renderHistory();
+  } catch (_) {}
+}
+// Without the server's history, the page makes its own: each title the stats name, once
+// another title takes its place, with the cover it had. No title (the push dropped, or off air) ends
 // nothing, and an item that shows the station's name (a hidden title) stays out. Over WebRTC
 // the station sends its own. True when the title changed.
 let serverNow = { title: "", artist: "", name: "", at: 0, cover: null };
@@ -1148,7 +1181,7 @@ function serverTitle(title, artist, name) {
   if (leading && before.coverAt === serverTagSince) before.cover = null;
   serverNow = { title, artist, name, at: Date.now(), cover: leading ? serverBlob : null, coverAt: serverTagSince };
   if (!leading) { staleTag = serverTag; serverTag = serverBlob = null; if (coverUrl) setCover(null); }
-  if (!before.title || before.title === before.name) return true;
+  if (!before.title || before.title === before.name || serverHistory) return true;
   const entry = { title: before.title, artist: before.artist, at: before.at };
   if (before.cover) { entry.thumb = "server:" + before.at; thumbs.set(entry.thumb, URL.createObjectURL(before.cover)); }
   played.unshift(entry);

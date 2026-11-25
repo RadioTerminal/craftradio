@@ -12,6 +12,7 @@ use crate::config::{
 use crate::conn::{Conn, server_config};
 use crate::cover::{Cover, MAX_COVER, image_type};
 use crate::framing::Format;
+use crate::history::History;
 use crate::http::{
     HttpError, Request, client_addr, read_body, read_request, respond, respond_head,
 };
@@ -380,6 +381,8 @@ struct StationMounts {
     cover: Mutex<Option<Arc<Cover>>>,
     /// How many covers the station has been given, for each cover's tag.
     covers_set: AtomicU64,
+    /// What the station played before. Kept across the ends of its source.
+    history: Mutex<History>,
 }
 
 impl StationMounts {
@@ -392,6 +395,7 @@ impl StationMounts {
             transcoder: Mutex::new(None),
             cover: Mutex::new(None),
             covers_set: AtomicU64::new(cover_count_start()),
+            history: Mutex::default(),
         }
     }
 
@@ -404,8 +408,29 @@ impl StationMounts {
     }
 
     /// Puts `cover` in place of the one there is, or clears it.
-    fn set_cover(&self, cover: Option<Cover>) {
-        *self.cover.lock().unwrap_or_else(PoisonError::into_inner) = cover.map(Arc::new);
+    fn set_cover(&self, cover: Option<Arc<Cover>>) {
+        *self.cover.lock().unwrap_or_else(PoisonError::into_inner) = cover;
+    }
+
+    /// The app set the cover of what plays now, or cleared it: the cover and the history
+    /// both take it.
+    fn put_cover(&self, cover: Option<Cover>) {
+        let cover = cover.map(Arc::new);
+        self.history().cover(cover.clone(), Instant::now());
+        self.set_cover(cover);
+    }
+
+    /// The history. Every change to it is whole under its lock, so a poisoned one is still
+    /// consistent.
+    fn history(&self) -> MutexGuard<'_, History> {
+        self.history.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The pushed mount took a title: the history takes what it names now.
+    fn note_title(&self) {
+        let stats = self.pushed.stats();
+        self.history()
+            .title(&stats.title, &stats.artist, &stats.name, Instant::now());
     }
 
     /// The current outputs. The lock only guards the swap of an `Arc`, so a poisoned one
@@ -442,6 +467,8 @@ impl StationMounts {
 struct OnAir<'a> {
     mounts: &'a StationMounts,
     guard: Option<SourceGuard>,
+    /// The count of titles the pushed mount had taken when the history last looked.
+    titles_seen: u64,
 }
 
 impl<'a> OnAir<'a> {
@@ -459,12 +486,19 @@ impl<'a> OnAir<'a> {
         Some(OnAir {
             mounts,
             guard: Some(guard),
+            titles_seen: mounts.pushed.titles_taken(),
         })
     }
 
     fn write(&mut self, bytes: &[u8]) {
         if let Some(guard) = &mut self.guard {
             guard.write(bytes);
+        }
+        // Ogg tags name a new item in the stream itself.
+        let taken = self.mounts.pushed.titles_taken();
+        if taken != self.titles_seen {
+            self.titles_seen = taken;
+            self.mounts.note_title();
         }
     }
 }
@@ -847,6 +881,25 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
         return send_cover(stream, request, mounts);
     }
     if matches!(method, "GET" | "HEAD")
+        && let Some((slug, tag)) = past_cover_path(&request.path)
+        && let Some(mounts) = shared.mounts.get(slug)
+    {
+        return send_past_cover(stream, request, mounts, tag);
+    }
+    if method == "GET"
+        && let Some((slug, "history")) = split_path(&request.path)
+        && let Some(mounts) = shared.mounts.get(slug)
+    {
+        let body = mounts.history().json(slug, Instant::now());
+        let headers = [
+            ("Content-Type", "application/json"),
+            CORS,
+            ("Cache-Control", "no-store"),
+        ];
+        let _ = respond(stream, 200, "OK", &headers, body.as_bytes());
+        return;
+    }
+    if matches!(method, "GET" | "HEAD")
         && player_slug(&request.path).is_some_and(|slug| shared.config.station(slug).is_some())
     {
         let page = PLAYER_PAGE.as_bytes();
@@ -966,6 +1019,14 @@ fn player_slug(path: &str) -> Option<&str> {
 }
 
 /// The slug and mount of `/<slug>/<mount>`, both one non-empty path segment.
+/// The station and tag of `/<slug>/cover/<tag>`: the cover of an item in its history.
+fn past_cover_path(path: &str) -> Option<(&str, &str)> {
+    let (slug, rest) = path.strip_prefix('/')?.split_once('/')?;
+    let tag = rest.strip_prefix("cover/")?;
+    let hex = !tag.is_empty() && tag.len() <= 64 && tag.bytes().all(|b| b.is_ascii_hexdigit());
+    (!slug.is_empty() && hex).then_some((slug, tag))
+}
+
 fn split_path(path: &str) -> Option<(&str, &str)> {
     let (slug, mount) = path.strip_prefix('/')?.split_once('/')?;
     (!slug.is_empty() && !mount.is_empty() && !mount.contains('/')).then_some((slug, mount))
@@ -1246,7 +1307,7 @@ fn put_cover(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request
         return refuse(stream, 413, "Content Too Large", &[], body.as_bytes());
     }
     if length == 0 {
-        mounts.set_cover(None);
+        mounts.put_cover(None);
         let _ = respond(stream, 204, "No Content", &[], b"");
         return;
     }
@@ -1282,7 +1343,7 @@ fn put_cover(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request
             return refuse(stream, 409, "Conflict", &[], NOT_LIVE_COVER);
         }
         let set = mounts.covers_set.fetch_add(1, Ordering::Relaxed);
-        mounts.set_cover(Some(Cover::new(mime, body, set)));
+        mounts.put_cover(Some(Cover::new(mime, body, set)));
     }
     let _ = respond(stream, 204, "No Content", &[], b"");
 }
@@ -1314,6 +1375,26 @@ fn send_cover(stream: &mut Conn, request: &Request, mounts: &StationMounts) {
     }
     let [cors, cache, etag, nosniff] = common;
     let headers = [("Content-Type", cover.mime), cors, cache, etag, nosniff];
+    let _ = if request.method == "HEAD" {
+        respond_head(stream, 200, "OK", &headers, cover.bytes.len())
+    } else {
+        respond(stream, 200, "OK", &headers, &cover.bytes)
+    };
+}
+
+/// `GET /<slug>/cover/<tag>` (or `HEAD`): public and unkeyed, the cover of an item in the
+/// station's history, which never changes under its tag; a 404 once the history let it go.
+fn send_past_cover(stream: &mut Conn, request: &Request, mounts: &StationMounts, tag: &str) {
+    let Some(cover) = mounts.history().cover_tagged(tag) else {
+        return refuse(stream, 404, "Not Found", &[CORS], NO_COVER);
+    };
+    let headers = [
+        ("Content-Type", cover.mime),
+        CORS,
+        ("Cache-Control", "public, max-age=3600, immutable"),
+        ("ETag", cover.etag.as_str()),
+        ("X-Content-Type-Options", "nosniff"),
+    ];
     let _ = if request.method == "HEAD" {
         respond_head(stream, 200, "OK", &headers, cover.bytes.len())
     } else {
@@ -1361,6 +1442,7 @@ fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request)
             b"this station is not on the air",
         );
     }
+    mounts.note_title();
     let _ = respond(
         stream,
         200,

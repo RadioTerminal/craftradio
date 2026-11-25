@@ -4,6 +4,7 @@ mod decode;
 mod e2e;
 mod encode;
 mod framing;
+mod history;
 mod http;
 mod icy;
 mod lockout;

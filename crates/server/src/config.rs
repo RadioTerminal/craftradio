@@ -14,8 +14,8 @@ const RESERVED_SLUGS: [&str; 3] = ["admin", "api", "status-json.xsl"];
 const MAX_SLUG_LEN: usize = 32;
 /// Paths under a station an output's mount can't take, because the server answers them
 /// itself (`/<slug>/stream` is the pushed bytes, untouched; `/<slug>/cover` is the cover of
-/// what plays).
-const FIXED_MOUNTS: [&str; 5] = ["stream", "live", "signal", "feed", "cover"];
+/// what plays; `/<slug>/history` is what played before).
+const FIXED_MOUNTS: [&str; 6] = ["stream", "live", "signal", "feed", "cover", "history"];
 const MAX_MOUNT_LEN: usize = 32;
 /// The most outputs a station may be given from the app (`PUT /api/station/outputs`) and
 /// so the most a saved file may hold. The config file itself has no such limit.

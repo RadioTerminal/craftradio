@@ -15,7 +15,7 @@ const SLUG: &str = "morning";
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\ninvented-cover-bytes";
 const JPEG: &[u8] = b"\xff\xd8\xffinvented-other-cover";
 
-fn config(state_dir: Option<&Path>) -> Config {
+pub(crate) fn config(state_dir: Option<&Path>) -> Config {
     let state_dir = state_dir
         .map(|dir| format!("state_dir = {:?}\n", dir.display().to_string()))
         .unwrap_or_default();
@@ -60,7 +60,7 @@ fn put_to(
     (head, body)
 }
 
-fn put(addr: SocketAddr, key: &str, content_type: &str, body: &[u8]) -> u16 {
+pub(crate) fn put(addr: SocketAddr, key: &str, content_type: &str, body: &[u8]) -> u16 {
     put_to(
         addr,
         "/api/station/cover",
