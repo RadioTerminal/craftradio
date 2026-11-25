@@ -48,6 +48,8 @@ pub(crate) struct Analysis {
     /// Items whose loudness is in measurement, or whose measurement failed. A failed one
     /// is not measured again until playout restarts, so a silent file costs one decode.
     pub(crate) measuring: std::collections::BTreeSet<ItemId>,
+    /// An analysis found markers since the view last took them.
+    pub(crate) markers_changed: bool,
 }
 
 fn audio_file(p: &Path) -> bool {
@@ -383,8 +385,29 @@ impl Core {
         })
     }
 
+    /// The markers the analysis found, for the view.
+    pub(crate) fn found_markers(
+        &self,
+    ) -> std::collections::BTreeMap<
+        ItemId,
+        (Option<std::time::Duration>, Option<std::time::Duration>),
+    > {
+        self.analysis
+            .done
+            .iter()
+            .filter_map(|(id, t)| {
+                let t = t.as_ref()?;
+                (t.markers == radio_model::MarkerSource::Detected)
+                    .then_some((*id, (t.intro_end, t.outro_start)))
+            })
+            .collect()
+    }
+
     /// A worker finished the analysis of an item.
     pub(crate) fn on_analysed(&mut self, id: ItemId, timing: Option<Timing>) {
+        self.analysis.markers_changed |= timing
+            .as_ref()
+            .is_some_and(|t| t.markers == radio_model::MarkerSource::Detected);
         self.analysis.done.insert(id, timing);
         self.dirty = true;
     }

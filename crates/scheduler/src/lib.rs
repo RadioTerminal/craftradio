@@ -12,6 +12,6 @@ pub use history::{PlayHistory, Played};
 pub use merge::{
     DropReason, Entry, Fixed, Origin, PlanInput, Timeline, Warning, merge, merge_with,
 };
-pub use over::{Over, OverEntry, Side};
+pub use over::{Over, OverEntry, Side, anchor as anchor_over};
 pub use pick::Picker;
 pub use replan::{PlanOptions, plan};

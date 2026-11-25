@@ -95,10 +95,19 @@ pub fn source(items: Vec<Item>) -> (EngineSource, ManualClock) {
 
 /// A source over `engine` as it is.
 pub fn source_from(engine: Engine) -> (EngineSource, ManualClock) {
+    source_tuned(engine, |_| {})
+}
+
+/// A source over `engine`, with `tune` applied to the playout settings.
+pub fn source_tuned(
+    engine: Engine,
+    tune: impl FnOnce(&mut PlayoutConfig),
+) -> (EngineSource, ManualClock) {
     let clock = ManualClock::new(t0());
     let mut cfg = PlayoutConfig::new(Arc::new(clock.clone()), OutputChoice::Null);
     cfg.horizon = Duration::from_secs(600);
     cfg.station_name = STATION.into();
+    tune(&mut cfg);
     let playout = Playout::start(engine, cfg).unwrap();
     let opts = SourceOptions {
         tz: TimeZone::UTC,

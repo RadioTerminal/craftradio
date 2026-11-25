@@ -431,3 +431,53 @@ fn an_over_item_shows_on_its_songs_row() {
         "the ID has a row of its own"
     );
 }
+
+/// Markers that only playout's analysis found show in the metadata editor, as found.
+#[test]
+fn markers_from_the_analysis_show_in_the_metadata_editor() {
+    use radio_engine::Command;
+    use radio_model::{MarkerSource, PlayMode, PlaylistId, Timing};
+    fn found(_: &std::path::Path) -> Option<Timing> {
+        Some(Timing {
+            cue_in: std::time::Duration::ZERO,
+            segue: std::time::Duration::from_secs(20),
+            cue_out: std::time::Duration::from_secs(20),
+            intro_end: Some(std::time::Duration::from_secs(6)),
+            fade_in: std::time::Duration::ZERO,
+            fade_out: std::time::Duration::ZERO,
+            outro_start: None,
+            markers: MarkerSource::Detected,
+        })
+    }
+    let dir = dir();
+    let path = wav(&dir, "found-song", 20.0);
+    let mut engine = radio_engine::Engine::open_in_memory().unwrap();
+    engine
+        .dispatch(Command::PlaylistAddItems {
+            playlist: PlaylistId(1),
+            items: vec![track(1, "Amber Wire", &path, 20.0)],
+            at: None,
+            lock: false,
+        })
+        .unwrap();
+    let made = engine
+        .dispatch(Command::PlaylistCreate { name: "IDs".into() })
+        .unwrap();
+    let ids = PlaylistId(made.data.and_then(|v| v.as_u64()).unwrap());
+    engine
+        .dispatch(Command::PlaylistSetPlays {
+            playlist: ids,
+            plays: PlayMode::Over { duck_db: -12 },
+        })
+        .unwrap();
+    let (mut source, clock) = source_tuned(engine, |cfg| cfg.analyse = found);
+    let view = wait_for(&mut source, &clock, |v| {
+        v.rows
+            .first()
+            .and_then(|r| r.meta.markers)
+            .is_some_and(|m| m.intro_end_s.is_some())
+    });
+    let m = view.rows[0].meta.markers.unwrap();
+    assert_eq!(m.intro_end_s, Some(6.0));
+    assert!(!m.by_hand);
+}

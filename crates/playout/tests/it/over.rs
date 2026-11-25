@@ -245,7 +245,7 @@ fn a_full_cartwall_leaves_the_slot_of_over_items() {
             })
             .unwrap();
     }
-    // Three carts on a mixer of three slots: the wall has two, the last is for over items.
+    // Three carts on a wall of three slots; over items have a slot of their own.
     let (p, clock) = offline(engine, |cfg| cfg.mixer.cart_slots = 3);
     let mut program = run(&p, &clock, 1.0);
     // A new cart on the third place after the ID loaded: it must not replace the ID.
@@ -261,5 +261,141 @@ fn a_full_cartwall_leaves_the_slot_of_over_items() {
     assert!(
         over_the_music(&program, start),
         "the ID played between songs"
+    );
+}
+
+/// Two different IDs in a row: loading the second never cuts the first short.
+#[test]
+fn the_next_id_loads_without_cutting_the_one_on_air() {
+    let mut engine = engine_with(songs("ov-two", Some(2.0), None));
+    let one = wav("ov-two-a", 1.0, Side::Right);
+    let two = wav("ov-two-b", 1.0, Side::Right);
+    let ids = add_playlist(
+        &mut engine,
+        "IDs",
+        vec![
+            file_item(50, "Station ID", &one, 1.0, 1.0, 0.0),
+            file_item(51, "Sweeper", &two, 1.0, 1.0, 0.0),
+        ],
+        EVERY_TRACK,
+    );
+    engine
+        .dispatch(Command::PlaylistSetPlays {
+            playlist: ids,
+            plays: PlayMode::Over { duck_db: -12 },
+        })
+        .unwrap();
+    let (p, clock) = offline(engine, |_| {});
+    let program = run(&p, &clock, 14.0);
+    let start = id_starts(&program).expect("the first ID sounds");
+    // The whole first ID sounds, to its last tenth of a second.
+    let tail = rms_db(&program, 1, at(start + 0.8), at(start + 0.95));
+    assert!(
+        tail > -30.0,
+        "the first ID was cut: its end is at {tail} dB"
+    );
+}
+
+/// After a seek, an outro ID still starts where the song reaches its outro.
+#[test]
+fn an_outro_id_follows_a_seek_in_its_song() {
+    let (p, clock) = offline(
+        station("ov-seek", songs("ov-seek", None, Some(3.0))),
+        |_| {},
+    );
+    let mut program = run(&p, &clock, 1.0);
+    let deck = deck_of(&p, 1);
+    // Jump from 1 s to 3 s into song 1: its outro ID, due 5 s into the song, now comes at 3 s.
+    p.send(Command::DeckSeek {
+        deck,
+        position: Duration::from_secs(3),
+        expect_item: Some(ItemId(1)),
+    })
+    .unwrap();
+    program.extend(run(&p, &clock, 4.0));
+    let start = id_starts(&program).expect("the ID sounds");
+    assert!((start - 3.0).abs() < 0.15, "the ID starts at {start} s");
+}
+
+/// A hard event that goes on air late moves the songs after it; their IDs move with them.
+#[test]
+fn ids_follow_the_songs_after_a_late_hard_event() {
+    let mut engine = station("ov-late", songs("ov-late", Some(2.0), None));
+    let news = wav("ov-late-news", 2.0, Side::Left);
+    let mut item = file_item(70, "News", &news, 2.0, 2.0, 0.0);
+    item.movable = false;
+    item.trimmable = false;
+    add_playlist(
+        &mut engine,
+        "News",
+        vec![item],
+        r#"rule({at: {date: "2026-11-21", time: "13:00:06", repeat: "once"},
+                place: {fixed: "hard", tolerance: 1}, take: 1, constraints: []});"#,
+    );
+    let (p, clock) = offline(engine, |_| {});
+    let mut program = run(&p, &clock, 6.5);
+    let deck = deck_of(&p, 70);
+    p.send(Command::DeckPause {
+        deck,
+        expect_item: Some(ItemId(70)),
+    })
+    .unwrap();
+    program.extend(run(&p, &clock, 2.0));
+    p.send(Command::DeckPlay {
+        deck,
+        expect_item: Some(ItemId(70)),
+        fade_in: Duration::ZERO,
+    })
+    .unwrap();
+    program.extend(run(&p, &clock, 6.0));
+    let tl = p.snapshot().timeline;
+    for o in &tl.over {
+        assert!(
+            tl.entries
+                .iter()
+                .any(|e| e.item == o.over.host && e.start == o.over.host_start),
+            "an ID lost its song: host {} at {}",
+            o.over.host.0,
+            o.over.host_start
+        );
+    }
+    // The news ends at 10 s instead of 8 s; the song after it carries an ID over its intro.
+    let after = first_audible(&program, 1, at(9.0)).expect("an ID sounds after the news");
+    let after = after as f32 / SR as f32;
+    assert!(
+        over_the_music(&program, after),
+        "the ID after the news played between songs"
+    );
+}
+
+/// Over items have a slot of their own: every place of the cartwall still fires its cart.
+#[test]
+fn every_cart_of_a_full_wall_still_fires() {
+    let mut engine = station("ov-full", songs("ov-full", Some(2.0), None));
+    let horn = wav("ov-full-horn", 0.5, Side::Right);
+    add_playlist(
+        &mut engine,
+        "Carts",
+        (60..63)
+            .map(|i| file_item(i, "Horn", &horn, 0.5, 0.5, 0.0))
+            .collect(),
+        "",
+    );
+    for (slot, item) in (60..63).enumerate() {
+        engine
+            .dispatch(Command::CartAssign {
+                page: 0,
+                slot: slot as u32,
+                item: ItemId(item),
+            })
+            .unwrap();
+    }
+    let (p, clock) = offline(engine, |cfg| cfg.mixer.cart_slots = 3);
+    let mut program = run(&p, &clock, 8.5);
+    p.send(Command::CartFire { page: 0, slot: 2 }).unwrap();
+    program.extend(run(&p, &clock, 1.0));
+    assert!(
+        rms_db(&program, 1, at(8.6), at(8.9)) > -30.0,
+        "the third cart of a three-cart wall did not fire"
     );
 }

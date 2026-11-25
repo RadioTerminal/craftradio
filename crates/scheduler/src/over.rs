@@ -271,8 +271,9 @@ pub(crate) fn keep_pinned(tl: &mut Timeline, prev: &Timeline, pinned: &[Entry]) 
     tl.over.sort_by_key(|o| o.entry.start);
 }
 
-/// Sets each over entry's start from its host's final start.
-pub(crate) fn anchor(tl: &mut Timeline) {
+/// Sets each over entry's start from its host's final start. Call it after anything moves
+/// the entries of a plan.
+pub fn anchor(tl: &mut Timeline) {
     let entries = &tl.entries;
     for o in &mut tl.over {
         if let Some(i) = find_host(entries, o) {

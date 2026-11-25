@@ -213,6 +213,11 @@ pub struct EngineSource {
     next_ready: Option<usize>,
     /// The rows on air in the last snapshot.
     on_air_rows: HashSet<u64>,
+    /// Markers that playout's analysis found for songs the engine holds none for.
+    found_markers: std::collections::BTreeMap<
+        ItemId,
+        (Option<std::time::Duration>, Option<std::time::Duration>),
+    >,
     /// Whether the last snapshot was on air (the setting), once there was one.
     air_seen: Option<bool>,
     /// When a snapshot first saw the station go back on air after being off air.
@@ -348,6 +353,7 @@ impl EngineSource {
             deck_states: [DeckState::Empty; 4],
             next_ready: None,
             on_air_rows: HashSet::new(),
+            found_markers: Default::default(),
             air_seen: None,
             on_air_since: None,
             fixed_rows: HashSet::new(),
@@ -481,7 +487,7 @@ impl EngineSource {
                     len: item_len(item),
                     category: p.name.clone(),
                     path,
-                    meta: view_meta(item, &meta, Some(self.state.trim_of(item.id))),
+                    meta: self.meta_view(item, &meta),
                 });
             }
         }
@@ -504,6 +510,29 @@ impl EngineSource {
             )
     }
 
+    /// The view tags of a station item, with the markers that playout's analysis found for
+    /// a song the engine holds none for.
+    fn meta_view(
+        &self,
+        item: &Item,
+        meta: &radio_model::ItemMeta,
+    ) -> radio_ui_egui::view::ItemMeta {
+        let mut m = view_meta(item, meta, Some(self.state.trim_of(item.id)));
+        let unmarked = item
+            .timing
+            .as_ref()
+            .is_some_and(|t| t.markers == radio_model::MarkerSource::NotAnalysed);
+        if let (true, Some(view), Some((intro, outro))) = (
+            unmarked,
+            m.markers.as_mut(),
+            self.found_markers.get(&item.id),
+        ) {
+            view.intro_end_s = intro.map(|d| d.as_secs_f32());
+            view.outro_start_s = outro.map(|d| d.as_secs_f32());
+        }
+        m
+    }
+
     fn row_for(&self, id: u64, item: &Item, playlist: PlaylistId, start: Timestamp) -> Row {
         let (name, color, is_main) = self.playlist_look(playlist);
         let meta = effective_meta(item, self.state.item_meta(item.id));
@@ -519,7 +548,7 @@ impl EngineSource {
             fixed: None,
             origin: Origin::Main,
             locked: item.locked,
-            meta: view_meta(item, &meta, Some(self.state.trim_of(item.id))),
+            meta: self.meta_view(item, &meta),
             timing: None,
             stream: None,
             deck: None,
@@ -1280,6 +1309,7 @@ impl ViewSource for EngineSource {
             self.input_devices = inputs;
         }
         let pv = self.playout.snapshot();
+        self.found_markers.clone_from(&pv.found_markers);
         if self.revision != Some(pv.revision) {
             self.rebuild(&pv.state);
             self.revision = Some(pv.revision);

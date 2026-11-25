@@ -359,6 +359,9 @@ fn open_output(
     taps: usize,
     device_meter: &Arc<radio_stream::LevelMeter>,
 ) -> Result<OpenedOutput, PlayoutError> {
+    // One cart slot more than the wall has: the slot of over items.
+    let mut config = config;
+    config.cart_slots += 1;
     let (mut mixer, handle, live) = Mixer::new(config);
     mixer.set_dynamics(dynamics)?;
     let (tap_tx, tap_rx) = tap_rings(taps);
@@ -552,8 +555,8 @@ impl Core {
     pub(crate) fn new(mut engine: Engine, cfg: PlayoutConfig) -> Result<Core, PlayoutError> {
         let engine_rx = engine.events();
         let log = engine.log_handle()?;
-        // The last cart slot plays over items; the cartwall has the others.
-        let carts = Carts::new(cfg.mixer.cart_slots.saturating_sub(1));
+        // The mixer has one slot past the wall's for over items.
+        let carts = Carts::new(cfg.mixer.cart_slots);
         let meters = crate::OutputMeters::default();
         // Icecast always has a tap, so settings that come while playout runs can use it.
         let tap = 1 + usize::from(cfg.webrtc.is_some());
@@ -614,6 +617,7 @@ impl Core {
             alarms: Vec::new(),
             alarms_dropped: 0,
             state: Arc::new(engine.state().clone()),
+            found_markers: Default::default(),
             revision: 0,
             plans: 0,
             tick_overruns: 0,
@@ -1361,6 +1365,8 @@ impl Core {
             }
             previous = Some(entry.clone());
         }
+        // The jingles over the music follow the songs that moved.
+        radio_scheduler::anchor_over(&mut tl);
         // A waiting soft event never starts before the plan says. The plan puts it after the
         // locked entries in its way, and those keep their times.
         for s in self.slots.iter_mut().flatten() {
@@ -1948,6 +1954,9 @@ impl Core {
         if self.timeline_changed {
             view.timeline = self.timeline.clone();
             self.timeline_changed = false;
+        }
+        if std::mem::take(&mut self.analysis.markers_changed) {
+            view.found_markers = self.found_markers();
         }
         view.plans = self.plans;
         view.tick_overruns = self.tick_overruns;

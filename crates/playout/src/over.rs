@@ -19,9 +19,10 @@ const HOST_MATCH: Duration = Duration::from_secs(1);
 /// How late an over item may still start.
 const GRACE: Duration = Duration::from_millis(40);
 
-/// The cart slot of over items: the last one. The cartwall uses the others.
+/// The cart slot of over items: the one past the wall's `cart_slots`, which the mixer
+/// has besides them.
 pub(crate) fn over_slot(cart_slots: usize) -> Option<usize> {
-    cart_slots.checked_sub(1)
+    Some(cart_slots)
 }
 
 /// The over item in the mixer and the ones that are done.
@@ -31,6 +32,8 @@ pub(crate) struct OverPlayer {
     loaded: Option<ItemId>,
     /// Played or skipped: by the tag of the host's airing and the side.
     done: BTreeSet<(u64, Side)>,
+    /// The fired item plays until then: the slot keeps its clip until it ends.
+    busy_until: Option<Timestamp>,
 }
 
 impl Core {
@@ -67,10 +70,11 @@ impl Core {
             if self.over.done.contains(&key) {
                 continue;
             }
-            let Some(started) = host.started else {
+            if host.started.is_none() {
                 continue;
-            };
-            let moment = add(started, o.over.offset);
+            }
+            // From the song's cue-in on air, which a seek, a pause or a resume moves.
+            let moment = add(host.real_start(), o.over.offset);
             let playing = host.phase == Phase::Playing;
             if now >= moment && since(moment, now) > GRACE {
                 // The moment passed while the song was paused, or before playout saw it.
@@ -95,10 +99,13 @@ impl Core {
                 .is_ok()
             {
                 self.over.done.insert(key);
+                // A new clip in the slot would stop this one, so the slot waits for its end.
+                self.over.busy_until = Some(add(moment, o.entry.len + LEAD));
                 self.log_over(&o, moment);
             }
         }
-        if let Some(item) = next_load {
+        let busy = self.over.busy_until.is_some_and(|until| now < until);
+        if let Some(item) = next_load.filter(|_| !busy) {
             self.load_over(slot, item);
         }
     }
