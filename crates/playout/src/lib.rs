@@ -25,7 +25,7 @@ mod work;
 pub use alarm::{Alarm, RaisedAlarm};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use view::{
-    DeckPhase, DeckRole, DeckView, LocalOutput, OutputStatus, PlayoutView, StreamState,
+    DeckPhase, DeckRole, DeckView, LocalOutput, NowShown, OutputStatus, PlayoutView, StreamState,
 };
 
 use jiff::Timestamp;

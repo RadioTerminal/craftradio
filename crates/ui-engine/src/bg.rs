@@ -138,6 +138,8 @@ pub(crate) enum Done {
     Pair(crate::pairing::PairAnswer),
     /// The answer of a save of the outputs.
     PutOutputs(crate::pairing::PutAnswer),
+    /// The paired server's answer to a cover.
+    ServerCover(crate::server_cover::CoverAnswer),
     /// The Icecast settings of request `seq`, or why there are none.
     Icecast {
         seq: u64,
@@ -173,12 +175,16 @@ pub(crate) enum Done {
 pub(crate) struct Worker {
     pub(crate) jobs: Sender<Job>,
     pub(crate) done: Receiver<Done>,
+    /// The covers for the paired server, on a lane of their own (see
+    /// [`crate::server_cover`]). `None` when its thread could not start.
+    pub(crate) covers: Option<crate::server_cover::Lane>,
 }
 
 impl Worker {
     pub(crate) fn start() -> Option<Self> {
         let (jobs, rx) = channel::<Job>();
         let (tx, done) = channel();
+        let covers = crate::server_cover::Lane::start(tx.clone());
         std::thread::Builder::new()
             .name("ui-background".into())
             .spawn(move || {
@@ -247,7 +253,7 @@ impl Worker {
                 }
             })
             .ok()?;
-        Some(Self { jobs, done })
+        Some(Self { jobs, done, covers })
     }
 }
 

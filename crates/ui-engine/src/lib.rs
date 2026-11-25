@@ -20,6 +20,9 @@ mod map;
 mod one_off;
 mod outputs;
 mod pairing;
+mod server_cover;
+
+pub use server_cover::{SERVER_MAX_COVER, put_cover};
 
 pub use pairing::{
     PUSH_CHANGED, PairError, PutError, check_address, fetch as fetch_pairing, is_paired,
@@ -254,6 +257,8 @@ pub struct EngineSource {
     icecast_asked: u64,
     /// Pairing with a station server.
     pairing: pairing::Pairing,
+    /// The cover last sent to the paired server.
+    server_cover: server_cover::CoverSync,
     /// Fader values on their way to the engine, by strip.
     strip_gain: HashMap<String, f32>,
     /// Part settings on their way to the engine.
@@ -366,6 +371,7 @@ impl EngineSource {
             icecast_seen,
             icecast_asked: 0,
             pairing: pairing::Pairing::default(),
+            server_cover: server_cover::CoverSync::default(),
             strip_gain: HashMap::new(),
             pending_settings: HashMap::new(),
             alarms: Vec::new(),
@@ -1257,6 +1263,7 @@ impl ViewSource for EngineSource {
         self.watch_outputs();
         self.take_done(now);
         self.watch_push(pv.outputs.icecast.as_ref());
+        self.watch_cover(&pv.outputs);
         self.poll_pending();
         self.poll_watches();
         let _ = self.fader_errors();

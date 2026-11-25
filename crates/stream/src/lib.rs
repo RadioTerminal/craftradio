@@ -11,7 +11,7 @@ mod webrtc;
 pub use brand::{Picture, PictureError, brand_messages, load_picture};
 pub use input::*;
 pub use meter::{LEVEL_FLOOR_DB, LevelMeter};
-pub use now::{Played, cover_messages, history_message};
+pub use now::{Played, cover_messages, history_message, server_cover};
 pub use output::*;
 pub use packets::{
     AUDIO_CHANNEL, BLOCK_CONTEXT, BLOCK_PACKETS, HASH_LEN, KIND_AUDIO, KIND_BLOCK, SIGNATURE_LEN,

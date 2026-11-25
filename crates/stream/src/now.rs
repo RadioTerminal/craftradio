@@ -237,6 +237,23 @@ pub(crate) fn read_cover(path: &Path) -> Result<Option<(String, Vec<u8>)>, Strin
     Ok(read_tag_cover(path))
 }
 
+/// The cover of `path` as a station server takes it: JPEG, PNG or WebP in at most `max`
+/// bytes. A cover of another type or larger than that is encoded again, smaller. `Ok(None)`
+/// when the file has no cover; the reason when its picture cannot be used.
+pub fn server_cover(path: &Path, max: usize) -> Result<Option<crate::Picture>, String> {
+    let Some((mime, data)) = read_cover(path)? else {
+        return Ok(None);
+    };
+    if matches!(mime.as_str(), "image/jpeg" | "image/png" | "image/webp") && data.len() <= max {
+        return Ok(Some(crate::Picture { mime, data }));
+    }
+    let picture = crate::brand::refit(&data)?;
+    if picture.data.len() > max {
+        return Err("the cover is too large to send to the server".into());
+    }
+    Ok(Some(picture))
+}
+
 /// The front cover of an audio file, or its first picture.
 fn read_tag_cover(path: &Path) -> Option<(String, Vec<u8>)> {
     use lofty::file::TaggedFileExt;

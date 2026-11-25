@@ -156,7 +156,27 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
     ) {
         return Err(NOT_A_PICTURE.into());
     }
-    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format);
+    decode_and_fit(&bytes, format)
+}
+
+/// A picture in the bytes of a cover (PNG, JPEG, WebP or GIF), decoded and encoded again
+/// as [`load_picture`] does.
+pub(crate) fn refit(bytes: &[u8]) -> Result<Picture, String> {
+    let format = image::guess_format(bytes).map_err(|_| NOT_A_PICTURE.to_owned())?;
+    if !matches!(
+        format,
+        image::ImageFormat::Png
+            | image::ImageFormat::Jpeg
+            | image::ImageFormat::WebP
+            | image::ImageFormat::Gif
+    ) {
+        return Err(NOT_A_PICTURE.into());
+    }
+    decode_and_fit(bytes, format)
+}
+
+fn decode_and_fit(bytes: &[u8], format: image::ImageFormat) -> Result<Picture, String> {
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_SOURCE_EDGE);
     limits.max_image_height = Some(MAX_SOURCE_EDGE);
