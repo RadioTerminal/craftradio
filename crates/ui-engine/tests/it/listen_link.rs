@@ -1,6 +1,6 @@
-//! The WebRTC listen link follows the pairing as it is now: on the paired server's listener
-//! page while the station is paired, back on the listener site once it is not, with no
-//! restart between.
+//! The listen link follows the pairing as it is now: the paired server's listener page
+//! alone while the station is paired (the server carries every listener), back on the
+//! listener site by the station's WebRTC ID once it is not, with no restart between.
 
 use radio_engine::{Command, Engine};
 use radio_model::{PairingDocument, PairingIcecast};
@@ -52,17 +52,20 @@ fn pairing_moves_the_link_to_the_servers_page_and_unpairing_moves_it_back() {
     );
     assert!(unpaired.ends_with(&format!("#{ID}")));
 
+    assert_eq!(radio_ui_engine::server_page(e.state()), None);
+
     pair(&mut e, document(&format!("{ADDRESS}/night-owls/")));
     let paired = radio_ui_engine::listen_link(e.state(), &started_link());
-    assert!(
-        paired.starts_with(&format!("{ADDRESS}/night-owls/?stream=")),
-        "paired, the server's page: {paired}"
+    assert_eq!(
+        paired,
+        format!("{ADDRESS}/night-owls/"),
+        "paired, the server's page alone: no WebRTC ID, no fallback stream"
     );
-    assert!(
-        paired.contains("night-owls%2Fstream"),
-        "with the server's stream for when WebRTC does not connect: {paired}"
+    assert_eq!(
+        radio_ui_engine::server_page(e.state()).as_deref(),
+        Some(paired.as_str()),
+        "the same page whether WebRTC runs or not"
     );
-    assert!(paired.ends_with(&format!("#{ID}")), "the station by its ID");
 
     e.dispatch(Command::ServerUnpair).unwrap();
     let back = radio_ui_engine::listen_link(e.state(), &started_link());

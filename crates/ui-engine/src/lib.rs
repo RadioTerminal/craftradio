@@ -60,14 +60,25 @@ fn public_stream(state: &State) -> Option<String> {
 }
 
 /// The listen link for the station that the WebRTC output's `link` names (by its ID, after
-/// `#`), from the settings as they are now: on the listener page of the paired server when it
-/// serves one, with the server's stream for when WebRTC does not connect, else on the
-/// listener site with the public Icecast address. Each snapshot asks it again, so pairing
-/// and unpairing change the link at once, not only at the next start.
+/// `#`), from the settings as they are now: the paired server's listener page when it serves
+/// one (see [`server_page`]), else the listener site with the station's ID and the public
+/// Icecast address. Each snapshot asks it again, so pairing and unpairing change the link
+/// at once, not only at the next start.
 pub fn listen_link(state: &State, link: &str) -> String {
+    if let Some(page) = server_page(state) {
+        return page;
+    }
     let Some((_, id)) = link.rsplit_once('#') else {
         return link.to_owned();
     };
+    radio_stream::link_for(id, public_stream(state).as_deref())
+}
+
+/// The listener page of the paired server, when it serves one: once paired, the server
+/// carries every listener, so the link is its page alone, which plays the server's stream,
+/// with no WebRTC ID. Only a page on the paired server itself, so a setting rewritten by hand
+/// cannot send listeners somewhere else.
+pub fn server_page(state: &State) -> Option<String> {
     let text = |key: &str| {
         state
             .settings(radio_model::SERVER_PART)
@@ -75,18 +86,11 @@ pub fn listen_link(state: &State, link: &str) -> String {
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
     };
-    // Only a page and a stream on the paired server itself, so a setting rewritten by
-    // hand cannot send listeners somewhere else.
     let address = text(radio_model::SERVER_ADDRESS_KEY)
-        .and_then(|a| radio_model::check_server_address(a).ok());
-    let on_server = |key: &str| {
-        let address = address.as_deref()?;
-        text(key).filter(|url| radio_model::on_server(address, url))
-    };
-    match on_server(radio_model::SERVER_PLAYER_URL_KEY) {
-        Some(page) => radio_stream::link_on(page, id, on_server("stream_url")),
-        None => radio_stream::link_for(id, public_stream(state).as_deref()),
-    }
+        .and_then(|a| radio_model::check_server_address(a).ok())?;
+    text(radio_model::SERVER_PLAYER_URL_KEY)
+        .filter(|url| radio_model::on_server(&address, url))
+        .map(str::to_owned)
 }
 
 /// The WebRTC stream settings that Preferences keeps, put onto `cfg`: the port (on the address
@@ -932,14 +936,16 @@ impl EngineSource {
                 StreamStatus::Retrying { last_error, .. } | StreamStatus::Refused { last_error },
             ) => Status::Failed(last_error.clone()),
         };
-        let listen_link = match &pv.outputs.webrtc {
+        // Paired, the server's page, whatever WebRTC does; else the WebRTC link while a
+        // tracker carries the offers.
+        let listen_link = server_page(&pv.state).or_else(|| match &pv.outputs.webrtc {
             Some(WebRtcStatus::Listening {
                 link: Some(link),
                 relays,
                 ..
             }) if *relays > 0 => Some(listen_link(&pv.state, link)),
             _ => None,
-        };
+        });
         let streaming = pv.outputs.webrtc_available.then(|| {
             pv.state
                 .settings(radio_playout::WEBRTC_PART)

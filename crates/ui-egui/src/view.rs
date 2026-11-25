@@ -1189,8 +1189,9 @@ pub struct OutputStatus {
     /// Listeners that pages say they pass the audio on to. The station cannot check it, so
     /// it never shows as part of [`webrtc_listeners`](Self::webrtc_listeners).
     pub webrtc_reported: Option<usize>,
-    /// The link that plays the station from anywhere. It is set only while a tracker
-    /// carries the offers, because without one the link does not work.
+    /// The link that plays the station from anywhere: the paired server's listener page
+    /// while paired; else the WebRTC link, set only while a tracker carries the offers,
+    /// because without one that link does not work.
     pub listen_link: Option<String>,
     /// The address of the listener page on the local network, while streaming runs.
     pub local_link: Option<String>,
