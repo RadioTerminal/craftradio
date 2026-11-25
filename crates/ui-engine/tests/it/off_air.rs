@@ -105,3 +105,76 @@ fn a_station_that_started_on_air_is_not_going_on_air() {
     assert!(view.on_air);
     assert!(!view.going_on_air);
 }
+
+fn set_icecast_enabled(source: &mut EngineSource, on: bool) {
+    source
+        .edit(Edit::SetPartSetting {
+            part: radio_model::ICECAST_PART.into(),
+            key: radio_model::ICECAST_ENABLED_KEY.into(),
+            value: on.into(),
+        })
+        .expect("the setting is taken");
+}
+
+/// Icecast switched off on air says `Off`, never live and never off air; off air still wins.
+#[test]
+fn icecast_switched_off_says_off_and_off_air_still_wins() {
+    let (mut source, clock) = station(true);
+    set_icecast_enabled(&mut source, false);
+    let view = wait_for(&mut source, &clock, |v| v.output.icecast == Status::Off);
+    assert!(view.on_air);
+    assert!(
+        !view.going_on_air,
+        "a switched-off Icecast is not going on air"
+    );
+    let strip = view
+        .output_meters
+        .iter()
+        .find(|m| m.kind == OutputKind::Icecast)
+        .expect("the strip");
+    assert!(!strip.live);
+    assert_eq!(strip.note, "Off");
+    assert!(
+        !view.alarms.iter().any(|a| a.text.contains("Icecast")),
+        "a switched-off Icecast raises no alarm"
+    );
+
+    set_on_air(&mut source, false);
+    let view = wait_for(&mut source, &clock, |v| v.output.icecast == Status::OffAir);
+    let strip = view
+        .output_meters
+        .iter()
+        .find(|m| m.kind == OutputKind::Icecast)
+        .expect("the strip");
+    assert_eq!(strip.note, "Off air");
+}
+
+/// A station with a WebRTC output whose own switch is off says WebRTC is `Off`, not "not
+/// connected"; off air it says off air.
+#[test]
+fn webrtc_switched_off_says_off_in_the_status_bar() {
+    let mut engine = Engine::open_in_memory().unwrap();
+    engine
+        .dispatch(Command::SettingsSet {
+            part: radio_playout::WEBRTC_PART.into(),
+            key: "enabled".into(),
+            value: false.into(),
+        })
+        .unwrap();
+    let clock = ManualClock::new(t0());
+    let mut cfg = PlayoutConfig::new(Arc::new(clock.clone()), OutputChoice::Null);
+    cfg.station_name = STATION.into();
+    cfg.webrtc = Some(radio_stream::WebRtcConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+    ));
+    let playout = Playout::start(engine, cfg).unwrap();
+    let opts = SourceOptions {
+        tz: jiff::tz::TimeZone::UTC,
+        station_name: STATION.into(),
+    };
+    let mut source = EngineSource::new(playout, opts);
+    let view = wait_for(&mut source, &clock, |v| v.output.webrtc == Status::Off);
+    assert_eq!(view.output.streaming, Some(false));
+    set_on_air(&mut source, false);
+    wait_for(&mut source, &clock, |v| v.output.webrtc == Status::OffAir);
+}

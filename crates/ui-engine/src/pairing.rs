@@ -566,6 +566,7 @@ impl EngineSource {
             w.jobs
                 .send(crate::bg::Job::Forget {
                     key: entry,
+                    what: "the station key",
                     store: Arc::clone(&self.secrets),
                 })
                 .is_ok()
@@ -764,6 +765,7 @@ impl EngineSource {
                 .jobs
                 .send(crate::bg::Job::Forget {
                     key: old,
+                    what: "the station key",
                     store: Arc::clone(&store),
                 })
                 .is_ok();

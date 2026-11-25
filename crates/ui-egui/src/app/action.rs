@@ -154,6 +154,11 @@ fn describe_real(edit: &Edit, n: usize) -> String {
             )
         }
         Edit::Unpair => "Unpaired from the server; its key left the keychain".to_owned(),
+        Edit::RestoreIcecast { had_host: true } => {
+            "Icecast is back to its defaults; its password is being removed from the keychain"
+                .to_owned()
+        }
+        Edit::RestoreIcecast { had_host: false } => "Icecast is back to its defaults".to_owned(),
         Edit::SaveServerOutputs(_) => {
             "Sending the outputs to the server; the Server page says how it went".to_owned()
         }
@@ -253,6 +258,9 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
         ),
         Edit::Pair { .. } => "asked nothing · the preview reaches no server".to_owned(),
         Edit::Unpair => "nothing to unpair · the preview is not paired".to_owned(),
+        Edit::RestoreIcecast { .. } => {
+            "set Icecast back to its defaults · nothing is sent".to_owned()
+        }
         Edit::SaveServerOutputs(_) => "sent nothing · the preview reaches no server".to_owned(),
         Edit::SetStreaming(on) => format!(
             "turned streaming {} · the preview sends no audio",

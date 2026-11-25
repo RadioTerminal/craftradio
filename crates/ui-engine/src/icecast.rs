@@ -16,8 +16,9 @@ use crate::EngineSource;
 pub const ICECAST_PART: &str = "icecast";
 /// The keychain service of the app.
 pub const KEYCHAIN_SERVICE: &str = "radio-station-manager";
-const DEFAULT_PORT: u16 = 8000;
-const DEFAULT_KBPS: u32 = 128;
+use radio_ui_egui::view::{
+    ICECAST_DEFAULT_KBPS as DEFAULT_KBPS, ICECAST_DEFAULT_PORT as DEFAULT_PORT,
+};
 
 /// A store for secrets, such as the OS keychain.
 pub trait SecretStore: Send + Sync {
@@ -278,6 +279,57 @@ impl EngineSource {
             self.notices
                 .push("The playout has stopped; the Icecast settings were not applied".into());
         }
+    }
+
+    /// `Edit::RestoreIcecast`: every Icecast setting goes back to its default in one step,
+    /// switched on and with no mount, and the password of the mount it had leaves the
+    /// keychain. A paired station keeps them: its pairing writes them at each start.
+    pub(crate) fn restore_icecast(&mut self) -> Result<usize, String> {
+        if crate::pairing::is_paired(&self.state) {
+            return Err(radio_ui_egui::view::ICECAST_PAIRED.into());
+        }
+        if self.worker.is_none() {
+            return Err("The background lane could not start; nothing changed".into());
+        }
+        let old = icecast_view(&self.state);
+        // Without a host no password was stored for it.
+        let key = (!old.host.is_empty()).then(|| secret_key(&old));
+        let set = |k: &str, v: serde_json::Value| Command::SettingsSet {
+            part: ICECAST_PART.into(),
+            key: k.into(),
+            value: v,
+        };
+        self.run_batch(vec![
+            set("host", "".into()),
+            set("port", DEFAULT_PORT.into()),
+            set("mount", "".into()),
+            set("user", "source".into()),
+            set("format", "opus".into()),
+            set("kbps", DEFAULT_KBPS.into()),
+            // No value: TLS follows the host again, as on a station that never set it.
+            set("tls", serde_json::Value::Null),
+            set("public_url", "".into()),
+            set(radio_model::ICECAST_ENABLED_KEY, true.into()),
+        ])?;
+        let sent = key.is_none_or(|key| {
+            self.worker.as_ref().is_some_and(|w| {
+                w.jobs
+                    .send(crate::bg::Job::Forget {
+                        key,
+                        what: "the Icecast password",
+                        store: std::sync::Arc::clone(&self.secrets),
+                    })
+                    .is_ok()
+            })
+        });
+        if !sent {
+            self.notices.push(
+                "The background lane has stopped; the Icecast password stays in the keychain"
+                    .into(),
+            );
+        }
+        self.secret_known = None;
+        Ok(1)
     }
 
     pub(crate) fn set_icecast(&mut self, ice: IcecastView) -> Result<usize, String> {

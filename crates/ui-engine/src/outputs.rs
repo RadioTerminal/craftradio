@@ -38,6 +38,7 @@ pub(crate) fn going_on_air(
     now: jiff::Timestamp,
 ) -> bool {
     out.on_air
+        && out.icecast_enabled
         && matches!(
             out.icecast,
             Some(StreamStatus::Connecting | StreamStatus::Retrying { .. })
@@ -67,6 +68,8 @@ pub(crate) fn output_meter_views(
     let icecast = match &out.icecast {
         None => (false, "Not set up"),
         Some(_) if !out.on_air => (false, "Off air"),
+        // Switched off on its own page while on air: off, never live.
+        Some(_) if !out.icecast_enabled => (false, "Off"),
         Some(StreamStatus::Connected { .. }) => (true, "Connected"),
         Some(StreamStatus::Connecting | StreamStatus::Retrying { .. }) if going => {
             (false, "Going on air…")
@@ -151,6 +154,7 @@ mod tests {
             webrtc: None,
             webrtc_available: true,
             on_air: true,
+            icecast_enabled: true,
         }
     }
 

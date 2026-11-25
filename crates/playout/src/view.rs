@@ -107,6 +107,9 @@ pub struct OutputStatus {
     /// The On air setting. Off air, neither Icecast nor WebRTC sends anything; the decks
     /// and the sound card go on.
     pub on_air: bool,
+    /// The Icecast switch (`icecast.enabled`). Switched off, Icecast sends nothing even on
+    /// air; WebRTC has a switch of its own.
+    pub icecast_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

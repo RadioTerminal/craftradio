@@ -479,6 +479,10 @@ pub(crate) struct Core {
     pub(crate) icecast_set_up: bool,
     /// The On air setting as Icecast and WebRTC last followed it.
     pub(crate) on_air: bool,
+    /// The Icecast switch as playout last read it.
+    pub(crate) icecast_enabled: bool,
+    /// Whether the Icecast source was last told to be on air: On air and its switch both on.
+    pub(crate) icecast_on_air: bool,
     pub(crate) webrtc: Option<WebRtcHandle>,
     /// Program for the WebRTC server, kept while the server is off.
     pub(crate) webrtc_tap: Option<TapSlot>,
@@ -562,11 +566,13 @@ impl Core {
         let mut taps = std::mem::take(&mut opened.taps).into_iter();
         // A station saved off air does not dial Icecast until it goes on air.
         let on_air = crate::streams::on_air(engine.state());
+        let icecast_enabled = crate::streams::icecast_enabled(engine.state());
+        let icecast_on_air = on_air && icecast_enabled;
         let icecast_set_up = cfg.icecast.is_some();
         let icecast = taps.next().map(|tap| {
             IcecastClient::start_metered_with(
                 cfg.icecast.clone(),
-                on_air,
+                icecast_on_air,
                 tap,
                 meters.icecast.clone(),
             )
@@ -596,6 +602,7 @@ impl Core {
                 webrtc: None,
                 webrtc_available: cfg.webrtc.is_some(),
                 on_air,
+                icecast_enabled,
             },
             stream_states: Vec::new(),
             alarms: Vec::new(),
@@ -644,6 +651,8 @@ impl Core {
             icecast,
             icecast_set_up,
             on_air,
+            icecast_enabled,
+            icecast_on_air,
             webrtc: None,
             webrtc_tap,
             output_meters: meters,
@@ -1921,6 +1930,7 @@ impl Core {
             .filter(|_| self.icecast_set_up)
             .map(IcecastHandle::status);
         view.outputs.on_air = self.on_air;
+        view.outputs.icecast_enabled = self.icecast_enabled;
         view.outputs.webrtc = self.webrtc.as_ref().map(WebRtcHandle::status);
         if self.timeline_changed {
             view.timeline = self.timeline.clone();

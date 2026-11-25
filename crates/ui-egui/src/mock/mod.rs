@@ -27,7 +27,7 @@ use crate::view::{
     DeckView, DeviceRole, DeviceRoles, DropTarget, Edit, FitView, FolderSource, FolderView,
     IcecastView, Imported, ItemMeta, LibraryItem, MetaTarget, MeterView, MoveTo, Origin,
     OutputStatus, Pick, Place, Placement, PlaylistTab, PublishMode, Row, RuleView, Settings,
-    StationView, Status, StreamFormat, StripChange, Timing, Trigger, ViewSource,
+    StationView, Status, StripChange, Timing, Trigger, ViewSource,
 };
 
 pub use stress::{STRESS_TITLES, StressSource, stress, stress_url};
@@ -225,16 +225,8 @@ impl MockSource {
             streaming: false,
             icecast: IcecastView {
                 host: "stream.example.org".to_owned(),
-                port: ICECAST_PORT,
                 mount: "/live".to_owned(),
-                user: "source".to_owned(),
-                password: String::new(),
-                password_set: false,
-                keychain_error: None,
-                tls: true,
-                format: StreamFormat::Opus,
-                kbps: ICECAST_KBPS,
-                public_url: String::new(),
+                ..IcecastView::defaults()
             },
             dynamics: radio_model::DynamicsSettings::default(),
             loudness: radio_model::LoudnessSettings::default(),

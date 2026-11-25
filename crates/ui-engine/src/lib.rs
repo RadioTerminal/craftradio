@@ -882,6 +882,8 @@ impl EngineSource {
         let icecast = match &pv.outputs.icecast {
             None | Some(StreamStatus::Stopped) => Status::NotConnected,
             Some(_) if off_air => Status::OffAir,
+            // Its own switch is off: Icecast sends nothing, on purpose.
+            Some(_) if !pv.outputs.icecast_enabled => Status::Off,
             Some(StreamStatus::OffAir) => Status::OffAir,
             Some(StreamStatus::Connecting) => Status::Reconnecting { attempt: 0 },
             Some(StreamStatus::Connected { .. }) => Status::Connected,
@@ -893,9 +895,20 @@ impl EngineSource {
             Some(WebRtcStatus::Listening { link, relays, .. }) if *relays > 0 => link.clone(),
             _ => None,
         };
+        let streaming = pv.outputs.webrtc_available.then(|| {
+            pv.state
+                .settings(radio_playout::WEBRTC_PART)
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        });
         let (webrtc, webrtc_listeners, webrtc_reported) = match &pv.outputs.webrtc {
             // WebRTC is stopped while off air; say why, not "off".
             _ if off_air => (Status::OffAir, None, None),
+            // Its own switch is off: on purpose, not a fault.
+            None | Some(WebRtcStatus::Stopped) if streaming == Some(false) => {
+                (Status::Off, None, None)
+            }
             None | Some(WebRtcStatus::Stopped) => (Status::NotConnected, None, None),
             Some(WebRtcStatus::Starting) => (Status::Reconnecting { attempt: 0 }, None, None),
             Some(WebRtcStatus::Listening {
@@ -923,13 +936,7 @@ impl EngineSource {
                 Some(WebRtcStatus::Listening { url, .. }) => Some(url.clone()),
                 _ => None,
             },
-            streaming: pv.outputs.webrtc_available.then(|| {
-                pv.state
-                    .settings(radio_playout::WEBRTC_PART)
-                    .and_then(|s| s.get("enabled"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            }),
+            streaming,
         }
     }
 
@@ -1025,8 +1032,9 @@ impl EngineSource {
                 here.clone(),
             ));
         }
-        // Off air nothing is pushed, so nothing is refused either.
-        if self.key_refused() && pv.outputs.on_air {
+        // Off air, or with Icecast switched off, nothing is pushed, so nothing is refused either.
+        let pushing = pv.outputs.on_air && pv.outputs.icecast_enabled;
+        if self.key_refused() && pushing {
             out.push(alarms::from_state(
                 "icecast_key_refused",
                 "",
@@ -1036,7 +1044,7 @@ impl EngineSource {
                 here.clone(),
             ));
         } else if let Some(StreamStatus::Refused { last_error }) = &pv.outputs.icecast
-            && pv.outputs.on_air
+            && pushing
         {
             out.push(alarms::from_state(
                 "icecast_refused",
@@ -1244,7 +1252,7 @@ impl ViewSource for EngineSource {
         let mut output = Self::output(&pv, card_wanted);
         // The paired server refused the key, found at start or while pushing: the strip, the
         // status bar and the alarm say so in the same words.
-        if self.key_refused() && on_air {
+        if self.key_refused() && on_air && pv.outputs.icecast_enabled {
             output.icecast = Status::Failed(pairing::KEY_REFUSED.to_owned());
             for v in &mut self.output_views {
                 if v.kind == radio_ui_egui::view::OutputKind::Icecast {

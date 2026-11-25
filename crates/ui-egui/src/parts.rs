@@ -16,6 +16,8 @@ pub(crate) const MIXER: &str = "mixer";
 pub(crate) const DECKS: &str = radio_model::DECKS_PART;
 /// The WebRTC listener stream: the same part the playout reads.
 pub(crate) const WEBRTC: &str = "webrtc";
+/// The Icecast push: the same part the playout reads.
+pub(crate) const ICECAST: &str = radio_model::ICECAST_PART;
 /// The station name and logo: the same part the playout reads.
 pub(crate) const BRANDING: &str = radio_model::BRANDING_PART;
 pub(crate) const PREFERENCES: &str = "preferences";

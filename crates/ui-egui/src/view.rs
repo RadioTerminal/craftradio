@@ -928,6 +928,16 @@ impl StreamFormat {
     }
 }
 
+/// Why Restore page defaults leaves the Icecast settings of a paired station: the pairing
+/// writes them again at each start.
+pub const ICECAST_PAIRED: &str =
+    "Paired with a server: Disconnect on the Server page sets these back.";
+
+/// The Icecast port of a station that set none.
+pub const ICECAST_DEFAULT_PORT: u16 = 8000;
+/// The Icecast bitrate of a station that set none, in kbit/s.
+pub const ICECAST_DEFAULT_KBPS: u32 = 128;
+
 /// The Icecast mount settings.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct IcecastView {
@@ -948,6 +958,27 @@ pub struct IcecastView {
     /// The address listeners open for the stream, such as `https://stream.example.org/live`.
     /// Empty when the station does not share it. The web player falls back to it.
     pub public_url: String,
+}
+
+impl IcecastView {
+    /// The mount of a station whose Icecast settings are all unset: no server, the default
+    /// port, user and bitrate, Opus, and TLS as the empty host has it. What Restore page
+    /// defaults goes back to.
+    pub fn defaults() -> Self {
+        Self {
+            host: String::new(),
+            port: ICECAST_DEFAULT_PORT,
+            mount: String::new(),
+            user: "source".to_owned(),
+            password: String::new(),
+            password_set: false,
+            keychain_error: None,
+            tls: !radio_model::is_loopback_host(""),
+            format: StreamFormat::Opus,
+            kbps: ICECAST_DEFAULT_KBPS,
+            public_url: String::new(),
+        }
+    }
 }
 
 // The password never shows in a debug print.
@@ -1112,6 +1143,9 @@ pub enum Status {
     NotConnected,
     /// Off air on purpose (the On air setting): nothing is sent, and that is not a fault.
     OffAir,
+    /// Switched off on purpose by its own switch (Preferences › Icecast) while the station
+    /// is on air: this output sends nothing, and that is not a fault.
+    Off,
     Connected,
     /// The connection dropped; the output tries again.
     Reconnecting {
@@ -1349,6 +1383,13 @@ pub enum Edit {
         change: StripChange,
     },
     SetIcecast(IcecastView),
+    /// Restore page defaults on the Icecast page: every `icecast.*` setting goes back to its
+    /// default (switched on, no mount), and the password of the mount leaves the keychain.
+    /// Refused while paired with a server, whose pairing writes them. `had_host` says that a
+    /// server was set, so a password may be there to remove.
+    RestoreIcecast {
+        had_host: bool,
+    },
     /// Pair with the station server at `address` (`https://…`, or `http://` to this
     /// computer). The key goes to the keychain only; an empty key uses the one stored for
     /// the paired mount.

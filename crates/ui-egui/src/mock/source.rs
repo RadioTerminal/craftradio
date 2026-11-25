@@ -123,6 +123,12 @@ impl ViewSource for MockSource {
             .and_then(serde_json::Value::as_bool);
         let on_air = radio_model::on_air(stored);
         let off = |s: Status| if on_air { s } else { Status::OffAir };
+        let icecast_on = radio_model::icecast_enabled(
+            self.settings
+                .get(radio_model::ICECAST_PART)
+                .and_then(|s| s.get(radio_model::ICECAST_ENABLED_KEY))
+                .and_then(serde_json::Value::as_bool),
+        );
         StationView {
             monitor_open: false,
             output_meters: super::decks::output_meters(on_air),
@@ -151,9 +157,18 @@ impl ViewSource for MockSource {
             loudness: self.loudness,
             output: OutputStatus {
                 local: Status::Preview,
-                icecast: off(Status::NotConnected),
+                // As the station: with no mount set up it says so before the switch.
+                icecast: off(if icecast_on || self.icecast.host.is_empty() {
+                    Status::NotConnected
+                } else {
+                    Status::Off
+                }),
                 listeners: None,
-                webrtc: off(Status::NotConnected),
+                webrtc: off(if self.streaming {
+                    Status::NotConnected
+                } else {
+                    Status::Off
+                }),
                 webrtc_listeners: None,
                 webrtc_reported: None,
                 listen_link: None,

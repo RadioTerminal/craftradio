@@ -128,6 +128,17 @@ MCP server or the control channel switches it at once, with no second press:
 craftradio-cli cmd --data-dir ./station '{"id":"settings.set","args":{"part":"air","key":"on_air","value":false}}'
 ```
 
+On Air is the switch of the whole station; each output also has its own. Preferences ›
+Icecast › Streaming (part `icecast`, key `enabled`, absent means on) and Preferences › WebRTC
+› Streaming (part `webrtc`, key `enabled`, absent means off) each stop only their output, which
+then reads "Off" in the status bar, its strip and its page; off air, both read "Off air"
+whatever their switch says.
+
+Restore page defaults on Preferences › Icecast sets every `icecast.*` setting back and takes
+the mount's password out of the keychain; a station paired with a server refuses, since
+Disconnect on the Server page does that. The CLI and MCP can set the `icecast.*` keys with
+`settings.set`, but only the app's Restore removes the Icecast password from the keychain.
+
 That line edits the station file, so close the app first (a running app keeps its own copy).
 For a running station use the `settings_set` MCP tool or `station.run` on the control channel
 ([docs/control.md](docs/control.md)) with the same `id` and `args`.

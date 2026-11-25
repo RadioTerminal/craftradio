@@ -226,6 +226,15 @@ fn set_on_air(p: &radio_playout::Playout, on: bool) {
     .unwrap();
 }
 
+fn set_icecast_enabled(p: &radio_playout::Playout, on: bool) {
+    p.dispatch(Command::SettingsSet {
+        part: radio_model::ICECAST_PART.into(),
+        key: radio_model::ICECAST_ENABLED_KEY.into(),
+        value: on.into(),
+    })
+    .unwrap();
+}
+
 /// Ticks playout until its view passes `check`, up to a bound.
 fn until_view(
     p: &radio_playout::Playout,
@@ -275,6 +284,71 @@ fn off_air_setting_takes_icecast_off_air() {
         v.outputs.on_air && v.outputs.icecast != Some(StreamStatus::OffAir)
     });
     assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Connected);
+}
+
+/// The Icecast switch closes the source while the station stays on air, and switched on
+/// again it connects again. Off air still wins: switching Icecast on off air dials nothing.
+#[test]
+fn the_icecast_switch_takes_only_icecast_off() {
+    let (ice, seen) = icecast_server();
+    let (p, clock) = offline(engine_with(Vec::new()), |cfg| cfg.icecast = Some(ice));
+    until_view(&p, &clock, "connected", |v| {
+        matches!(v.outputs.icecast, Some(StreamStatus::Connected { .. }))
+    });
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Connected);
+    assert!(p.snapshot().outputs.icecast_enabled);
+
+    set_icecast_enabled(&p, false);
+    until_view(&p, &clock, "Icecast off", |v| {
+        v.outputs.icecast == Some(StreamStatus::OffAir) && !v.outputs.icecast_enabled
+    });
+    assert!(p.snapshot().outputs.on_air, "the station went off air");
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Left);
+
+    set_icecast_enabled(&p, true);
+    until_view(&p, &clock, "connected again", |v| {
+        matches!(v.outputs.icecast, Some(StreamStatus::Connected { .. }))
+    });
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Connected);
+
+    set_on_air(&p, false);
+    until_view(&p, &clock, "off air", |v| {
+        v.outputs.icecast == Some(StreamStatus::OffAir)
+    });
+    assert_eq!(seen.recv_timeout(PATIENCE).unwrap(), Seen::Left);
+    set_icecast_enabled(&p, false);
+    run(&p, &clock, 0.2);
+    set_icecast_enabled(&p, true);
+    run(&p, &clock, 0.5);
+    assert_eq!(p.snapshot().outputs.icecast, Some(StreamStatus::OffAir));
+    assert!(
+        seen.recv_timeout(Duration::from_secs(1)).is_err(),
+        "a source reached the server off air"
+    );
+}
+
+/// A station saved with Icecast switched off never dials it at start, though it is on air.
+#[test]
+fn a_station_saved_with_icecast_off_does_not_dial_it() {
+    let (ice, seen) = icecast_server();
+    let mut engine = engine_with(Vec::new());
+    engine
+        .dispatch(Command::SettingsSet {
+            part: radio_model::ICECAST_PART.into(),
+            key: radio_model::ICECAST_ENABLED_KEY.into(),
+            value: false.into(),
+        })
+        .unwrap();
+    let (p, clock) = offline(engine, |cfg| cfg.icecast = Some(ice));
+    run(&p, &clock, 1.0);
+    let view = p.snapshot();
+    assert_eq!(view.outputs.icecast, Some(StreamStatus::OffAir));
+    assert!(view.outputs.on_air);
+    assert!(!view.outputs.icecast_enabled);
+    assert!(
+        seen.recv_timeout(Duration::from_secs(1)).is_err(),
+        "a source reached the server"
+    );
 }
 
 /// A station saved off air never dials Icecast at start.

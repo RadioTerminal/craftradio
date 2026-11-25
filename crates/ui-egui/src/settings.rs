@@ -102,6 +102,8 @@ pub(crate) enum Dot {
     Good(String),
     /// Not working or not connected: a ring.
     Bad(String),
+    /// Switched off on purpose: a small muted dot, neither working nor a fault.
+    Off(String),
 }
 
 /// One page of the rail: its name, icon and group, what the heading says about it, the words a
@@ -350,8 +352,13 @@ pub(crate) fn page(
             let button = egui::Button::new(words).min_size(egui::vec2(0.0, size::CONTROL_MD));
             let r = ui.add_enabled(restore.is_ok(), button);
             // The icon is drawn in the label; the name is the words alone.
-            ui.ctx()
-                .accesskit_node_builder(r.id, |node| node.set_label("Restore page defaults"));
+            // A disabled button says why in its description too, for a screen reader.
+            ui.ctx().accesskit_node_builder(r.id, |node| {
+                node.set_label("Restore page defaults");
+                if let Err(why) = restore {
+                    node.set_description(why);
+                }
+            });
             let r = match restore {
                 Ok(()) => r.on_hover_text("Set this page's settings back to their defaults"),
                 Err(why) => r.on_disabled_hover_text(why),
@@ -600,7 +607,7 @@ fn tab_button(
     );
     let resp = ui.interact(rect, id, egui::Sense::click());
     let name = match &tab.dot {
-        Some(Dot::Good(w) | Dot::Bad(w)) => format!("{} — {w}", tab.label),
+        Some(Dot::Good(w) | Dot::Bad(w) | Dot::Off(w)) => format!("{} — {w}", tab.label),
         None => tab.label.to_owned(),
     };
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
@@ -654,11 +661,12 @@ fn tab_button(
                 Dot::Bad(_) => {
                     p.circle_stroke(c, size::DOT_R, Stroke::new(size::HAIRLINE, t.text_muted))
                 }
+                Dot::Off(_) => p.circle_filled(c, size::DOT_R / 2.0, t.text_muted),
             };
         }
     }
     let resp = match &tab.dot {
-        Some(Dot::Good(w) | Dot::Bad(w)) => resp.on_hover_text(w.as_str()),
+        Some(Dot::Good(w) | Dot::Bad(w) | Dot::Off(w)) => resp.on_hover_text(w.as_str()),
         None => resp,
     };
     if keys && resp.has_focus() {

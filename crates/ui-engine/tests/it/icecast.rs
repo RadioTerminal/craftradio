@@ -404,3 +404,82 @@ fn a_headless_station_given_icecast_settings_by_the_cli_connects_without_a_resta
         Seen::Arrived(_)
     ));
 }
+
+/// Restore page defaults on the Icecast page: the settings go back to their defaults in one
+/// step, switched on again, and the password of the old mount leaves the keychain. A paired
+/// station keeps them, because its pairing writes them.
+#[test]
+fn restoring_icecast_sets_it_back_and_forgets_the_password_unless_paired() {
+    let store = std::sync::Arc::new(MemoryStore::default());
+    let (source, clock) = source(Vec::new());
+    let mut source = source.with_secrets(std::sync::Arc::new(Shared(store.clone())));
+    let port = refusing_port();
+    let mount = IcecastView {
+        host: "127.0.0.1".into(),
+        port,
+        mount: "/live".into(),
+        user: "source".into(),
+        password: "restore-test-only".into(),
+        password_set: false,
+        keychain_error: None,
+        tls: false,
+        format: StreamFormat::Opus,
+        kbps: 96,
+        public_url: "https://stream.example.org/live".into(),
+    };
+    assert_eq!(source.edit(Edit::SetIcecast(mount)), Ok(1));
+    wait_for(&mut source, &clock, |v| v.icecast.password_set);
+    source
+        .edit(Edit::SetPartSetting {
+            part: radio_model::ICECAST_PART.into(),
+            key: radio_model::ICECAST_ENABLED_KEY.into(),
+            value: false.into(),
+        })
+        .unwrap();
+    let switch = |v: &radio_ui_egui::view::StationView| {
+        v.settings
+            .get(radio_model::ICECAST_PART)
+            .and_then(|s| s.get(radio_model::ICECAST_ENABLED_KEY))
+            .and_then(serde_json::Value::as_bool)
+    };
+    wait_for(&mut source, &clock, |v| switch(v) == Some(false));
+    let entry = radio_ui_engine::mount_entry("source", "127.0.0.1", port, "/live");
+    assert!(store.get(&entry).unwrap().is_some());
+
+    // Paired: refused, in words, and nothing changes.
+    source
+        .edit(Edit::SetPartSetting {
+            part: radio_model::SERVER_PART.into(),
+            key: radio_model::SERVER_ADDRESS_KEY.into(),
+            value: "https://server.example.org".into(),
+        })
+        .unwrap();
+    wait_for(&mut source, &clock, |v| v.pairing.paired);
+    assert_eq!(
+        source.edit(Edit::RestoreIcecast { had_host: true }),
+        Err(radio_ui_egui::view::ICECAST_PAIRED.to_owned())
+    );
+    assert!(store.get(&entry).unwrap().is_some(), "the password stays");
+    source
+        .edit(Edit::SetPartSetting {
+            part: radio_model::SERVER_PART.into(),
+            key: radio_model::SERVER_ADDRESS_KEY.into(),
+            value: "".into(),
+        })
+        .unwrap();
+    wait_for(&mut source, &clock, |v| !v.pairing.paired);
+
+    assert_eq!(source.edit(Edit::RestoreIcecast { had_host: true }), Ok(1));
+    let view = wait_for(&mut source, &clock, |v| {
+        v.icecast.host.is_empty()
+            && store.get(&entry).is_ok_and(|p| p.is_none())
+            && v.output.icecast == Status::NotConnected
+    });
+    assert!(view.icecast.mount.is_empty());
+    assert_eq!(view.icecast.user, "source");
+    assert!(view.icecast.public_url.is_empty());
+    assert_ne!(view.icecast.kbps, 96, "the bitrate went back");
+    assert!(view.icecast.tls, "TLS follows the host again");
+    assert!(!view.icecast.password_set);
+    assert_eq!(switch(&view), Some(true), "switched on again");
+}

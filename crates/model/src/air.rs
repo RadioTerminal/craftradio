@@ -11,6 +11,18 @@ pub fn on_air(stored: Option<bool>) -> bool {
     stored.unwrap_or(true)
 }
 
+/// The settings part of the Icecast push.
+pub const ICECAST_PART: &str = "icecast";
+/// The key of the Icecast switch in [`ICECAST_PART`], a bool. On air is the switch of the
+/// whole station; this one is Icecast's own.
+pub const ICECAST_ENABLED_KEY: &str = "enabled";
+
+/// Whether Icecast is switched on, from the stored setting. A station that never chose
+/// streams to Icecast, so an old station keeps sending after an update.
+pub fn icecast_enabled(stored: Option<bool>) -> bool {
+    stored.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

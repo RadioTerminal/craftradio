@@ -13,7 +13,7 @@ mod rule;
 mod server;
 mod station;
 
-pub use air::{AIR_PART, ON_AIR_KEY, on_air};
+pub use air::{AIR_PART, ICECAST_ENABLED_KEY, ICECAST_PART, ON_AIR_KEY, icecast_enabled, on_air};
 pub use branding::{BRANDING_LOGO_KEY, BRANDING_NAME_KEY, BRANDING_PART, DEFAULT_STATION_NAME};
 pub use decks::{DECK_COUNT_KEY, DECKS_PART, DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, deck_count};
 pub use dynamics::{

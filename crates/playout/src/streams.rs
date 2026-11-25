@@ -288,17 +288,21 @@ impl Core {
         self.cfg.icecast = cfg;
     }
 
-    /// Takes Icecast off air or puts it on air when the On air setting changed. WebRTC
-    /// follows the same setting in [`Core::sync_webrtc`].
+    /// Takes Icecast off air or puts it on air when the On air setting or the Icecast
+    /// switch changed: Icecast sends only while both are on. WebRTC follows On air and its
+    /// own switch in [`Core::sync_webrtc`].
     pub(crate) fn sync_air(&mut self) {
-        let on = on_air(self.engine.state());
-        if on == self.on_air {
+        let state = self.engine.state();
+        self.on_air = on_air(state);
+        self.icecast_enabled = icecast_enabled(state);
+        let send = self.on_air && self.icecast_enabled;
+        if send == self.icecast_on_air {
             return;
         }
         if let Some(ice) = &self.icecast {
-            ice.set_on_air(on);
+            ice.set_on_air(send);
         }
-        self.on_air = on;
+        self.icecast_on_air = send;
     }
 
     /// Starts or stops the WebRTC server to match its setting. Off air stops it whatever
@@ -414,6 +418,15 @@ pub(crate) fn on_air(state: &radio_engine::State) -> bool {
         .and_then(|s| s.get(radio_model::ON_AIR_KEY))
         .and_then(|v| v.as_bool());
     radio_model::on_air(stored)
+}
+
+/// The Icecast switch of `state`: on unless it is stored as `false`.
+pub(crate) fn icecast_enabled(state: &radio_engine::State) -> bool {
+    let stored = state
+        .settings(radio_model::ICECAST_PART)
+        .and_then(|s| s.get(radio_model::ICECAST_ENABLED_KEY))
+        .and_then(|v| v.as_bool());
+    radio_model::icecast_enabled(stored)
 }
 
 /// What the logo watch has been asked about and what it saw.

@@ -108,12 +108,10 @@ pub(super) const DEFAULT_SLOT: CartSlot = CartSlot {
     mode: crate::view::CartMode::OneShot,
     colour: None,
 };
-pub(super) const ICECAST_PORT: u16 = 8000;
 /// The stream title before a row that is not in the timeline.
 pub(super) const UNKNOWN_PREVIOUS: &str = "(the stream title before it)";
 /// The part name of the cartwall settings.
 pub(super) const CARTWALL_PART: &str = "cartwall";
-pub(super) const ICECAST_KBPS: u32 = 128;
 /// The cartwall part settings for the grid.
 pub(super) const CART_COLS_KEY: &str = "cols";
 pub(super) const CART_ROWS_KEY: &str = "rows";
