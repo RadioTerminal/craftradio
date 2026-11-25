@@ -11,15 +11,20 @@ pub const MAX_COVER: usize = 1 << 20;
 pub struct Cover {
     pub mime: &'static str,
     pub bytes: Vec<u8>,
-    /// A strong `ETag`, quoted: a hash of the bytes.
+    /// A strong `ETag`, quoted: a hash of the bytes and of the count of covers the station
+    /// was given, so each cover set is new to the page, even with the bytes of the last
+    /// (the next song of the same album).
     pub etag: String,
 }
 
 impl Cover {
-    pub fn new(mime: &'static str, bytes: Vec<u8>) -> Cover {
+    /// The cover `bytes` of type `mime`, the station's `set`-th.
+    pub fn new(mime: &'static str, bytes: Vec<u8>, set: u64) -> Cover {
+        let mut tagged = set.to_be_bytes().to_vec();
+        tagged.extend_from_slice(&bytes);
         let mut etag = String::with_capacity(34);
         etag.push('"');
-        for byte in digest(&SHA256, &bytes).as_ref().iter().take(16) {
+        for byte in digest(&SHA256, &tagged).as_ref().iter().take(16) {
             etag.push_str(&format!("{byte:02x}"));
         }
         etag.push('"');

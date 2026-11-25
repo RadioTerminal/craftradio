@@ -132,6 +132,17 @@ fn a_cover_put_with_the_key_is_served_with_its_type_and_tag() {
         Some(tag.as_str()),
         "a new cover, a new tag"
     );
+
+    // The same bytes again, for the next song of one album: a tag of its own, so the page
+    // can tell it from the last song's cover.
+    let last = next.header("ETag").unwrap().to_owned();
+    assert_eq!(put(addr, MORNING_KEY, "image/jpeg", JPEG), 204);
+    let (again, body) = get(addr, "GET", Some(&last));
+    assert_eq!(
+        again.status, 200,
+        "the same bytes set again are a new cover"
+    );
+    assert_eq!(body, JPEG);
 }
 
 #[test]

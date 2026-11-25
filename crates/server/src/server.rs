@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -359,6 +359,8 @@ struct StationMounts {
     /// The cover of what plays now, as the station's app last set it. Kept in memory only,
     /// and cleared when the source ends.
     cover: Mutex<Option<Arc<Cover>>>,
+    /// How many covers the station has been given, for each cover's tag.
+    covers_set: AtomicU64,
 }
 
 impl StationMounts {
@@ -370,6 +372,7 @@ impl StationMounts {
             cap,
             transcoder: Mutex::new(None),
             cover: Mutex::new(None),
+            covers_set: AtomicU64::new(0),
         }
     }
 
@@ -1249,7 +1252,8 @@ fn put_cover(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request
             b"the body did not all arrive",
         );
     };
-    mounts.set_cover(Some(Cover::new(mime, body)));
+    let set = mounts.covers_set.fetch_add(1, Ordering::Relaxed);
+    mounts.set_cover(Some(Cover::new(mime, body, set)));
     let _ = respond(stream, 204, "No Content", &[], b"");
 }
 

@@ -1077,7 +1077,7 @@ function coverOf(url) {
 // What the station server plays, shown from the moment the page opens, playing or not:
 // its stats and its cover, asked every 2.5 s while the page is visible. A cover or title
 // that came over the data channel is never replaced.
-const WATCH_EVERY = 2500;
+const WATCH_EVERY = 2500, LEADING_COVER = WATCH_EVERY + 1000;
 let watched = null, watchTimer = null;
 function watchServer(url) {
   if (watched === url) return;
@@ -1095,11 +1095,12 @@ function watchTick() {
 }
 document.addEventListener("visibilitychange", watchTick);
 
-// The server's cover. The server answers 304 while it is the same. When the title changes
-// the old cover goes at once; the cover then shown is one the server got after that, or the
-// same one still there 4 s later (two songs of one album), so a new title never shows the
-// last item's cover. A cover that came just before its title (the app sends both as the
-// item starts) stays. Each item keeps the first cover it showed, for the history.
+// The server's cover. The server answers 304 while it is the same, and gives each cover
+// the app sets a tag of its own, even with the bytes of the last. When the title changes
+// the old cover goes at once, and only a cover set after it shows, so a new title never
+// shows the last item's cover. A cover first seen within a poll before its title (the app
+// sends both as the item starts) stays, and is that title's. Each item keeps the first
+// cover it showed, for the history.
 let serverTag = null, serverTagSince = 0, serverBlob = null, staleTag = null, coverAsked = 0;
 async function serverCover(url) {
   const at = coverOf(url), asked = ++coverAsked;
@@ -1109,12 +1110,11 @@ async function serverCover(url) {
     if (asked !== coverAsked || gotMeta || watched !== url) return;
     if (r.status === 404) { if (serverTag !== null || coverUrl) { serverTag = staleTag = serverBlob = null; setCover(null); } return; }
     const tag = r.headers.get("ETag") || "";
-    if (!r.ok || tag === serverTag) return;
-    if (tag === staleTag && Date.now() - serverNow.at < 4000) return;
+    if (!r.ok || tag === serverTag || tag === staleTag) return;
     const blob = await r.blob();
     if (asked !== coverAsked || gotMeta || !/^image\/(png|jpeg|webp)$/.test(blob.type)) return;
     serverTag = tag; serverTagSince = Date.now(); serverBlob = blob; staleTag = null;
-    if (!serverNow.cover) serverNow.cover = blob;
+    if (!serverNow.cover) { serverNow.cover = blob; serverNow.coverAt = serverTagSince; }
     setCover(URL.createObjectURL(blob));
   } catch (_) {}
 }
@@ -1141,10 +1141,11 @@ const SERVER_PLAYED_MAX = 40;
 function serverTitle(title, artist) {
   if (gotMeta || (title === serverNow.title && artist === serverNow.artist)) return false;
   const before = serverNow;
-  // A cover first seen within the last poll came with this title; an older one goes with
-  // the old title.
-  const leading = !!serverTag && Date.now() - serverTagSince < WATCH_EVERY + 1000;
-  serverNow = { title, artist, at: Date.now(), cover: leading ? serverBlob : null };
+  // A cover first seen within the last poll (or the one there when the page opened) came
+  // with this title, not the old one; an older cover goes with the old title.
+  const leading = !!serverTag && (!before.title || Date.now() - serverTagSince < LEADING_COVER);
+  if (leading && before.coverAt === serverTagSince) before.cover = null;
+  serverNow = { title, artist, at: Date.now(), cover: leading ? serverBlob : null, coverAt: serverTagSince };
   if (!leading) { staleTag = serverTag; serverTag = serverBlob = null; if (coverUrl) setCover(null); }
   if (!before.title) return true;
   const entry = { title: before.title, artist: before.artist, at: before.at };
