@@ -121,6 +121,9 @@ fn describe_real(edit: &Edit, n: usize) -> String {
                 DeckCommand::PlayPause => format!("Deck {name} plays or pauses"),
                 DeckCommand::Play(_) => format!("Deck {name} is on air"),
                 DeckCommand::Fade(_) => format!("Deck {name} fades out, then the next item starts"),
+                DeckCommand::Seek(to) => {
+                    format!("Deck {name} is at {}", crate::app::position(*to))
+                }
             }
         }
         Edit::PlayNext { .. } => "The next deck is on air".to_owned(),
@@ -217,6 +220,10 @@ fn describe_preview(edit: &Edit, n: usize) -> String {
                 DeckCommand::Play(_) => format!("deck {name} is on air"),
                 DeckCommand::Fade(s) => {
                     format!("deck {name} fades out over {s:.1} s, then the next item starts")
+                }
+                DeckCommand::Seek(to) => {
+                    let at = crate::app::position(*to);
+                    format!("deck {name} is at {at} here only; the timeline keeps time")
                 }
             }
         }

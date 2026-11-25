@@ -82,6 +82,8 @@ pub struct MockSource {
     row_timing: HashMap<u64, Timing>,
     /// Deck A stopped at this instant.
     paused_at: Option<Timestamp>,
+    /// Deck A was moved: the row, the position, and the instant of the move.
+    sought: Option<(u64, Duration, Timestamp)>,
     /// Deck A fades out from this instant over this many seconds.
     fade: Option<(Timestamp, f32)>,
     strips: HashMap<String, Strip>,
@@ -217,6 +219,7 @@ impl MockSource {
             row_meta: HashMap::new(),
             row_timing: HashMap::new(),
             paused_at: None,
+            sought: None,
             fade: None,
             strips: HashMap::new(),
             streaming: false,

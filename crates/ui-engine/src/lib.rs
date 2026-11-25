@@ -615,16 +615,15 @@ impl EngineSource {
                 DeckPhase::Playing => DeckState::Playing,
                 DeckPhase::Paused => DeckState::Paused,
             };
-            let len = match (d.start, d.end) {
-                (Some(s), Some(e)) if e > s => e.duration_since(s).unsigned_abs(),
-                _ => Duration::ZERO,
+            // The position of the snapshot, moved on by the clock while the item plays. A
+            // paused deck stands still, and a deck that waits shows where it will start.
+            let len = d.len;
+            let since = if d.running && now > pv.now {
+                now.duration_since(pv.now).unsigned_abs()
+            } else {
+                Duration::ZERO
             };
-            let elapsed = match (state, d.start) {
-                (DeckState::Playing | DeckState::Paused, Some(s)) if now > s => {
-                    now.duration_since(s).unsigned_abs().min(len)
-                }
-                _ => Duration::ZERO,
-            };
+            let elapsed = d.position.saturating_add(since).min(len);
             let (playlist, playlist_color) = d.item.and_then(|id| self.items.get(&id)).map_or(
                 (String::new(), [0x80; 3]),
                 |(p, _)| {
@@ -654,6 +653,7 @@ impl EngineSource {
                     .map_or_else(|| d.title.clone(), |(_, item)| display_title(item)),
                 elapsed,
                 len,
+                seekable: d.seekable,
                 state,
                 start: d.start.map(|s| self.zoned(s)),
                 gain: d.gain,

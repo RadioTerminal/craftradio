@@ -607,6 +607,11 @@ impl EngineSource {
                 expect_item,
                 over: Some(Duration::try_from_secs_f32(secs.max(0.0)).unwrap_or_default()),
             },
+            DeckCommand::Seek(position) => Command::DeckSeek {
+                deck: d,
+                position,
+                expect_item,
+            },
         };
         self.run_audio(cmd)
     }

@@ -191,3 +191,66 @@ fn rows_that_nobody_placed_by_hand_have_no_lock() {
         "nobody placed these rows by hand, so none is locked: {rows:?}"
     );
 }
+
+/// A seek on the deck on air through the UI path: the deck shows the new position, plays
+/// on from there, and the time left gets shorter by the jump.
+#[test]
+fn a_seek_moves_the_deck_on_air_and_it_plays_on() {
+    let (mut source, clock) = six_songs(20.0);
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        on_air(v).is_some()
+    });
+    let deck = on_air(&view).expect("a deck is on air");
+    assert!(view.decks[deck].seekable, "a file on air can seek");
+    let to = Duration::from_secs(12);
+    let r = source.edit(Edit::Deck {
+        deck,
+        command: DeckCommand::Seek(to),
+    });
+    assert_eq!(r, Ok(1));
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        v.decks[deck].elapsed > to
+    });
+    let d = &view.decks[deck];
+    assert_eq!(d.state, DeckState::Playing, "the deck stopped");
+    assert!(d.elapsed > to, "the deck is at {:?}", d.elapsed);
+    assert!(
+        d.len.saturating_sub(d.elapsed) < Duration::from_secs(8),
+        "the time left did not follow the seek"
+    );
+}
+
+/// A paused deck shows the position where it stopped, and a seek there moves it while it
+/// stays paused.
+#[test]
+fn a_paused_deck_holds_its_position_and_a_seek_moves_it() {
+    let (mut source, clock) = six_songs(20.0);
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        on_air(v).is_some()
+    });
+    let deck = on_air(&view).expect("a deck is on air");
+    let pause = Edit::Deck {
+        deck,
+        command: DeckCommand::PlayPause,
+    };
+    assert_eq!(source.edit(pause), Ok(1));
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        v.decks[deck].state == DeckState::Paused
+    });
+    let stopped = view.decks[deck].elapsed;
+    let view = settle(&mut source, &clock, Duration::from_millis(600), |_| false);
+    let drift = view.decks[deck].elapsed.abs_diff(stopped);
+    assert!(drift < Duration::from_millis(200), "a paused deck ran on");
+
+    let to = Duration::from_secs(15);
+    let r = source.edit(Edit::Deck {
+        deck,
+        command: DeckCommand::Seek(to),
+    });
+    assert_eq!(r, Ok(1));
+    let view = settle(&mut source, &clock, Duration::from_secs(4), |v| {
+        v.decks[deck].elapsed == to
+    });
+    assert_eq!(view.decks[deck].elapsed, to);
+    assert_eq!(view.decks[deck].state, DeckState::Paused);
+}

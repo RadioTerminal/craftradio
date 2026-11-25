@@ -70,3 +70,53 @@ fn the_mixer_has_a_strip_for_each_deck_in_use_only() {
         "a deck that is not in use has no strip"
     );
 }
+
+const ON_AIR: &str = "Halvard Pine – Harbours of Kelmora";
+
+/// The position bar of the deck on air is a slider: a click on it moves the deck there. A
+/// deck that the preview cannot move has no slider.
+#[test]
+fn a_click_on_the_position_bar_moves_the_deck_on_air() {
+    let mut h = app(Some(4));
+    assert!(
+        !shows(&h, "Deck B position"),
+        "a deck that cannot seek shows a slider"
+    );
+    h.get_by_label("Deck A position").click();
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("deck A is at").is_some(),
+        "the click did not move deck A"
+    );
+}
+
+/// The Left key on the focused position bar moves the deck back.
+#[test]
+fn the_left_key_on_the_position_bar_moves_the_deck_back() {
+    let mut h = app(Some(4));
+    h.get_by_label("Deck A position").focus();
+    h.run_steps(FRAMES);
+    h.key_press(egui::Key::ArrowLeft);
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("deck A is at").is_some(),
+        "the key did not move deck A"
+    );
+}
+
+/// Cue to start in the deck menu puts the deck on air at the start of its item.
+#[test]
+fn cue_to_start_moves_the_deck_to_the_start() {
+    let mut h = app(Some(4));
+    h.query_all_by_label(ON_AIR)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the deck card names the item on air")
+        .click_secondary();
+    h.run_steps(FRAMES);
+    h.get_by_label("Cue to start").click();
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("deck A is at 0:00").is_some(),
+        "Cue to start did not move deck A to its start"
+    );
+}

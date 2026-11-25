@@ -1240,6 +1240,14 @@ pub(crate) fn mmss(d: Duration) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// A position in an item as m:ss. The start is 0:00, not unknown.
+pub(crate) fn position(d: Duration) -> String {
+    if d.is_zero() {
+        return "0:00".to_owned();
+    }
+    mmss(d)
+}
+
 /// A local time as HH:MM:SS.
 pub(crate) fn hms(z: &jiff::Zoned) -> String {
     z.strftime("%H:%M:%S").to_string()

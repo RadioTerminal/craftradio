@@ -274,7 +274,11 @@ impl Slot {
 
     /// The planned length, from the cue-in to the planned end.
     pub(crate) fn planned_len(&self) -> Duration {
-        self.entry.len.saturating_sub(self.entry.trim)
+        match self.live_end {
+            // A live input ends on the clock, whenever it started.
+            Some(end) => since(self.real_start(), end),
+            None => self.entry.len.saturating_sub(self.entry.trim),
+        }
     }
 
     /// A seek works on this slot now: a file that is loaded, before its end fade.
