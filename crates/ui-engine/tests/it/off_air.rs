@@ -148,3 +148,33 @@ fn icecast_switched_off_says_off_and_off_air_still_wins() {
         .expect("the strip");
     assert_eq!(strip.note, "Off air");
 }
+
+/// A station with a WebRTC output whose own switch is off says WebRTC is `Off`, not "not
+/// connected"; off air it says off air.
+#[test]
+fn webrtc_switched_off_says_off_in_the_status_bar() {
+    let mut engine = Engine::open_in_memory().unwrap();
+    engine
+        .dispatch(Command::SettingsSet {
+            part: radio_playout::WEBRTC_PART.into(),
+            key: "enabled".into(),
+            value: false.into(),
+        })
+        .unwrap();
+    let clock = ManualClock::new(t0());
+    let mut cfg = PlayoutConfig::new(Arc::new(clock.clone()), OutputChoice::Null);
+    cfg.station_name = STATION.into();
+    cfg.webrtc = Some(radio_stream::WebRtcConfig::new(
+        "127.0.0.1:0".parse().unwrap(),
+    ));
+    let playout = Playout::start(engine, cfg).unwrap();
+    let opts = SourceOptions {
+        tz: jiff::tz::TimeZone::UTC,
+        station_name: STATION.into(),
+    };
+    let mut source = EngineSource::new(playout, opts);
+    let view = wait_for(&mut source, &clock, |v| v.output.webrtc == Status::Off);
+    assert_eq!(view.output.streaming, Some(false));
+    set_on_air(&mut source, false);
+    wait_for(&mut source, &clock, |v| v.output.webrtc == Status::OffAir);
+}

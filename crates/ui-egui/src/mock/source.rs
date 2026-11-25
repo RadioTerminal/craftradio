@@ -157,13 +157,18 @@ impl ViewSource for MockSource {
             loudness: self.loudness,
             output: OutputStatus {
                 local: Status::Preview,
-                icecast: off(if icecast_on {
+                // As the station: with no mount set up it says so before the switch.
+                icecast: off(if icecast_on || self.icecast.host.is_empty() {
                     Status::NotConnected
                 } else {
                     Status::Off
                 }),
                 listeners: None,
-                webrtc: off(Status::NotConnected),
+                webrtc: off(if self.streaming {
+                    Status::NotConnected
+                } else {
+                    Status::Off
+                }),
                 webrtc_listeners: None,
                 webrtc_reported: None,
                 listen_link: None,

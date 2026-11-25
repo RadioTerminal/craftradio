@@ -32,7 +32,7 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::PlayNext { .. }
             | Edit::SetStrip { .. }
             | Edit::SetIcecast(_)
-            | Edit::RestoreIcecast
+            | Edit::RestoreIcecast { .. }
             | Edit::Pair { .. }
             | Edit::Unpair
             | Edit::SaveServerOutputs(_)
@@ -548,8 +548,8 @@ impl MockSource {
                 self.icecast = ice;
                 Ok(1)
             }
-            Edit::RestoreIcecast => {
-                self.icecast = super::default_icecast();
+            Edit::RestoreIcecast { .. } => {
+                self.icecast = IcecastView::defaults();
                 self.settings.remove(radio_model::ICECAST_PART);
                 Ok(1)
             }

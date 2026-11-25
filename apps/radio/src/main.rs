@@ -397,9 +397,9 @@ fn headless(
             air = Some(now_air);
         }
         // Icecast's own switch, apart from On air; said at start only when it is off.
-        let now_ice = outputs.icecast_enabled;
-        if icecast_on.is_some_and(|was| was != now_ice) || (icecast_on.is_none() && !now_ice) {
-            println!("radio: {}", icecast_line(now_ice));
+        let now_ice = (outputs.icecast_enabled, outputs.icecast.is_some());
+        if icecast_on.is_some_and(|was| was != now_ice) || (icecast_on.is_none() && !now_ice.0) {
+            println!("radio: {}", icecast_line(now_ice.0, now_ice.1));
         }
         icecast_on = Some(now_ice);
         let now_webrtc = source.playout().snapshot().outputs.webrtc;
@@ -496,12 +496,15 @@ fn air_line(on_air: bool) -> &'static str {
     }
 }
 
-/// The headless status line for the Icecast switch (`icecast.enabled`).
-fn icecast_line(enabled: bool) -> &'static str {
-    if enabled {
-        "Icecast on (it sends while the station is on air)"
-    } else {
-        "Icecast off (its switch in Preferences › Icecast; WebRTC and the decks go on)"
+/// The headless status line for the Icecast switch (`icecast.enabled`), and whether a mount
+/// is `set_up`.
+fn icecast_line(enabled: bool, set_up: bool) -> &'static str {
+    match (enabled, set_up) {
+        (true, true) => "Icecast on (it sends while the station is on air)",
+        (true, false) => "Icecast on, but no Icecast server is set up, so nothing is sent",
+        (false, _) => {
+            "Icecast off (its switch in Preferences › Icecast; WebRTC and the decks go on)"
+        }
     }
 }
 

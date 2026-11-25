@@ -102,6 +102,8 @@ pub(crate) enum Dot {
     Good(String),
     /// Not working or not connected: a ring.
     Bad(String),
+    /// Switched off on purpose: a small muted dot, neither working nor a fault.
+    Off(String),
 }
 
 /// One page of the rail: its name, icon and group, what the heading says about it, the words a
@@ -605,7 +607,7 @@ fn tab_button(
     );
     let resp = ui.interact(rect, id, egui::Sense::click());
     let name = match &tab.dot {
-        Some(Dot::Good(w) | Dot::Bad(w)) => format!("{} — {w}", tab.label),
+        Some(Dot::Good(w) | Dot::Bad(w) | Dot::Off(w)) => format!("{} — {w}", tab.label),
         None => tab.label.to_owned(),
     };
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
@@ -659,11 +661,12 @@ fn tab_button(
                 Dot::Bad(_) => {
                     p.circle_stroke(c, size::DOT_R, Stroke::new(size::HAIRLINE, t.text_muted))
                 }
+                Dot::Off(_) => p.circle_filled(c, size::DOT_R / 2.0, t.text_muted),
             };
         }
     }
     let resp = match &tab.dot {
-        Some(Dot::Good(w) | Dot::Bad(w)) => resp.on_hover_text(w.as_str()),
+        Some(Dot::Good(w) | Dot::Bad(w) | Dot::Off(w)) => resp.on_hover_text(w.as_str()),
         None => resp,
     };
     if keys && resp.has_focus() {

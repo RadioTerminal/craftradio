@@ -156,6 +156,9 @@ pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
     let ice = icecast_status(view, t);
     if ice.connected {
         Dot::Good(ice.word)
+    } else if view.output.icecast == Status::Off {
+        // Switched off on purpose is not a fault.
+        Dot::Off(ice.word)
     } else {
         Dot::Bad(ice.word)
     }
@@ -164,6 +167,7 @@ pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
 /// Restore page defaults on a mixer page: Processing goes back to the model's default loudness
 /// and dynamics, Meters to the default peak hold, Icecast to no mount and switched on.
 pub(crate) fn restore_defaults(
+    view: &StationView,
     state: &mut State,
     tab: Option<SettingsTab>,
     actions: &mut Vec<Action>,
@@ -189,10 +193,13 @@ pub(crate) fn restore_defaults(
             ));
         }
         Some(SettingsTab::Icecast) => {
-            // The draft goes too, so the form shows the defaults and Apply cannot write the
-            // old mount back. The source also takes the password out of the keychain.
-            state.icecast = None;
-            actions.push(Action::Edit(Edit::RestoreIcecast));
+            // The draft takes the defaults at once: the view still has the old mount until
+            // the source applies the edit, and a draft filled from it could Apply it back.
+            // The source also takes the password out of the keychain.
+            state.icecast = Some(IcecastView::defaults());
+            actions.push(Action::Edit(Edit::RestoreIcecast {
+                had_host: !view.icecast.host.is_empty(),
+            }));
         }
         _ => {}
     }

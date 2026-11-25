@@ -895,9 +895,20 @@ impl EngineSource {
             Some(WebRtcStatus::Listening { link, relays, .. }) if *relays > 0 => link.clone(),
             _ => None,
         };
+        let streaming = pv.outputs.webrtc_available.then(|| {
+            pv.state
+                .settings(radio_playout::WEBRTC_PART)
+                .and_then(|s| s.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        });
         let (webrtc, webrtc_listeners, webrtc_reported) = match &pv.outputs.webrtc {
             // WebRTC is stopped while off air; say why, not "off".
             _ if off_air => (Status::OffAir, None, None),
+            // Its own switch is off: on purpose, not a fault.
+            None | Some(WebRtcStatus::Stopped) if streaming == Some(false) => {
+                (Status::Off, None, None)
+            }
             None | Some(WebRtcStatus::Stopped) => (Status::NotConnected, None, None),
             Some(WebRtcStatus::Starting) => (Status::Reconnecting { attempt: 0 }, None, None),
             Some(WebRtcStatus::Listening {
@@ -925,13 +936,7 @@ impl EngineSource {
                 Some(WebRtcStatus::Listening { url, .. }) => Some(url.clone()),
                 _ => None,
             },
-            streaming: pv.outputs.webrtc_available.then(|| {
-                pv.state
-                    .settings(radio_playout::WEBRTC_PART)
-                    .and_then(|s| s.get("enabled"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            }),
+            streaming,
         }
     }
 

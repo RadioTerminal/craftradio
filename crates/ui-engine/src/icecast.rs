@@ -16,8 +16,9 @@ use crate::EngineSource;
 pub const ICECAST_PART: &str = "icecast";
 /// The keychain service of the app.
 pub const KEYCHAIN_SERVICE: &str = "radio-station-manager";
-const DEFAULT_PORT: u16 = 8000;
-const DEFAULT_KBPS: u32 = 128;
+use radio_ui_egui::view::{
+    ICECAST_DEFAULT_KBPS as DEFAULT_KBPS, ICECAST_DEFAULT_PORT as DEFAULT_PORT,
+};
 
 /// A store for secrets, such as the OS keychain.
 pub trait SecretStore: Send + Sync {
@@ -290,7 +291,9 @@ impl EngineSource {
         if self.worker.is_none() {
             return Err("The background lane could not start; nothing changed".into());
         }
-        let key = secret_key(&icecast_view(&self.state));
+        let old = icecast_view(&self.state);
+        // Without a host no password was stored for it.
+        let key = (!old.host.is_empty()).then(|| secret_key(&old));
         let set = |k: &str, v: serde_json::Value| Command::SettingsSet {
             part: ICECAST_PART.into(),
             key: k.into(),
@@ -308,13 +311,16 @@ impl EngineSource {
             set("public_url", "".into()),
             set(radio_model::ICECAST_ENABLED_KEY, true.into()),
         ])?;
-        let sent = self.worker.as_ref().is_some_and(|w| {
-            w.jobs
-                .send(crate::bg::Job::Forget {
-                    key,
-                    store: std::sync::Arc::clone(&self.secrets),
-                })
-                .is_ok()
+        let sent = key.is_none_or(|key| {
+            self.worker.as_ref().is_some_and(|w| {
+                w.jobs
+                    .send(crate::bg::Job::Forget {
+                        key,
+                        what: "the Icecast password",
+                        store: std::sync::Arc::clone(&self.secrets),
+                    })
+                    .is_ok()
+            })
         });
         if !sent {
             self.notices.push(

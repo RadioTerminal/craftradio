@@ -324,17 +324,22 @@ pub(crate) fn show(
         state.page = p;
     }
     if out.restore && state.page.restore(view).is_ok() {
-        restore_defaults(state.page, mixer_state, actions);
+        restore_defaults(state.page, view, mixer_state, actions);
     }
     out.done
 }
 
 /// Sets the settings of `page` back to their defaults, as commands.
-fn restore_defaults(page: Page, mixer_state: &mut mixer::State, actions: &mut Vec<Action>) {
+fn restore_defaults(
+    page: Page,
+    view: &StationView,
+    mixer_state: &mut mixer::State,
+    actions: &mut Vec<Action>,
+) {
     match page {
         Page::Decks => decks::restore_defaults(actions),
         Page::Processing | Page::Meters | Page::Icecast => {
-            mixer::restore_defaults(mixer_state, page.mixer(), actions);
+            mixer::restore_defaults(view, mixer_state, page.mixer(), actions);
         }
         Page::Clock => clock_window::restore_defaults(actions),
         Page::History => history::restore_defaults(actions),
@@ -736,7 +741,12 @@ mod tests {
     fn restoring_branding_clears_the_name_and_the_logo() {
         assert!(Page::Branding.restore(&view()).is_ok());
         let mut actions = Vec::new();
-        restore_defaults(Page::Branding, &mut mixer::State::default(), &mut actions);
+        restore_defaults(
+            Page::Branding,
+            &view(),
+            &mut mixer::State::default(),
+            &mut actions,
+        );
         let mut keys: Vec<String> = actions
             .iter()
             .filter_map(|a| match a {

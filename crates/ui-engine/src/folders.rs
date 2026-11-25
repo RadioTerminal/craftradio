@@ -158,11 +158,10 @@ impl EngineSource {
                 crate::bg::Done::Icecast { seq, result } => self.icecast_answer(seq, result),
                 crate::bg::Done::Pair(answer) => self.pair_answer(answer),
                 crate::bg::Done::PutOutputs(answer) => self.put_answer(answer),
-                crate::bg::Done::Forgot { result } => {
+                crate::bg::Done::Forgot { what, result } => {
                     if let Err(e) = result {
-                        self.notices.push(format!(
-                            "The keychain kept an entry it was asked to remove: {e}"
-                        ));
+                        self.notices
+                            .push(format!("The keychain kept {what}, which was to go: {e}"));
                     }
                 }
                 // An answer for a range that the person has left since is dropped.

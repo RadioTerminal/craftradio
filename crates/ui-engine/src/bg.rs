@@ -35,9 +35,11 @@ pub(crate) enum Job {
         set: Option<String>,
         store: Arc<dyn SecretStore + Sync>,
     },
-    /// Remove the keychain entry `key`.
+    /// Remove the keychain entry `key`, which holds `what` (such as "the station key"), the
+    /// words a failure names it by.
     Forget {
         key: String,
+        what: &'static str,
         store: Arc<dyn SecretStore + Sync>,
     },
     /// Fetch the pairing document of the server at `address`, as try `seq`, with `key` or the
@@ -128,7 +130,10 @@ pub(crate) enum Done {
         result: Result<bool, String>,
     },
     /// The keychain entry `key` is gone, or the keychain failed.
-    Forgot { result: Result<(), String> },
+    Forgot {
+        what: &'static str,
+        result: Result<(), String>,
+    },
     /// The answer of a pairing try.
     Pair(crate::pairing::PairAnswer),
     /// The answer of a save of the outputs.
@@ -327,7 +332,8 @@ fn run(job: Job) -> Done {
             };
             Done::Secret { key, wrote, result }
         }
-        Job::Forget { key, store } => Done::Forgot {
+        Job::Forget { key, what, store } => Done::Forgot {
+            what,
             result: store.delete(&key),
         },
         // The lane runs a pairing try on a thread of its own before it gets here.

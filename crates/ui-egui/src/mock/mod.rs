@@ -27,7 +27,7 @@ use crate::view::{
     DeckView, DeviceRole, DeviceRoles, DropTarget, Edit, FitView, FolderSource, FolderView,
     IcecastView, Imported, ItemMeta, LibraryItem, MetaTarget, MeterView, MoveTo, Origin,
     OutputStatus, Pick, Place, Placement, PlaylistTab, PublishMode, Row, RuleView, Settings,
-    StationView, Status, StreamFormat, StripChange, Timing, Trigger, ViewSource,
+    StationView, Status, StripChange, Timing, Trigger, ViewSource,
 };
 
 pub use stress::{STRESS_TITLES, StressSource, stress, stress_url};
@@ -107,24 +107,6 @@ pub struct MockSource {
     stop_after_current: bool,
     /// The sample alarms that a person acknowledged.
     acked_alarms: std::collections::HashSet<u64>,
-}
-
-/// The Icecast mount of a station that set none up: the defaults Restore page defaults
-/// goes back to.
-fn default_icecast() -> IcecastView {
-    IcecastView {
-        host: String::new(),
-        port: ICECAST_PORT,
-        mount: String::new(),
-        user: "source".to_owned(),
-        password: String::new(),
-        password_set: false,
-        keychain_error: None,
-        tls: true,
-        format: StreamFormat::Opus,
-        kbps: ICECAST_KBPS,
-        public_url: String::new(),
-    }
 }
 
 impl MockSource {
@@ -244,7 +226,7 @@ impl MockSource {
             icecast: IcecastView {
                 host: "stream.example.org".to_owned(),
                 mount: "/live".to_owned(),
-                ..default_icecast()
+                ..IcecastView::defaults()
             },
             dynamics: radio_model::DynamicsSettings::default(),
             loudness: radio_model::LoudnessSettings::default(),

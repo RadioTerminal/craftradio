@@ -456,7 +456,7 @@ fn restoring_icecast_sets_it_back_and_forgets_the_password_unless_paired() {
         .unwrap();
     wait_for(&mut source, &clock, |v| v.pairing.paired);
     assert_eq!(
-        source.edit(Edit::RestoreIcecast),
+        source.edit(Edit::RestoreIcecast { had_host: true }),
         Err(radio_ui_egui::view::ICECAST_PAIRED.to_owned())
     );
     assert!(store.get(&entry).unwrap().is_some(), "the password stays");
@@ -469,7 +469,7 @@ fn restoring_icecast_sets_it_back_and_forgets_the_password_unless_paired() {
         .unwrap();
     wait_for(&mut source, &clock, |v| !v.pairing.paired);
 
-    assert_eq!(source.edit(Edit::RestoreIcecast), Ok(1));
+    assert_eq!(source.edit(Edit::RestoreIcecast { had_host: true }), Ok(1));
     let view = wait_for(&mut source, &clock, |v| {
         v.icecast.host.is_empty()
             && store.get(&entry).is_ok_and(|p| p.is_none())
