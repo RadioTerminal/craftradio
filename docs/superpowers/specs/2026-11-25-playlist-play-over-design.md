@@ -80,10 +80,10 @@ My calls, from the builder check:
   again. The item editor gets **Intro ends** and **Outro starts** fields (m:ss.s), with a
   hint that they're detected ("auto") or set by hand.
 - **Model.** `Playlist.plays: PlayMode` with `#[serde(default)]`:
-  `enum PlayMode { InSequence, Over { duck_db: f32 } }`, default `InSequence`.
-  `duck_db` is 0 or lower (0 = play over without ducking).
+  `enum PlayMode { InSequence, Over { duck_db: i16 } }`, default `InSequence`.
+  `duck_db` is whole dB in −40…0 (0 = play over without ducking).
 - **Engine.** Command `playlist.set_plays { playlist, plays }`, like
-  `playlist.set_on_interrupt`; refuses a positive or non-finite `duck_db`. CLI and MCP get it
+  `playlist.set_on_interrupt`; refuses a `duck_db` outside −40…0. CLI and MCP get it
   through the registry.
 - **Scheduler.** `Entry` gains `over: Option<Over>`:
   `struct Over { host: ItemId /* plus the host's plan position */, side: Intro | Outro,
