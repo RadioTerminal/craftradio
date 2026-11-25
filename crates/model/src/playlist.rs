@@ -30,6 +30,9 @@ pub struct Playlist {
     /// What a restart does with an item of this playlist that a crash cut off.
     #[serde(default)]
     pub on_interrupt: OnInterrupt,
+    /// How its items play: one after another on the decks, or over the music.
+    #[serde(default)]
+    pub plays: PlayMode,
     pub priority: i32,
     pub pick: PickOrder,
     pub items: Vec<Item>,
@@ -63,6 +66,25 @@ pub enum OnInterrupt {
     Replay,
     /// Do not play it again, and continue with the next item.
     Skip,
+}
+
+/// The duck depth that a new over playlist starts with, in dB.
+pub const DEFAULT_DUCK_DB: i16 = -12;
+/// The deepest duck that a playlist may set, in dB.
+pub const MAX_DUCK_DB: i16 = -40;
+
+/// How the items of a playlist play.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub enum PlayMode {
+    /// One after another on the decks, each taking its own airtime.
+    #[default]
+    InSequence,
+    /// Over a song's intro or outro, on the cart bus, lowering the music by `duck_db`
+    /// (whole dB, `MAX_DUCK_DB..=0`; 0 plays over without ducking). An item that fits no
+    /// intro or outro plays in sequence.
+    Over { duck_db: i16 },
 }
 
 /// A folder that supplies playlist files.

@@ -69,6 +69,8 @@ pub fn file_item(id: u64, title: &str, path: &str, len: f32, segue: f32, fade: f
     let mut item = radio_testkit::track(id, title, "Test artist", 1);
     item.source = Source::File { path: path.into() };
     item.timing = Some(Timing {
+        outro_start: None,
+        markers: radio_model::MarkerSource::NotAnalysed,
         cue_in: Duration::ZERO,
         segue: secs(segue),
         cue_out: secs(len),

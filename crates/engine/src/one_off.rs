@@ -133,6 +133,7 @@ fn playlist_of(station: &mut Station) -> &mut Playlist {
             .find(|n| !taken(n))
             .unwrap_or_else(|| ONE_OFF_PLAYLIST.to_owned());
         station.playlists.push(Playlist {
+            plays: radio_model::PlayMode::InSequence,
             id,
             source: None,
             name,

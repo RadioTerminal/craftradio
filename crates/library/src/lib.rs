@@ -322,6 +322,8 @@ pub fn analyse(path: impl AsRef<Path>) -> Result<Analysis, LibraryError> {
     Ok(Analysis {
         len: time(frames),
         timing: Timing {
+            outro_start: None,
+            markers: radio_model::MarkerSource::NotAnalysed,
             cue_in,
             segue,
             cue_out,

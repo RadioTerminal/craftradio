@@ -57,6 +57,8 @@ pub fn track(id: u64, title: &str, path: &str, secs: f32) -> Item {
         artist: Some("Test Artist".into()),
         source: Source::File { path: path.into() },
         timing: Some(Timing {
+            outro_start: None,
+            markers: radio_model::MarkerSource::NotAnalysed,
             cue_in: Duration::ZERO,
             segue: len,
             cue_out: len,

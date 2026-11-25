@@ -35,6 +35,27 @@ pub struct Timing {
     pub intro_end: Option<Duration>,
     pub fade_in: Duration,
     pub fade_out: Duration,
+    /// Where the outro starts: from here to the segue the music thins out, so an over item
+    /// can lie on it. `None` when the song has no outro.
+    #[serde(default)]
+    pub outro_start: Option<Duration>,
+    /// Who set `intro_end` and `outro_start`.
+    #[serde(default)]
+    pub markers: MarkerSource,
+}
+
+/// Who set the intro and outro markers of a song.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub enum MarkerSource {
+    /// The file was not analysed for markers yet.
+    #[default]
+    NotAnalysed,
+    /// The library analysis found them.
+    Detected,
+    /// A person set them. A later analysis keeps them.
+    ByHand,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

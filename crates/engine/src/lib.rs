@@ -217,6 +217,7 @@ impl State {
 
     fn fresh_station() -> Self {
         let main = Playlist {
+            plays: radio_model::PlayMode::InSequence,
             id: PlaylistId(1),
             name: "Main".into(),
             color: [0x3b, 0x82, 0xf6],
@@ -877,6 +878,7 @@ impl Engine {
                 );
                 self.edit_station(|s| {
                     s.playlists.push(Playlist {
+                        plays: radio_model::PlayMode::InSequence,
                         id,
                         name,
                         color: [0x8b, 0x5c, 0xf6],
