@@ -257,7 +257,7 @@ kbps = 64
 
 #[test]
 fn an_output_cannot_take_a_fixed_path() {
-    for mount in ["stream", "live", "signal", "feed"] {
+    for mount in ["stream", "live", "signal", "feed", "cover"] {
         let message = refused(&station_with_outputs("morning", &[(mount, "opus", 64)]));
         assert!(
             message.contains("morning") && message.contains(mount),

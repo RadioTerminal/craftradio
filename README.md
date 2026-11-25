@@ -160,9 +160,9 @@ public stream address. The app asks the server again at each start, so settings 
 hand after pairing are overwritten. The Server page and the headless app (`radio: …`) say
 `Paired`, `Paired — server unreachable: …` or `Paired — key refused`; only `Paired` means
 the push works. `craftradio-cli unpair --data-dir ./station` puts those settings back and
-removes the key. While paired, the WebRTC listen link opens the listener page the server
-serves at `/<slug>/`; the fallback stream the station tells listeners over WebRTC is taken at
-the app's start, so restart after pairing to change it.
+removes the key. Once paired, the server carries every listener: the listen link is the
+server's own page at `/<slug>/`, which plays the server's stream and shows the title, the
+cover the app sends for each item, and the history.
 
 When the server keeps a `state_dir`, the station's outputs (the same stream in another format
 or bitrate, which the server re-encodes) can be changed from the app: Preferences › Server ›

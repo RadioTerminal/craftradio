@@ -92,7 +92,7 @@ pub(crate) fn read_document(body: &str) -> Result<PairingDocument, PairError> {
 
 /// The agent for a request that carries the station key to the server at `address` (in
 /// [`check_address`]'s shape): no proxy, no redirects, short timeouts.
-fn agent(address: &str) -> Result<ureq::Agent, String> {
+pub(crate) fn agent(address: &str) -> Result<ureq::Agent, String> {
     let config = ureq::Agent::config_builder()
         // A proxy from the environment would see the key, in clear over http.
         .proxy(None)
@@ -111,7 +111,7 @@ fn agent(address: &str) -> Result<ureq::Agent, String> {
 }
 
 /// The `Authorization` header with `key` as the Basic password.
-fn basic(key: &str) -> String {
+pub(crate) fn basic(key: &str) -> String {
     let pair = base64::engine::general_purpose::STANDARD.encode(format!("source:{key}"));
     format!("Basic {pair}")
 }
@@ -158,7 +158,7 @@ pub fn fetch(address: &str, key: &str) -> Result<PairingDocument, PairError> {
 }
 
 /// A failed request in words.
-fn describe(e: &ureq::Error) -> String {
+pub(crate) fn describe(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Timeout(_) => format!("no answer within {} seconds", FETCH_TIMEOUT.as_secs()),
         ureq::Error::HostNotFound => "the host name is not known".into(),
@@ -370,7 +370,7 @@ pub(crate) fn run(
 }
 
 /// The typed key, else the one stored under `paired_entry`.
-fn stored_or(
+pub(crate) fn stored_or(
     typed: Option<Secret>,
     paired_entry: Option<&str>,
     store: &dyn SecretStore,
@@ -943,6 +943,17 @@ impl EngineSource {
             self.pairing.outputs_reply = None;
             self.pairing.outputs_state = OutputsState::Saved;
         }
+    }
+
+    /// The paired server refused the stored key on a request other than the push: the page
+    /// says so, and neither the push nor another request walks its lockout.
+    pub(crate) fn refuse_key(&mut self) {
+        if let Some(address) = paired_address(&self.state) {
+            self.pairing.address = address;
+        }
+        self.pairing.state = PairState::KeyRefused;
+        self.pairing.hold = Hold::Refused;
+        self.sync_icecast(true);
     }
 
     /// True while the push waits: for the start's answer, or for a new key.

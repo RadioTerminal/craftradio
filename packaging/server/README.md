@@ -200,16 +200,44 @@ settings back and removes the key.
 
 ## The listener page
 
-The server serves the WebRTC listener page (the same one as on GitHub Pages) at `/<slug>/`
-for each station it has, for example `https://radio.example.org/morning/`; any other slug
-is 404. Opened as it is, the page plays the station's `/<slug>/stream`. The pairing
-document names it as `player_url`, and a paired app links listeners to it, as
-`<player_url>?stream=<stream>#<station ID>`: the page plays the station over WebRTC by its
-ID and falls back to `/<slug>/stream` when WebRTC does not connect. The app keeps a
-`player_url` only when it is on the server it paired with. The link changes as soon as the
-app pairs or unpairs; the fallback stream that the station tells listeners over WebRTC is
-taken at the app's start, so restart the app after pairing to change that. An app paired
-with a server older than this page keeps the GitHub Pages link.
+The server serves the listener page (the same one as on GitHub Pages) at `/<slug>/` for each
+station it has, for example `https://radio.example.org/morning/`; any other slug is 404.
+Opened as it is, the page plays the station's `/<slug>/stream`. From the moment it opens,
+playing or not, it shows what plays: it asks `/status-json.xsl` and `/<slug>/cover` every
+2.5 s while it is visible (not while hidden), keeps a history of the titles it saw with the
+cover each had, and drops a cover as soon as its title gives way to the next.
+
+Once paired, the server carries every listener: the pairing document names the page as
+`player_url`, and the app's listen link (Preferences › WebRTC, Share, and the headless
+`radio: listen from anywhere:` line) is that page alone, with no WebRTC ID and no
+`?stream=`. The app keeps a `player_url` only when it is on the server it paired with, and
+the link changes as soon as the app pairs or unpairs. Unpaired, or paired with a server older
+than this page, the link is the GitHub Pages `#<station ID>` link, and the station's own
+WebRTC serves it as before.
+
+The paired app sends the cover of each item as it starts (`PUT /api/station/cover`; one
+above 256 KiB is encoded again, smaller), and an empty body when the item has none, while it
+pushes. The server keeps it in memory only: a
+restart, or the end of the station's push, clears it, and the app sends it again when the push
+connects again.
+
+The routes the page and the app use:
+
+| Route | Key | What it does |
+|---|---|---|
+| `GET /<slug>/` (and `HEAD`) | no | The listener page. |
+| `GET /<slug>/stream` | no | The stream the app pushes. |
+| `GET /status-json.xsl` | no | Icecast-shaped stats: titles and listeners, CORS `*`. |
+| `GET /<slug>/cover` (and `HEAD`) | no | The cover of what plays, with its type, `Cache-Control: no-cache`, an `ETag`, new for each cover set even with the same bytes and across restarts (304 to a matching `If-None-Match`), `nosniff` and CORS `*`; 404 with none. |
+| `GET /api/station` | yes | The pairing document. |
+| `PUT /api/station/outputs` | yes | Replaces the outputs (see "Change outputs from the app"). |
+| `PUT /api/station/cover` | yes | Sets the cover: the image as the body, `Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB (413 above, 415 for another type, 411 without `Content-Length`, 409 while the station's push is not live); an empty body clears it. 204 when taken. |
+| `PUT` or `SOURCE /<slug>/stream` | yes | The push. |
+| `GET /admin/metadata` | yes | An MP3 push's title, as Icecast takes it. |
+
+A keyed route takes the station key as the Basic password; a wrong key is 401 and counts
+toward the address's lockout, as on every keyed route. `cover` is the server's own path
+under a station, so no output may use it as its mount.
 
 ## Set the app's Icecast output by hand
 

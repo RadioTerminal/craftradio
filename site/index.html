@@ -964,8 +964,9 @@ async function stop(message) {
   wanted = false;
   clearTimeout(retryTimer); retryTimer = null;
   teardown();
-  // The item is over: the station's name and logo show again.
+  // The item is over: the station's name and logo show again, or what the server plays.
   cover = null; setNow("", ""); setCover(null);
+  if (watched) { serverTag = null; serverNow = { title: "", artist: "", name: "", at: 0, cover: null }; watchTick(); }
   setIcon(false);
   say(message || "Stopped");
 }
@@ -1056,8 +1057,107 @@ async function playIcecast(url, reason) {
   }
   if (gen !== mine) return;
   onAir(true); say(liveText());
-  titleFromServer(url);
-  poll = setInterval(() => titleFromServer(url), 10000);
+  // The station server's own stream: its title, cover and history come from the watch.
+  if (coverOf(url)) watchServer(url);
+  else {
+    titleFromServer(url);
+    poll = setInterval(() => titleFromServer(url), 10000);
+  }
+}
+
+// A stream of the station server that serves this page, <origin>/<slug>/stream, has its
+// cover at <origin>/<slug>/cover, which the station's app sets as each item starts.
+function coverOf(url) {
+  try {
+    const u = new URL(url), m = /^\/([a-z0-9-]+)\/stream$/.exec(u.pathname);
+    return served && m && u.origin === location.origin ? u.origin + "/" + m[1] + "/cover" : null;
+  } catch (_) { return null; }
+}
+
+// What the station server plays, shown from the moment the page opens, playing or not:
+// its stats and its cover, asked every 2.5 s while the page is visible. A cover or title
+// that came over the data channel is never replaced.
+const WATCH_EVERY = 2500, LEADING_COVER = WATCH_EVERY + 1000;
+let watched = null, watchTimer = null;
+function watchServer(url) {
+  if (watched === url) return;
+  watched = url;
+  clearInterval(watchTimer);
+  watchTimer = setInterval(watchTick, WATCH_EVERY);
+  watchTick();
+}
+function watchTick() {
+  if (!watched || document.hidden || gotMeta) return;
+  const url = watched;
+  // Both at once: the title, then the cover, never one waiting on the other.
+  statsTitle(url);
+  serverCover(url);
+}
+document.addEventListener("visibilitychange", watchTick);
+
+// The server's cover. The server answers 304 while it is the same, and gives each cover
+// the app sets a tag of its own, even with the bytes of the last. When the title changes
+// the old cover goes at once, and only a cover set after it shows, so a new title never
+// shows the last item's cover. A cover first seen within a poll before its title (the app
+// sends both as the item starts) stays, and is that title's. Each item keeps the first
+// cover it showed, for the history.
+let serverTag = null, serverTagSince = 0, serverBlob = null, staleTag = null, coverAsked = 0;
+async function serverCover(url) {
+  const at = coverOf(url), asked = ++coverAsked;
+  if (!at) return;
+  try {
+    const r = await fetch(at, { cache: "no-cache" });
+    if (asked !== coverAsked || gotMeta || watched !== url) return;
+    if (r.status === 404) { if (serverTag !== null || coverUrl) { serverTag = staleTag = serverBlob = null; setCover(null); } return; }
+    const tag = r.headers.get("ETag") || "";
+    if (!r.ok || tag === serverTag || tag === staleTag) return;
+    const blob = await r.blob();
+    if (asked !== coverAsked || gotMeta || !/^image\/(png|jpeg|webp)$/.test(blob.type)) return;
+    serverTag = tag; serverTagSince = Date.now(); serverBlob = blob; staleTag = null;
+    if (!serverNow.cover) { serverNow.cover = blob; serverNow.coverAt = serverTagSince; }
+    setCover(URL.createObjectURL(blob));
+  } catch (_) {}
+}
+// The title of the server's stream, from its stats.
+async function statsTitle(url) {
+  try {
+    const u = new URL(url);
+    const r = await fetch(u.origin + "/status-json.xsl", { cache: "no-store" });
+    if (!r.ok || gotMeta || watched !== url) return;
+    const sources = [].concat(((await r.json()).icestats || {}).source || []);
+    const s = sources.find((x) => (x.listenurl || "").replace(/\/+$/, "").endsWith(u.pathname)) || null;
+    if (gotMeta || watched !== url) return;
+    // Off air: the station's name, and nothing in the history.
+    const title = s ? s.title || "" : "", artist = s ? s.artist || "" : "";
+    if (serverTitle(title, artist, s ? s.server_name || "" : "")) serverCover(url);
+    setNow(title || (s && s.server_name) || "", artist);
+  } catch (_) {}
+}
+// The history on the server's stream is made here: each title the stats name, once another
+// title takes its place, with the cover it had. No title (the push dropped, or off air) ends
+// nothing, and an item that shows the station's name (a hidden title) stays out. Over WebRTC
+// the station sends its own. True when the title changed.
+let serverNow = { title: "", artist: "", name: "", at: 0, cover: null };
+const SERVER_PLAYED_MAX = 40;
+function serverTitle(title, artist, name) {
+  if (gotMeta || !title || (title === serverNow.title && artist === serverNow.artist)) return false;
+  const before = serverNow;
+  // A cover first seen within the last poll (or the one there when the page opened) came
+  // with this title, not the old one; an older cover goes with the old title.
+  const leading = !!serverTag && (!before.title || Date.now() - serverTagSince < LEADING_COVER);
+  if (leading && before.coverAt === serverTagSince) before.cover = null;
+  serverNow = { title, artist, name, at: Date.now(), cover: leading ? serverBlob : null, coverAt: serverTagSince };
+  if (!leading) { staleTag = serverTag; serverTag = serverBlob = null; if (coverUrl) setCover(null); }
+  if (!before.title || before.title === before.name) return true;
+  const entry = { title: before.title, artist: before.artist, at: before.at };
+  if (before.cover) { entry.thumb = "server:" + before.at; thumbs.set(entry.thumb, URL.createObjectURL(before.cover)); }
+  played.unshift(entry);
+  const hourAgo = Date.now() - 3600000;
+  for (const old of played.splice(SERVER_PLAYED_MAX).concat(played.filter((p) => p.at < hourAgo)))
+    if (old.thumb && old.thumb.startsWith("server:")) { URL.revokeObjectURL(thumbs.get(old.thumb)); thumbs.delete(old.thumb); }
+  played = played.filter((p) => p.at >= hourAgo);
+  renderHistory();
+  return true;
 }
 
 // An error that a retry cannot fix.
@@ -1410,6 +1510,8 @@ function tuneTo(text) {
   const next = parseStation(text);
   if (!next) { say("That is not a station link or address"); input.focus(); return; }
   station = next;
+  // Another station: the server's watch is for the page's own.
+  watched = null; clearInterval(watchTimer); watchTimer = null;
   history.replaceState(null, "", next.kind === "id" ? "#" + next.id : "?station=" + encodeURIComponent(next.url));
   paint(next.label); setNow("", ""); setCover(null); loadBrand(); played = []; renderHistory(); shareBtn.hidden = next.kind !== "id"; relayRow.hidden = next.kind !== "id";
   openCard("settings", false);
@@ -1465,6 +1567,8 @@ window.addEventListener("pagehide", () => { if (resource) fetch(resource, { meth
 setIcon(false);
 loadBrand();
 if (station) say("Press play to listen");
+// The server's page shows what plays before Play is pressed.
+if (slugStream) watchServer(slugStream);
 </script>
 </body>
 </html>

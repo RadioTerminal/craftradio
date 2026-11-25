@@ -239,6 +239,7 @@ impl Core {
                 now.send(w, &self.webrtc_played);
             }
             self.webrtc_now = Some(now);
+            self.now_rev += 1;
         }
         self.title = title;
     }
@@ -564,6 +565,11 @@ fn cover_file(item: &Item) -> Option<std::path::PathBuf> {
 }
 
 impl NowPlaying {
+    /// The file that gives its cover.
+    pub(crate) fn cover(&self) -> Option<&std::path::Path> {
+        self.file.as_deref()
+    }
+
     fn send(&self, server: &WebRtcHandle, played: &std::collections::VecDeque<Played>) {
         let history: Vec<Played> = played.iter().cloned().collect();
         server.set_now(

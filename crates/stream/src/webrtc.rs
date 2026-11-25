@@ -114,9 +114,9 @@ pub fn link_for(id: &str, public_stream: Option<&str>) -> String {
     link_on(LISTEN_SITE, id, public_stream)
 }
 
-/// The link for station `id` on the listener page at `page`, such as the one a paired
-/// server serves. With a public stream, the link carries it, as [`link_for`]'s does.
-pub fn link_on(page: &str, id: &str, public_stream: Option<&str>) -> String {
+/// The link for station `id` on the listener page at `page`. With a public stream, the link
+/// carries it, as [`link_for`]'s does.
+fn link_on(page: &str, id: &str, public_stream: Option<&str>) -> String {
     match public_stream {
         Some(url) => format!("{page}?stream={}#{id}", query_escape(url)),
         None => format!("{page}#{id}"),

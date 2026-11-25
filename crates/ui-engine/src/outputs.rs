@@ -155,6 +155,7 @@ mod tests {
             webrtc_available: true,
             on_air: true,
             icecast_enabled: true,
+            now: None,
         }
     }
 

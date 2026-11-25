@@ -413,14 +413,15 @@ fn headless(
                 matches!(webrtc, Some(radio_stream::WebRtcStatus::Listening { .. }));
             print_webrtc(status, !was_listening);
         }
-        // The link to play from anywhere, as the settings make it now (on the paired
-        // server's page when it serves one): printed when it changes, as pairing does.
-        let link = match &now_webrtc {
+        // The link to play from anywhere, as the settings make it now (the paired server's
+        // page when it serves one, whatever WebRTC does): printed when it changes, as
+        // pairing does.
+        let link = radio_ui_engine::server_page(&snapshot.state).or_else(|| match &now_webrtc {
             Some(radio_stream::WebRtcStatus::Listening {
                 link: Some(link), ..
             }) => Some(radio_ui_engine::listen_link(&snapshot.state, link)),
             _ => None,
-        };
+        });
         if link != shown_link {
             if let Some(link) = &link {
                 println!("radio: listen from anywhere: {link}");

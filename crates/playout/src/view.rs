@@ -8,6 +8,7 @@ use radio_engine::State;
 use radio_model::ItemId;
 use radio_scheduler::Timeline;
 use radio_stream::{StreamStatus, WebRtcStatus};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Everything a UI shows about playout, cheap to take once a second. Meters for 30 fps
@@ -110,6 +111,17 @@ pub struct OutputStatus {
     /// The Icecast switch (`icecast.enabled`). Switched off, Icecast sends nothing even on
     /// air; WebRTC has a switch of its own.
     pub icecast_enabled: bool,
+    /// What plays now as listeners see it, for the cover a paired server shows. `None`
+    /// before the first item that shows anything.
+    pub now: Option<NowShown>,
+}
+
+/// The item on air as listeners see it: a revision that changes with each item, and the
+/// file that gives its cover (`None` when it shows none, as on WebRTC).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowShown {
+    pub rev: u64,
+    pub cover: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

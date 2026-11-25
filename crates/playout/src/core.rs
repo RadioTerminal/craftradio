@@ -505,6 +505,8 @@ pub(crate) struct Core {
     pub(crate) webrtc_now: Option<NowPlaying>,
     /// What listeners saw before the item on air, newest first, for the last hour.
     pub(crate) webrtc_played: std::collections::VecDeque<radio_stream::Played>,
+    /// Counts the items [`webrtc_now`](Self::webrtc_now) has held, for [`crate::NowShown`].
+    pub(crate) now_rev: u64,
     /// The last stream title sent.
     pub(crate) title: String,
     pub(crate) save_due: bool,
@@ -603,6 +605,7 @@ impl Core {
                 webrtc_available: cfg.webrtc.is_some(),
                 on_air,
                 icecast_enabled,
+                now: None,
             },
             stream_states: Vec::new(),
             alarms: Vec::new(),
@@ -663,6 +666,7 @@ impl Core {
             webrtc_stopping: None,
             webrtc_now: None,
             webrtc_played: std::collections::VecDeque::new(),
+            now_rev: 0,
             title: String::new(),
             save_due: false,
             last_prune: None,
@@ -1932,6 +1936,10 @@ impl Core {
         view.outputs.on_air = self.on_air;
         view.outputs.icecast_enabled = self.icecast_enabled;
         view.outputs.webrtc = self.webrtc.as_ref().map(WebRtcHandle::status);
+        view.outputs.now = self.webrtc_now.as_ref().map(|now| crate::NowShown {
+            rev: self.now_rev,
+            cover: now.cover().map(std::path::Path::to_path_buf),
+        });
         if self.timeline_changed {
             view.timeline = self.timeline.clone();
             self.timeline_changed = false;
