@@ -54,6 +54,8 @@ env:
 
 jobs:
   version:
+    # A server release (tag server-vX.Y.Z) is the server image's, not this one's: skip it.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
@@ -277,7 +279,7 @@ jobs:
   release:
     name: Attach to the release, or keep the dry-run files
     needs: [version, linux, macos, windows]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    if: ${{ !cancelled() && needs.version.result == 'success' && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: ${{ github.event_name == 'release' && 'release' || '' }}
