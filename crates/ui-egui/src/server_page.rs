@@ -206,7 +206,11 @@ fn sync_outputs(draft: &mut Draft, from_view: &[OutputRow]) {
 }
 
 const OUTPUT_KBPS_DEFAULT: u32 = 64;
-const OUTPUT_KBPS_RANGE: std::ops::RangeInclusive<u32> = 8..=320;
+/// The bitrates the server takes: Opus any whole kbit/s in this range, MP3 only these steps.
+const OPUS_KBPS_RANGE: std::ops::RangeInclusive<u32> = 6..=510;
+const MP3_KBPS: [u32; 14] = [
+    32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+];
 
 /// What a new row starts as.
 fn new_output() -> OutputRow {
@@ -325,14 +329,28 @@ fn output_row(ui: &mut egui::Ui, i: usize, row: &mut OutputRow) -> bool {
             })
             .response;
         combo.accessible_name(format!("Format of output {n}"));
-        let kbps = ui.add_sized(
-            egui::vec2(size::OUTPUT_KBPS_W, size::CONTROL_SM),
-            egui::DragValue::new(&mut row.kbps)
-                .range(OUTPUT_KBPS_RANGE)
-                // A value the server refused stays as it was sent; only an edit clamps it.
-                .clamp_existing_to_range(false)
-                .suffix(" kbit/s"),
-        );
+        let kbps = match row.format {
+            StreamFormat::Opus => ui.add_sized(
+                egui::vec2(size::OUTPUT_KBPS_W, size::CONTROL_SM),
+                egui::DragValue::new(&mut row.kbps)
+                    .range(OPUS_KBPS_RANGE)
+                    // A value the server refused stays as it was sent; only an edit clamps it.
+                    .clamp_existing_to_range(false)
+                    .suffix(" kbit/s"),
+            ),
+            // A value that is not a step stays shown until one is picked.
+            StreamFormat::Mp3 => {
+                craft_ui::ComboBox::from_id_salt(("output_kbps", i))
+                    .width(size::OUTPUT_KBPS_W)
+                    .selected_text(format!("{} kbit/s", row.kbps))
+                    .show_ui(ui, |ui| {
+                        for b in MP3_KBPS {
+                            widgets::selectable_value(ui, &mut row.kbps, b, format!("{b} kbit/s"));
+                        }
+                    })
+                    .response
+            }
+        };
         kbps.accessible_name(format!("Bitrate of output {n}"));
         let mount_w = (ui.available_width() - size::OUTPUT_REMOVE_W - space::S).max(0.0);
         let mount = ui.add(

@@ -509,3 +509,77 @@ fn the_output_controls_are_named_by_their_labels_and_reached_by_tab() {
         "Tab moves from the format to the bitrate"
     );
 }
+
+const MP3_STEPS: [u32; 14] = [
+    32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+];
+
+/// Types `text` into the bitrate field of an Opus row and presses Enter.
+fn set_opus_kbps(p: &mut Page, text: &str) {
+    p.h.get_by_label("Bitrate of output 1").click();
+    p.h.run_steps(2);
+    p.h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    p.h.get_by_label("Bitrate of output 1").type_text(text);
+    p.h.key_press(egui::Key::Enter);
+    p.h.run_steps(FRAMES);
+}
+
+#[test]
+fn an_opus_row_takes_6_to_510() {
+    for (typed, want) in [("6", 6), ("510", 510), ("2", 6), ("9999", 510)] {
+        let mut p = page(paired_with(
+            vec![row("a.opus", OutputFormatView::Opus, 64)],
+            OutputsState::Idle,
+        ));
+        set_opus_kbps(&mut p, typed);
+        p.click("Save");
+        let saved = p.saves();
+        assert_eq!(
+            saved.first().and_then(|r| r.first()).map(|r| r.kbps),
+            Some(want),
+            "typed {typed}"
+        );
+    }
+}
+
+#[test]
+fn an_mp3_row_offers_exactly_the_fourteen_bitrates() {
+    let mut p = page(paired_with(
+        vec![row("a.mp3", OutputFormatView::Mp3, 128)],
+        OutputsState::Idle,
+    ));
+    p.click("Bitrate of output 1");
+    let offered: Vec<u32> = MP3_STEPS
+        .iter()
+        .copied()
+        .filter(|b| p.h.query_by_label(&format!("{b} kbit/s")).is_some())
+        .collect();
+    assert_eq!(offered, MP3_STEPS, "every step is offered");
+    let all = p.h.query_all_by_label_contains(" kbit/s").count();
+    assert_eq!(all, MP3_STEPS.len(), "nothing but the steps is offered");
+    // The last steps may sit below the popup's fold.
+    p.h.get_by_label("320 kbit/s").scroll_to_me();
+    p.h.run_steps(FRAMES);
+    p.click("320 kbit/s");
+    p.click("Save");
+    assert_eq!(
+        p.saves(),
+        vec![vec![row("a.mp3", OutputFormatView::Mp3, 320)]]
+    );
+}
+
+#[test]
+fn an_mp3_row_with_another_bitrate_keeps_it_until_one_is_picked() {
+    let sent = vec![row("a.mp3", OutputFormatView::Mp3, 100)];
+    let mut p = page(paired_with(
+        sent.clone(),
+        OutputsState::Failed("100 kbps can't be made".to_owned()),
+    ));
+    assert_eq!(
+        p.value("Bitrate of output 1"),
+        "100 kbit/s",
+        "the refused value still shows"
+    );
+    p.click("Save");
+    assert_eq!(p.saves(), vec![sent], "sent unchanged");
+}
