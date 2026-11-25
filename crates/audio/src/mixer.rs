@@ -157,6 +157,13 @@ enum Control {
         deck: DeckId,
         source: DeckSource,
     },
+    /// The same item at another position. It waits beside the source of the deck until its
+    /// ring is ready, then takes its place.
+    Seek {
+        deck: DeckId,
+        source: DeckSource,
+        id: u64,
+    },
     SetCart {
         slot: usize,
         clip: Option<Clip>,
@@ -286,6 +293,9 @@ struct DeckSlot {
     underrun: bool,
     /// The item gain (the loudness gain), linear.
     item_gain: Ramp,
+    /// The same item at another position, with the id of its seek. It takes the place of
+    /// `source` when its ring is ready.
+    next: Option<(DeckSource, u64)>,
 }
 
 /// One cart voice.
@@ -359,7 +369,7 @@ impl Mixer {
         let (cmd_tx, cmd_rx) = RingBuffer::new(COMMAND_CAPACITY);
         let (ctl_tx, ctl_rx) = RingBuffer::new(CONTROL_CAPACITY);
         // The bound holds every heap item in the mixer and in the control ring.
-        let (ret_tx, ret_rx) = RingBuffer::new(CONTROL_CAPACITY + 4 + config.cart_slots + 3);
+        let (ret_tx, ret_rx) = RingBuffer::new(CONTROL_CAPACITY + 8 + config.cart_slots + 3);
         let (ev_tx, ev_rx) = RingBuffer::new(EVENT_CAPACITY);
         let (live_tx, live_rx) = RingBuffer::new(ring_samples(config.live_buffer));
         let board = Arc::new(MeterBoard::new());
@@ -452,6 +462,7 @@ impl Mixer {
         if self.sample >= self.next_due {
             self.apply_due();
         }
+        self.take_seeks();
         // A queued live deck must not retain audio from its preload interval.
         for slot in &mut self.decks {
             if (!slot.playing || slot.paused)
@@ -577,11 +588,17 @@ impl Mixer {
         let start = Instant::now();
         loop {
             let starving = self.decks.iter().any(|slot| {
-                slot.source.as_ref().is_some_and(|src| {
+                let waits = slot.source.as_ref().is_some_and(|src| {
                     !src.external
                         && !src.shared.eof.load(Ordering::Acquire)
                         && src.consumer.slots() < samples
-                })
+                });
+                // A seek that waits for its ring: the swap comes on the same frame each run.
+                let seeks = slot
+                    .next
+                    .as_ref()
+                    .is_some_and(|(src, _)| src.shared.state() == DeckState::Loading);
+                waits || seeks
             });
             if !starving || start.elapsed() > timeout {
                 return;
@@ -594,6 +611,7 @@ impl Mixer {
         while let Ok(item) = self.control.pop() {
             match item {
                 Control::Load { deck, source } => self.take_load(deck, source),
+                Control::Seek { deck, source, id } => self.take_seek(deck, source, id),
                 Control::SetDynamics(chain) => {
                     if self.incoming.is_some() {
                         // A fade runs: the newest chain waits for its end.
@@ -626,8 +644,85 @@ impl Mixer {
         }
     }
 
+    /// Keeps a source that holds the item of the deck at another position, until its ring
+    /// is ready. It refuses a source for another item, and a deck that is fed from outside.
+    fn take_seek(&mut self, deck: DeckId, source: DeckSource, id: u64) {
+        let slot = &mut self.decks[deck.index()];
+        let same = slot
+            .source
+            .as_ref()
+            .is_some_and(|src| !src.external && src.item_tag == source.item_tag);
+        if !same {
+            source.shared.set_verdict(Verdict::Rejected);
+            self.retire(Retired::Deck(source));
+            return;
+        }
+        if let Some((old, _)) = slot.next.replace((source, id)) {
+            old.shared.set_verdict(Verdict::Rejected);
+            self.retire(Retired::Deck(old));
+        }
+    }
+
+    /// Puts each waiting seek on its deck once its ring is ready. The deck keeps its play
+    /// or pause, its gain and its fade-out.
+    fn take_seeks(&mut self) {
+        for deck in DeckId::ALL {
+            let slot = &mut self.decks[deck.index()];
+            let ready = slot
+                .next
+                .as_ref()
+                .is_some_and(|(src, _)| src.shared.state() != DeckState::Loading);
+            if !ready {
+                continue;
+            }
+            let Some((mut new, id)) = slot.next.take() else {
+                continue;
+            };
+            // A deck that waits keeps the fade-in of its load. A started deck has none.
+            new.fade_in = match (&slot.source, slot.playing) {
+                (Some(old), false) => old.fade_in,
+                _ => 0,
+            };
+            new.live_bus = slot.source.as_ref().is_some_and(|old| old.live_bus);
+            new.shared.set_verdict(Verdict::Accepted);
+            if slot.playing {
+                let state = if slot.paused {
+                    DeckState::Paused
+                } else {
+                    DeckState::Playing
+                };
+                new.shared.set_state(state);
+            }
+            slot.underrun = false;
+            let item_tag = new.item_tag;
+            let old = slot.source.replace(new);
+            if let Some(old) = old {
+                old.shared.set_state(DeckState::Empty);
+                self.retire(Retired::Deck(old));
+            }
+            let at_sample = self.sample;
+            self.emit(AudioEvent::Seeked {
+                deck,
+                item_tag,
+                id,
+                at_sample,
+            });
+        }
+    }
+
+    /// Gives back a seek that waits on the deck: its item goes away.
+    fn drop_seek(&mut self, deck: DeckId) {
+        if let Some((next, _)) = self.decks[deck.index()].next.take() {
+            next.shared.set_verdict(Verdict::Rejected);
+            self.retire(Retired::Deck(next));
+        }
+    }
+
     /// Puts a new item on a deck, or refuses it when the deck is on air.
     fn take_load(&mut self, deck: DeckId, source: DeckSource) {
+        if !self.decks[deck.index()].playing {
+            self.drop_seek(deck);
+        }
         let slot = &mut self.decks[deck.index()];
         if slot.playing {
             let item_tag = source.item_tag;
@@ -795,6 +890,7 @@ impl Mixer {
 
     /// Unloads a deck at once.
     fn unload(&mut self, deck: DeckId) {
+        self.drop_seek(deck);
         let slot = &mut self.decks[deck.index()];
         let old = slot.source.take();
         *slot = DeckSlot::default();
@@ -1089,6 +1185,8 @@ pub fn render_offline_buses(mixer: &mut Mixer, frames: usize) -> (Vec<f32>, Vec<
 /// One load that the handle sent, with its decoder thread.
 struct Item {
     shared: Arc<DeckShared>,
+    /// The same item at another position: the deck does not show it until the mixer took it.
+    seek: bool,
     _feeder: Option<DeckFeeder>,
 }
 
@@ -1167,6 +1265,45 @@ impl MixerHandle {
             .map_err(|_| AudioError::QueueFull)?;
         self.items[deck.index()].push(Item {
             shared,
+            seek: false,
+            _feeder: Some(feeder),
+        });
+        Ok(())
+    }
+
+    /// Moves the item on a deck to the position where `decoder` starts. Open the decoder
+    /// on another thread, as for [`MixerHandle::load_decoder`]. The deck plays on (or
+    /// stays paused or ready) with the audio it has until the new audio is ready, then
+    /// the mixer changes to it in one frame and sends [`AudioEvent::Seeked`] with `id`.
+    /// A newer seek takes the place of one that still waits. The mixer drops the seek
+    /// without an answer when the deck holds another item than `item_tag`, or an item
+    /// that another thread feeds.
+    pub fn seek_decoder(
+        &mut self,
+        deck: DeckId,
+        decoder: Decoder,
+        item_tag: Option<u64>,
+        id: u64,
+    ) -> Result<(), AudioError> {
+        self.collect();
+        let (producer, consumer) = RingBuffer::new(self.deck_buffer);
+        let shared = Arc::new(DeckShared::new());
+        let feeder = DeckFeeder::spawn(decoder, producer, Arc::clone(&shared))?;
+        let source = DeckSource {
+            live_bus: false,
+            consumer,
+            shared: Arc::clone(&shared),
+            fade_in: 0,
+            item_tag,
+            gain: 1.0,
+            external: false,
+        };
+        self.control
+            .push(Control::Seek { deck, source, id })
+            .map_err(|_| AudioError::QueueFull)?;
+        self.items[deck.index()].push(Item {
+            shared,
+            seek: true,
             _feeder: Some(feeder),
         });
         Ok(())
@@ -1200,6 +1337,7 @@ impl MixerHandle {
             .map_err(|_| AudioError::QueueFull)?;
         self.items[deck.index()].push(Item {
             shared,
+            seek: false,
             _feeder: None,
         });
         Ok(())
@@ -1251,7 +1389,12 @@ impl MixerHandle {
     /// load that the mixer did not refuse.
     fn current(&self, deck: DeckId) -> Option<&DeckShared> {
         let items = &self.items[deck.index()];
-        let live = |it: &&Item| it.shared.verdict() != Verdict::Rejected;
+        // A seek that the mixer did not take yet is not the item of the deck.
+        let live = |it: &&Item| match it.shared.verdict() {
+            Verdict::Rejected => false,
+            Verdict::Pending => !it.seek,
+            Verdict::Accepted => true,
+        };
         let on_air = items
             .iter()
             .filter(live)

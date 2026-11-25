@@ -184,6 +184,19 @@ pub enum AudioEvent {
         /// The tag from [`crate::LoadOptions`].
         item_tag: Option<u64>,
     },
+    /// The item on the deck moved to another position (see
+    /// [`crate::MixerHandle::seek_decoder`]). `at_sample` is the first frame that plays
+    /// from the new position, on a deck that plays.
+    Seeked {
+        /// The deck.
+        deck: DeckId,
+        /// The tag of the item.
+        item_tag: Option<u64>,
+        /// The id that the handle gave the seek.
+        id: u64,
+        /// The frame of the change.
+        at_sample: u64,
+    },
     /// The mixer refused the new item, because the deck was on air. The deck keeps its
     /// item. `item_tag` is the tag of the refused load.
     LoadRejected {
