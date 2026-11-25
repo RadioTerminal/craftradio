@@ -25,9 +25,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim
 RUN useradd --system --user-group --uid 10001 --no-create-home --shell /usr/sbin/nologin craftradio \
-    && install -d -o root -g craftradio -m 0750 /etc/craftradio-server
+    && install -d -o root -g craftradio -m 0750 /etc/craftradio-server \
+    && install -d -o craftradio -g craftradio -m 0750 /var/lib/craftradio-server
 COPY --from=build /usr/local/bin/craftradio-server /usr/local/bin/craftradio-server
 USER craftradio
+VOLUME /var/lib/craftradio-server
 EXPOSE 8080
 ENTRYPOINT ["craftradio-server"]
 CMD ["run", "--config", "/etc/craftradio-server/config.toml"]

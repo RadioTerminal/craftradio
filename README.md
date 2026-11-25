@@ -151,6 +151,14 @@ hand after pairing are overwritten. The Server page and the headless app (`radio
 the push works. `craftradio-cli unpair --data-dir ./station` puts those settings back and
 removes the key.
 
+When the server keeps a `state_dir`, the station's outputs (the same stream in another format
+or bitrate, which the server re-encodes) can be changed from the app: Preferences › Server ›
+Outputs, shown once the app is paired, or without the window
+`craftradio-cli outputs --data-dir ./station` to list them and
+`craftradio-cli outputs set --data-dir ./station low=opus:64 stream.mp3=mp3:192` to replace
+them (none clears). A server without a `state_dir` keeps its outputs in its config file, and the
+app shows them read-only. See [packaging/server/README.md](packaging/server/README.md).
+
 ## Under the hood
 
 A Rust workspace in layers: plain data (`model`), DST-safe time (`timing`), scheduling and the

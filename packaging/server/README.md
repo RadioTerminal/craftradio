@@ -62,6 +62,11 @@ sees them (the Docker bridge's gateway, often `172.17.0.1`), not `127.0.0.1`. Fo
 server's own TLS, mount the certificate and key read-only and point `tls_cert`/`tls_key`
 at them inside the container. `packaging/server/Dockerfile` builds the same image locally.
 
+To let the app change outputs (see "Change outputs from the app"), set
+`state_dir = "/var/lib/craftradio-server"` in the config and add
+`-v craftradio-state:/var/lib/craftradio-server` to `docker run`. The image makes that
+directory writable by its user, and a named volume keeps it across container updates.
+
 ## Make a station key
 
 ```sh
@@ -244,6 +249,48 @@ kbps = 192
   pushes MP3.
 - The stats list each output while it plays, with its format and bitrate, after the
   station's `/<slug>/stream`.
+- To let the station's operator change outputs from the app instead of editing this file,
+  see "Change outputs from the app".
+
+## Change outputs from the app
+
+Set `state_dir` in the config to a directory the server can write:
+
+```toml
+state_dir = "/var/lib/craftradio-server"
+```
+
+With it, a paired app can list the station's outputs and save a new list (Preferences ›
+Server › Outputs, or `craftradio-cli outputs`). The server saves them as
+`<state_dir>/<slug>.outputs.json` and applies them at once.
+
+- **The saved file overrides the config.** At start, a station with a saved file uses it
+  and ignores its `[[station.output]]` blocks; a station without one uses the blocks.
+  Changing the blocks later does nothing for a station that has a saved file. Delete the
+  file to go back to the config. A saved file the server can't read, or a `state_dir` that
+  is not a directory, stops the server at start with a message naming it.
+- **Who may change them:** only the holder of the station's key, for that station only.
+  The same limits as in the config apply (at most 8 outputs, the mount and bitrate rules
+  above); a list that breaks them is refused with the reason and nothing changes.
+- **Listeners of a changed output reconnect.** The push and `/<slug>/stream` keep playing.
+  Listeners of the outputs are cut off when the list changes, and a player that reconnects
+  gets the new list.
+- **Without `state_dir`,** the server refuses the change (`this server keeps no state_dir:
+  outputs are set in its config`) and the app shows the outputs read-only with
+  `This server keeps its outputs in its config file.`
+- **Install:** the systemd unit has `StateDirectory=craftradio-server`, which creates
+  `/var/lib/craftradio-server` for the server's user. In the container, mount a volume
+  there (see "Container").
+- **Without the window,** with the app closed:
+
+  ```sh
+  craftradio-cli outputs --data-dir /srv/morning
+  craftradio-cli outputs set --data-dir /srv/morning stream.mp3=mp3:192 low=opus:64
+  craftradio-cli outputs set --data-dir /srv/morning
+  ```
+
+  The first prints `<mount> <format> <kbps> <url>` for each output; the second sends the
+  whole list; the third, with no outputs, clears the list.
 
 ## Not yet available
 

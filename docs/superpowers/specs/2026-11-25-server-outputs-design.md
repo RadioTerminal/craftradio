@@ -1,6 +1,6 @@
 # Managing a station's server outputs from the app
 
-**Status (2026-11-25):** approved by the operator; being built.
+**Status (2026-11-25):** built.
 
 ## Intent
 
