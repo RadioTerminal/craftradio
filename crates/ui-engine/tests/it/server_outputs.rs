@@ -3,7 +3,8 @@
 
 use crate::fixtures::*;
 use crate::pairing::{
-    DAWN_KEY, Rotating, answering, get, keep_snapshotting, pair, server_with, setting, station,
+    DAWN_KEY, Rotating, answering, document_for, get, keep_key, keep_snapshotting, pair,
+    paired_with, server_with, setting, station,
 };
 use radio_engine::Command;
 use radio_playout::Clock;
@@ -191,4 +192,49 @@ fn the_key_goes_only_to_the_paired_address() {
     assert_eq!(other.connections(), 0, "the other host saw nothing");
     let (_, document) = get(&address, "/api/station", Some(DAWN_KEY));
     assert!(!document.contains("low.opus"), "{document}");
+}
+
+/// Save is not offered while the server is being asked, nor while it refused the key: each
+/// would send the key once more toward the server's lockout.
+#[test]
+fn save_is_refused_mid_pairing_and_after_a_refused_key() {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", silent.local_addr().unwrap());
+    let (mut source, clock, store) = station();
+    paired_with(&mut source, &address, document_for(&address));
+    keep_key(&store, &address, DAWN_KEY);
+    let view = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::Pairing
+    });
+    assert_eq!(view.pairing.state, PairState::Pairing, "asking at start");
+    assert!(
+        save(&mut source, &low_opus()).is_err(),
+        "not offered mid-pairing"
+    );
+    assert_eq!(
+        source.snapshot(clock.now()).pairing.outputs_state,
+        OutputsState::Idle
+    );
+    drop(silent);
+
+    let rotated = Rotating::start("invented-rotated-key-5Hn1");
+    let (mut source, clock, store) = station();
+    paired_with(
+        &mut source,
+        &rotated.address,
+        document_for(&rotated.address),
+    );
+    keep_key(&store, &rotated.address, DAWN_KEY);
+    let _ = wait_for(&mut source, &clock, |v| {
+        v.pairing.state == PairState::KeyRefused
+    });
+    let refused = rotated.refused();
+    let reason = save(&mut source, &low_opus()).unwrap_err();
+    assert!(reason.contains("refused the station key"), "{reason}");
+    keep_snapshotting(&mut source, &clock, Duration::from_secs(1));
+    assert_eq!(
+        rotated.refused(),
+        refused,
+        "the refused key was not sent again"
+    );
 }

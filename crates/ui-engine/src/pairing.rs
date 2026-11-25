@@ -817,6 +817,10 @@ impl EngineSource {
         if self.pairing.state == PairState::Pairing {
             return Err("The server is being asked; save once it answered".into());
         }
+        // A key the server refused would only walk its lockout again.
+        if self.key_refused() || self.pairing.state == PairState::KeyRefused {
+            return Err(KEY_REFUSED.into());
+        }
         if self.pairing.outputs_state == OutputsState::Saving {
             return Err("The outputs are on their way to the server; wait for its answer".into());
         }

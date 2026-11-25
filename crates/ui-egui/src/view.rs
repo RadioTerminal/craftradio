@@ -1030,12 +1030,15 @@ pub struct PairingView {
 /// The hint under a read-only list of outputs: the server has no `state_dir`.
 pub const OUTPUTS_READ_ONLY: &str = "This server keeps its outputs in its config file.";
 
+/// The codec of a re-encoded output on the server: the same two as the Icecast push.
+pub type OutputFormatView = StreamFormat;
+
 /// One re-encoded output of the station on the server, as the Server page edits it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputRow {
     /// The mount under the station, such as `low.opus`.
     pub mount: String,
-    pub format: StreamFormat,
+    pub format: OutputFormatView,
     pub kbps: u32,
 }
 

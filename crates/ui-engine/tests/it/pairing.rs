@@ -60,7 +60,7 @@ fn dawn_entry(address: &str) -> String {
 
 /// The keychain as a pairing with `address` left it: the key under the push's entry and
 /// under the address's own entry.
-fn keep_key(store: &MemoryStore, address: &str, key: &str) {
+pub(crate) fn keep_key(store: &MemoryStore, address: &str, key: &str) {
     store.set(&dawn_entry(address), key).unwrap();
     store.set(&server_entry(address), key).unwrap();
 }
@@ -191,7 +191,7 @@ fn a_wrong_key_says_key_refused_and_does_not_retry() {
 }
 
 /// The settings of a pairing with `address`, written as `server.pair` writes them.
-fn paired_with(source: &mut EngineSource, address: &str, document: PairingDocument) {
+pub(crate) fn paired_with(source: &mut EngineSource, address: &str, document: PairingDocument) {
     source
         .playout()
         .dispatch(Command::ServerPair {
@@ -202,7 +202,7 @@ fn paired_with(source: &mut EngineSource, address: &str, document: PairingDocume
 }
 
 /// A pairing document, field for field as a server at `address` could write it.
-fn document_for(address: &str) -> PairingDocument {
+pub(crate) fn document_for(address: &str) -> PairingDocument {
     let host_port = address.trim_start_matches("http://");
     let (host, port) = host_port.split_once(':').unwrap();
     serde_json::from_value(serde_json::json!({
@@ -623,7 +623,7 @@ impl Rotating {
         self.connections.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn refused(&self) -> usize {
+    pub(crate) fn refused(&self) -> usize {
         self.refused.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
