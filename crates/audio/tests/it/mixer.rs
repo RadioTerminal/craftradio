@@ -124,7 +124,13 @@ fn ducking_under_a_cart_lowers_program() {
     let fire = SR as u64;
     handle.send(play(0, DeckId::A)).expect("send");
     handle
-        .send(Command::new(fire, CommandKind::FireCart { slot: 0 }))
+        .send(Command::new(
+            fire,
+            CommandKind::FireCart {
+                slot: 0,
+                duck_db: 0.0,
+            },
+        ))
         .unwrap();
     handle
         .send(Command::new(
@@ -673,5 +679,117 @@ fn a_seek_for_another_item_is_dropped() {
     assert!(
         events.iter().any(|e| matches!(e, AudioEvent::DeckEnded(_))),
         "the item did not play to its own end: {events:?}"
+    );
+}
+
+/// A deck tone with near-silent carts in `slots`, fired at 0 with their duck depths.
+fn ducked_program(name: &str, carts: &[(f32, f32)], secs: f32) -> Vec<f32> {
+    let path = tone_wav(name, 48_000, f64::from(secs) + 1.0, 500.0, -6.0);
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    handle
+        .load(DeckId::A, &path, LoadOptions::default())
+        .expect("load");
+    for (i, &(len, _)) in carts.iter().enumerate() {
+        handle
+            .set_cart(
+                i,
+                Some(Clip::from_interleaved(tone_samples(
+                    f64::from(len),
+                    800.0,
+                    -70.0,
+                ))),
+            )
+            .expect("cart");
+    }
+    wait_ready(&handle, DeckId::A);
+    handle.send(play(0, DeckId::A)).expect("send");
+    for (i, &(_, duck_db)) in carts.iter().enumerate() {
+        handle
+            .send(Command::new(
+                SR as u64,
+                CommandKind::FireCart { slot: i, duck_db },
+            ))
+            .unwrap();
+    }
+    render_offline(&mut mixer, (secs * SR as f32) as usize)
+}
+
+/// The level of Program from `a` to `b` seconds.
+fn level(out: &[f32], a: f32, b: f32) -> f32 {
+    rms_db(frames(
+        out,
+        (a * SR as f32) as usize,
+        (b * SR as f32) as usize,
+    ))
+}
+
+/// A cart with a duck depth lowers the decks by that depth while it plays, and the music
+/// comes back once it ends.
+#[test]
+fn a_ducking_cart_lowers_the_decks_while_it_plays() {
+    let out = ducked_program("cart-duck", &[(1.0, -12.0)], 3.0);
+    let before = level(&out, 0.3, 0.9);
+    let during = level(&out, 1.4, 1.9);
+    let after = level(&out, 2.6, 3.0);
+    assert!(
+        (before - during - 12.0).abs() < 1.5,
+        "ducked by {}",
+        before - during
+    );
+    assert!(
+        (before - after).abs() < 1.0,
+        "came back to {} below",
+        before - after
+    );
+}
+
+/// While two ducking carts play, the deeper duck holds; when it ends, the other one's.
+#[test]
+fn overlapping_ducks_follow_the_deepest_cart_still_playing() {
+    let out = ducked_program("cart-two", &[(2.0, -6.0), (1.0, -18.0)], 4.0);
+    let before = level(&out, 0.3, 0.9);
+    let both = level(&out, 1.4, 1.9);
+    let shallow = level(&out, 2.6, 2.9);
+    let none = level(&out, 3.5, 3.9);
+    assert!(
+        (before - both - 18.0).abs() < 1.5,
+        "both: {}",
+        before - both
+    );
+    assert!(
+        (before - shallow - 6.0).abs() < 1.5,
+        "one: {}",
+        before - shallow
+    );
+    assert!((before - none).abs() < 1.0, "none: {}", before - none);
+}
+
+/// A cart with no duck depth leaves the decks as they are.
+#[test]
+fn a_cart_without_a_duck_leaves_the_decks() {
+    let out = ducked_program("cart-zero", &[(1.0, 0.0)], 2.0);
+    assert!((level(&out, 0.3, 0.9) - level(&out, 1.3, 1.9)).abs() < 0.5);
+}
+
+/// Ducking lowers the decks, never the carts.
+#[test]
+fn a_ducking_cart_is_not_ducked_itself() {
+    let cart_alone = |duck_db: f32| {
+        let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+        handle
+            .set_cart(
+                0,
+                Some(Clip::from_interleaved(tone_samples(1.0, 800.0, -12.0))),
+            )
+            .expect("cart");
+        handle
+            .send(Command::new(0, CommandKind::FireCart { slot: 0, duck_db }))
+            .unwrap();
+        level(&render_offline(&mut mixer, SR), 0.5, 0.9)
+    };
+    let (plain, ducking) = (cart_alone(0.0), cart_alone(-18.0));
+    assert!(
+        (plain - ducking).abs() < 0.5,
+        "{plain} dB, ducking {ducking} dB"
     );
 }

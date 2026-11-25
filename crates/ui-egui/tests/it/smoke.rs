@@ -621,16 +621,16 @@ fn snd_is_disabled_without_a_monitor_device() {
     assert!(snd.accesskit_node().is_disabled(), "SND A is disabled");
 }
 
-/// Cart ducking is kept but not played yet, and its controls say so instead of looking like
-/// they work.
+/// Cart ducking plays now, so its settings no longer say it is not applied; the cart
+/// modes still are not, and keep saying so.
 #[test]
-fn cart_ducking_says_it_is_not_played_yet() {
+fn cart_ducking_no_longer_says_it_is_not_played() {
     let mut harness = harness();
     click(&mut harness, "Cartwall");
     click(&mut harness, "Cartwall preferences");
     assert!(
-        shows(&harness, "Saved, but the playout does not apply this yet"),
-        "the ducking rows say they are not played yet"
+        !shows(&harness, "Saved, but the playout does not apply this yet"),
+        "the ducking rows still say they are not played"
     );
 }
 

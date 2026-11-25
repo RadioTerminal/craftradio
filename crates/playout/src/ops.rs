@@ -680,10 +680,15 @@ impl Core {
         if self.carts.loaded.get(i) != Some(&Some(item)) {
             return Check::Now(false);
         }
+        let duck_db = state
+            .cart_settings
+            .iter()
+            .find(|c| c.page == page && c.slot == slot)
+            .map_or(0.0, |c| c.duck_db);
         let at = self.mixer.now();
         match self
             .mixer
-            .send(Cmd::new(at, CommandKind::FireCart { slot: i }))
+            .send(Cmd::new(at, CommandKind::FireCart { slot: i, duck_db }))
         {
             Ok(()) => Check::Passed(at),
             Err(_) => Check::Now(false),
