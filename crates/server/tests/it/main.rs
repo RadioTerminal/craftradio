@@ -1,4 +1,5 @@
 mod config;
+mod cover;
 mod decode;
 mod e2e;
 mod encode;

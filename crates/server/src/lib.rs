@@ -3,6 +3,7 @@
 mod addr;
 mod config;
 mod conn;
+mod cover;
 mod decode;
 mod encode;
 mod framing;
@@ -17,6 +18,7 @@ mod stats;
 mod transcode;
 
 pub use config::{Config, MAX_SAVED_OUTPUTS, Output, OutputFormat, Station, read_saved_outputs};
+pub use cover::MAX_COVER;
 pub use decode::{BLOCK, DecodeError, Decoded, RATE, SourceDecoder};
 pub use encode::OutputEncoder;
 pub use framing::{Format, Framer};

@@ -10,6 +10,7 @@ use crate::config::{
     Config, Output, Station, parse_saved_outputs, read_saved_outputs, saved_outputs_path,
 };
 use crate::conn::{Conn, server_config};
+use crate::cover::{Cover, MAX_COVER, image_type};
 use crate::framing::Format;
 use crate::http::{
     HttpError, Request, client_addr, read_body, read_request, respond, respond_head,
@@ -66,6 +67,9 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 const MAX_OUTPUTS_BODY: usize = 16 << 10;
 /// What `PUT /api/station/outputs` answers on a server without a `state_dir`.
 const NO_STATE_DIR: &[u8] = b"this server keeps no state_dir: outputs are set in its config";
+/// How long the body of `PUT /api/station/cover` may take to arrive: up to [`MAX_COVER`]
+/// bytes from a home uplink.
+const COVER_BODY_WAIT: Duration = Duration::from_secs(30);
 
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
 /// The listener page, the same one GitHub Pages publishes, served at `/<slug>/` for each
@@ -352,6 +356,9 @@ struct StationMounts {
     outputs: Mutex<Arc<Outputs>>,
     /// The transcoder of the live source, if the station has outputs.
     transcoder: Mutex<Option<Transcoder>>,
+    /// The cover of what plays now, as the station's app last set it. Kept in memory only,
+    /// and cleared when the source ends.
+    cover: Mutex<Option<Arc<Cover>>>,
 }
 
 impl StationMounts {
@@ -362,7 +369,21 @@ impl StationMounts {
             outputs: Mutex::new(Outputs::new(&station.outputs, &cap)),
             cap,
             transcoder: Mutex::new(None),
+            cover: Mutex::new(None),
         }
+    }
+
+    /// The cover there is now. The lock only guards the swap of an `Arc`.
+    fn cover(&self) -> Option<Arc<Cover>> {
+        self.cover
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Puts `cover` in place of the one there is, or clears it.
+    fn set_cover(&self, cover: Option<Cover>) {
+        *self.cover.lock().unwrap_or_else(PoisonError::into_inner) = cover.map(Arc::new);
     }
 
     /// The current outputs. The lock only guards the swap of an `Arc`, so a poisoned one
@@ -433,6 +454,8 @@ impl Drop for OnAir<'_> {
             transcoder.finish();
         }
         drop(self.guard.take());
+        // The cover was of what this source played.
+        self.mounts.set_cover(None);
         drop(slot);
     }
 }
@@ -794,7 +817,13 @@ fn keyed_station<'a>(shared: &'a Shared, request: &Request) -> Option<&'a Statio
 
 fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     let method = request.method.as_str();
-    // The listener page is the one thing a HEAD reaches.
+    // The listener page and the cover are the only things a HEAD reaches.
+    if matches!(method, "GET" | "HEAD")
+        && let Some((slug, "cover")) = split_path(&request.path)
+        && let Some(mounts) = shared.mounts.get(slug)
+    {
+        return send_cover(stream, request, mounts);
+    }
     if matches!(method, "GET" | "HEAD")
         && player_slug(&request.path).is_some_and(|slug| shared.config.station(slug).is_some())
     {
@@ -836,6 +865,9 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     }
     if method == "PUT" && request.path == "/api/station/outputs" {
         return put_outputs(shared, stream, peer, request);
+    }
+    if method == "PUT" && request.path == "/api/station/cover" {
+        return put_cover(shared, stream, peer, request);
     }
     if method == "GET" && request.path == "/status-json.xsl" {
         return stats(shared, stream);
@@ -1154,6 +1186,105 @@ fn put_outputs(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Reque
             refuse(stream, 500, "Internal Server Error", &[], body.as_bytes());
         }
     }
+}
+
+/// `PUT /api/station/cover`: the cover of what the station whose key the request carries
+/// (as `GET /api/station` takes it) plays now. The body is the image, JPEG, PNG or WebP as
+/// its `Content-Type` says, at most [`MAX_COVER`] bytes; an empty body clears the cover.
+/// Kept in memory only: a restart, or the end of the station's source, clears it.
+fn put_cover(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
+    let Some(station) = keyed(shared, stream, peer, request, |key| {
+        station_with_key(shared, key)
+    }) else {
+        return;
+    };
+    let Some(mounts) = shared.mounts.get(&station.slug) else {
+        return refuse(stream, 404, "Not Found", &[], b"not found");
+    };
+    let Some(length) = request.header("Content-Length") else {
+        return refuse(
+            stream,
+            411,
+            "Length Required",
+            &[],
+            b"the request must say its Content-Length",
+        );
+    };
+    let Ok(length) = length.parse::<usize>() else {
+        return refuse(
+            stream,
+            400,
+            "Bad Request",
+            &[],
+            b"the Content-Length is not a number",
+        );
+    };
+    if length > MAX_COVER {
+        let body = format!("a cover may be at most {MAX_COVER} bytes");
+        return refuse(stream, 413, "Content Too Large", &[], body.as_bytes());
+    }
+    if length == 0 {
+        mounts.set_cover(None);
+        let _ = respond(stream, 204, "No Content", &[], b"");
+        return;
+    }
+    let Some(mime) = request.header("Content-Type").and_then(image_type) else {
+        return refuse(
+            stream,
+            415,
+            "Unsupported Media Type",
+            &[],
+            b"a cover must be image/jpeg, image/png or image/webp",
+        );
+    };
+    let deadline = Instant::now()
+        .checked_add(COVER_BODY_WAIT)
+        .unwrap_or_else(Instant::now);
+    let Ok(body) = read_body(stream, length, deadline) else {
+        return refuse(
+            stream,
+            400,
+            "Bad Request",
+            &[],
+            b"the body did not all arrive",
+        );
+    };
+    mounts.set_cover(Some(Cover::new(mime, body)));
+    let _ = respond(stream, 204, "No Content", &[], b"");
+}
+
+/// `GET /<slug>/cover` (or `HEAD`): public and unkeyed, for the listener page. The cover
+/// with its type and `ETag`, a 304 when `If-None-Match` names it, a 404 when there is none.
+fn send_cover(stream: &mut Conn, request: &Request, mounts: &StationMounts) {
+    let Some(cover) = mounts.cover() else {
+        return refuse(
+            stream,
+            404,
+            "Not Found",
+            &[CORS, ("Cache-Control", "no-cache")],
+            b"this station has no cover now",
+        );
+    };
+    let common = [
+        CORS,
+        ("Cache-Control", "no-cache"),
+        ("ETag", cover.etag.as_str()),
+        ("X-Content-Type-Options", "nosniff"),
+    ];
+    if request
+        .header("If-None-Match")
+        .is_some_and(|tags| cover.matches(tags))
+    {
+        let _ = respond(stream, 304, "Not Modified", &common, b"");
+        return;
+    }
+    let [cors, cache, etag, nosniff] = common;
+    let headers = [("Content-Type", cover.mime), cors, cache, etag, nosniff];
+    let _ = if request.method == "HEAD" {
+        respond_head(stream, 200, "OK", &headers, cover.bytes.len())
+    } else {
+        respond(stream, 200, "OK", &headers, &cover.bytes)
+    };
 }
 
 /// `GET /admin/metadata?mount=/<slug>/stream&mode=updinfo&song=<title>`: an MP3 source's
