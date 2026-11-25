@@ -5,7 +5,7 @@
 //! queue is full is dropped, and hears nothing more, not even what is already queued.
 
 use crate::framing::{Format, Framer};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -106,6 +106,9 @@ impl Drop for Place {
 pub struct Mount {
     cap: Arc<ListenerCap>,
     state: Mutex<State>,
+    /// Counts the title updates and Ogg tags the mount took, so a reader sees a new title
+    /// without taking the state's lock.
+    titles: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -143,6 +146,7 @@ impl Mount {
         Arc::new(Mount {
             cap,
             state: Mutex::default(),
+            titles: AtomicU64::new(0),
         })
     }
 
@@ -245,8 +249,14 @@ impl Mount {
         let live = state.live.is_some();
         if live {
             state.title = capped(title);
+            self.titles.fetch_add(1, Ordering::Release);
         }
         live
+    }
+
+    /// Changes each time the mount takes a title (a title update or Ogg tags).
+    pub fn titles_taken(&self) -> u64 {
+        self.titles.load(Ordering::Acquire)
     }
 
     pub fn stats(&self) -> MountStats {
@@ -315,6 +325,7 @@ impl SourceGuard {
             if let Some((tag_title, tag_artist)) = self.framer.tags() {
                 *title = capped(tag_title);
                 *artist = capped(tag_artist.unwrap_or_default());
+                self.mount.titles.fetch_add(1, Ordering::Release);
             }
         }
     }

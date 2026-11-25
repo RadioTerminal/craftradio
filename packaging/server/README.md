@@ -204,8 +204,15 @@ The server serves the listener page (the same one as on GitHub Pages) at `/<slug
 station it has, for example `https://radio.example.org/morning/`; any other slug is 404.
 Opened as it is, the page plays the station's `/<slug>/stream`. From the moment it opens,
 playing or not, it shows what plays: it asks `/status-json.xsl` and `/<slug>/cover` every
-2.5 s while it is visible (not while hidden), keeps a history of the titles it saw with the
-cover each had, and drops a cover as soon as its title gives way to the next.
+2.5 s while it is visible (not while hidden), and drops a cover as soon as its title gives way
+to the next. Its history of what played comes from the server (`/<slug>/history`), asked as
+the page opens and at each new title, so every listener sees the same list at once.
+
+The server keeps that history in memory: each title the push named, once the next took its
+place, with the cover the app set for it (a cover set up to 5 s before its title counts as
+that title's). It keeps the last 40 items from the last hour, across the ends of the push (a
+push that comes back with the same title adds nothing), and leaves out a title that is the
+station's name. A restart clears it.
 
 Once paired, the server carries every listener: the pairing document names the page as
 `player_url`, and the app's listen link (Preferences › WebRTC, Share, and the headless
@@ -229,6 +236,8 @@ The routes the page and the app use:
 | `GET /<slug>/stream` | no | The stream the app pushes. |
 | `GET /status-json.xsl` | no | Icecast-shaped stats: titles and listeners, CORS `*`. |
 | `GET /<slug>/cover` (and `HEAD`) | no | The cover of what plays, with its type, `Cache-Control: no-cache`, an `ETag`, new for each cover set even with the same bytes and across restarts (304 to a matching `If-None-Match`), `nosniff` and CORS `*`; 404 with none. |
+| `GET /<slug>/history` | no | What played before, newest first, as JSON: `{"items": [{"title", "artist", "ago_ms", "cover"}]}`, where `cover` is the path of the item's cover or `null`. `no-store`, CORS `*`. |
+| `GET /<slug>/cover/<tag>` (and `HEAD`) | no | The cover of an item in the history, by the tag its `cover` path names; it never changes, so it is cached for an hour. 404 once the history let it go. |
 | `GET /api/station` | yes | The pairing document. |
 | `PUT /api/station/outputs` | yes | Replaces the outputs (see "Change outputs from the app"). |
 | `PUT /api/station/cover` | yes | Sets the cover: the image as the body, `Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB (413 above, 415 for another type, 411 without `Content-Length`, 409 while the station's push is not live); an empty body clears it. 204 when taken. |
