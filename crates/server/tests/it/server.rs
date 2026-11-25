@@ -125,7 +125,12 @@ fn push(addr: SocketAddr, slug: &str, key: &str, content_type: &str) -> (TcpStre
 
 /// Pushes until the mount takes the source: the server notices a closed source a moment
 /// after the close.
-fn push_when_free(addr: SocketAddr, slug: &str, key: &str, content_type: &str) -> TcpStream {
+pub(crate) fn push_when_free(
+    addr: SocketAddr,
+    slug: &str,
+    key: &str,
+    content_type: &str,
+) -> TcpStream {
     let deadline = Instant::now() + PATIENCE;
     loop {
         let (stream, head) = push(addr, slug, key, content_type);
@@ -1526,7 +1531,7 @@ pub(crate) struct Pusher {
 }
 
 impl Pusher {
-    fn start(mut source: TcpStream, tone: Tone) -> Pusher {
+    pub(crate) fn start(mut source: TcpStream, tone: Tone) -> Pusher {
         let stop = Arc::new(AtomicBool::new(false));
         let packets = Arc::new(AtomicUsize::new(0));
         let sent = Arc::new(Mutex::new(Vec::new()));
@@ -1583,7 +1588,7 @@ impl Pusher {
     }
 
     /// Waits until `more` packets more have been sent.
-    fn wait_packets(&self, more: usize) {
+    pub(crate) fn wait_packets(&self, more: usize) {
         let target = self.packets.load(Ordering::Acquire) + more;
         let deadline = Instant::now() + PATIENCE + Duration::from_millis(20 * more as u64);
         while self.packets.load(Ordering::Acquire) < target {
@@ -1622,14 +1627,14 @@ pub(crate) fn on_air(addr: SocketAddr, slug: &str, key: &str, tone: Tone) -> Pus
 
 /// Reads and throws away what a listener is sent, from a thread, until dropped; counts the
 /// bytes.
-struct Drain {
+pub(crate) struct Drain {
     bytes: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Drain {
-    fn start(mut stream: TcpStream) -> Drain {
+    pub(crate) fn start(mut stream: TcpStream) -> Drain {
         let bytes = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
@@ -1657,8 +1662,13 @@ impl Drain {
         }
     }
 
-    fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.bytes.load(Ordering::Acquire)
+    }
+
+    /// Whether the server ended the connection.
+    pub(crate) fn ended(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 }
 

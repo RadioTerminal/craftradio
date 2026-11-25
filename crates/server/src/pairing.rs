@@ -2,7 +2,7 @@
 //! listeners to it, served at `GET /api/station` to the station's key. It names the
 //! station and its streams and never holds the key or its hash.
 
-use crate::config::Station;
+use crate::config::{Output, Station};
 use serde::{Deserialize, Serialize};
 
 /// The version of the document's shape. An app refuses a version it does not know.
@@ -22,8 +22,12 @@ pub struct Document {
     pub icecast: IcecastTarget,
     /// The pushed stream as listeners reach it: `<public_url>/<slug>/stream`.
     pub stream_url: String,
-    /// The re-encoded streams, in config order.
+    /// The re-encoded streams, in the order they were set.
     pub outputs: Vec<OutputEntry>,
+    /// Whether the app may change the outputs (`PUT /api/station/outputs`): the server has
+    /// a `state_dir` to keep them in. An older server sends no field; read it as false.
+    #[serde(default)]
+    pub outputs_editable: bool,
 }
 
 /// The Icecast push the app makes to this server.
@@ -122,12 +126,17 @@ fn split_host_port(authority: &str) -> Option<(&str, Option<u16>)> {
 }
 
 impl Document {
-    /// The document for `station` on a server reached at `public_url`.
-    pub fn for_station(public_url: &PublicUrl, station: &Station) -> Document {
+    /// The document for `station` on a server reached at `public_url`, whose outputs are
+    /// now `outputs`, which the app may change when `outputs_editable`.
+    pub fn for_station(
+        public_url: &PublicUrl,
+        station: &Station,
+        outputs: &[Output],
+        outputs_editable: bool,
+    ) -> Document {
         let base = &public_url.base;
         let slug = &station.slug;
-        let outputs = station
-            .outputs
+        let outputs = outputs
             .iter()
             .map(|output| OutputEntry {
                 mount: output.mount.clone(),
@@ -150,6 +159,7 @@ impl Document {
             },
             stream_url: format!("{base}/{slug}/stream"),
             outputs,
+            outputs_editable,
         }
     }
 }

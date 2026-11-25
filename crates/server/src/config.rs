@@ -4,7 +4,7 @@ use crate::ServerError;
 use crate::key::parse_hash;
 use crate::pairing::PublicUrl;
 use radio_codecs::encode::{Mp3Encoder, OpusEncoder};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,9 @@ const MAX_SLUG_LEN: usize = 32;
 /// itself (`/<slug>/stream` is the pushed bytes, untouched).
 const FIXED_MOUNTS: [&str; 4] = ["stream", "live", "signal", "feed"];
 const MAX_MOUNT_LEN: usize = 32;
+/// The most outputs a station may be given from the app (`PUT /api/station/outputs`) and
+/// so the most a saved file may hold. The config file itself has no such limit.
+pub const MAX_SAVED_OUTPUTS: usize = 8;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +31,11 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     #[serde(default)]
     pub tls_key: Option<PathBuf>,
+    /// A directory the server writes: each station's outputs set from the app are saved in
+    /// it as `<slug>.outputs.json`, and replace the station's config outputs at start.
+    /// Without it, outputs come from this file only and the app can't change them.
+    #[serde(default)]
+    pub state_dir: Option<PathBuf>,
     #[serde(rename = "station", default)]
     pub stations: Vec<Station>,
 }
@@ -46,7 +54,7 @@ pub struct Station {
 }
 
 /// One re-encoded stream of a station, served at `/<slug>/<mount>`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Output {
     pub mount: String,
@@ -54,7 +62,7 @@ pub struct Output {
     pub kbps: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     Opus,
@@ -137,14 +145,15 @@ impl Config {
 
 /// Each output of a station has a mount of its own and a bitrate its encoder can make.
 fn check_outputs(station: &Station) -> Result<(), ServerError> {
+    check_output_list(&station.outputs)
+        .map_err(|what| ServerError::Config(format!("station {:?}, {what}", station.slug)))
+}
+
+/// What [`check_outputs`] checks, for a bare list: the reason in words, naming the output.
+fn check_output_list(outputs: &[Output]) -> Result<(), String> {
     let mut mounts = HashSet::new();
-    for output in &station.outputs {
-        let fail = |what: String| {
-            ServerError::Config(format!(
-                "station {:?}, output {:?}: {what}",
-                station.slug, output.mount
-            ))
-        };
+    for output in outputs {
+        let fail = |what: String| format!("output {:?}: {what}", output.mount);
         check_mount(&output.mount).map_err(fail)?;
         if !mounts.insert(output.mount.as_str()) {
             return Err(fail("two outputs of the station use this mount".into()));
@@ -164,6 +173,39 @@ fn check_outputs(station: &Station) -> Result<(), ServerError> {
         })?;
     }
     Ok(())
+}
+
+/// Checks a list of outputs set from the app: what the config checks, and at most
+/// [`MAX_SAVED_OUTPUTS`]. The reason in words.
+pub fn check_saved_outputs(outputs: &[Output]) -> Result<(), String> {
+    if outputs.len() > MAX_SAVED_OUTPUTS {
+        return Err(format!(
+            "a station may have at most {MAX_SAVED_OUTPUTS} outputs; this list has {}",
+            outputs.len()
+        ));
+    }
+    check_output_list(outputs)
+}
+
+/// Reads JSON text of a list of outputs set from the app and checks it.
+pub fn parse_saved_outputs(text: &[u8]) -> Result<Vec<Output>, String> {
+    let outputs: Vec<Output> = serde_json::from_slice(text).map_err(|e| {
+        format!("the outputs must be a JSON list of {{\"mount\", \"format\", \"kbps\"}}: {e}")
+    })?;
+    check_saved_outputs(&outputs)?;
+    Ok(outputs)
+}
+
+/// Reads and checks a station's saved outputs file. An error names the file.
+pub fn read_saved_outputs(path: &Path) -> Result<Vec<Output>, ServerError> {
+    let fail = |what: String| ServerError::Config(format!("{}: {what}", path.display()));
+    let text = std::fs::read(path).map_err(|e| fail(e.to_string()))?;
+    parse_saved_outputs(&text).map_err(fail)
+}
+
+/// Where the outputs of station `slug` are saved in `state_dir`.
+pub fn saved_outputs_path(state_dir: &Path, slug: &str) -> PathBuf {
+    state_dir.join(format!("{slug}.outputs.json"))
 }
 
 /// A mount is one URL path segment: 1–32 of `a-z`, `0-9`, `-`, `.` and `_`, not starting

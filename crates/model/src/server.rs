@@ -106,6 +106,10 @@ pub struct PairingDocument {
     pub stream_url: String,
     /// The re-encoded streams the server offers.
     pub outputs: Vec<PairingOutput>,
+    /// Whether the app may change the outputs on the server. A server older than the
+    /// field sends none, which reads as false.
+    #[serde(default)]
+    pub outputs_editable: bool,
 }
 
 /// The Icecast push the app makes to the server. Its password is the station key, which the

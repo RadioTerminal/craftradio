@@ -39,6 +39,7 @@ fn server_document() -> Document {
                 url: format!("{ADDRESS}/night-owls/high"),
             },
         ],
+        outputs_editable: true,
     }
 }
 

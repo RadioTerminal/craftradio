@@ -137,6 +137,36 @@ pub fn read_request(stream: &mut impl Read, deadline: Instant) -> Result<Request
     parse(&head)
 }
 
+/// Reads a request body of exactly `len` bytes, which the caller has held to a limit.
+///
+/// As with [`read_request`], the caller sets the socket's read timeout; a read that times
+/// out before `deadline` is tried again, and once `deadline` has passed the body is
+/// [`HttpError::Timeout`]. A connection that closes early is [`HttpError::Io`].
+pub fn read_body(
+    stream: &mut impl Read,
+    len: usize,
+    deadline: Instant,
+) -> Result<Vec<u8>, HttpError> {
+    let mut body = vec![0; len];
+    let mut filled = 0;
+    while let Some(rest) = body.get_mut(filled..).filter(|rest| !rest.is_empty()) {
+        if Instant::now() >= deadline {
+            return Err(HttpError::Timeout);
+        }
+        match stream.read(rest) {
+            Ok(0) => return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into()),
+            Ok(read) => filled += read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(body)
+}
+
 fn parse(head: &[u8]) -> Result<Request, HttpError> {
     let text = std::str::from_utf8(head).map_err(|_| HttpError::Malformed)?;
     let mut lines = text
