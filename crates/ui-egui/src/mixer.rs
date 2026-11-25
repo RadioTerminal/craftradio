@@ -17,8 +17,8 @@ use crate::theme::{self, Tokens, pad, size, space};
 use radio_model::{DynamicsSettings, LoudnessSettings, dynamics_range as range, loudness_range};
 
 use crate::view::{
-    DeviceRole, Edit, IcecastView, MeterView, NO_DEVICE, OutputKind, OutputMeterView, StationView,
-    Status, StreamFormat, StripChange,
+    DeviceRole, Edit, Health, IcecastView, MeterView, NO_DEVICE, OutputKind, OutputMeterView,
+    StationView, Status, StreamFormat, StripChange,
 };
 
 /// The settings part where the view source keeps the audio devices.
@@ -151,16 +151,24 @@ pub(crate) fn input_channels(view: &StationView) -> (u32, u32) {
     )
 }
 
-/// The status dot of the Icecast page: connected or not, in words too.
+/// The status dot of the Icecast page, in the words of its status line: green connected,
+/// orange connecting, red down, muted while nothing goes out on purpose.
 pub(crate) fn icecast_dot(view: &StationView, t: &Tokens) -> Dot {
     let ice = icecast_status(view, t);
-    if ice.connected {
-        Dot::Good(ice.word)
-    } else if view.output.icecast == Status::Off {
+    let health = match &view.output.icecast {
+        _ if ice.connected => Health::Good,
+        _ if view.preview => Health::Idle,
+        // Going on air, a mount that still connects is not a fault yet.
+        Status::Failed(_) if view.going_on_air => Health::Busy,
+        Status::Reconnecting { .. } => Health::Busy,
+        Status::Failed(_) => Health::Fault,
         // Switched off on purpose is not a fault.
-        Dot::Off(ice.word)
-    } else {
-        Dot::Bad(ice.word)
+        Status::Off => Health::Off,
+        Status::Connected | Status::OffAir | Status::NotConnected | Status::Preview => Health::Idle,
+    };
+    Dot {
+        health,
+        words: ice.word,
     }
 }
 

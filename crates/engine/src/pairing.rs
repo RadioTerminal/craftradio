@@ -5,7 +5,7 @@
 use crate::{EngineError, Outcome};
 use radio_model::{
     PairingDocument, SERVER_ADDRESS_KEY, SERVER_OUTPUTS_EDITABLE_KEY, SERVER_OUTPUTS_KEY,
-    SERVER_PART, SERVER_PUSH_KEY,
+    SERVER_PART, SERVER_PLAYER_URL_KEY, SERVER_PUSH_KEY,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -18,7 +18,7 @@ const ICECAST_PART: &str = "icecast";
 const WEBRTC_PART: &str = "webrtc";
 
 /// Every setting pairing writes, by part and key. Unpairing removes exactly these.
-const PAIRED: [(&str, &str); 14] = [
+const PAIRED: [(&str, &str); 15] = [
     (ICECAST_PART, "host"),
     (ICECAST_PART, "port"),
     (ICECAST_PART, "mount"),
@@ -33,6 +33,7 @@ const PAIRED: [(&str, &str); 14] = [
     (SERVER_PART, SERVER_OUTPUTS_KEY),
     (SERVER_PART, SERVER_PUSH_KEY),
     (SERVER_PART, SERVER_OUTPUTS_EDITABLE_KEY),
+    (SERVER_PART, SERVER_PLAYER_URL_KEY),
 ];
 
 /// Writes the settings `document` offers. A document of another version changes nothing.
@@ -74,6 +75,12 @@ pub(crate) fn pair(
         outputs,
         push,
         json!(document.outputs_editable),
+        // Kept only when it is a page on the paired server itself.
+        json!(if radio_model::on_server(&address, &document.player_url) {
+            document.player_url.as_str()
+        } else {
+            ""
+        }),
     ];
     for ((part, key), value) in PAIRED.into_iter().zip(values) {
         settings

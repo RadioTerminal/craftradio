@@ -279,7 +279,12 @@ function parseStation(text) {
 }
 const served = !location.hostname.endsWith("github.io") && location.protocol.startsWith("http");
 const fromLink = parseStation(location.hash.slice(1)) || parseStation(new URLSearchParams(location.search).get("station") || "");
-let station = fromLink || (served ? { kind: "url", url: location.origin, label: location.origin } : null);
+// A station server serves this page at /<slug>/: with no station in the link, it plays
+// that station's stream there.
+const slugStream = served && !fromLink && /^\/[a-z0-9-]+\/?$/.test(location.pathname)
+  ? location.origin + location.pathname.replace(/\/?$/, "/") + "stream" : null;
+let station = fromLink || (served ? { kind: "url", url: location.origin, label: slugStream || location.origin } : null);
+const pageStation = station;
 if (station) input.value = station.kind === "id" ? location.origin + location.pathname + "#" + station.id : station.url;
 else openCard("settings", true);
 
@@ -1020,6 +1025,7 @@ function fromStation(text) {
 }
 async function publicStream() {
   if (!station) return null;
+  if (slugStream && station === pageStation) return slugStream;
   if (streamFromStation) return streamFromStation;
   if (station.kind === "id") {
     try { const kept = cleanStream(localStorage.getItem("stream:" + station.id) || ""); if (kept) return kept; } catch (_) {}
@@ -1342,6 +1348,7 @@ async function listen() {
     await stop("This page cannot reach an http:// station on another computer. Open " + station.url + " directly.");
     return;
   }
+  if (slugStream && station === pageStation) { icecastTried = true; return playIcecast(slugStream, "the server plays the stream"); }
   teardown();
   const mine = gen;
   setIcon(true); gotMeta = false;

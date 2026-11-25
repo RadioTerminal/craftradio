@@ -24,6 +24,9 @@ pub struct Document {
     pub stream_url: String,
     /// The re-encoded streams, in the order they were set.
     pub outputs: Vec<OutputEntry>,
+    /// The listener page this server serves for the station: `<public_url>/<slug>/`.
+    #[serde(default)]
+    pub player_url: String,
     /// Whether the app may change the outputs (`PUT /api/station/outputs`): the server has
     /// a `state_dir` to keep them in. An older server sends no field; read it as false.
     #[serde(default)]
@@ -159,6 +162,7 @@ impl Document {
             },
             stream_url: format!("{base}/{slug}/stream"),
             outputs,
+            player_url: format!("{base}/{slug}/"),
             outputs_editable,
         }
     }

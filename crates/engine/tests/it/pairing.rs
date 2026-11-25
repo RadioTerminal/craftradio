@@ -40,6 +40,7 @@ fn server_document() -> Document {
             },
         ],
         outputs_editable: true,
+        player_url: format!("{ADDRESS}/night-owls/"),
     }
 }
 
@@ -70,7 +71,7 @@ fn set(e: &mut Engine, part: &str, key: &str, value: Value) {
 }
 
 /// The settings pairing writes, by part and key.
-const PAIRED: [(&str, &str); 14] = [
+const PAIRED: [(&str, &str); 15] = [
     ("icecast", "host"),
     ("icecast", "port"),
     ("icecast", "mount"),
@@ -85,6 +86,7 @@ const PAIRED: [(&str, &str); 14] = [
     (SERVER_PART, "outputs"),
     (SERVER_PART, "push"),
     (SERVER_PART, "outputs_editable"),
+    (SERVER_PART, "player_url"),
 ];
 
 #[test]
@@ -95,6 +97,19 @@ fn the_app_reads_the_document_the_server_writes() {
         serde_json::to_value(read).unwrap(),
         written,
         "every field the server writes is read, and nothing is added"
+    );
+}
+
+#[test]
+fn a_player_page_on_another_host_is_not_stored() {
+    let mut e = Engine::open_in_memory().unwrap();
+    let mut doc = document();
+    doc.player_url = "https://elsewhere.example.invalid/night-owls/".into();
+    pair(&mut e, doc).unwrap();
+    assert_eq!(
+        setting(&e, SERVER_PART, "player_url"),
+        Some(json!("")),
+        "only a page on the paired server is kept"
     );
 }
 
@@ -135,6 +150,8 @@ fn pairing_writes_icecast_webrtc_and_server_settings() {
         ),
         // Whether the app may change the outputs on the server.
         (SERVER_PART, "outputs_editable", json!(doc.outputs_editable)),
+        // The listener page the server serves for the station.
+        (SERVER_PART, "player_url", json!(doc.player_url)),
     ];
     assert_eq!(expected.len(), PAIRED.len());
     for (part, key, value) in expected {

@@ -3,6 +3,7 @@ mod fixtures;
 mod folders;
 mod history;
 mod icecast;
+mod listen_link;
 mod meters;
 mod off_air;
 mod one_off;

@@ -271,7 +271,12 @@ pub(crate) fn show(
         group: p.group(),
         description: p.description(),
         keywords: p.keywords(),
-        dot: (p == Page::Icecast).then(|| mixer::icecast_dot(view, t)),
+        dot: match p {
+            Page::Icecast => Some(mixer::icecast_dot(view, t)),
+            Page::WebRtc => view.webrtc_page_status(),
+            Page::Server => view.pairing.page_status(),
+            _ => None,
+        },
         restore: p.restore(view),
     });
     let mut nav = settings::Nav {
@@ -416,6 +421,10 @@ fn webrtc_page(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
                 .font(theme::text(theme::CAPTION))
                 .color(t.text_muted),
             ),
+        }
+        // The same words as the dot on the rail and the status bar.
+        if let Some(status) = view.webrtc_page_status() {
+            settings::status_line(ui, &status, t);
         }
         if let Some(link) = &view.output.listen_link {
             settings::form_row(ui, "Listen link", t, |ui| {

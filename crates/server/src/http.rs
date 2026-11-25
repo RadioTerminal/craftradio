@@ -246,16 +246,32 @@ pub fn respond(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> std::io::Result<()> {
+    let mut bytes = head(status, reason, headers, body.len()).into_bytes();
+    bytes.extend_from_slice(body);
+    stream.write_all(&bytes)?;
+    stream.flush()
+}
+
+/// Writes the reply to a `HEAD`: the head [`respond`] would write for a body of `len`
+/// bytes, and no body.
+pub fn respond_head(
+    stream: &mut impl Write,
+    status: u16,
+    reason: &str,
+    headers: &[(&str, &str)],
+    len: usize,
+) -> std::io::Result<()> {
+    stream.write_all(head(status, reason, headers, len).as_bytes())?;
+    stream.flush()
+}
+
+fn head(status: u16, reason: &str, headers: &[(&str, &str)], len: usize) -> String {
     let mut reply = format!("HTTP/1.0 {status} {reason}\r\n");
     for (name, value) in headers {
         reply.push_str(&format!("{name}: {value}\r\n"));
     }
     reply.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+        "Content-Length: {len}\r\nConnection: close\r\n\r\n"
     ));
-    let mut bytes = reply.into_bytes();
-    bytes.extend_from_slice(body);
-    stream.write_all(&bytes)?;
-    stream.flush()
+    reply
 }

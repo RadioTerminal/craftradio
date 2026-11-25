@@ -9,6 +9,7 @@ use crate::app::Action;
 use crate::icons::Icon;
 use crate::preferences::Page;
 use crate::theme::{self, Tokens, size, space};
+use crate::view::Health;
 use crate::widgets;
 use crate::windows::Band;
 
@@ -95,16 +96,8 @@ pub(crate) fn label(ui: &mut egui::Ui, text: &str, t: &Tokens) {
     );
 }
 
-/// The status dot of a settings tab. The shape differs too, and the tooltip says it in words.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Dot {
-    /// Working: a filled dot.
-    Good(String),
-    /// Not working or not connected: a ring.
-    Bad(String),
-    /// Switched off on purpose: a small muted dot, neither working nor a fault.
-    Off(String),
-}
+/// The status dot of a settings tab: how it looks and, in the tooltip, what it says.
+pub(crate) type Dot = crate::view::PageStatus;
 
 /// One page of the rail: its name, icon and group, what the heading says about it, the words a
 /// search finds it by, and whether Restore page defaults can reset it.
@@ -590,6 +583,46 @@ enum Step {
     Down,
 }
 
+/// A page's status in words for its Status line, led by an icon and in the dot's colour.
+pub(crate) fn status_line(ui: &mut egui::Ui, status: &Dot, t: &Tokens) {
+    let (icon, ink) = match status.health {
+        Health::Good => (Icon::CircleDot, t.ok),
+        Health::Busy => (Icon::RefreshCw, t.warn),
+        Health::Fault => (Icon::Circle, t.danger),
+        Health::Idle | Health::Off => (Icon::Circle, t.text_muted),
+    };
+    form_note(
+        ui,
+        RichText::new(crate::icons::lead(icon, &status.words))
+            .font(theme::text(theme::LABEL))
+            .color(ink),
+    );
+}
+
+/// A status dot: green, orange, red or muted, and each in a shape of its own, so the colour is
+/// never the only sign.
+fn draw_dot(p: &egui::Painter, c: egui::Pos2, health: Health, t: &Tokens) {
+    match health {
+        Health::Good => {
+            p.circle_filled(c, size::DOT_R, t.ok);
+        }
+        Health::Busy => {
+            p.circle_stroke(c, size::DOT_R, Stroke::new(size::HAIRLINE, t.warn));
+            p.circle_filled(c, size::DOT_R / 2.0, t.warn);
+        }
+        Health::Fault => {
+            let square = egui::Rect::from_center_size(c, egui::Vec2::splat(size::DOT_R * 2.0));
+            p.rect_filled(square, 0.0, t.danger);
+        }
+        Health::Idle => {
+            p.circle_stroke(c, size::DOT_R, Stroke::new(size::HAIRLINE, t.text_muted));
+        }
+        Health::Off => {
+            p.circle_filled(c, size::DOT_R / 2.0, t.text_muted);
+        }
+    }
+}
+
 /// One page of the rail: its icon and name, the selected one filled with the accent. It
 /// returns where the selection goes: here on a click, or up and down with the arrow keys while
 /// the tab has the focus.
@@ -607,7 +640,7 @@ fn tab_button(
     );
     let resp = ui.interact(rect, id, egui::Sense::click());
     let name = match &tab.dot {
-        Some(Dot::Good(w) | Dot::Bad(w) | Dot::Off(w)) => format!("{} — {w}", tab.label),
+        Some(dot) => format!("{} — {}", tab.label, dot.words),
         None => tab.label.to_owned(),
     };
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &name));
@@ -656,17 +689,11 @@ fn tab_button(
         p.galley(at, galley, ink);
         if let Some(dot) = &tab.dot {
             let c = egui::pos2(rect.right() - space::M - size::DOT_R, rect.center().y);
-            match dot {
-                Dot::Good(_) => p.circle_filled(c, size::DOT_R, t.ok),
-                Dot::Bad(_) => {
-                    p.circle_stroke(c, size::DOT_R, Stroke::new(size::HAIRLINE, t.text_muted))
-                }
-                Dot::Off(_) => p.circle_filled(c, size::DOT_R / 2.0, t.text_muted),
-            };
+            draw_dot(p, c, dot.health, t);
         }
     }
     let resp = match &tab.dot {
-        Some(Dot::Good(w) | Dot::Bad(w) | Dot::Off(w)) => resp.on_hover_text(w.as_str()),
+        Some(dot) => resp.on_hover_text(dot.words.as_str()),
         None => resp,
     };
     if keys && resp.has_focus() {

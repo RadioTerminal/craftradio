@@ -411,7 +411,8 @@ fn other_methods_and_paths_are_405_and_404() {
     let server = start();
     let addr = server.local_addr();
     assert_eq!(status_of(request(addr, "DELETE", "/morning/stream")), 405);
-    assert_eq!(status_of(request(addr, "GET", "/morning")), 404);
+    // `/morning` is the station's listener page (see the `player` tests).
+    assert_eq!(status_of(request(addr, "GET", "/morning/other")), 404);
     assert_eq!(status_of(request(addr, "GET", "/morning/stream/more")), 404);
     // PUT elsewhere is 404, never 405, which the app would take as "try SOURCE".
     assert_eq!(status_of(request(addr, "PUT", "/morning/other")), 404);

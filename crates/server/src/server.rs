@@ -11,7 +11,9 @@ use crate::config::{
 };
 use crate::conn::{Conn, server_config};
 use crate::framing::Format;
-use crate::http::{HttpError, Request, client_addr, read_body, read_request, respond};
+use crate::http::{
+    HttpError, Request, client_addr, read_body, read_request, respond, respond_head,
+};
 use crate::icy::{IcyWriter, METAINT};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
@@ -66,6 +68,20 @@ const MAX_OUTPUTS_BODY: usize = 16 << 10;
 const NO_STATE_DIR: &[u8] = b"this server keeps no state_dir: outputs are set in its config";
 
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
+/// The listener page, the same one GitHub Pages publishes, served at `/<slug>/` for each
+/// station.
+const PLAYER_PAGE: &str = include_str!("../../../site/index.html");
+/// The headers of the listener page: a static page, always checked again, never sniffed as
+/// anything else, never framed by another site, and sending no address of its own to the
+/// trackers and streams it reaches.
+const PLAYER_HEADERS: [(&str, &str); 6] = [
+    ("Content-Type", "text/html; charset=utf-8"),
+    ("Cache-Control", "no-cache"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+    ("X-Frame-Options", "DENY"),
+    ("Content-Security-Policy", "frame-ancestors 'none'"),
+];
 const LOCKED_FOR_SECS: &str = "300";
 const CHALLENGE: (&str, &str) = ("WWW-Authenticate", "Basic realm=\"craftradio\"");
 /// The body of a 503 for a request the full pool has no place for.
@@ -778,6 +794,18 @@ fn keyed_station<'a>(shared: &'a Shared, request: &Request) -> Option<&'a Statio
 
 fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     let method = request.method.as_str();
+    // The listener page is the one thing a HEAD reaches.
+    if matches!(method, "GET" | "HEAD")
+        && player_slug(&request.path).is_some_and(|slug| shared.config.station(slug).is_some())
+    {
+        let page = PLAYER_PAGE.as_bytes();
+        let _ = if method == "HEAD" {
+            respond_head(stream, 200, "OK", &PLAYER_HEADERS, page.len())
+        } else {
+            respond(stream, 200, "OK", &PLAYER_HEADERS, page)
+        };
+        return;
+    }
     match method {
         "GET" | "PUT" | "SOURCE" => {}
         "OPTIONS" => {
@@ -874,6 +902,13 @@ fn output_at<'a, 'p>(
             mount,
         },
     ))
+}
+
+/// The slug of the listener page's path, `/<slug>/` or `/<slug>`.
+fn player_slug(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix('/')?;
+    let slug = rest.strip_suffix('/').unwrap_or(rest);
+    (!slug.is_empty() && !slug.contains('/')).then_some(slug)
 }
 
 /// The slug and mount of `/<slug>/<mount>`, both one non-empty path segment.
