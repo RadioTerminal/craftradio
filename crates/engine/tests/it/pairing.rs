@@ -70,7 +70,7 @@ fn set(e: &mut Engine, part: &str, key: &str, value: Value) {
 }
 
 /// The settings pairing writes, by part and key.
-const PAIRED: [(&str, &str); 13] = [
+const PAIRED: [(&str, &str); 14] = [
     ("icecast", "host"),
     ("icecast", "port"),
     ("icecast", "mount"),
@@ -84,6 +84,7 @@ const PAIRED: [(&str, &str); 13] = [
     (SERVER_PART, "stream_url"),
     (SERVER_PART, "outputs"),
     (SERVER_PART, "push"),
+    (SERVER_PART, "outputs_editable"),
 ];
 
 #[test]
@@ -132,6 +133,8 @@ fn pairing_writes_icecast_webrtc_and_server_settings() {
                 "user": doc.icecast.user,
             }),
         ),
+        // Whether the app may change the outputs on the server.
+        (SERVER_PART, "outputs_editable", json!(doc.outputs_editable)),
     ];
     assert_eq!(expected.len(), PAIRED.len());
     for (part, key, value) in expected {
@@ -291,4 +294,26 @@ fn a_push_in_clear_to_another_computer_is_refused() {
     assert_eq!(setting(&e, SERVER_PART, "address"), None);
     doc.icecast.host = "127.0.0.1".into();
     pair(&mut e, doc).unwrap();
+}
+
+/// A server older than `outputs_editable` sends no such field: the station is paired, and
+/// its outputs read as not editable from the app.
+#[test]
+fn an_old_server_document_reads_as_not_editable() {
+    let mut old = serde_json::to_value(server_document()).unwrap();
+    old.as_object_mut().unwrap().remove("outputs_editable");
+    let read: PairingDocument = serde_json::from_value(old).unwrap();
+    assert!(!read.outputs_editable);
+    let mut e = Engine::open_in_memory().unwrap();
+    pair(&mut e, document()).unwrap();
+    assert_eq!(
+        setting(&e, SERVER_PART, "outputs_editable"),
+        Some(json!(true))
+    );
+    pair(&mut e, read).unwrap();
+    assert_eq!(
+        setting(&e, SERVER_PART, "outputs_editable"),
+        Some(json!(false)),
+        "pairing again with an older server takes the editing away"
+    );
 }

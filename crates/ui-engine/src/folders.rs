@@ -157,6 +157,7 @@ impl EngineSource {
                 }
                 crate::bg::Done::Icecast { seq, result } => self.icecast_answer(seq, result),
                 crate::bg::Done::Pair(answer) => self.pair_answer(answer),
+                crate::bg::Done::PutOutputs(answer) => self.put_answer(answer),
                 crate::bg::Done::Forgot { result } => {
                     if let Err(e) = result {
                         self.notices

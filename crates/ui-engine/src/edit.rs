@@ -1093,6 +1093,7 @@ impl EngineSource {
             Edit::SetIcecast(ice) => self.set_icecast(ice),
             Edit::Pair { address, key } => self.pair(&address, &key),
             Edit::Unpair => self.unpair(),
+            Edit::SaveServerOutputs(rows) => self.save_outputs(rows),
             Edit::SetStreaming(on) => {
                 self.run_edit(Command::SettingsSet {
                     part: radio_playout::WEBRTC_PART.into(),

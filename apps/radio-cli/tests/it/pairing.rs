@@ -8,12 +8,20 @@ use std::process::{Command, Output, Stdio};
 use radio_model::{SERVER_ADDRESS_KEY, SERVER_PART};
 use radio_server::{Config, Server, ServerHandle, hash_key};
 
-const DAWN_KEY: &str = "invented-dawn-key-7Hc2";
-const WRONG_KEY: &str = "invented-wrong-key-4Tm9";
+pub(crate) const DAWN_KEY: &str = "invented-dawn-key-7Hc2";
+pub(crate) const WRONG_KEY: &str = "invented-wrong-key-4Tm9";
 
 /// A station server on a free port of this computer, with the station "dawn", and the
 /// address a person types for it.
 fn server() -> (ServerHandle, String) {
+    server_with(None)
+}
+
+/// [`server`] with a `state_dir`, where the server keeps outputs the app sets, when given.
+pub(crate) fn server_with(state_dir: Option<&Path>) -> (ServerHandle, String) {
+    let state_dir = state_dir
+        .map(|dir| format!("state_dir = {:?}\n", dir.display().to_string()))
+        .unwrap_or_default();
     // The port is free when picked; another test may take it before the server binds it,
     // so a taken port is picked again.
     for _ in 0..20 {
@@ -22,8 +30,8 @@ fn server() -> (ServerHandle, String) {
             .expect("a free port")
             .port();
         let config = format!(
-            "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\n\
-             [[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
+            "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\
+             {state_dir}\n[[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
             hash_key(DAWN_KEY),
         );
         if let Ok(server) = Server::start(Config::parse(&config).unwrap()) {
@@ -34,7 +42,7 @@ fn server() -> (ServerHandle, String) {
 }
 
 /// A folder with a fresh station.db.
-fn station() -> tempfile::TempDir {
+pub(crate) fn station() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     radio_engine::Engine::open(dir.path().join("station.db"))
         .unwrap()
@@ -50,7 +58,12 @@ fn cli(args: &[&str], data_dir: &Path, stdin: &str) -> Output {
 }
 
 /// [`cli`] with more environment variables.
-fn cli_with(args: &[&str], data_dir: &Path, stdin: &str, env: &[(&str, &str)]) -> Output {
+pub(crate) fn cli_with(
+    args: &[&str],
+    data_dir: &Path,
+    stdin: &str,
+    env: &[(&str, &str)],
+) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_craftradio-cli"))
         .args(args)
         .envs(env.iter().copied())
@@ -70,7 +83,7 @@ fn cli_with(args: &[&str], data_dir: &Path, stdin: &str, env: &[(&str, &str)]) -
 }
 
 /// The paired address in the station's settings, if any.
-fn paired_address(data_dir: &Path) -> Option<String> {
+pub(crate) fn paired_address(data_dir: &Path) -> Option<String> {
     let engine = radio_engine::Engine::open(data_dir.join("station.db")).unwrap();
     engine
         .state()

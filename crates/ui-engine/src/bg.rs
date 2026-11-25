@@ -50,6 +50,16 @@ pub(crate) enum Job {
         paired_entry: Option<String>,
         store: Arc<dyn SecretStore + Sync>,
     },
+    /// Send the whole list of outputs to the server at `address`, as save `seq`, with the
+    /// key stored under `entry`, the entry of that address. It runs on a thread of its own,
+    /// as a pairing try does.
+    PutOutputs {
+        seq: u64,
+        address: String,
+        entry: String,
+        outputs: Vec<radio_model::OutputSpec>,
+        store: Arc<dyn SecretStore + Sync>,
+    },
     /// Build the Icecast settings for playout from `state` and the keychain, as request `seq`.
     Icecast {
         seq: u64,
@@ -121,6 +131,8 @@ pub(crate) enum Done {
     Forgot { result: Result<(), String> },
     /// The answer of a pairing try.
     Pair(crate::pairing::PairAnswer),
+    /// The answer of a save of the outputs.
+    PutOutputs(crate::pairing::PutAnswer),
     /// The Icecast settings of request `seq`, or why there are none.
     Icecast {
         seq: u64,
@@ -199,6 +211,31 @@ impl Worker {
                         }
                         continue;
                     }
+                    if let Job::PutOutputs {
+                        seq,
+                        address,
+                        entry,
+                        outputs,
+                        store,
+                    } = job
+                    {
+                        let reply = tx.clone();
+                        let asked = address.clone();
+                        let spawned = std::thread::Builder::new().name("ui-outputs".into()).spawn(
+                            move || {
+                                let answer =
+                                    crate::pairing::run_put(seq, address, &entry, &outputs, &store);
+                                let _ = reply.send(Done::PutOutputs(answer));
+                            },
+                        );
+                        if spawned.is_err() {
+                            let answer = not_started_put(seq, asked);
+                            if tx.send(Done::PutOutputs(answer)).is_err() {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
                     if tx.send(run(job)).is_err() {
                         break;
                     }
@@ -206,6 +243,17 @@ impl Worker {
             })
             .ok()?;
         Some(Self { jobs, done })
+    }
+}
+
+/// The answer of a save of the outputs whose request could not start.
+fn not_started_put(seq: u64, address: String) -> crate::pairing::PutAnswer {
+    crate::pairing::PutAnswer {
+        seq,
+        address,
+        result: Err(crate::pairing::PutError::Refused(
+            "the app could not start the request".into(),
+        )),
     }
 }
 
@@ -292,6 +340,8 @@ fn run(job: Job) -> Done {
                 "the app could not start the request".into(),
             )),
         }),
+        // The lane sends the outputs on a thread of its own before it gets here.
+        Job::PutOutputs { seq, address, .. } => Done::PutOutputs(not_started_put(seq, address)),
         Job::Icecast {
             seq,
             state,

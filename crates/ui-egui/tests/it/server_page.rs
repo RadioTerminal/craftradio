@@ -176,6 +176,7 @@ fn each_state_shows_in_words_and_only_paired_looks_ok() {
                 address: ADDRESS.to_owned(),
                 paired,
                 state: state.clone(),
+                ..PairingView::default()
             };
             let words = pairing.label();
             let p = page(pairing.clone());
@@ -208,6 +209,7 @@ fn disconnect_sends_unpair() {
         address: ADDRESS.to_owned(),
         paired: true,
         state: PairState::Paired,
+        ..PairingView::default()
     });
     p.click("Disconnect");
     assert_eq!(p.unpairs(), 1);
@@ -258,6 +260,7 @@ fn connect_is_off_while_a_pairing_is_asked() {
         address: ADDRESS.to_owned(),
         paired: false,
         state: PairState::Pairing,
+        ..PairingView::default()
     });
     p.type_into("Server address", ADDRESS);
     p.type_into("Station key", KEY);

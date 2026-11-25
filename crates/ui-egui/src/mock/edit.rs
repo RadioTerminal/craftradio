@@ -34,6 +34,7 @@ fn undoable(edit: &Edit) -> bool {
             | Edit::SetIcecast(_)
             | Edit::Pair { .. }
             | Edit::Unpair
+            | Edit::SaveServerOutputs(_)
             | Edit::SetStreaming(_)
             | Edit::SetDynamics(_)
             | Edit::SetLoudness(_)
@@ -552,6 +553,9 @@ impl MockSource {
                 address.trim()
             )),
             Edit::Unpair => Err("preview — the preview is not paired with a server".to_owned()),
+            Edit::SaveServerOutputs(_) => {
+                Err("preview — the outputs live on the station server; nothing was sent".to_owned())
+            }
             Edit::SetStreaming(on) => {
                 self.streaming = on;
                 Ok(1)

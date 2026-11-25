@@ -8,5 +8,6 @@ mod off_air;
 mod one_off;
 mod pairing;
 mod pick_orders;
+mod server_outputs;
 mod snapshot;
 mod transport;
