@@ -22,7 +22,8 @@ mod outputs;
 mod pairing;
 
 pub use pairing::{
-    PairError, check_address, fetch as fetch_pairing, is_paired, paired_entry, server_entry,
+    PUSH_CHANGED, PairError, PutError, check_address, fetch as fetch_pairing, is_paired,
+    paired_entry, put_outputs, server_entry,
 };
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
@@ -1204,6 +1205,9 @@ impl ViewSource for EngineSource {
         }
         // After `with_secrets`, so the start asks with the keychain of the app.
         self.watch_pairing();
+        // Before the answers of the lane, so a saved list says Saved once the settings
+        // that this snapshot reads hold it.
+        self.watch_outputs();
         self.take_done(now);
         self.watch_push(pv.outputs.icecast.as_ref());
         self.poll_pending();

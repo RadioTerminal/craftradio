@@ -10,6 +10,12 @@ pub const SERVER_ADDRESS_KEY: &str = "address";
 /// and user, which name the keychain entry of the station key. Hand edits of `icecast.*`
 /// do not move it.
 pub const SERVER_PUSH_KEY: &str = "push";
+/// The key of the server's outputs in [`SERVER_PART`], as its document lists them
+/// ([`PairingOutput`]s).
+pub const SERVER_OUTPUTS_KEY: &str = "outputs";
+/// The key in [`SERVER_PART`] that says whether the app may change the outputs on the
+/// server (the document's `outputs_editable`).
+pub const SERVER_OUTPUTS_EDITABLE_KEY: &str = "outputs_editable";
 /// The version of the pairing document's shape that this app reads.
 pub const PAIRING_VERSION: u32 = 1;
 
@@ -106,6 +112,10 @@ pub struct PairingDocument {
     pub stream_url: String,
     /// The re-encoded streams the server offers.
     pub outputs: Vec<PairingOutput>,
+    /// Whether the app may change the outputs on the server. A server older than the
+    /// field sends none, which reads as false.
+    #[serde(default)]
+    pub outputs_editable: bool,
 }
 
 /// The Icecast push the app makes to the server. Its password is the station key, which the
@@ -132,6 +142,19 @@ pub struct PairingOutput {
     pub format: String,
     pub kbps: u32,
     pub url: String,
+}
+
+/// One re-encoded output as the app sends it to the server (`PUT /api/station/outputs`),
+/// which names its URL itself.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct OutputSpec {
+    /// The mount under the station, such as `low.opus`.
+    pub mount: String,
+    /// `opus` or `mp3`.
+    pub format: String,
+    pub kbps: u32,
 }
 
 impl PairingDocument {

@@ -5,8 +5,12 @@
 use crate::app::Action;
 use crate::icons::{self, Icon};
 use crate::settings;
-use crate::theme::{self, Tokens, size};
-use crate::view::{Edit, PairState, PairingView, Secret, StationView};
+use crate::theme::{self, Tokens, size, space};
+use crate::view::{
+    Edit, OUTPUTS_READ_ONLY, OutputRow, OutputsState, PairState, PairingView, Secret, StationView,
+    StreamFormat,
+};
+use crate::widgets;
 use egui::{Color32, RichText};
 
 /// What the page is typing. The key lives here only while it is typed: Connect takes it, and
@@ -19,6 +23,12 @@ pub(crate) struct Draft {
     key: String,
     /// The frame in which the page last drew, to tell when it opens.
     drawn: u64,
+    /// The outputs as the page edits them.
+    outputs: Vec<OutputRow>,
+    /// The outputs of the view that `outputs` was last made from. A new view replaces the
+    /// edited rows only while they are still these (nothing typed would be lost). `None`
+    /// until the page has drawn them once.
+    outputs_seen: Option<Vec<OutputRow>>,
 }
 
 impl Draft {
@@ -26,6 +36,7 @@ impl Draft {
     pub(crate) fn forget(&mut self) {
         self.key.clear();
         self.edited = false;
+        self.outputs_seen = None;
     }
 }
 
@@ -66,6 +77,7 @@ pub(crate) fn show(
         draft.forget();
     }
     let pairing = &view.pairing;
+    sync_outputs(draft, &pairing.outputs);
     if !draft.edited {
         draft.address.clone_from(&pairing.address);
     }
@@ -172,4 +184,190 @@ pub(crate) fn show(
             ),
         );
     });
+    // The outputs live on the server, so they are offered only to a pairing it took.
+    if pairing.paired && pairing.state == PairState::Paired {
+        settings::section(ui, "Outputs", t, |ui| {
+            outputs(ui, pairing, draft, actions, t);
+        });
+    }
+}
+
+/// Makes the edited rows follow the view: at once while nothing was edited, and never over
+/// an edit.
+fn sync_outputs(draft: &mut Draft, from_view: &[OutputRow]) {
+    let unedited = draft.outputs_seen.as_deref() == Some(draft.outputs.as_slice());
+    let changed = draft.outputs_seen.as_deref() != Some(from_view);
+    if draft.outputs_seen.is_none() || (changed && unedited) {
+        draft.outputs = from_view.to_vec();
+    }
+    if changed {
+        draft.outputs_seen = Some(from_view.to_vec());
+    }
+}
+
+const OUTPUT_KBPS_DEFAULT: u32 = 64;
+/// The bitrates the server takes: Opus any whole kbit/s in this range, MP3 only these steps.
+const OPUS_KBPS_RANGE: std::ops::RangeInclusive<u32> = 6..=510;
+const MP3_KBPS: [u32; 14] = [
+    32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+];
+
+/// What a new row starts as.
+fn new_output() -> OutputRow {
+    OutputRow {
+        mount: String::new(),
+        format: StreamFormat::Opus,
+        kbps: OUTPUT_KBPS_DEFAULT,
+    }
+}
+
+/// The icon, the colour and the words of the last save, or nothing when there was none. The
+/// icon goes with the colour, so the colour is never the only signal.
+fn outputs_line(state: &OutputsState, t: &Tokens) -> Option<(Icon, Color32, String)> {
+    let (icon, ink) = match state {
+        OutputsState::Idle => return None,
+        OutputsState::Saving => (Icon::RefreshCw, t.text_muted),
+        OutputsState::Saved => (Icon::CircleDot, t.ok),
+        OutputsState::Failed(_) => (Icon::OctagonAlert, t.danger),
+    };
+    Some((icon, ink, state.label().to_owned()))
+}
+
+/// The Outputs section: one row per re-encoded output, Add output and Save, and how the last
+/// save went. Read-only, with the reason, when the server keeps its outputs in its config.
+fn outputs(
+    ui: &mut egui::Ui,
+    pairing: &PairingView,
+    draft: &mut Draft,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
+    let caption = |text: &str| {
+        RichText::new(text)
+            .font(theme::text(theme::CAPTION))
+            .color(t.text_muted)
+    };
+    if !pairing.outputs_editable {
+        for r in &pairing.outputs {
+            let words = format!("{} · {} kbit/s · {}", r.format.label(), r.kbps, r.mount);
+            settings::form_note(
+                ui,
+                RichText::new(words)
+                    .font(theme::text(theme::LABEL))
+                    .color(t.text),
+            );
+        }
+        settings::form_note(ui, caption(OUTPUTS_READ_ONLY));
+        return;
+    }
+    settings::form_note(
+        ui,
+        caption(
+            "Each output is the stream re-encoded and served under the station's address. \
+             Save sends the whole list to the server.",
+        ),
+    );
+    if draft.outputs.is_empty() {
+        settings::form_note(ui, caption("No outputs yet."));
+    }
+    let mut remove = None;
+    for (i, r) in draft.outputs.iter_mut().enumerate() {
+        if output_row(ui, i, r) {
+            remove = Some(i);
+        }
+    }
+    if let Some(i) = remove {
+        draft.outputs.remove(i);
+    }
+    let saving = pairing.outputs_state == OutputsState::Saving;
+    let failed = matches!(pairing.outputs_state, OutputsState::Failed(_));
+    // After a failed save the view holds the rows that were sent, so they match the draft;
+    // trying again is still offered.
+    let can_save = !saving && (failed || draft.outputs != pairing.outputs);
+    ui.horizontal(|ui| {
+        if ui.button("Add output").clicked() {
+            draft.outputs.push(new_output());
+        }
+        let why = if saving {
+            "The outputs are being sent; wait for the server's answer."
+        } else {
+            "Nothing changed since the server's list."
+        };
+        if ui
+            .add_enabled(can_save, egui::Button::new("Save"))
+            .on_disabled_hover_text(why)
+            .clicked()
+        {
+            actions.push(Action::Edit(Edit::SaveServerOutputs(draft.outputs.clone())));
+        }
+    });
+    if let Some((icon, ink, words)) = outputs_line(&pairing.outputs_state, t) {
+        settings::form_note(
+            ui,
+            RichText::new(icons::lead(icon, &words))
+                .font(theme::text(theme::LABEL))
+                .color(ink),
+        );
+    }
+}
+
+/// One editable row: format, bitrate, mount and Remove. Returns true when Remove was used.
+/// The columns have no heading, so each control is named by the word of its job and the
+/// row's number.
+fn output_row(ui: &mut egui::Ui, i: usize, row: &mut OutputRow) -> bool {
+    let n = i + 1;
+    let mut remove = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::S;
+        let combo = craft_ui::ComboBox::from_id_salt(("output_format", i))
+            .width(size::OUTPUT_FORMAT_W)
+            .selected_text(row.format.label())
+            .show_ui(ui, |ui| {
+                for f in StreamFormat::ALL {
+                    widgets::selectable_value(ui, &mut row.format, f, f.label());
+                }
+            })
+            .response;
+        combo.accessible_name(format!("Format of output {n}"));
+        let kbps = match row.format {
+            StreamFormat::Opus => ui.add_sized(
+                egui::vec2(size::OUTPUT_KBPS_W, size::CONTROL_SM),
+                egui::DragValue::new(&mut row.kbps)
+                    .range(OPUS_KBPS_RANGE)
+                    // A value the server refused stays as it was sent; only an edit clamps it.
+                    .clamp_existing_to_range(false)
+                    .suffix(" kbit/s"),
+            ),
+            // A value that is not a step stays shown until one is picked.
+            StreamFormat::Mp3 => {
+                craft_ui::ComboBox::from_id_salt(("output_kbps", i))
+                    .width(size::OUTPUT_KBPS_W)
+                    .selected_text(format!("{} kbit/s", row.kbps))
+                    .show_ui(ui, |ui| {
+                        for b in MP3_KBPS {
+                            widgets::selectable_value(ui, &mut row.kbps, b, format!("{b} kbit/s"));
+                        }
+                    })
+                    .response
+            }
+        };
+        kbps.accessible_name(format!("Bitrate of output {n}"));
+        let mount_w = (ui.available_width() - size::OUTPUT_REMOVE_W - space::S).max(0.0);
+        let mount = ui.add(
+            egui::TextEdit::singleline(&mut row.mount)
+                .hint_text("low.opus")
+                .desired_width(mount_w)
+                .min_size(egui::vec2(0.0, size::CONTROL_SM))
+                .align(egui::Align2::LEFT_CENTER),
+        );
+        mount.accessible_name(format!("Mount of output {n}"));
+        let button = ui.add_sized(
+            egui::vec2(size::OUTPUT_REMOVE_W, size::CONTROL_SM),
+            egui::Button::new("Remove"),
+        );
+        remove = button
+            .accessible_name(format!("Remove output {n}"))
+            .clicked();
+    });
+    remove
 }

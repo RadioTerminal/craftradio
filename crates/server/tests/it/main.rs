@@ -7,6 +7,7 @@ mod http;
 mod icy;
 mod lockout;
 mod mount;
+mod outputs_api;
 mod pairing;
 mod server;
 mod support;

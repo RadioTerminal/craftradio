@@ -16,11 +16,11 @@ mod server;
 mod stats;
 mod transcode;
 
-pub use config::{Config, Output, OutputFormat, Station};
+pub use config::{Config, MAX_SAVED_OUTPUTS, Output, OutputFormat, Station, read_saved_outputs};
 pub use decode::{BLOCK, DecodeError, Decoded, RATE, SourceDecoder};
 pub use encode::OutputEncoder;
 pub use framing::{Format, Framer};
-pub use http::{HttpError, Request, client_addr, read_request, respond};
+pub use http::{HttpError, Request, client_addr, read_body, read_request, respond};
 pub use icy::{IcyWriter, METAINT};
 pub use key::{hash_key, key_matches, new_key};
 pub use lockout::Lockout;

@@ -6,10 +6,12 @@
 
 use crate::ServerError;
 use crate::addr::{canonical, limit_key};
-use crate::config::{Config, Output, Station};
+use crate::config::{
+    Config, Output, Station, parse_saved_outputs, read_saved_outputs, saved_outputs_path,
+};
 use crate::conn::{Conn, server_config};
 use crate::framing::Format;
-use crate::http::{HttpError, Request, client_addr, read_request, respond};
+use crate::http::{HttpError, Request, client_addr, read_body, read_request, respond};
 use crate::icy::{IcyWriter, METAINT};
 use crate::key::key_matches;
 use crate::lockout::Lockout;
@@ -21,6 +23,7 @@ use rustls::ServerConfig;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -57,6 +60,10 @@ const MIN_TIMEOUT: Duration = Duration::from_millis(1);
 /// How long the accept loop pauses after a failed accept (for example out of file
 /// descriptors), so it does not spin.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
+/// The largest body `PUT /api/station/outputs` takes.
+const MAX_OUTPUTS_BODY: usize = 16 << 10;
+/// What `PUT /api/station/outputs` answers on a server without a `state_dir`.
+const NO_STATE_DIR: &[u8] = b"this server keeps no state_dir: outputs are set in its config";
 
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
 const LOCKED_FOR_SECS: &str = "300";
@@ -116,6 +123,8 @@ impl Server {
             }
         };
         let public_url = PublicUrl::parse(&config.public_url).map_err(ServerError::Config)?;
+        let mut config = config;
+        apply_saved_outputs(&mut config)?;
         let listener = TcpListener::bind(config.listen)?;
         let local_addr = listener.local_addr()?;
         let mounts = config
@@ -175,10 +184,17 @@ impl ServerHandle {
     /// output's mount through it, so that output fails for the next source.
     #[doc(hidden)]
     pub fn outputs(&self, slug: &str) -> Option<Arc<Outputs>> {
+        self.shared.mounts.get(slug).map(StationMounts::outputs)
+    }
+
+    /// Whether the station `slug` has a transcoder, for tests: it has one only while a
+    /// source is live and the station has outputs.
+    #[doc(hidden)]
+    pub fn transcoding(&self, slug: &str) -> bool {
         self.shared
             .mounts
             .get(slug)
-            .map(|mounts| Arc::clone(&mounts.outputs))
+            .is_some_and(|mounts| mounts.slot().is_some())
     }
 
     /// Stops accepting, ends every source and listener, and waits (briefly) for their
@@ -233,6 +249,47 @@ impl Drop for ServerHandle {
     }
 }
 
+/// Puts each station's saved outputs (see [`Shared::set_outputs`]) in place of the ones
+/// its config gives. A file that can't be read or fails the checks is an error naming it.
+fn apply_saved_outputs(config: &mut Config) -> Result<(), ServerError> {
+    let Some(dir) = config.state_dir.clone() else {
+        return Ok(());
+    };
+    if !dir.is_dir() {
+        return Err(ServerError::Config(format!(
+            "state_dir {}: is not a directory the server can use",
+            dir.display()
+        )));
+    }
+    for station in &mut config.stations {
+        let path = saved_outputs_path(&dir, &station.slug);
+        let saved = path.try_exists().map_err(|e| {
+            ServerError::Config(format!("{}: can't be looked at: {e}", path.display()))
+        })?;
+        if saved {
+            station.outputs = read_saved_outputs(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes `outputs` to the station's file in `dir`: to a temporary file beside it first,
+/// then renamed over it, so the file is always whole.
+fn save_outputs(dir: &Path, slug: &str, outputs: &[Output]) -> std::io::Result<()> {
+    let path = saved_outputs_path(dir, slug);
+    let temporary = dir.join(format!(".{slug}.outputs.json.tmp"));
+    let text = serde_json::to_vec_pretty(outputs)?;
+    let written = std::fs::File::create(&temporary).and_then(|mut file| {
+        file.write_all(&text)?;
+        file.sync_all()
+    });
+    let saved = written.and_then(|()| std::fs::rename(&temporary, &path));
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    saved
+}
+
 /// Where `stop` connects to wake the accept loop: the listening address, with an
 /// unspecified IP replaced by loopback.
 fn wake_addr(local: SocketAddr) -> SocketAddr {
@@ -265,9 +322,20 @@ struct Shared {
 
 /// A station's mounts: the stream it pushes and its re-encoded outputs, all under the
 /// station's one listener limit.
+///
+/// The transcoder slot is the station's one lock for a source's start and end and for a
+/// change of outputs: each takes it first and holds it throughout, so a station never has
+/// two transcoders, and none is left once its source has ended. A source begins and ends
+/// the pushed mount under it, and a change of outputs looks at the pushed mount and
+/// replaces `outputs` under it; nothing takes the slot while holding either of those.
 struct StationMounts {
     pushed: Arc<Mount>,
-    outputs: Arc<Outputs>,
+    cap: Arc<ListenerCap>,
+    /// The current outputs. A change replaces the whole set; a reader clones the `Arc` and
+    /// keeps to that set.
+    outputs: Mutex<Arc<Outputs>>,
+    /// The transcoder of the live source, if the station has outputs.
+    transcoder: Mutex<Option<Transcoder>>,
 }
 
 impl StationMounts {
@@ -275,28 +343,90 @@ impl StationMounts {
         let cap = ListenerCap::new(station.max_stream_listeners);
         StationMounts {
             pushed: Mount::new(Arc::clone(&cap)),
-            outputs: Outputs::new(&station.outputs, &cap),
+            outputs: Mutex::new(Outputs::new(&station.outputs, &cap)),
+            cap,
+            transcoder: Mutex::new(None),
+        }
+    }
+
+    /// The current outputs. The lock only guards the swap of an `Arc`, so a poisoned one
+    /// still holds a whole set.
+    fn outputs(&self) -> Arc<Outputs> {
+        Arc::clone(&self.outputs.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// The transcoder slot (see [`StationMounts`]). A thread that panicked holding it left
+    /// a transcoder or none, either of which the next holder handles.
+    fn slot(&self) -> MutexGuard<'_, Option<Transcoder>> {
+        self.transcoder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Finishes the transcoder in `slot`, if any, ending its outputs, and starts one on the
+    /// current outputs while a source is live.
+    fn restart(&self, slot: &mut Option<Transcoder>) {
+        if let Some(old) = slot.take() {
+            old.finish();
+        }
+        let outputs = self.outputs();
+        if self.pushed.stats().live && !outputs.is_empty() {
+            *slot = Some(spawn(Arc::clone(&self.pushed), outputs));
         }
     }
 }
 
-/// A live source: the pushed mount's guard and the transcoder reading it. The transcoder
-/// is a field before the guard, so on every way out of [`source`] (unwinding included) it
-/// is finished, and its outputs ended, before the guard frees the mount for a new source.
-struct OnAir {
-    transcoder: Option<Transcoder>,
-    guard: SourceGuard,
+/// A live source: the pushed mount's guard, with the station's transcoder in its slot.
+/// Dropping it, on every way out of [`source`] (unwinding included), finishes the
+/// transcoder, ending its outputs, before the guard frees the mount for a new source, both
+/// under the slot's lock, so a change of outputs can't start a transcoder in between.
+struct OnAir<'a> {
+    mounts: &'a StationMounts,
+    guard: Option<SourceGuard>,
 }
 
-impl OnAir {
-    /// Ends the outputs, then the pushed stream.
-    fn end(self) {
-        let OnAir { transcoder, guard } = self;
-        if let Some(transcoder) = transcoder {
+impl<'a> OnAir<'a> {
+    /// Begins the station's pushed mount and starts its transcoder; `None` while another
+    /// source is live.
+    fn begin(
+        mounts: &'a StationMounts,
+        format: Format,
+        name: String,
+        kbps: Option<u32>,
+    ) -> Option<OnAir<'a>> {
+        let mut slot = mounts.slot();
+        let guard = mounts.pushed.begin(format, name, kbps)?;
+        mounts.restart(&mut slot);
+        Some(OnAir {
+            mounts,
+            guard: Some(guard),
+        })
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        if let Some(guard) = &mut self.guard {
+            guard.write(bytes);
+        }
+    }
+}
+
+impl Drop for OnAir<'_> {
+    fn drop(&mut self) {
+        let mut slot = self.mounts.slot();
+        if let Some(transcoder) = slot.take() {
             transcoder.finish();
         }
-        drop(guard);
+        drop(self.guard.take());
+        drop(slot);
     }
+}
+
+/// Why a station's outputs were not changed.
+enum SetOutputsError {
+    /// The server has no `state_dir` to keep them in.
+    NoStateDir,
+    /// They could not be saved; nothing changed.
+    Save(std::io::Error),
 }
 
 /// The open connections, so `stop` can close them, and what limits them.
@@ -408,6 +538,35 @@ impl Connections {
 impl Shared {
     fn stopping(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Saves `outputs` (already checked) as station `slug`'s and puts them live: every
+    /// current output ends (its listeners are cut off), and while the station is on the
+    /// air its transcoder starts again on the new set. The pushed stream goes on. Gives
+    /// the new set; on an error nothing has changed, on disk or live.
+    fn set_outputs(
+        &self,
+        mounts: &StationMounts,
+        slug: &str,
+        outputs: &[Output],
+    ) -> Result<Arc<Outputs>, SetOutputsError> {
+        let dir = self
+            .config
+            .state_dir
+            .as_deref()
+            .ok_or(SetOutputsError::NoStateDir)?;
+        // Saved and swapped under the slot's lock, so two changes at once leave the file
+        // and the live set the same.
+        let mut slot = mounts.slot();
+        save_outputs(dir, slug, outputs).map_err(SetOutputsError::Save)?;
+        let new = Outputs::new(outputs, &mounts.cap);
+        *mounts
+            .outputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::clone(&new);
+        // The old transcoder ends the old outputs and their listeners as it finishes.
+        mounts.restart(&mut slot);
+        Ok(new)
     }
 
     /// The connection list, even after a thread panicked while holding it: it only maps
@@ -647,6 +806,9 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     if method == "GET" && request.path == "/api/station" {
         return pairing(shared, stream, peer, request);
     }
+    if method == "PUT" && request.path == "/api/station/outputs" {
+        return put_outputs(shared, stream, peer, request);
+    }
     if method == "GET" && request.path == "/status-json.xsl" {
         return stats(shared, stream);
     }
@@ -660,13 +822,13 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     }
     // Only a listener may name an output: no key is looked at for one.
     if method == "GET"
-        && let Some((slug, mounts, output, mount)) = output_at(shared, &request.path)
+        && let Some((slug, mounts, found)) = output_at(shared, &request.path)
     {
         let titles = shared
             .config
             .station(slug)
             .and_then(|station| Titles::asked(request, station, &mounts.pushed));
-        return listen_output(shared, stream, slug, mounts, output, mount, titles);
+        return listen_output(shared, stream, slug, mounts, &found, titles);
     }
     refuse(stream, 404, "Not Found", &[CORS], b"not found")
 }
@@ -682,19 +844,36 @@ fn station_at<'a>(shared: &'a Shared, path: &str) -> Option<(&'a Station, &'a St
     Some((station, mounts))
 }
 
-/// The output at `path`, `/<slug>/<mount>`: the slug, the station's mounts, the output and
-/// its own mount.
+/// One output as a listener found it: the station's set of outputs then, the output and
+/// its own mount in that set.
+struct FoundOutput {
+    outputs: Arc<Outputs>,
+    output: Output,
+    mount: Arc<Mount>,
+}
+
+/// The output at `path`, `/<slug>/<mount>`, in the station's current outputs: the slug,
+/// the station's mounts and the output.
 fn output_at<'a, 'p>(
     shared: &'a Shared,
     path: &'p str,
-) -> Option<(&'p str, &'a StationMounts, &'a Output, &'a Arc<Mount>)> {
+) -> Option<(&'p str, &'a StationMounts, FoundOutput)> {
     let (slug, name) = split_path(path)?;
     let mounts = shared.mounts.get(slug)?;
-    let (output, mount) = mounts
-        .outputs
+    let outputs = mounts.outputs();
+    let (output, mount) = outputs
         .each()
-        .find(|(output, _)| output.mount == name)?;
-    Some((slug, mounts, output, mount))
+        .find(|(output, _)| output.mount == name)
+        .map(|(output, mount)| (output.clone(), Arc::clone(mount)))?;
+    Some((
+        slug,
+        mounts,
+        FoundOutput {
+            outputs,
+            output,
+            mount,
+        },
+    ))
 }
 
 /// The slug and mount of `/<slug>/<mount>`, both one non-empty path segment.
@@ -738,7 +917,7 @@ fn source(
         .filter(|kbps| *kbps > 0);
     // Taken before the reply, so a listener who comes the moment the source has its 200
     // finds the source live.
-    let Some(guard) = mounts.pushed.begin(format, name, kbps) else {
+    let Some(mut on_air) = OnAir::begin(mounts, format, name, kbps) else {
         return refuse(
             stream,
             403,
@@ -746,11 +925,6 @@ fn source(
             &[],
             b"this mount already has a source",
         );
-    };
-    let mut on_air = OnAir {
-        transcoder: (!mounts.outputs.is_empty())
-            .then(|| spawn(Arc::clone(&mounts.pushed), Arc::clone(&mounts.outputs))),
-        guard,
     };
     if stream.write_all(b"HTTP/1.0 200 OK\r\n\r\n").is_err()
         || stream.flush().is_err()
@@ -764,14 +938,14 @@ fn source(
     while !shared.stopping() {
         match stream.read(&mut buffer) {
             Ok(0) => break,
-            Ok(read) => on_air.guard.write(buffer.get(..read).unwrap_or_default()),
+            Ok(read) => on_air.write(buffer.get(..read).unwrap_or_default()),
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             // A read timeout is the source's silence: it is gone.
             Err(_) => break,
         }
     }
     // Ends the outputs, then the stream for every listener, and frees the mount.
-    on_air.end();
+    drop(on_air);
 }
 
 /// Checks the station key of a keyed request for `station`, and answers the request
@@ -847,7 +1021,21 @@ fn pairing(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) 
     }) else {
         return;
     };
-    let document = Document::for_station(&shared.public_url, station);
+    let Some(mounts) = shared.mounts.get(&station.slug) else {
+        return refuse(stream, 404, "Not Found", &[], b"not found");
+    };
+    send_document(shared, stream, station, &mounts.outputs());
+}
+
+/// Answers 200 with the pairing document of `station`, whose outputs are `outputs`.
+fn send_document(shared: &Shared, stream: &mut Conn, station: &Station, outputs: &Outputs) {
+    let outputs: Vec<Output> = outputs.each().map(|(output, _)| output.clone()).collect();
+    let document = Document::for_station(
+        &shared.public_url,
+        station,
+        &outputs,
+        shared.config.state_dir.is_some(),
+    );
     let Ok(body) = serde_json::to_vec(&document) else {
         return refuse(
             stream,
@@ -867,6 +1055,70 @@ fn pairing(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) 
         ],
         &body,
     );
+}
+
+/// `PUT /api/station/outputs`: replaces the outputs of the station whose key the request
+/// carries (as `GET /api/station` takes it) with the JSON list in the body, saved in
+/// `state_dir` and put live at once; answers with the new pairing document. A refused
+/// change changes nothing.
+fn put_outputs(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
+    let Some(station) = keyed(shared, stream, peer, request, |key| {
+        station_with_key(shared, key)
+    }) else {
+        return;
+    };
+    let Some(mounts) = shared.mounts.get(&station.slug) else {
+        return refuse(stream, 404, "Not Found", &[], b"not found");
+    };
+    if shared.config.state_dir.is_none() {
+        return refuse(stream, 403, "Forbidden", &[], NO_STATE_DIR);
+    }
+    let Some(length) = request.header("Content-Length") else {
+        return refuse(
+            stream,
+            411,
+            "Length Required",
+            &[],
+            b"the request must say its Content-Length",
+        );
+    };
+    let Ok(length) = length.parse::<usize>() else {
+        return refuse(
+            stream,
+            400,
+            "Bad Request",
+            &[],
+            b"the Content-Length is not a number",
+        );
+    };
+    if length > MAX_OUTPUTS_BODY {
+        let body = format!("the list of outputs may be at most {MAX_OUTPUTS_BODY} bytes");
+        return refuse(stream, 413, "Content Too Large", &[], body.as_bytes());
+    }
+    let deadline = Instant::now()
+        .checked_add(shared.timeouts.head.max(MIN_TIMEOUT))
+        .unwrap_or_else(Instant::now);
+    let Ok(body) = read_body(stream, length, deadline) else {
+        return refuse(
+            stream,
+            400,
+            "Bad Request",
+            &[],
+            b"the body did not all arrive",
+        );
+    };
+    let outputs = match parse_saved_outputs(&body) {
+        Ok(outputs) => outputs,
+        Err(reason) => return refuse(stream, 400, "Bad Request", &[], reason.as_bytes()),
+    };
+    match shared.set_outputs(mounts, &station.slug, &outputs) {
+        Ok(current) => send_document(shared, stream, station, &current),
+        Err(SetOutputsError::NoStateDir) => refuse(stream, 403, "Forbidden", &[], NO_STATE_DIR),
+        Err(SetOutputsError::Save(error)) => {
+            let body = format!("the outputs could not be saved, so nothing changed: {error}");
+            refuse(stream, 500, "Internal Server Error", &[], body.as_bytes());
+        }
+    }
 }
 
 /// `GET /admin/metadata?mount=/<slug>/stream&mode=updinfo&song=<title>`: an MP3 source's
@@ -919,10 +1171,10 @@ fn metadata(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request)
 }
 
 /// `GET /status-json.xsl`: public and unkeyed, for the listener page's "now playing".
-/// Each station's pushed mount comes first, then its outputs in config order, so the page,
-/// which falls back to the first entry, finds the pushed stream. An output carries the
-/// pushed mount's title and artist; one whose source is refused, or that failed, is left
-/// out.
+/// Each station's pushed mount comes first, then its outputs in the order they were set,
+/// so the page, which falls back to the first entry, finds the pushed stream. An output
+/// carries the pushed mount's title and artist; one whose source is refused, or that
+/// failed, is left out.
 fn stats(shared: &Shared, stream: &mut Conn) {
     let mut entries = Vec::new();
     for station in &shared.config.stations {
@@ -933,13 +1185,13 @@ fn stats(shared: &Shared, stream: &mut Conn) {
         if pushed.name.is_empty() {
             pushed.name.clone_from(&station.name);
         }
-        let outputs: Vec<StatsEntry> = if mounts.outputs.refusal().is_some() {
+        let current = mounts.outputs();
+        let outputs: Vec<StatsEntry> = if current.refusal().is_some() {
             Vec::new()
         } else {
-            mounts
-                .outputs
+            current
                 .each()
-                .filter(|(output, _)| !mounts.outputs.failed(&output.mount))
+                .filter(|(output, _)| !current.failed(&output.mount))
                 .map(|(output, mount)| {
                     let mut stats = mount.stats();
                     if stats.name.is_empty() {
@@ -985,22 +1237,35 @@ fn listen(shared: &Shared, stream: &mut Conn, mount: &Arc<Mount>, titles: Option
 
 /// A listener of one of a station's outputs. With the station on the air but the output
 /// not begun yet (its transcoder is still reading the source's first audio), it waits up
-/// to [`OUTPUT_START_WAIT`] for it. Outputs that can't run, and an output that failed, are
-/// refused at once with the reason.
+/// to [`OUTPUT_START_WAIT`] for it. Outputs that can't run, an output that failed, and one
+/// whose station's outputs were changed meanwhile, are refused at once with the reason.
 fn listen_output(
     shared: &Shared,
     stream: &mut Conn,
     slug: &str,
     mounts: &StationMounts,
-    output: &Output,
-    mount: &Arc<Mount>,
+    found: &FoundOutput,
     titles: Option<Titles>,
 ) {
+    let FoundOutput {
+        outputs,
+        output,
+        mount,
+    } = found;
     let deadline = Instant::now()
         .checked_add(OUTPUT_START_WAIT)
         .unwrap_or_else(Instant::now);
     loop {
-        if let Some(refusal) = mounts.outputs.refusal() {
+        if !Arc::ptr_eq(outputs, &mounts.outputs()) {
+            return refuse(
+                stream,
+                503,
+                "Service Unavailable",
+                &[CORS],
+                b"this station's outputs were just changed; try again",
+            );
+        }
+        if let Some(refusal) = outputs.refusal() {
             return refuse(
                 stream,
                 503,
@@ -1010,7 +1275,7 @@ fn listen_output(
             );
         }
         // Checked before joining: a failed output's mount may still be held.
-        if mounts.outputs.failed(&output.mount) {
+        if outputs.failed(&output.mount) {
             let body = format!(
                 "the {} output ({} kbit/s) failed for this broadcast and is off until the \
                  source reconnects; the station's main stream still plays at /{slug}/stream",

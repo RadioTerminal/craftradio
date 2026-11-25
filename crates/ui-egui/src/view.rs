@@ -1016,6 +1016,56 @@ pub struct PairingView {
     /// True while the settings hold a pairing (the station pushes to the server).
     pub paired: bool,
     pub state: PairState,
+    /// The station's re-encoded outputs on the server: the paired settings' list, or, while
+    /// a save is on its way or after one failed, the rows that were sent, so nothing typed
+    /// is lost.
+    pub outputs: Vec<OutputRow>,
+    /// True when the server keeps outputs the app may change (its document's
+    /// `outputs_editable`). Otherwise the list is read-only, with [`OUTPUTS_READ_ONLY`].
+    pub outputs_editable: bool,
+    /// What the last save of the outputs said.
+    pub outputs_state: OutputsState,
+}
+
+/// The hint under a read-only list of outputs: the server has no `state_dir`.
+pub const OUTPUTS_READ_ONLY: &str = "This server keeps its outputs in its config file.";
+
+/// The codec of a re-encoded output on the server: the same two as the Icecast push.
+pub type OutputFormatView = StreamFormat;
+
+/// One re-encoded output of the station on the server, as the Server page edits it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutputRow {
+    /// The mount under the station, such as `low.opus`.
+    pub mount: String,
+    pub format: OutputFormatView,
+    pub kbps: u32,
+}
+
+/// What the last save of the outputs ([`Edit::SaveServerOutputs`]) said.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum OutputsState {
+    /// Nothing saved since the page opened, or since the pairing changed.
+    #[default]
+    Idle,
+    /// The list is on its way to the server.
+    Saving,
+    /// The server took the list and the settings hold what it answered.
+    Saved,
+    /// The server refused the list, or did not answer; the reason in words.
+    Failed(String),
+}
+
+impl OutputsState {
+    /// The state in words, as the Server page says it. Idle says nothing.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Idle => "",
+            Self::Saving => "Saving…",
+            Self::Saved => "Saved",
+            Self::Failed(reason) => reason,
+        }
+    }
 }
 
 /// What the last pairing try said.
@@ -1308,6 +1358,9 @@ pub enum Edit {
     },
     /// Unpair from the station server: the settings pairing wrote go, and so does the key.
     Unpair,
+    /// Send the whole list of re-encoded outputs to the paired server, which applies it.
+    /// The settings follow the document the server answers with (`server.pair`).
+    SaveServerOutputs(Vec<OutputRow>),
     /// Turns streaming to listeners (WebRTC, with the listen link) on or off.
     SetStreaming(bool),
     /// The compressor and the limiter on Program, whole.

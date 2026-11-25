@@ -257,6 +257,11 @@ pub mod size {
     pub const SETTINGS_LABEL: f32 = 168.0;
     pub const SETTINGS_FIELD: f32 = 320.0;
     pub const SETTINGS_FIELD_MIN: f32 = 132.0;
+    /// The format, bitrate and Remove cells of a row of the Server page's outputs; the mount
+    /// takes the rest of the row.
+    pub const OUTPUT_FORMAT_W: f32 = 88.0;
+    pub const OUTPUT_KBPS_W: f32 = 112.0;
+    pub const OUTPUT_REMOVE_W: f32 = 80.0;
     /// The height of a settings page with its header. A shorter window scrolls the form.
     pub const SETTINGS_PAGE_H: f32 = 700.0;
     /// The least height of Preferences in a window sized by hand.

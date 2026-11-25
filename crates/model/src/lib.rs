@@ -29,8 +29,9 @@ pub use loudness::{
 pub use playlist::{FolderSource, OnInterrupt, PickOrder, Playlist, PlaylistRole};
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
 pub use server::{
-    PAIRING_VERSION, PairingDocument, PairingIcecast, PairingOutput, SERVER_ADDRESS_KEY,
-    SERVER_PART, SERVER_PUSH_KEY, check_server_address, is_loopback_host,
+    OutputSpec, PAIRING_VERSION, PairingDocument, PairingIcecast, PairingOutput,
+    SERVER_ADDRESS_KEY, SERVER_OUTPUTS_EDITABLE_KEY, SERVER_OUTPUTS_KEY, SERVER_PART,
+    SERVER_PUSH_KEY, check_server_address, is_loopback_host,
 };
 pub use station::Station;
 

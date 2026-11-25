@@ -78,12 +78,39 @@ enum Command {
         #[arg(long)]
         data_dir: PathBuf,
     },
+    /// Print the station's re-encoded outputs on its server, one per line:
+    /// `<mount> <format> <kbps> <url>`, as the last pairing or save left them.
+    ///
+    /// `outputs set` sends a new list to the server, with the key that pairing stored in
+    /// the keychain. Close the app first: a running app keeps its own copy of the station.
+    /// While it runs, change them on Preferences › Server instead.
+    #[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
+    Outputs {
+        #[command(subcommand)]
+        set: Option<OutputsCommand>,
+        /// The folder that holds station.db: the --data-dir of the app.
+        #[arg(long, required = true)]
+        data_dir: Option<PathBuf>,
+    },
     /// Serve MCP on stdio: every engine command as a tool, run on the running station through
     /// its control channel (docs/control.md).
     Mcp {
         /// The control port of the station. Defaults to the station started last.
         #[arg(long)]
         port: Option<u16>,
+    },
+}
+
+#[derive(Subcommand)]
+enum OutputsCommand {
+    /// Send the whole list of outputs to the server, which applies it at once. None clears
+    /// them. Each is <mount>=<format>:<kbps>, such as low.opus=opus:32 or high.mp3=mp3:128.
+    Set {
+        /// The folder that holds station.db: the --data-dir of the app.
+        #[arg(long)]
+        data_dir: PathBuf,
+        /// The outputs, each <mount>=<format>:<kbps>; the format is opus or mp3.
+        outputs: Vec<String>,
     },
 }
 
@@ -145,6 +172,17 @@ fn run(cli: Cli) -> Result<u8, String> {
         Command::Cmd { data_dir, command } => run_command(&data_dir, &command),
         Command::Pair { address, data_dir } => pairing::pair(&station_db(&data_dir)?, &address),
         Command::Unpair { data_dir } => pairing::unpair(&station_db(&data_dir)?),
+        Command::Outputs {
+            set: Some(OutputsCommand::Set { data_dir, outputs }),
+            ..
+        } => pairing::set_outputs(&station_db(&data_dir)?, &outputs),
+        Command::Outputs {
+            set: None,
+            data_dir,
+        } => {
+            let data_dir = data_dir.ok_or("give the station's folder with --data-dir")?;
+            pairing::list_outputs(&station_db(&data_dir)?)
+        }
         Command::Mcp { port } => {
             // The token comes from CRAFTRADIO_CONTROL_TOKEN or the station's token file, never
             // from the command line, where other users could read it.

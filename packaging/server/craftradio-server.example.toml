@@ -23,6 +23,13 @@ trusted_proxy = "127.0.0.1"
 # tls_cert = "/etc/craftradio-server/fullchain.pem"
 # tls_key = "/etc/craftradio-server/privkey.pem"
 
+# Where the server keeps the outputs a station's operator saves from the app (Preferences >
+# Server > Outputs), one <slug>.outputs.json per station. A saved file replaces that
+# station's [[station.output]] blocks below at start. The directory must exist and be
+# writable by the server (the systemd unit's StateDirectory makes this one). Leave it out
+# and outputs are set only here; the app then shows them read-only.
+state_dir = "/var/lib/craftradio-server"
+
 # One [[station]] block per station that may push to this server.
 [[station]]
 # The station's part of every URL: its stream is /<slug>/stream. 1–32 of a-z, 0-9 and -,

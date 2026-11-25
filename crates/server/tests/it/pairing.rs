@@ -168,7 +168,12 @@ fn the_push_target_follows_the_public_url() {
 
     let config = Config::parse(&config("http://radio.example.test:8000/")).unwrap();
     let url = PublicUrl::parse(&config.public_url).unwrap();
-    let doc = Document::for_station(&url, &config.stations[0]);
+    let doc = Document::for_station(
+        &url,
+        &config.stations[0],
+        &config.stations[0].outputs,
+        false,
+    );
     assert_eq!(doc.icecast.port, 8000);
     assert!(!doc.icecast.tls);
     assert!(!doc.stream_url.contains("//dawn"), "no doubled slash");

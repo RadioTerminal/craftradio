@@ -9,23 +9,32 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
-use radio_engine::{Command, State};
+use radio_engine::{Command, EngineError, Outcome, State};
 use radio_model::{
-    PAIRING_VERSION, PairingDocument, SERVER_ADDRESS_KEY, SERVER_PART, SERVER_PUSH_KEY,
+    OutputSpec, PAIRING_VERSION, PairingDocument, PairingOutput, SERVER_ADDRESS_KEY,
+    SERVER_OUTPUTS_EDITABLE_KEY, SERVER_OUTPUTS_KEY, SERVER_PART, SERVER_PUSH_KEY,
 };
-use radio_ui_egui::view::{PairState, PairingView, Secret, is_loopback};
+use radio_ui_egui::view::{
+    OUTPUTS_READ_ONLY, OutputRow, OutputsState, PairState, PairingView, Secret, StreamFormat,
+    is_loopback,
+};
 
 use crate::{EngineSource, SecretStore};
 
 /// What the strip, the status bar and the alarm say while the paired server refuses the key.
 pub(crate) const KEY_REFUSED: &str =
     "the server refused the station key; pair again with the new key";
+/// Why a save's answer is not applied when the server answered with another push than the
+/// paired one: its key is not stored, so the station pairs again.
+pub const PUSH_CHANGED: &str = "the server's push changed; pair again";
 /// The whole fetch of the pairing document, connection included, takes at most this long.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A connection to the server takes at most this long.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// A pairing document is small; a longer answer is not one.
 const MAX_DOCUMENT: u64 = 64 * 1024;
+/// The server's reason for a refused list of outputs is a line of words.
+const MAX_REASON: u64 = 4 * 1024;
 
 /// Why a pairing try did not give a document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,10 +90,9 @@ pub(crate) fn read_document(body: &str) -> Result<PairingDocument, PairError> {
     Ok(document)
 }
 
-/// Fetches `<address>/api/station` with `key` as the Basic password. An address outside
-/// [`check_address`]'s rule is refused before anything is sent, wherever it came from.
-pub fn fetch(address: &str, key: &str) -> Result<PairingDocument, PairError> {
-    let address = &check_address(address).map_err(PairError::Refused)?;
+/// The agent for a request that carries the station key to the server at `address` (in
+/// [`check_address`]'s shape): no proxy, no redirects, short timeouts.
+fn agent(address: &str) -> Result<ureq::Agent, String> {
     let config = ureq::Agent::config_builder()
         // A proxy from the environment would see the key, in clear over http.
         .proxy(None)
@@ -95,15 +103,27 @@ pub fn fetch(address: &str, key: &str) -> Result<PairingDocument, PairError> {
         .max_redirects(0)
         .max_redirects_will_error(false);
     let config = if address.starts_with("https://") {
-        config.tls_config(radio_stream::https_tls().map_err(PairError::Unreachable)?)
+        config.tls_config(radio_stream::https_tls()?)
     } else {
         config
     };
-    let agent = ureq::Agent::new_with_config(config.build());
-    let basic = base64::engine::general_purpose::STANDARD.encode(format!("source:{key}"));
+    Ok(ureq::Agent::new_with_config(config.build()))
+}
+
+/// The `Authorization` header with `key` as the Basic password.
+fn basic(key: &str) -> String {
+    let pair = base64::engine::general_purpose::STANDARD.encode(format!("source:{key}"));
+    format!("Basic {pair}")
+}
+
+/// Fetches `<address>/api/station` with `key` as the Basic password. An address outside
+/// [`check_address`]'s rule is refused before anything is sent, wherever it came from.
+pub fn fetch(address: &str, key: &str) -> Result<PairingDocument, PairError> {
+    let address = &check_address(address).map_err(PairError::Refused)?;
+    let agent = agent(address).map_err(PairError::Unreachable)?;
     let mut response = agent
         .get(format!("{address}/api/station"))
-        .header("Authorization", format!("Basic {basic}"))
+        .header("Authorization", basic(key))
         .call()
         .map_err(|e| PairError::Unreachable(describe(&e)))?;
     match response.status().as_u16() {
@@ -150,6 +170,166 @@ fn describe(e: &ureq::Error) -> String {
             "the answer is too long to be a pairing document".into()
         }
         other => other.to_string(),
+    }
+}
+
+/// Why a list of outputs sent to the server did not give a new document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PutError {
+    /// The server answered 401: it does not know the key.
+    KeyRefused,
+    /// No answer, or not now (503, 429, a timeout); the reason in words.
+    Unreachable(String),
+    /// The server refused the list (its reason, in its words), or keeps no outputs the app
+    /// may change, or answered with something that is not a pairing document.
+    Refused(String),
+}
+
+/// Sends `outputs`, the whole new list, to `<address>/api/station/outputs` with `key` as the
+/// Basic password, and gives the pairing document the server answers with. An address
+/// outside [`check_address`]'s rule is refused before anything is sent.
+pub fn put_outputs(
+    address: &str,
+    key: &str,
+    outputs: &[OutputSpec],
+) -> Result<PairingDocument, PutError> {
+    let address = &check_address(address).map_err(PutError::Refused)?;
+    let body = serde_json::to_vec(outputs)
+        .map_err(|e| PutError::Refused(format!("the outputs cannot be sent: {e}")))?;
+    let agent = agent(address).map_err(PutError::Unreachable)?;
+    // A body of bytes goes with its Content-Length, which the server needs.
+    let mut response = agent
+        .put(format!("{address}/api/station/outputs"))
+        .header("Authorization", basic(key))
+        .header("Content-Type", "application/json")
+        .send(&body[..])
+        .map_err(|e| PutError::Unreachable(describe(&e)))?;
+    let status = response.status().as_u16();
+    let limit = if status == 200 {
+        MAX_DOCUMENT
+    } else {
+        MAX_REASON
+    };
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_string();
+    match status {
+        200 => {
+            let body = text.map_err(|e| PutError::Unreachable(describe(&e)))?;
+            read_document(&body).map_err(|e| match e {
+                PairError::KeyRefused => PutError::KeyRefused,
+                PairError::Unreachable(r) => PutError::Unreachable(r),
+                PairError::Refused(r) => PutError::Refused(r),
+            })
+        }
+        // The server's own reason: a bad bitrate, a taken mount, or no state_dir.
+        400 | 403 | 413 | 500 => {
+            let reason = text.unwrap_or_default();
+            let reason = reason.trim();
+            Err(PutError::Refused(if reason.is_empty() {
+                format!("the server refused the outputs ({status})")
+            } else {
+                reason.to_owned()
+            }))
+        }
+        401 => Err(PutError::KeyRefused),
+        429 => Err(PutError::Unreachable(
+            "the server refuses keys from this computer for a while after wrong ones; try \
+             again in a few minutes"
+                .into(),
+        )),
+        503 => Err(PutError::Unreachable(
+            "the server is busy (503); try again later".into(),
+        )),
+        404 | 405 => Err(PutError::Refused(
+            "this server cannot change its outputs from the app; update craftradio-server".into(),
+        )),
+        code @ 300..=399 => Err(PutError::Refused(format!(
+            "the server sends the app elsewhere ({code}); pair with its own address"
+        ))),
+        code => Err(PutError::Unreachable(format!("the server answered {code}"))),
+    }
+}
+
+/// The rows of the Server page as the server reads them.
+pub(crate) fn output_specs(rows: &[OutputRow]) -> Vec<OutputSpec> {
+    rows.iter()
+        .map(|r| OutputSpec {
+            mount: r.mount.clone(),
+            format: match r.format {
+                StreamFormat::Opus => "opus",
+                StreamFormat::Mp3 => "mp3",
+            }
+            .to_owned(),
+            kbps: r.kbps,
+        })
+        .collect()
+}
+
+/// The outputs the paired settings list, as rows. An output of a format this app does not
+/// know is left out.
+pub(crate) fn output_rows(state: &State) -> Vec<OutputRow> {
+    let listed = state
+        .settings(SERVER_PART)
+        .and_then(|s| s.get(SERVER_OUTPUTS_KEY))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<PairingOutput>>(v).ok())
+        .unwrap_or_default();
+    listed
+        .into_iter()
+        .filter_map(|o| {
+            let format = match o.format.as_str() {
+                "opus" => StreamFormat::Opus,
+                "mp3" => StreamFormat::Mp3,
+                _ => return None,
+            };
+            Some(OutputRow {
+                mount: o.mount,
+                format,
+                kbps: o.kbps,
+            })
+        })
+        .collect()
+}
+
+/// True when the paired settings say the server keeps outputs the app may change.
+pub(crate) fn outputs_editable(state: &State) -> bool {
+    state
+        .settings(SERVER_PART)
+        .and_then(|s| s.get(SERVER_OUTPUTS_EDITABLE_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// What the background lane hands back for a save of the outputs.
+pub(crate) struct PutAnswer {
+    pub(crate) seq: u64,
+    pub(crate) address: String,
+    pub(crate) result: Result<PairingDocument, PutError>,
+}
+
+/// One save of the outputs, off the UI thread: the key stored under `entry`, the entry of
+/// the paired address itself, then the request. It never writes the keychain.
+pub(crate) fn run_put(
+    seq: u64,
+    address: String,
+    entry: &str,
+    outputs: &[OutputSpec],
+    store: &Arc<dyn SecretStore + Sync>,
+) -> PutAnswer {
+    let result = match stored_or(None, Some(entry), store.as_ref()) {
+        Ok(key) => put_outputs(&address, key.expose(), outputs),
+        Err(PairError::Refused(reason) | PairError::Unreachable(reason)) => {
+            Err(PutError::Refused(reason))
+        }
+        Err(PairError::KeyRefused) => Err(PutError::KeyRefused),
+    };
+    PutAnswer {
+        seq,
+        address,
+        result,
     }
 }
 
@@ -246,6 +426,24 @@ pub(crate) struct Pairing {
     storing: Vec<String>,
     /// Why a write of `storing` failed, once one did.
     store_failed: Option<String>,
+    /// The last save of the outputs sent to the background lane. Older answers are dropped.
+    saves: u64,
+    /// What the last save of the outputs said.
+    outputs_state: OutputsState,
+    /// The rows of the last save, shown while it is on its way and after it failed.
+    outputs_sent: Vec<OutputRow>,
+    /// The engine's answer to the `server.pair` of a saved list, and the outputs it writes.
+    outputs_reply: Option<OutputsReply>,
+}
+
+/// The `server.pair` of a list the server took, on its way to the engine.
+struct OutputsReply {
+    rx: std::sync::mpsc::Receiver<Result<Outcome, EngineError>>,
+    /// The `server.outputs` setting the document writes, to say Saved only once the
+    /// settings show it.
+    outputs: serde_json::Value,
+    /// True once the engine took the command.
+    applied: bool,
 }
 
 /// The keychain entry of the station key for fetching from the server at `address` (in
@@ -310,6 +508,8 @@ impl EngineSource {
             return;
         }
         let before = std::mem::replace(&mut self.pairing.seen, now.clone());
+        // A save on its way is for a pairing that changed: its answer writes nothing.
+        self.forget_save();
         match now {
             None => {
                 if before.is_some() {
@@ -457,6 +657,7 @@ impl EngineSource {
         self.pairing.asked_for = None;
         self.pairing.hold = Hold::Open;
         self.secret_known = None;
+        self.forget_save();
         Ok(1)
     }
 
@@ -601,6 +802,147 @@ impl EngineSource {
         }
     }
 
+    /// Drops a save of the outputs on its way: the outputs show the settings again.
+    fn forget_save(&mut self) {
+        self.pairing.saves += 1;
+        self.pairing.outputs_state = OutputsState::Idle;
+        self.pairing.outputs_sent.clear();
+        self.pairing.outputs_reply = None;
+    }
+
+    /// `Edit::SaveServerOutputs`: sends the whole list to the paired server. It is not
+    /// offered while unpaired, while a pairing is asked, while a save is on its way, or when
+    /// the server keeps its outputs in its config.
+    pub(crate) fn save_outputs(&mut self, rows: Vec<OutputRow>) -> Result<usize, String> {
+        let Some(address) = paired_address(&self.state) else {
+            return Err("The station is not paired with a server".into());
+        };
+        if self.pairing.state == PairState::Pairing {
+            return Err("The server is being asked; save once it answered".into());
+        }
+        // A key the server refused would only walk its lockout again.
+        if self.key_refused() || self.pairing.state == PairState::KeyRefused {
+            return Err(KEY_REFUSED.into());
+        }
+        if self.pairing.outputs_state == OutputsState::Saving {
+            return Err("The outputs are on their way to the server; wait for its answer".into());
+        }
+        if !outputs_editable(&self.state) {
+            return Err(OUTPUTS_READ_ONLY.into());
+        }
+        check_address(&address).map_err(|e| format!("the server address is not usable: {e}"))?;
+        self.pairing.saves += 1;
+        // The stored key is read only from the entry of this very address.
+        let job = crate::bg::Job::PutOutputs {
+            seq: self.pairing.saves,
+            entry: server_entry(&address),
+            address,
+            outputs: output_specs(&rows),
+            store: Arc::clone(&self.secrets),
+        };
+        let sent = self
+            .worker
+            .as_ref()
+            .is_some_and(|w| w.jobs.send(job).is_ok());
+        if !sent {
+            return Err("The background lane has stopped; restart the app".into());
+        }
+        self.pairing.outputs_reply = None;
+        self.pairing.outputs_sent = rows;
+        self.pairing.outputs_state = OutputsState::Saving;
+        Ok(1)
+    }
+
+    /// The server's answer to a save of the outputs. Only the answer to the last save, for
+    /// the address still paired, counts; the settings follow the document it hands back.
+    pub(crate) fn put_answer(&mut self, answer: PutAnswer) {
+        if answer.seq != self.pairing.saves {
+            return;
+        }
+        if paired_address(&self.state).as_deref() != Some(answer.address.as_str()) {
+            return self.forget_save();
+        }
+        let document = match answer.result {
+            Ok(document) => document,
+            Err(e) => {
+                if matches!(e, PutError::KeyRefused) {
+                    // The paired server refused the stored key, as a pairing try would: the
+                    // page says so, and neither the push nor another Save walks its lockout.
+                    self.pairing.state = PairState::KeyRefused;
+                    self.pairing.hold = Hold::Refused;
+                    self.sync_icecast(true);
+                }
+                self.pairing.outputs_state = OutputsState::Failed(match e {
+                    PutError::KeyRefused => KEY_REFUSED.to_owned(),
+                    PutError::Unreachable(reason) => format!("server unreachable: {reason}"),
+                    PutError::Refused(reason) => reason,
+                });
+                return;
+            }
+        };
+        // The key is stored only for the paired push: an answer naming another push would
+        // move the settings to a push with no key, so it is not applied.
+        let ice = &document.icecast;
+        let answered = crate::icecast::mount_entry(&ice.user, &ice.host, ice.port, &ice.mount);
+        if paired_entry(&self.state).as_deref() != Some(answered.as_str()) {
+            self.pairing.outputs_state = OutputsState::Failed(PUSH_CHANGED.to_owned());
+            return;
+        }
+        let outputs = serde_json::to_value(&document.outputs).unwrap_or_default();
+        let cmd = Command::ServerPair {
+            address: answer.address,
+            document,
+        };
+        match self.playout.send(cmd) {
+            Ok(rx) => {
+                self.pairing.outputs_reply = Some(OutputsReply {
+                    rx,
+                    outputs,
+                    applied: false,
+                })
+            }
+            Err(e) => {
+                self.pairing.outputs_state = OutputsState::Failed(format!(
+                    "the server took the outputs, but the settings were not written: {e}"
+                ));
+            }
+        }
+    }
+
+    /// The engine's answer to the `server.pair` of a saved list, then Saved once the
+    /// settings hold what the server answered; or why not.
+    pub(crate) fn watch_outputs(&mut self) {
+        let Some(reply) = &mut self.pairing.outputs_reply else {
+            return;
+        };
+        if !reply.applied {
+            let failed = match reply.rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Ok(Ok(_)) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some("the playout stopped".to_owned())
+                }
+            };
+            if let Some(e) = failed {
+                self.pairing.outputs_reply = None;
+                self.pairing.outputs_state = OutputsState::Failed(format!(
+                    "the server took the outputs, but the settings were not written: {e}"
+                ));
+                return;
+            }
+            reply.applied = true;
+        }
+        let listed = self
+            .state
+            .settings(SERVER_PART)
+            .and_then(|s| s.get(SERVER_OUTPUTS_KEY));
+        if listed == Some(&reply.outputs) {
+            self.pairing.outputs_reply = None;
+            self.pairing.outputs_state = OutputsState::Saved;
+        }
+    }
+
     /// True while the push waits: for the start's answer, or for a new key.
     pub(crate) fn push_held(&self) -> bool {
         self.pairing.hold != Hold::Open
@@ -625,10 +967,18 @@ impl EngineSource {
             PairState::Paired if paired.as_deref() != Some(address.as_str()) => PairState::Pairing,
             state => state.clone(),
         };
+        let outputs_state = self.pairing.outputs_state.clone();
+        let outputs = match outputs_state {
+            OutputsState::Saving | OutputsState::Failed(_) => self.pairing.outputs_sent.clone(),
+            OutputsState::Idle | OutputsState::Saved => output_rows(&self.state),
+        };
         PairingView {
             address,
             paired: paired.is_some(),
             state,
+            outputs,
+            outputs_editable: paired.is_some() && outputs_editable(&self.state),
+            outputs_state,
         }
     }
 }

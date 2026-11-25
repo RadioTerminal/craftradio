@@ -13,20 +13,28 @@ use radio_ui_engine::{EngineSource, MemoryStore, SecretStore, check_address, ser
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const DAWN_KEY: &str = "invented-dawn-key-9Qx4";
+pub(crate) const DAWN_KEY: &str = "invented-dawn-key-9Qx4";
 const WRONG_KEY: &str = "invented-wrong-key-2Lr8";
 
 /// A station server on a free port of this computer, with the station "dawn". Its public
 /// URL is its own address, so the push the document names reaches it. The address it gives
 /// is the one a person types.
 fn server() -> (ServerHandle, String) {
+    server_with(None)
+}
+
+/// [`server`] with a `state_dir`, where the server keeps outputs the app sets, when given.
+pub(crate) fn server_with(state_dir: Option<&std::path::Path>) -> (ServerHandle, String) {
+    let state_dir = state_dir
+        .map(|dir| format!("state_dir = {:?}\n", dir.display().to_string()))
+        .unwrap_or_default();
     // The port is free when picked; another test may take it before the server binds it,
     // so a taken port is picked again.
     for _ in 0..20 {
         let port = refusing_port();
         let config = format!(
-            "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\n\
-             [[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
+            "listen = \"127.0.0.1:{port}\"\npublic_url = \"http://127.0.0.1:{port}\"\n\
+             {state_dir}\n[[station]]\nslug = \"dawn\"\nname = \"Dawn Chorus\"\nkey_hash = \"{}\"\n",
             hash_key(DAWN_KEY),
         );
         if let Ok(server) = Server::start(Config::parse(&config).unwrap()) {
@@ -37,7 +45,7 @@ fn server() -> (ServerHandle, String) {
 }
 
 /// A source over a fresh station with a memory keychain the test can read.
-fn station() -> (EngineSource, radio_playout::ManualClock, Arc<MemoryStore>) {
+pub(crate) fn station() -> (EngineSource, radio_playout::ManualClock, Arc<MemoryStore>) {
     let store = Arc::new(MemoryStore::default());
     let (source, clock) = source(Vec::new());
     let source = source.with_secrets(Arc::new(Shared(store.clone())));
@@ -52,13 +60,13 @@ fn dawn_entry(address: &str) -> String {
 
 /// The keychain as a pairing with `address` left it: the key under the push's entry and
 /// under the address's own entry.
-fn keep_key(store: &MemoryStore, address: &str, key: &str) {
+pub(crate) fn keep_key(store: &MemoryStore, address: &str, key: &str) {
     store.set(&dawn_entry(address), key).unwrap();
     store.set(&server_entry(address), key).unwrap();
 }
 
 /// `GET <address><path>` with `key` as the Basic password, if any: the status and the body.
-fn get(address: &str, path: &str, key: Option<&str>) -> (u16, String) {
+pub(crate) fn get(address: &str, path: &str, key: Option<&str>) -> (u16, String) {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .http_status_as_error(false)
@@ -99,7 +107,7 @@ fn wait_live(
 }
 
 /// A setting as the source shows it now.
-fn view_setting(
+pub(crate) fn view_setting(
     source: &mut EngineSource,
     clock: &radio_playout::ManualClock,
     part: &str,
@@ -113,11 +121,11 @@ fn settings_text(view: &StationView) -> String {
     serde_json::to_string(&view.settings).unwrap()
 }
 
-fn setting(view: &StationView, part: &str, key: &str) -> Option<serde_json::Value> {
+pub(crate) fn setting(view: &StationView, part: &str, key: &str) -> Option<serde_json::Value> {
     view.settings.get(part).and_then(|s| s.get(key)).cloned()
 }
 
-fn pair(source: &mut EngineSource, address: &str, key: &str) -> Result<usize, String> {
+pub(crate) fn pair(source: &mut EngineSource, address: &str, key: &str) -> Result<usize, String> {
     source.edit(Edit::Pair {
         address: address.into(),
         key: Secret::new(key),
@@ -183,7 +191,7 @@ fn a_wrong_key_says_key_refused_and_does_not_retry() {
 }
 
 /// The settings of a pairing with `address`, written as `server.pair` writes them.
-fn paired_with(source: &mut EngineSource, address: &str, document: PairingDocument) {
+pub(crate) fn paired_with(source: &mut EngineSource, address: &str, document: PairingDocument) {
     source
         .playout()
         .dispatch(Command::ServerPair {
@@ -194,7 +202,7 @@ fn paired_with(source: &mut EngineSource, address: &str, document: PairingDocume
 }
 
 /// A pairing document, field for field as a server at `address` could write it.
-fn document_for(address: &str) -> PairingDocument {
+pub(crate) fn document_for(address: &str) -> PairingDocument {
     let host_port = address.trim_start_matches("http://");
     let (host, port) = host_port.split_once(':').unwrap();
     serde_json::from_value(serde_json::json!({
@@ -424,7 +432,7 @@ fn the_key_never_reaches_settings_or_the_snapshot() {
 }
 
 /// A server on this computer that answers every request with `status` and `body`.
-fn answering(status: &'static str, body: &'static str) -> String {
+pub(crate) fn answering(status: &'static str, body: &'static str) -> String {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
@@ -514,8 +522,8 @@ fn a_pairing_by_another_client_is_asked_once_and_connects() {
 /// A station server stand-in whose key can be rotated while it runs. It answers
 /// `/api/station` and takes pushes for the current key, refuses other keys with 401, and
 /// counts the pushes and the refusals.
-struct Rotating {
-    address: String,
+pub(crate) struct Rotating {
+    pub(crate) address: String,
     key: Arc<std::sync::Mutex<String>>,
     pushes: Arc<std::sync::atomic::AtomicUsize>,
     refused: Arc<std::sync::atomic::AtomicUsize>,
@@ -525,7 +533,17 @@ struct Rotating {
 }
 
 impl Rotating {
-    fn start(key: &str) -> Self {
+    pub(crate) fn start(key: &str) -> Self {
+        Self::serving(key, false)
+    }
+
+    /// [`Rotating::start`] for a server that keeps a `state_dir`: its document says the
+    /// station may set its outputs.
+    pub(crate) fn editable(key: &str) -> Self {
+        Self::serving(key, true)
+    }
+
+    fn serving(key: &str, outputs_editable: bool) -> Self {
         use std::io::{Read, Write};
         use std::sync::atomic::Ordering;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -545,7 +563,9 @@ impl Rotating {
             me.refused.clone(),
             me.open.clone(),
         );
-        let document = serde_json::to_string(&document_for(&address)).unwrap();
+        let mut document = document_for(&address);
+        document.outputs_editable = outputs_editable;
+        let document = serde_json::to_string(&document).unwrap();
         std::thread::spawn(move || {
             for mut conn in listener.incoming().flatten() {
                 connections.fetch_add(1, Ordering::SeqCst);
@@ -611,17 +631,21 @@ impl Rotating {
         self.pushes.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn connections(&self) -> usize {
+    pub(crate) fn connections(&self) -> usize {
         self.connections.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn refused(&self) -> usize {
+    pub(crate) fn refused(&self) -> usize {
         self.refused.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
 /// Takes snapshots for `d`.
-fn keep_snapshotting(source: &mut EngineSource, clock: &radio_playout::ManualClock, d: Duration) {
+pub(crate) fn keep_snapshotting(
+    source: &mut EngineSource,
+    clock: &radio_playout::ManualClock,
+    d: Duration,
+) {
     let until = Instant::now() + d;
     while Instant::now() < until {
         let _ = source.snapshot(clock.now());
