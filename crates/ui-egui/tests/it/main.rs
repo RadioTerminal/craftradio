@@ -18,5 +18,6 @@ mod preferences;
 mod prefs_window;
 mod server_page;
 mod smoke;
+mod status_dots;
 mod steady;
 mod tabs;

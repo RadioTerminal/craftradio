@@ -3,7 +3,7 @@
 
 use egui::accesskit::Toggled;
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::{NodeT, Queryable, by};
 use radio_ui_egui::view::{Edit, StationView, ViewSource};
 use radio_ui_egui::{MockSource, RadioApp, ToolWindow};
 
@@ -36,6 +36,20 @@ fn click(h: &mut Harness<'_, RadioApp>, label: &str) {
         .last()
         .unwrap_or_else(|| panic!("no {label}"))
         .click();
+    h.run_steps(FRAMES);
+}
+
+/// Clicks the tab of the page called `name` on the rail: its name, then its status when it
+/// has a dot.
+fn click_tab(h: &mut Harness<'_, RadioApp>, name: &str) {
+    let dotted = format!("{name} — ");
+    h.query_all(by().predicate(|n| {
+        n.label()
+            .is_some_and(|l| l == name || l.starts_with(&dotted))
+    }))
+    .next()
+    .unwrap_or_else(|| panic!("no {name} tab"))
+    .click();
     h.run_steps(FRAMES);
 }
 
@@ -170,7 +184,7 @@ fn restore_page_defaults_turns_the_compressor_back_off() {
 #[test]
 fn the_webrtc_page_keeps_its_port_and_restores_it() {
     let mut h = preferences();
-    click(&mut h, "WebRTC");
+    click_tab(&mut h, "WebRTC");
     assert!(shows(&h, "Port"), "the page has a Port row");
     let restore = h.get_by_label("Restore page defaults");
     assert!(
@@ -395,7 +409,7 @@ fn restore_on_the_icecast_page_sets_it_back_unless_paired() {
 #[test]
 fn restore_on_the_webrtc_page_turns_streaming_off() {
     let (mut h, edits) = station_preferences(false);
-    click(&mut h, "WebRTC");
+    click_tab(&mut h, "WebRTC");
     click(&mut h, "Streaming");
     assert!(checked(&h, "Streaming"), "streaming is on");
     click(&mut h, "Restore page defaults");

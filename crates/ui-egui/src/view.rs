@@ -1133,6 +1133,22 @@ impl PairingView {
             PairState::Refused(reason) => format!("{head} — {reason}"),
         }
     }
+
+    /// The status dot of the Server page: none until a pairing is tried.
+    pub fn page_status(&self) -> Option<PageStatus> {
+        let health = match &self.state {
+            PairState::NotPaired => return None,
+            PairState::Pairing => Health::Busy,
+            PairState::Paired => Health::Good,
+            PairState::Unreachable(_) | PairState::KeyRefused | PairState::Refused(_) => {
+                Health::Fault
+            }
+        };
+        Some(PageStatus {
+            health,
+            words: self.label(),
+        })
+    }
 }
 
 /// The state of an output.
@@ -1189,6 +1205,54 @@ impl OutputStatus {
         }
         Some(text)
     }
+
+    /// The WebRTC state in the words of the status bar, and the dot of its Preferences page.
+    pub fn webrtc_page_status(&self) -> PageStatus {
+        let (health, word) = match &self.webrtc {
+            Status::NotConnected if self.streaming == Some(false) => (Health::Off, "off".into()),
+            Status::Off => (Health::Off, "off".into()),
+            Status::Connected => (
+                Health::Good,
+                self.webrtc_listeners_text()
+                    .map_or_else(|| "connected".to_owned(), |n| format!("listening, {n}")),
+            ),
+            Status::Preview => (Health::Idle, "preview (no audio)".into()),
+            Status::OffAir => (Health::Idle, "off air".into()),
+            Status::NotConnected => (Health::Idle, "not connected".into()),
+            Status::Reconnecting { attempt } => {
+                (Health::Busy, format!("reconnecting (try {attempt})"))
+            }
+            Status::Failed(e) => (Health::Fault, format!("failed: {e}")),
+        };
+        PageStatus {
+            health,
+            words: format!("WebRTC {word}"),
+        }
+    }
+}
+
+/// How the status dot of a Preferences page looks. Its words always go with it, in the
+/// tooltip and in the name a screen reader says, and each look has its own shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Health {
+    /// Working: a filled green dot.
+    Good,
+    /// Starting, connecting or trying again: an orange ring with a dot in it.
+    Busy,
+    /// A fault: a red square.
+    Fault,
+    /// Not connected, off air or the preview: nothing goes out, and that is not a fault. A
+    /// muted ring.
+    Idle,
+    /// Switched off by its own switch: a small muted dot.
+    Off,
+}
+
+/// The status of a Preferences page: how its dot looks and what it says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageStatus {
+    pub health: Health,
+    pub words: String,
 }
 
 /// The job of an audio device.

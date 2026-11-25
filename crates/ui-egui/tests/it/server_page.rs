@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::{By, NodeT, Queryable, by};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use radio_ui_egui::theme::Tokens;
@@ -76,13 +76,23 @@ fn page(pairing: PairingView) -> Page {
     h.run_steps(FRAMES);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
     h.run_steps(FRAMES);
-    // The rail draws the page's name first; the page heading, once open, after it.
-    h.query_all_by_label("Server")
+    // The rail draws the page's name first, with its status once a pairing is tried; the
+    // page heading, once open, after it.
+    h.query_all(rail_tab("Server"))
         .next()
         .expect("the Server page in the rail")
         .click();
     h.run_steps(FRAMES);
     Page { h, edits }
+}
+
+/// The tab of the page called `name` on the rail: its name, then its status when it has a dot.
+fn rail_tab(name: &str) -> By<'_> {
+    let dotted = format!("{name} — ");
+    by().predicate(move |n| {
+        n.label()
+            .is_some_and(|l| l == name || l.starts_with(&dotted))
+    })
 }
 
 impl Page {
