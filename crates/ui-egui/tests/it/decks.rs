@@ -70,3 +70,59 @@ fn the_mixer_has_a_strip_for_each_deck_in_use_only() {
         "a deck that is not in use has no strip"
     );
 }
+
+const ON_AIR: &str = "Halvard Pine – Harbours of Kelmora";
+
+/// The position bar of the deck on air is a slider: a click on it moves the deck there. A
+/// deck that the preview cannot move has no slider.
+#[test]
+fn a_click_on_the_position_bar_moves_the_deck_on_air() {
+    let mut h = app(Some(4));
+    assert!(
+        !shows(&h, "Deck B position"),
+        "a deck that cannot seek shows a slider"
+    );
+    h.get_by_label("Deck A position").click();
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("deck A is at").is_some(),
+        "the click did not move deck A"
+    );
+}
+
+/// Left and Right on the focused position bar move the deck, and the bar keeps the focus.
+#[test]
+fn the_arrow_keys_on_the_position_bar_move_the_deck_and_keep_the_focus() {
+    let mut h = app(Some(4));
+    h.get_by_label("Deck A position").focus();
+    h.run_steps(FRAMES);
+    for key in [egui::Key::ArrowLeft, egui::Key::ArrowRight] {
+        h.key_press(key);
+        h.run_steps(FRAMES);
+        assert!(
+            h.get_by_label("Deck A position").is_focused(),
+            "{key:?} moved the focus off the bar"
+        );
+    }
+    assert!(
+        h.query_by_label_contains("deck A is at").is_some(),
+        "the keys did not move deck A"
+    );
+}
+
+/// Cue to start in the deck menu puts the deck on air at the start of its item.
+#[test]
+fn cue_to_start_moves_the_deck_to_the_start() {
+    let mut h = app(Some(4));
+    h.query_all_by_label(ON_AIR)
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the deck card names the item on air")
+        .click_secondary();
+    h.run_steps(FRAMES);
+    h.get_by_label("Cue to start").click();
+    h.run_steps(FRAMES);
+    assert!(
+        h.query_by_label_contains("deck A is at 0:00").is_some(),
+        "Cue to start did not move deck A to its start"
+    );
+}

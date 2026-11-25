@@ -37,6 +37,12 @@ pub(crate) enum Done {
         /// The loudness from the ReplayGain or R128 tags of the file, if it has them.
         tagged: Option<radio_model::Loudness>,
     },
+    /// A decoder at the position of seek `id`, for the load with this tag.
+    Reopened {
+        tag: u64,
+        id: u64,
+        result: Result<Decoder, String>,
+    },
     /// The as-played row of the load with this tag.
     Row {
         tag: u64,

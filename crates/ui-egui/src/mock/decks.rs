@@ -53,6 +53,19 @@ impl MockSource {
                 Ok(1)
             }
             DeckCommand::Play(_) => Ok(1),
+            DeckCommand::Seek(to) => {
+                let rows = self.current();
+                let on_air = rows
+                    .iter()
+                    .find(|r| r.start.timestamp() <= now && now < end_of(r))
+                    .ok_or_else(|| format!("preview — deck {name} has nothing to move"))?;
+                self.sought = Some((on_air.id, to.min(on_air.len), now));
+                // A paused deck stays paused at the new position.
+                if self.paused_at.is_some() {
+                    self.paused_at = Some(now);
+                }
+                Ok(1)
+            }
         }
     }
 }
@@ -69,6 +82,8 @@ pub(super) fn deck(
             title: r.title.clone(),
             elapsed,
             len: r.len,
+            // The preview moves only the deck on air.
+            seekable: matches!(state, DeckState::Playing | DeckState::Paused),
             state,
             start: Some(r.start.clone()),
             playlist: r.playlist.clone(),
@@ -84,6 +99,7 @@ pub(super) fn deck(
             title: String::new(),
             elapsed: Duration::ZERO,
             len: Duration::ZERO,
+            seekable: false,
             state: DeckState::Empty,
             start: None,
             playlist: String::new(),

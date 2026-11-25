@@ -474,6 +474,13 @@ pub enum AudioIntent {
         deck: u8,
         expect_item: Option<ItemId>,
     },
+    /// Move the file on the deck to `to`, counted from its cue-in. `expect_item` is as
+    /// for `Pause`.
+    Seek {
+        deck: u8,
+        expect_item: Option<ItemId>,
+        to: std::time::Duration,
+    },
     SetMode(Mode),
     StopAfterCurrent,
     /// Start the next item now (the operator pressed Next).
@@ -1272,6 +1279,19 @@ impl Engine {
                 self.loaded_with(deck, expect_item)?;
                 let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
                 Ok(self.audio(AudioIntent::Skip { deck, expect_item }))
+            }
+            C::DeckSeek {
+                deck,
+                position: to,
+                expect_item,
+            } => {
+                self.loaded_with(deck, expect_item)?;
+                let expect_item = expect_item.or(self.state.decks[usize::from(deck)]);
+                Ok(self.audio(AudioIntent::Seek {
+                    deck,
+                    expect_item,
+                    to,
+                }))
             }
             C::ModeSet { mode } => {
                 self.state.mode = mode;

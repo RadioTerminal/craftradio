@@ -54,6 +54,16 @@ pub struct DeckView {
     pub start: Option<Timestamp>,
     /// The planned end.
     pub end: Option<Timestamp>,
+    /// Where the item is at [`PlayoutView::now`], counted from its cue-in. On a deck that
+    /// waits, this is where it will start.
+    pub position: std::time::Duration,
+    /// The position moves with the clock: the item plays, and no seek waits.
+    pub running: bool,
+    /// The planned length from the cue-in to the planned end.
+    pub len: std::time::Duration,
+    /// `deck.seek` works on this deck now: it holds a file that is loaded, and its end
+    /// fade did not begin.
+    pub seekable: bool,
     /// The item gain that playout sent to the mixer for a file item: the loudness gain
     /// with the trim and the clamps. `None` for an empty deck, a stream or live input.
     pub gain: Option<radio_model::ItemGain>,

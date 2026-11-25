@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use radio_audio::{
-    AudioError, AudioEvent, Clip, Command, CommandKind, DeckId, DeckState, LoadOptions, Mixer,
-    MixerConfig, Strip, render_offline,
+    AudioError, AudioEvent, Clip, Command, CommandKind, DeckId, DeckState, Decoder, LoadOptions,
+    Mixer, MixerConfig, Strip, render_offline,
 };
 
 use crate::fixtures::{frames, peak_db, rms_db, tone_samples, tone_wav, wait_ready};
@@ -540,4 +540,138 @@ fn a_decode_failure_in_the_middle_of_a_file_is_reported() {
         .position(|e| *e == AudioEvent::DeckEnded(DeckId::A));
     assert!(failed.is_some(), "no failure in {events:?}");
     assert!(failed < ended, "the failure came after the end");
+}
+
+/// A seek on a deck on air changes to the new position without a gap: Program stays
+/// audible through the change, no underrun is reported, and the item ends early by the
+/// time that the seek jumped over.
+#[test]
+fn a_seek_on_air_jumps_without_a_gap_and_the_item_ends_sooner() {
+    let path = tone_wav("seek-on-air", 48_000, 3.0, 1_000.0, -6.0);
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    let options = LoadOptions {
+        item_tag: Some(7),
+        ..LoadOptions::default()
+    };
+    handle.load(DeckId::A, &path, options).expect("load");
+    wait_ready(&handle, DeckId::A);
+    handle.send(play(0, DeckId::A)).expect("send");
+    let _ = render_offline(&mut mixer, SR / 10);
+
+    let decoder = Decoder::open_at(&path, Duration::from_millis(2_500)).expect("open");
+    handle
+        .seek_decoder(DeckId::A, decoder, Some(7), 42)
+        .expect("seek");
+    let mut events = Vec::new();
+    let mut rendered = SR / 10;
+    let mut ended_at = None;
+    while ended_at.is_none() && rendered < 3 * SR {
+        let out = render_offline(&mut mixer, SR / 100);
+        rendered += SR / 100;
+        events.extend(handle.events());
+        if events.iter().any(|e| matches!(e, AudioEvent::DeckEnded(_))) {
+            ended_at = Some(rendered);
+        } else {
+            assert!(peak_db(&out) > -7.0, "a gap at frame {rendered}");
+        }
+    }
+    let seeked = events.iter().find_map(|e| match e {
+        AudioEvent::Seeked {
+            deck: DeckId::A,
+            item_tag: Some(7),
+            id: 42,
+            at_sample,
+        } => Some(*at_sample),
+        _ => None,
+    });
+    assert!(seeked.is_some(), "no Seeked event: {events:?}");
+    assert!(
+        !events.iter().any(|e| matches!(e, AudioEvent::Underrun(_))),
+        "the seek made an underrun: {events:?}"
+    );
+    let ended_at = ended_at.expect("the item never ended");
+    assert!(
+        ended_at < 2 * SR,
+        "the item played to its old end ({ended_at} frames)"
+    );
+}
+
+/// A seek keeps what the deck does: a paused deck stays paused and silent, and plays
+/// from the new position when it continues.
+#[test]
+fn a_seek_on_a_paused_deck_keeps_it_paused() {
+    let path = tone_wav("seek-paused", 48_000, 3.0, 1_000.0, -6.0);
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    handle
+        .load(DeckId::B, &path, LoadOptions::default())
+        .expect("load");
+    wait_ready(&handle, DeckId::B);
+    handle.send(play(0, DeckId::B)).expect("send");
+    let _ = render_offline(&mut mixer, SR / 10);
+    let now = handle.now();
+    handle
+        .send(Command::new(now, CommandKind::Pause(DeckId::B)))
+        .expect("pause");
+    let _ = render_offline(&mut mixer, SR / 10);
+    assert_eq!(handle.deck_state(DeckId::B), DeckState::Paused);
+
+    let decoder = Decoder::open_at(&path, Duration::from_millis(2_500)).expect("open");
+    handle
+        .seek_decoder(DeckId::B, decoder, None, 1)
+        .expect("seek");
+    let out = render_offline(&mut mixer, SR / 10);
+    assert!(out.iter().all(|s| *s == 0.0), "a paused deck made sound");
+    assert_eq!(handle.deck_state(DeckId::B), DeckState::Paused);
+    assert!(
+        handle
+            .events()
+            .any(|e| matches!(e, AudioEvent::Seeked { id: 1, .. })),
+        "no Seeked event"
+    );
+
+    let now = handle.now();
+    handle.send(play(now, DeckId::B)).expect("continue");
+    let out = render_offline(&mut mixer, SR);
+    assert!(
+        peak_db(frames(&out, 0, SR / 4)) > -7.0,
+        "no audio after the seek"
+    );
+    assert!(
+        handle
+            .events()
+            .any(|e| matches!(e, AudioEvent::DeckEnded(_))),
+        "the deck did not end 0.5 s after the new position"
+    );
+}
+
+/// A seek that was made for another item does nothing to the item on the deck.
+#[test]
+fn a_seek_for_another_item_is_dropped() {
+    let path = tone_wav("seek-stale", 48_000, 1.0, 1_000.0, -6.0);
+    let (mut mixer, mut handle, _live) = Mixer::new(MixerConfig::default());
+    let options = LoadOptions {
+        item_tag: Some(2),
+        ..LoadOptions::default()
+    };
+    handle.load(DeckId::C, &path, options).expect("load");
+    wait_ready(&handle, DeckId::C);
+    handle.send(play(0, DeckId::C)).expect("send");
+    let _ = render_offline(&mut mixer, SR / 10);
+
+    let decoder = Decoder::open_at(&path, Duration::ZERO).expect("open");
+    handle
+        .seek_decoder(DeckId::C, decoder, Some(1), 9)
+        .expect("seek");
+    let _ = render_offline(&mut mixer, SR);
+    let events: Vec<_> = handle.events().collect();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AudioEvent::Seeked { .. })),
+        "a stale seek was taken: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, AudioEvent::DeckEnded(_))),
+        "the item did not play to its own end: {events:?}"
+    );
 }

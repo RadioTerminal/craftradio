@@ -7,5 +7,6 @@ mod loudness;
 mod modes;
 mod one_off;
 mod plan;
+mod seek;
 mod streams;
 mod webrtc;

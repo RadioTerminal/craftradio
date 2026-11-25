@@ -83,6 +83,14 @@ impl ViewSource for MockSource {
             Some(p) => on_air.map_or(elapsed, |i| remaining(rows[i].start.timestamp(), p)),
             None => elapsed,
         };
+        // A move of deck A counts on from its position. The timeline keeps its times.
+        let elapsed = match (self.sought, on_air) {
+            (Some((id, pos, at)), Some(i)) if rows[i].id == id => {
+                let until = self.paused_at.unwrap_or(now);
+                pos.saturating_add(remaining(at, until)).min(rows[i].len)
+            }
+            _ => elapsed,
+        };
         // A deck past the number in use stays empty, as on the station.
         let count = self.deck_count();
         let at = |k: usize| at(k).filter(|_| k < count);

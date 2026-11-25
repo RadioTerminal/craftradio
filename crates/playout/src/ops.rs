@@ -30,6 +30,9 @@ pub(crate) enum Check {
     Fading { deck: usize, tag: u64 },
     /// The item with this tag left the deck.
     Gone { deck: usize, tag: u64 },
+    /// The mixer took seek `id` of the item with this tag, or the seek is no longer the
+    /// one the item waits for.
+    Seeked { deck: usize, tag: u64, id: u64 },
 }
 
 pub(crate) struct Pending {
@@ -106,6 +109,13 @@ impl Core {
             Check::Passed(at) => self.mixer.now() > at,
             Check::Fading { deck, tag } => slot(deck, tag).is_none_or(|s| s.fading),
             Check::Gone { deck, tag } => slot(deck, tag).is_none(),
+            Check::Seeked { deck, tag, id } => {
+                // The item left the deck, or its file did not open: the seek did not happen.
+                let Some(s) = slot(deck, tag).filter(|s| s.seek_failed != Some(id)) else {
+                    return Some(false);
+                };
+                s.seek.is_none_or(|(want, _)| want != id)
+            }
         };
         yes.then_some(true)
     }
@@ -132,6 +142,11 @@ impl Core {
             | AudioIntent::Skip {
                 deck: d,
                 expect_item,
+            }
+            | AudioIntent::Seek {
+                deck: d,
+                expect_item,
+                ..
             } if !self.holds(deck(d), expect_item) => Check::Now(false),
             AudioIntent::Play {
                 deck: d, fade_in, ..
@@ -142,6 +157,7 @@ impl Core {
             AudioIntent::Pause { deck: d, .. } => self.op_pause(deck(d)),
             AudioIntent::Fade { deck: d, over, .. } => self.op_fade(deck(d), over),
             AudioIntent::Skip { deck: d, .. } => self.op_skip(deck(d), now),
+            AudioIntent::Seek { deck: d, to, .. } => self.op_seek(deck(d), to),
             AudioIntent::SetMode(_) => {
                 self.leave_emergency(now);
                 self.dirty = true;
@@ -416,6 +432,33 @@ impl Core {
             },
             Err(_) => Check::Now(false),
         }
+    }
+
+    /// Moves the file on deck `i` to `to`, counted from its cue-in. A worker opens the file
+    /// there, then the mixer changes to it without a gap.
+    fn op_seek(&mut self, i: usize, to: Duration) -> Check {
+        let Some(s) = &mut self.slots[i] else {
+            return Check::Now(false);
+        };
+        let Source::File { path } = &s.item.source else {
+            return Check::Now(false);
+        };
+        if !s.seekable() {
+            return Check::Now(false);
+        }
+        let to = to.min(s.planned_len());
+        let cue_in = s.item.timing.as_ref().map_or(Duration::ZERO, |t| t.cue_in);
+        let (id, tag, path) = (self.next_seek, s.tag, path.clone());
+        self.next_seek += 1;
+        s.seek = Some((id, to));
+        s.reopening = true;
+        let (open, at) = (self.cfg.open_file, cue_in.saturating_add(to));
+        self.work.run(move || Done::Reopened {
+            tag,
+            id,
+            result: open(std::path::Path::new(&path), at).map_err(|e| e.to_string()),
+        });
+        Check::Seeked { deck: i, tag, id }
     }
 
     /// The fade of an item that ends early: its own fade-out, or [`CUT_FADE`].

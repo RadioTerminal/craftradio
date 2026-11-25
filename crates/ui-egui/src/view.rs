@@ -22,6 +22,9 @@ pub struct DeckView {
     pub title: String,
     pub elapsed: Duration,
     pub len: Duration,
+    /// The position of the item can move now ([`DeckCommand::Seek`]): the deck holds a
+    /// file, not a stream or a live input, and its fade-out did not begin.
+    pub seekable: bool,
     pub state: DeckState,
     /// The start time of the item, as the timeline plans it. `None` for an empty deck.
     pub start: Option<jiff::Zoned>,
@@ -317,6 +320,9 @@ pub enum DeckCommand {
     Play(f32),
     /// Fade out over this many seconds, then start the next item.
     Fade(f32),
+    /// Move the item to this position, counted from its start. The deck keeps what it
+    /// does: it plays on, stays paused, or waits.
+    Seek(Duration),
 }
 
 /// What put a row in the timeline.

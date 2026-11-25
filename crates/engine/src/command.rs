@@ -272,6 +272,16 @@ pub enum Command {
         #[serde(default)]
         expect_item: Option<ItemId>,
     },
+    /// Moves the file on a deck to `position`, counted from its cue-in: on a deck
+    /// that waits, is paused or is on air. The planned end moves with it. With
+    /// `expect_item`, the command fails with `StaleTarget` if the deck holds another item.
+    #[serde(rename = "deck.seek")]
+    DeckSeek {
+        deck: u8,
+        position: std::time::Duration,
+        #[serde(default)]
+        expect_item: Option<ItemId>,
+    },
     #[serde(rename = "mode.set")]
     ModeSet { mode: Mode },
     #[serde(rename = "station.stop_after_current")]
@@ -486,6 +496,7 @@ impl Command {
             Self::DeckPause { .. } => "deck.pause",
             Self::DeckFade { .. } => "deck.fade",
             Self::DeckSkip { .. } => "deck.skip",
+            Self::DeckSeek { .. } => "deck.seek",
             Self::ModeSet { .. } => "mode.set",
             Self::StationStopAfterCurrent => "station.stop_after_current",
             Self::PlayoutNext => "playout.next",
@@ -561,6 +572,7 @@ impl Command {
             | Self::DeckPause { .. }
             | Self::DeckFade { .. }
             | Self::DeckSkip { .. }
+            | Self::DeckSeek { .. }
             | Self::ModeSet { .. }
             | Self::StationStopAfterCurrent
             | Self::PlayoutNext
@@ -816,6 +828,19 @@ pub fn registry() -> Vec<CommandSpec> {
         with_optional(
             spec("deck.skip", "Skip what a deck is playing", A, &[d]),
             "expect_item",
+        ),
+        with_optional_prop(
+            with_optional(
+                spec(
+                    "deck.seek",
+                    "Move the file on a deck to a position, counted from its cue-in",
+                    A,
+                    &[d, ("position", "object")],
+                ),
+                "expect_item",
+            ),
+            "position",
+            json!({"type": "object", "properties": {"secs": {"type": "integer", "minimum": 0}, "nanos": {"type": "integer", "minimum": 0, "maximum": 999999999}}, "required": ["secs", "nanos"]}),
         ),
         spec(
             "mode.set",

@@ -143,6 +143,8 @@ pub mod size {
     /// The station logo in Preferences, as it shows to listeners.
     pub const LOGO_PREVIEW: f32 = 96.0;
     pub const PROGRESS_H: f32 = 6.0;
+    /// How far above and below the position bar of a deck a click still takes hold of it.
+    pub const PROGRESS_GRAB: f32 = 5.0;
     pub const BADGE: f32 = 28.0;
     /// The status cluster beside the decks, by width. Full: every label and the date. Mid: only
     /// Play next keeps its word. Narrow: one column, icons only, no date.

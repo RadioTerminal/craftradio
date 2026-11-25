@@ -201,6 +201,9 @@ pub(crate) struct Slot {
     pub(crate) phase: Phase,
     /// The real start on air.
     pub(crate) started: Option<Timestamp>,
+    /// When the item first went on air. A pause or a seek moves `started`, and never this,
+    /// so it gives the order of the items on air.
+    pub(crate) aired: Option<Timestamp>,
     /// When the operator paused the item, while it is paused.
     pub(crate) paused_at: Option<Timestamp>,
     /// Playout sent the fade at the planned end.
@@ -211,8 +214,17 @@ pub(crate) struct Slot {
     pub(crate) stream: Option<StreamSlot>,
     pub(crate) capture: Option<Box<dyn crate::Capture>>,
     live_end: Option<Timestamp>,
-    /// The load starts this far after the cue-in (a resume).
+    /// The load starts this far after the cue-in (a resume or a seek).
     pub(crate) offset: Duration,
+    /// A seek that the mixer did not take yet: its id and its position from the cue-in.
+    pub(crate) seek: Option<(u64, Duration)>,
+    /// The seek with this id did not happen: its file did not open.
+    pub(crate) seek_failed: Option<u64>,
+    /// A worker still opens the file for `seek`.
+    pub(crate) reopening: bool,
+    /// A seek set `offset` before the start, so the entry still starts when the plan says
+    /// and ends sooner by `offset`.
+    pub(crate) seeked: bool,
     /// The mixer reported that a fade-out began.
     pub(crate) fading: bool,
     /// Start as soon as the deck is ready, whatever the plan says.
@@ -254,18 +266,50 @@ impl Slot {
     /// Where the item really started at its cue-in, once it is on air. A hard event keeps
     /// its target in `entry.start`, so a late one starts after that.
     pub(crate) fn real_start(&self) -> Timestamp {
-        self.started
-            .map_or(self.entry.start, |w| sub(w, self.offset))
+        match self.started {
+            Some(w) => sub(w, self.offset),
+            // A deck that waits after a seek starts in the middle of its item.
+            None if self.seeked => sub(self.entry.start, self.offset),
+            None => self.entry.start,
+        }
+    }
+
+    /// The planned length, from the cue-in to the planned end.
+    pub(crate) fn planned_len(&self) -> Duration {
+        match self.live_end {
+            // A live input ends on the clock, whenever it started.
+            Some(end) => since(self.real_start(), end),
+            None => self.entry.len.saturating_sub(self.entry.trim),
+        }
+    }
+
+    /// A seek works on this slot now: a file that is loaded, before its end fade.
+    pub(crate) fn seekable(&self) -> bool {
+        matches!(self.item.source, Source::File { .. })
+            && !matches!(self.phase, Phase::Opening | Phase::Loading)
+            && !self.end_sent
+            && !self.fading
+    }
+
+    /// Where the item is at `now`, counted from its cue-in, and whether that moves with
+    /// the clock. A seek that waits shows its target, so the position does not jump back.
+    pub(crate) fn position(&self, now: Timestamp) -> (Duration, bool) {
+        let (at, running) = match (self.seek, self.phase) {
+            (Some((_, to)), _) => (to, false),
+            (None, Phase::Playing) => (since(self.real_start(), now), true),
+            (None, Phase::Paused) => {
+                let at = self.paused_at.unwrap_or(now);
+                (since(self.real_start(), at), false)
+            }
+            (None, _) => (self.offset, false),
+        };
+        (at.min(self.planned_len()), running)
     }
 
     /// The planned end: the real start plus the length, less the trim of the planner.
     pub(crate) fn planned_end(&self) -> Timestamp {
-        self.live_end.unwrap_or_else(|| {
-            add(
-                self.real_start(),
-                self.entry.len.saturating_sub(self.entry.trim),
-            )
-        })
+        self.live_end
+            .unwrap_or_else(|| add(self.real_start(), self.planned_len()))
     }
 }
 
@@ -409,6 +453,7 @@ pub(crate) struct Core {
     pub(crate) slots: [Option<Slot>; 4],
     next_deck: usize,
     next_tag: u64,
+    pub(crate) next_seek: u64,
     /// Items that failed to load, with the time of the failure.
     pub(crate) broken: BTreeMap<ItemId, Timestamp>,
     /// The station items at the last plan.
@@ -581,6 +626,7 @@ impl Core {
             slots: Default::default(),
             next_deck: 0,
             next_tag: 1,
+            next_seek: 1,
             broken: BTreeMap::new(),
             items: BTreeMap::new(),
             alarms,
@@ -929,6 +975,12 @@ impl Core {
                 at_sample,
                 item_tag,
             } => self.on_started(deck, at_sample, item_tag),
+            AudioEvent::Seeked {
+                deck,
+                item_tag,
+                id,
+                at_sample,
+            } => self.on_seeked(deck, item_tag, id, at_sample),
             AudioEvent::DecodeFailed { deck, item_tag } => {
                 self.on_decode_failed(deck.index(), item_tag, now);
             }
@@ -988,6 +1040,35 @@ impl Core {
         auto && !self.hold && !self.dead_air.emergency && !taken_over
     }
 
+    /// The mixer moved the item on the deck to the position of seek `id`. The rest of the
+    /// item plays from there, so its start, its planned end and the items after it move,
+    /// as after a pause.
+    fn on_seeked(&mut self, deck: DeckId, tag: Option<u64>, id: u64, at_sample: u64) {
+        let wall = self.map.wall_at(at_sample);
+        let Some(s) = &mut self.slots[deck.index()] else {
+            return;
+        };
+        let Some((_, to)) = s.seek.filter(|(want, _)| tag == Some(s.tag) && *want == id) else {
+            return;
+        };
+        s.seek = None;
+        s.offset = to;
+        if s.started.is_some() {
+            s.started = Some(wall);
+            if s.paused_at.is_some() {
+                s.paused_at = Some(wall);
+            }
+            // A hard event keeps its target as its start.
+            if !s.is_hard() {
+                s.entry.start = sub(wall, to);
+            }
+        } else {
+            s.seeked = true;
+        }
+        self.dirty = true;
+        self.save_due = true;
+    }
+
     fn on_started(&mut self, deck: DeckId, at_sample: u64, tag: Option<u64>) {
         let wall = self.map.wall_at(at_sample);
         let Some(s) = &mut self.slots[deck.index()] else {
@@ -998,6 +1079,7 @@ impl Core {
         }
         s.phase = Phase::Playing;
         s.started = Some(wall);
+        s.aired = Some(wall);
         let fallback = s.role == DeckRole::Emergency;
         if let Some(fixed) = &s.entry.fixed {
             let by = since(fixed.target, wall);
@@ -1122,7 +1204,13 @@ impl Core {
         let mut order: Vec<usize> = (0..4)
             .filter(|&i| self.slots[i].as_ref().is_some_and(Slot::pinned))
             .collect();
-        order.sort_by_key(|&i| self.slots[i].as_ref().map(|s| s.entry.start));
+        // A seek forward puts the start of an entry before the start of the item that
+        // still ends under it, so the items on air go by when they went on air.
+        order.sort_by_key(|&i| {
+            self.slots[i]
+                .as_ref()
+                .map(|s| s.aired.unwrap_or(s.entry.start))
+        });
         let mut prev: Option<(Timestamp, Item, Duration)> = None;
         for i in order {
             let Some(s) = &mut self.slots[i] else {
@@ -1141,7 +1229,7 @@ impl Core {
                     };
                 }
                 // A hard event keeps its target, even when it starts late.
-                if s.offset.is_zero() && !s.is_hard() {
+                if (s.offset.is_zero() || s.seeked) && !s.is_hard() {
                     s.entry.start = s.entry.start.max(now);
                 }
             }
@@ -1149,7 +1237,7 @@ impl Core {
             let start = match s.started {
                 Some(_) => s.real_start(),
                 None if s.is_hard() => s.entry.start.max(now),
-                None => s.entry.start,
+                None => s.real_start(),
             };
             prev = Some((start, s.item.clone(), s.entry.trim));
         }
@@ -1617,6 +1705,7 @@ impl Core {
             role,
             phase,
             started: None,
+            aired: None,
             paused_at: None,
             end_sent: false,
             cut: false,
@@ -1624,6 +1713,10 @@ impl Core {
             stream,
             capture: None,
             offset,
+            seek: None,
+            seek_failed: None,
+            reopening: false,
+            seeked: false,
             fading: false,
             asap: false,
             options,
@@ -1730,7 +1823,10 @@ impl Core {
                     .filter(|t| *t > start && *t < end)
                     .min()
             } else {
-                self.hard_between(&s.entry, start, end)
+                // After a seek forward the item starts, by its position, before it went on
+                // air. A hard event from before that is over, and does not cut it.
+                let from = s.aired.map_or(start, |aired| aired.max(start));
+                self.hard_between(&s.entry, from, end)
             };
             if !planned && hard.is_none() {
                 continue;
@@ -1796,6 +1892,10 @@ impl Core {
                 role: Some(s.role),
                 start: Some(s.started.unwrap_or(s.entry.start)),
                 end: Some(s.planned_end()),
+                position: s.position(now).0,
+                running: s.position(now).1,
+                len: s.planned_len(),
+                seekable: s.seekable(),
                 gain: s.gain,
             },
         });
@@ -1857,6 +1957,7 @@ impl Core {
             let busy = (0..4).any(|i| {
                 self.slots[i].as_ref().is_some_and(|s| {
                     s.phase == Phase::Opening
+                        || s.reopening
                         || (s.not_started()
                             && self.mixer.deck_state(DeckId::ALL[i]) == DeckState::Loading)
                 })
@@ -1938,6 +2039,7 @@ impl Core {
                     result,
                     tagged,
                 } => self.on_opened(tag, result, tagged, now),
+                Done::Reopened { tag, id, result } => self.on_reopened(tag, id, result, now),
                 Done::Row { tag, result } => match result {
                     Ok(row) => {
                         let slot = self.slots.iter_mut().flatten().find(|s| s.tag == tag);
@@ -1964,6 +2066,36 @@ impl Core {
                 Done::Measured(id, measured) => self.on_measured(id, measured),
                 Done::Cart(i, item, result) => self.on_cart(i, item, result, now),
             }
+        }
+    }
+
+    /// A worker opened the file of the load with `tag` at the position of seek `id`. The
+    /// decoder goes to the mixer, unless a newer seek or another item took its place.
+    fn on_reopened(&mut self, tag: u64, id: u64, result: Result<Decoder, String>, now: Timestamp) {
+        let Some(i) = (0..4).find(|&i| {
+            self.slots[i]
+                .as_ref()
+                .is_some_and(|s| s.tag == tag && s.seek.is_some_and(|(want, _)| want == id))
+        }) else {
+            return;
+        };
+        let deck = DeckId::ALL[i];
+        if let Some(s) = &mut self.slots[i] {
+            s.reopening = false;
+        }
+        let sent = result.and_then(|dec| {
+            self.mixer
+                .seek_decoder(deck, dec, Some(tag), id)
+                .map_err(|e| e.to_string())
+        });
+        if let Err(reason) = sent {
+            if let Some(s) = &mut self.slots[i] {
+                s.seek = None;
+                s.seek_failed = Some(id);
+            }
+            let name = ['A', 'B', 'C', 'D'][i];
+            let what = format!("Deck {name} keeps its position, the file did not open: {reason}");
+            self.alarms.raise(now, Alarm::Unsupported { what });
         }
     }
 

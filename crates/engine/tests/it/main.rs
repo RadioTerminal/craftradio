@@ -859,6 +859,7 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
     // The loudness commands: a measurement and an item trim.
     values["lufs"] = serde_json::json!(-18.0);
     values["db"] = serde_json::json!(-1.5);
+    values["position"] = serde_json::json!({"secs": 90, "nanos": 0});
     values["start"] = serde_json::json!("2026-11-22T09:00:00");
     values["one_off"] = serde_json::to_value(item(9, "One-off")).unwrap();
     values["address"] = serde_json::json!("https://radio.example.invalid");

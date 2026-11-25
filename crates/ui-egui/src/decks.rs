@@ -15,6 +15,7 @@ use crate::theme::{self, Tokens, pad, size, space};
 use crate::view::{DeckCommand, DeckState, DeckView, Edit, StationView, Status};
 use crate::widgets::{self, Armed, Look, guard_button_sized, icon_button_sized, transport_button};
 use radio_model::{Clamp, GainSource, ItemGain};
+use std::time::Duration;
 
 /// The part setting that switches the second press on the deck on air.
 const CONFIRM_KEY: &str = "confirm_on_air";
@@ -52,7 +53,25 @@ pub(crate) struct State {
     next: Vec<Option<usize>>,
     /// The view is the UI preview: nothing plays, so no gain applies.
     preview: bool,
+    /// The position bar that the pointer holds or just let go of.
+    scrub: Option<Scrub>,
 }
+
+/// A move of the position bar of a deck by the pointer.
+#[derive(Clone, Copy)]
+struct Scrub {
+    deck: usize,
+    /// The place on the bar, 0 to 1.
+    frac: f32,
+    /// The egui time when the pointer let go. The bar keeps the new place for
+    /// [`SCRUB_HOLD_S`], until the deck reports it.
+    released: Option<f64>,
+}
+
+/// The step of the Left and Right keys on the position bar, in seconds.
+const SCRUB_STEP_S: u64 = 5;
+/// How long the bar keeps the place of a seek that the deck did not report yet.
+const SCRUB_HOLD_S: f64 = 0.5;
 
 impl Default for State {
     fn default() -> Self {
@@ -66,6 +85,7 @@ impl Default for State {
             shown: [true; 4],
             next: Vec::new(),
             preview: false,
+            scrub: None,
         }
     }
 }
@@ -330,10 +350,14 @@ fn deck_menu(
         actions.push(a);
     }
     ui.separator();
-    for label in ["Stop", "Eject", "Reload", "Cue to start"] {
+    for label in ["Stop", "Eject", "Reload"] {
         if menu_item(ui, label, None) {
             actions.push(Action::Toast(context_menu::not_here(view)));
         }
+    }
+    // A stream or a live input has no start to go back to: the row shows, and is off.
+    if context_menu::menu_item_if(ui, deck.seekable, "Cue to start", None) {
+        actions.push(command(i, DeckCommand::Seek(Duration::ZERO)));
     }
 }
 
@@ -539,7 +563,7 @@ fn deck_body(
                 .inner
         })
         .inner;
-    progress(ui, deck, t);
+    progress(ui, i, deck, state, actions, t);
     let left = deck.len.saturating_sub(deck.elapsed);
     let muted = |s: &str| {
         RichText::new(s)
@@ -560,6 +584,11 @@ fn deck_body(
             DeckState::Ready => {
                 ui.label(big(mmss(deck.len)).color(t.text_muted))
                     .on_hover_text("Length of this item");
+                // A deck that was moved starts in the middle of its item.
+                if !deck.elapsed.is_zero() {
+                    let from = format!("from {}", mmss(deck.elapsed));
+                    widgets::truncated_label(ui, muted(&from));
+                }
             }
             DeckState::Empty => {
                 ui.label(big("–:––".to_owned()).color(t.text_muted));
@@ -740,13 +769,111 @@ fn badge(ui: &mut egui::Ui, i: usize, label: char, focused: bool, t: &Tokens) ->
     resp
 }
 
-fn progress(ui: &mut egui::Ui, deck: &DeckView, t: &Tokens) {
+/// The position bar of a deck. On a deck that can seek it is a slider: a click or a drag
+/// moves the position, and one seek goes out when the pointer lets go, so the audio jumps
+/// once. Left and Right move it by [`SCRUB_STEP_S`], Home goes to the start.
+fn progress(
+    ui: &mut egui::Ui,
+    i: usize,
+    deck: &DeckView,
+    state: &mut State,
+    actions: &mut Vec<Action>,
+    t: &Tokens,
+) {
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, size::PROGRESS_H), Sense::hover());
     ui.painter().rect_filled(rect, t.radius_sm, t.canvas);
     let len = deck.len.as_secs_f32();
+    let seekable = deck.seekable && len > 0.0;
+    let now = ui.input(|i| i.time);
+    if state
+        .scrub
+        .is_some_and(|s| s.released.is_some_and(|at| now - at > SCRUB_HOLD_S))
+    {
+        state.scrub = None;
+    }
+    // A deck that cannot seek any more lets go of the bar.
+    if !seekable && state.scrub.is_some_and(|s| s.deck == i) {
+        state.scrub = None;
+    }
+    if seekable {
+        let grab = rect.expand2(egui::vec2(0.0, size::PROGRESS_GRAB));
+        let id = egui::Id::unique(("deck_position", i));
+        let resp = ui
+            .interact(grab, id, Sense::click_and_drag())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let at = |x: f32| ((x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let to = |frac: f32| Duration::from_secs_f32(frac * len);
+        let pointer = resp.interact_pointer_pos().map(|p| at(p.x));
+        if resp.dragged()
+            && let Some(frac) = pointer
+        {
+            state.scrub = Some(Scrub {
+                deck: i,
+                frac,
+                released: None,
+            });
+        }
+        let held = state.scrub.filter(|s| s.deck == i && s.released.is_none());
+        let let_go = resp
+            .drag_stopped()
+            .then_some(held)
+            .flatten()
+            .map(|s| s.frac);
+        let clicked = resp.clicked().then_some(pointer).flatten();
+        if let Some(frac) = let_go.or(clicked) {
+            state.scrub = Some(Scrub {
+                deck: i,
+                frac,
+                released: Some(now),
+            });
+            actions.push(command(i, DeckCommand::Seek(to(frac))));
+        }
+        if resp.has_focus() {
+            // Left and Right move the position. They do not move the focus away.
+            let arrows = egui::EventFilter {
+                horizontal_arrows: true,
+                ..Default::default()
+            };
+            ui.memory_mut(|m| m.set_focus_lock_filter(id, arrows));
+            let step = Duration::from_secs(SCRUB_STEP_S);
+            let key = |k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+            let target = if key(egui::Key::ArrowLeft) {
+                Some(deck.elapsed.saturating_sub(step))
+            } else if key(egui::Key::ArrowRight) {
+                Some(deck.elapsed.saturating_add(step).min(deck.len))
+            } else if key(egui::Key::Home) {
+                Some(Duration::ZERO)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                state.scrub = Some(Scrub {
+                    deck: i,
+                    frac: target.as_secs_f32() / len,
+                    released: Some(now),
+                });
+                actions.push(command(i, DeckCommand::Seek(target)));
+            }
+            let ring = Stroke::new(size::HAIRLINE, t.accent);
+            ui.painter()
+                .rect_stroke(grab, t.radius_sm, ring, egui::StrokeKind::Outside);
+        }
+        let name = format!("Deck {} position", deck.label);
+        let value = f64::from(deck.elapsed.as_secs_f32());
+        resp.widget_info(|| egui::WidgetInfo::slider(true, value, &name));
+        if let Some(frac) = resp.hover_pos().map(|p| at(p.x)) {
+            resp.on_hover_text_at_pointer(crate::app::position(to(frac)));
+        }
+    }
     if len > 0.0 {
-        let frac = (deck.elapsed.as_secs_f32() / len).clamp(0.0, 1.0);
+        // The bar shows the place of the pointer while it holds the bar, and for a moment
+        // after, so it does not jump back before the deck reports the new position.
+        let shown = state.scrub.filter(|s| s.deck == i && seekable);
+        let frac = shown.map_or_else(
+            || (deck.elapsed.as_secs_f32() / len).clamp(0.0, 1.0),
+            |s| s.frac,
+        );
         let mut done = rect;
         done.set_width(rect.width() * frac);
         let colour = match deck.state {
