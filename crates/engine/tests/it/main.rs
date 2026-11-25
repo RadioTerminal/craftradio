@@ -7,6 +7,7 @@ mod dynamics;
 mod loudness;
 mod one_off;
 mod pairing;
+mod play_over;
 
 const MAIN: PlaylistId = PlaylistId(1);
 
@@ -858,6 +859,8 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
     });
     // The loudness commands: a measurement and an item trim.
     values["lufs"] = serde_json::json!(-18.0);
+    values["markers"] = serde_json::json!("ByHand");
+    values["plays"] = serde_json::json!({"Over": {"duck_db": -12}});
     values["db"] = serde_json::json!(-1.5);
     values["position"] = serde_json::json!({"secs": 90, "nanos": 0});
     values["start"] = serde_json::json!("2026-11-22T09:00:00");

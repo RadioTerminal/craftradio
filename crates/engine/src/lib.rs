@@ -552,6 +552,7 @@ fn undoable(cmd: &Command) -> bool {
         | C::PlaylistEnable { .. }
         | C::PlaylistSetFillPool { .. }
         | C::PlaylistSetOnInterrupt { .. }
+        | C::PlaylistSetPlays { .. }
         | C::PlaylistAddItems { .. }
         | C::PlaylistRemoveItems { .. }
         | C::PlaylistClear { .. }
@@ -566,6 +567,7 @@ fn undoable(cmd: &Command) -> bool {
         | C::ItemUnlock { .. }
         | C::ItemSetMeta { .. }
         | C::ItemSetKeepAlive { .. }
+        | C::ItemSetMarkers { .. }
         | C::ItemSetGainTrim { .. }
         | C::CartAssign { .. }
         | C::CartClear { .. }
@@ -1213,6 +1215,71 @@ impl Engine {
                 } else {
                     self.state.trims.insert(item, db);
                 }
+                Ok(Outcome::default())
+            }
+            C::PlaylistSetPlays { playlist, plays } => {
+                if let radio_model::PlayMode::Over { duck_db } = plays
+                    && !(radio_model::MAX_DUCK_DB..=0).contains(&duck_db)
+                {
+                    return Err(EngineError::BadArgument(format!(
+                        "the duck depth must be between {} and 0 dB",
+                        radio_model::MAX_DUCK_DB
+                    )));
+                }
+                self.edit_station(|s| {
+                    playlist_mut(s, playlist)?.plays = plays;
+                    Ok(())
+                })?;
+                Ok(Outcome::default())
+            }
+            C::ItemSetMarkers {
+                item,
+                intro_end,
+                outro_start,
+                markers,
+            } => {
+                if markers == radio_model::MarkerSource::NotAnalysed {
+                    return Err(EngineError::BadArgument(
+                        "markers come from Detected or ByHand".into(),
+                    ));
+                }
+                self.edit_station(|s| {
+                    let i = item_mut(s, item).ok_or(EngineError::UnknownItem(item))?;
+                    let Some(t) = i.timing.as_mut() else {
+                        return Err(EngineError::BadArgument(
+                            "the item has no cue points to mark".into(),
+                        ));
+                    };
+                    if markers == radio_model::MarkerSource::Detected
+                        && t.markers == radio_model::MarkerSource::ByHand
+                    {
+                        return Ok(());
+                    }
+                    let inside = |m: Option<std::time::Duration>| {
+                        m.is_none_or(|m| m > t.cue_in && m <= t.cue_out)
+                    };
+                    if !inside(intro_end) || !inside(outro_start) {
+                        return Err(EngineError::BadArgument(
+                            "a marker must lie inside the song's cue points".into(),
+                        ));
+                    }
+                    if outro_start.is_some_and(|o| o > t.segue) {
+                        return Err(EngineError::BadArgument(
+                            "the outro must start before the segue".into(),
+                        ));
+                    }
+                    if let (Some(a), Some(b)) = (intro_end, outro_start)
+                        && a >= b
+                    {
+                        return Err(EngineError::BadArgument(
+                            "the intro must end before the outro starts".into(),
+                        ));
+                    }
+                    t.intro_end = intro_end;
+                    t.outro_start = outro_start;
+                    t.markers = markers;
+                    Ok(())
+                })?;
                 Ok(Outcome::default())
             }
             C::ItemSetKeepAlive { item, keep_alive } => {
