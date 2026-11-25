@@ -395,6 +395,8 @@ pub struct PlaylistTab {
     pub weights: Vec<u32>,
     /// A stable id for each item. It has one entry per item.
     pub ids: Vec<u64>,
+    /// How the playlist's items play: in sequence, or over the music with a duck.
+    pub plays: radio_model::PlayMode,
 }
 
 /// A folder that backs a playlist.

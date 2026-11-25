@@ -116,6 +116,7 @@ mod tests {
         daily.place = Placement::FixedHard;
         let visual = vec![minutes, RuleView::new(), daily];
         let tab = PlaylistTab {
+            plays: radio_model::PlayMode::InSequence,
             name: "Ads".to_owned(),
             color: [0, 0, 0],
             pick: String::new(),

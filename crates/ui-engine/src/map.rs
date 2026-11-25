@@ -189,6 +189,7 @@ pub(crate) fn tab(p: &Playlist, state: &State) -> PlaylistTab {
         _ => 1,
     };
     let mut tab = PlaylistTab {
+        plays: p.plays,
         name: p.name.clone(),
         color: p.color,
         pick: String::new(),
@@ -275,6 +276,7 @@ fn describe_rule(r: &Rule) -> String {
 /// An empty tab, for a station without a main playlist.
 pub(crate) fn empty_tab(name: &str) -> PlaylistTab {
     let mut tab = PlaylistTab {
+        plays: radio_model::PlayMode::InSequence,
         name: name.to_owned(),
         color: [0x80; 3],
         pick: String::new(),

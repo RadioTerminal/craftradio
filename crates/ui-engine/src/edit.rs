@@ -1399,6 +1399,12 @@ impl EngineSource {
             .iter()
             .chain(self.main.as_ref())
             .find(|t| t.name == tab.name);
+        if now.is_some_and(|t| t.plays != tab.plays) {
+            cmds.push(Command::PlaylistSetPlays {
+                playlist,
+                plays: tab.plays,
+            });
+        }
         if let Some(src) = &tab.source
             && now.and_then(|t| t.source.as_ref()) != Some(src)
         {

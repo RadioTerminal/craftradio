@@ -60,6 +60,42 @@ fn the_cog_opens_the_rules_editor_with_a_script_tab() {
     );
 }
 
+/// The rules editor sets how a playlist's items play. The duck depth shows only for items
+/// that play over the music.
+#[test]
+fn the_rules_editor_sets_a_playlist_to_play_over_the_music() {
+    let mut harness = harness();
+    click(&mut harness, "Music rules");
+    assert!(
+        !shows(&harness, "Duck by"),
+        "a duck depth for items in sequence"
+    );
+    let plays = harness
+        .query_all_by_role(egui::accesskit::Role::ComboBox)
+        .find(|n| {
+            let node = n.accesskit_node();
+            [node.value(), node.label()]
+                .into_iter()
+                .flatten()
+                .any(|t| t == "In sequence")
+        })
+        .expect("the Plays picker names its setting");
+    assert!(
+        plays
+            .accesskit_node()
+            .label()
+            .is_some_and(|l| l.starts_with("Plays")),
+        "the picker's name starts with its label"
+    );
+    plays.click();
+    harness.run_steps(FRAMES);
+    click(&mut harness, "Over the music");
+    assert!(
+        shows(&harness, "Duck by"),
+        "no duck depth for items over the music"
+    );
+}
+
 #[test]
 fn each_tool_window_opens_from_the_deck_strip() {
     let mut harness = harness();
