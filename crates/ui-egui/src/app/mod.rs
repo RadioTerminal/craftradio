@@ -785,10 +785,15 @@ impl RadioApp {
 }
 
 impl eframe::App for RadioApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        // The native menu's key equivalents reach egui as the keys they are.
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // The native menu's key equivalents reach egui as the keys they are, in the window that
+        // has the focus.
         if let Some(menu) = &mut self.native_menu {
+            let before = raw_input.events.clone();
             menu.raw_input(raw_input);
+            if let Some(window) = crate::key_route::route(ctx, &before, raw_input) {
+                ctx.request_repaint_of(window);
+            }
         }
     }
 

@@ -6,6 +6,7 @@ mod editing;
 mod folders;
 mod guards;
 mod icecast_form;
+mod key_route;
 mod keyboard;
 mod listen_link;
 mod loudness;

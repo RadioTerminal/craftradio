@@ -31,6 +31,8 @@ mod decks;
 mod fonts;
 mod history;
 mod icons;
+#[doc(hidden)]
+pub mod key_route;
 mod library;
 mod main_pane;
 mod menus;
