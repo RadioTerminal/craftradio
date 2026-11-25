@@ -70,6 +70,8 @@ fn the_station_key_gets_its_pairing_document() {
     assert_eq!(dawn.icecast.user, "source");
     assert!(dawn.stream_url.starts_with(&dawn.public_url));
     assert!(dawn.stream_url.ends_with("/dawn/stream"));
+    // The listener page this server serves for the station.
+    assert_eq!(dawn.player_url, format!("{}/dawn/", dawn.public_url));
     let mounts: Vec<&str> = dawn.outputs.iter().map(|o| o.mount.as_str()).collect();
     assert_eq!(mounts, ["opus", "mp3"], "outputs come in config order");
     let mp3 = &dawn.outputs[1];

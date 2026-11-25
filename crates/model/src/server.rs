@@ -16,6 +16,9 @@ pub const SERVER_OUTPUTS_KEY: &str = "outputs";
 /// The key in [`SERVER_PART`] that says whether the app may change the outputs on the
 /// server (the document's `outputs_editable`).
 pub const SERVER_OUTPUTS_EDITABLE_KEY: &str = "outputs_editable";
+/// The key in [`SERVER_PART`] of the listener page the server serves for the station (the
+/// document's `player_url`). Empty or missing when the server serves none.
+pub const SERVER_PLAYER_URL_KEY: &str = "player_url";
 /// The version of the pairing document's shape that this app reads.
 pub const PAIRING_VERSION: u32 = 1;
 
@@ -116,6 +119,10 @@ pub struct PairingDocument {
     /// field sends none, which reads as false.
     #[serde(default)]
     pub outputs_editable: bool,
+    /// The listener page the server serves for the station: `<public_url>/<slug>/`. A
+    /// server older than the field sends none, which reads as empty: no page.
+    #[serde(default)]
+    pub player_url: String,
 }
 
 /// The Icecast push the app makes to the server. Its password is the station key, which the

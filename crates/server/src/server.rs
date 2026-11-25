@@ -66,6 +66,17 @@ const MAX_OUTPUTS_BODY: usize = 16 << 10;
 const NO_STATE_DIR: &[u8] = b"this server keeps no state_dir: outputs are set in its config";
 
 const CORS: (&str, &str) = ("Access-Control-Allow-Origin", "*");
+/// The listener page, the same one GitHub Pages publishes, served at `/<slug>/` for each
+/// station.
+const PLAYER_PAGE: &str = include_str!("../../../site/index.html");
+/// The headers of the listener page: a static page, always checked again, never sniffed as
+/// anything else and sending no address of its own to the trackers and streams it reaches.
+const PLAYER_HEADERS: [(&str, &str); 4] = [
+    ("Content-Type", "text/html; charset=utf-8"),
+    ("Cache-Control", "no-cache"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+];
 const LOCKED_FOR_SECS: &str = "300";
 const CHALLENGE: (&str, &str) = ("WWW-Authenticate", "Basic realm=\"craftradio\"");
 /// The body of a 503 for a request the full pool has no place for.
@@ -812,6 +823,12 @@ fn route(shared: &Shared, stream: &mut Conn, peer: IpAddr, request: &Request) {
     if method == "GET" && request.path == "/status-json.xsl" {
         return stats(shared, stream);
     }
+    if method == "GET"
+        && player_slug(&request.path).is_some_and(|slug| shared.config.station(slug).is_some())
+    {
+        let _ = respond(stream, 200, "OK", &PLAYER_HEADERS, PLAYER_PAGE.as_bytes());
+        return;
+    }
     if let Some((station, mounts)) = station_at(shared, &request.path) {
         return if method == "GET" {
             let titles = Titles::asked(request, station, &mounts.pushed);
@@ -874,6 +891,13 @@ fn output_at<'a, 'p>(
             mount,
         },
     ))
+}
+
+/// The slug of the listener page's path, `/<slug>/` or `/<slug>`.
+fn player_slug(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix('/')?;
+    let slug = rest.strip_suffix('/').unwrap_or(rest);
+    (!slug.is_empty() && !slug.contains('/')).then_some(slug)
 }
 
 /// The slug and mount of `/<slug>/<mount>`, both one non-empty path segment.

@@ -47,16 +47,44 @@ pub fn output_choice(out_setting: Option<&str>, null_flag: bool) -> radio_playou
     }
 }
 
+/// The public Icecast address, when it is one a listener can open. It lives with Icecast;
+/// the web player falls back to it.
+fn public_stream(state: &State) -> Option<String> {
+    let public = icecast_view(state).public_url;
+    radio_ui_egui::view::check_stream_url(&public)
+        .is_ok()
+        .then(|| public.trim().to_owned())
+}
+
+/// The listen link for the station that the WebRTC output's `link` names (by its ID, after
+/// `#`), from the settings as they are now: on the listener page of the paired server when it
+/// serves one, with the server's stream for when WebRTC does not connect, else on the
+/// listener site with the public Icecast address. Each snapshot asks it again, so pairing
+/// and unpairing change the link at once, not only at the next start.
+pub fn listen_link(state: &State, link: &str) -> String {
+    let Some((_, id)) = link.rsplit_once('#') else {
+        return link.to_owned();
+    };
+    let server = |key: &str| {
+        state
+            .settings(radio_model::SERVER_PART)
+            .and_then(|s| s.get(key))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|url| radio_ui_egui::view::check_stream_url(url).is_ok())
+    };
+    match server(radio_model::SERVER_PLAYER_URL_KEY) {
+        Some(page) => radio_stream::link_on(page, id, server("stream_url")),
+        None => radio_stream::link_for(id, public_stream(state).as_deref()),
+    }
+}
+
 /// The WebRTC stream settings that Preferences keeps, put onto `cfg`: the port (on the address
 /// it has), the bitrate, the most listeners, whether listeners pass the audio on and the slots
 /// kept for listeners who find no one to play through. Values
 /// out of range are left as they were.
 pub fn webrtc_settings(state: &State, cfg: &mut radio_stream::WebRtcConfig) {
-    // The public Icecast address lives with Icecast; the web player falls back to it.
-    let public = icecast_view(state).public_url;
-    cfg.public_stream = radio_ui_egui::view::check_stream_url(&public)
-        .is_ok()
-        .then(|| public.trim().to_owned());
+    cfg.public_stream = public_stream(state);
     let Some(s) = state.settings(radio_playout::WEBRTC_PART) else {
         return;
     };
@@ -892,7 +920,11 @@ impl EngineSource {
             ) => Status::Failed(last_error.clone()),
         };
         let listen_link = match &pv.outputs.webrtc {
-            Some(WebRtcStatus::Listening { link, relays, .. }) if *relays > 0 => link.clone(),
+            Some(WebRtcStatus::Listening {
+                link: Some(link),
+                relays,
+                ..
+            }) if *relays > 0 => Some(listen_link(&pv.state, link)),
             _ => None,
         };
         let streaming = pv.outputs.webrtc_available.then(|| {

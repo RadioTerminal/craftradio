@@ -9,6 +9,7 @@ mod lockout;
 mod mount;
 mod outputs_api;
 mod pairing;
+mod player;
 mod server;
 mod support;
 mod transcode;

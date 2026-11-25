@@ -108,12 +108,18 @@ pub fn listen_link(identity: &[u8]) -> Option<String> {
     Some(link_for(&crate::relay::Identity::new(identity)?.id(), None))
 }
 
-/// The link for station `id`. With a public stream, the link carries it, so the page can
-/// play it when WebRTC does not connect.
+/// The link for station `id` on the listener site. With a public stream, the link carries
+/// it, so the page can play it when WebRTC does not connect.
 pub fn link_for(id: &str, public_stream: Option<&str>) -> String {
+    link_on(LISTEN_SITE, id, public_stream)
+}
+
+/// The link for station `id` on the listener page at `page`, such as the one a paired
+/// server serves. With a public stream, the link carries it, as [`link_for`]'s does.
+pub fn link_on(page: &str, id: &str, public_stream: Option<&str>) -> String {
     match public_stream {
-        Some(url) => format!("{LISTEN_SITE}?stream={}#{id}", query_escape(url)),
-        None => format!("{LISTEN_SITE}#{id}"),
+        Some(url) => format!("{page}?stream={}#{id}", query_escape(url)),
+        None => format!("{page}#{id}"),
     }
 }
 
