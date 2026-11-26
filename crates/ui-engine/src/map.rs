@@ -198,6 +198,7 @@ pub(crate) fn tab(p: &Playlist, state: &State) -> PlaylistTab {
     };
     let mut tab = PlaylistTab {
         plays: p.plays,
+        repeat_minutes: u32::try_from(p.repeat_gap.as_secs() / 60).unwrap_or(u32::MAX),
         name: p.name.clone(),
         color: p.color,
         pick: String::new(),
@@ -285,6 +286,8 @@ fn describe_rule(r: &Rule) -> String {
 pub(crate) fn empty_tab(name: &str) -> PlaylistTab {
     let mut tab = PlaylistTab {
         plays: radio_model::PlayMode::InSequence,
+        repeat_minutes: u32::try_from(radio_model::DEFAULT_REPEAT_GAP.as_secs() / 60)
+            .unwrap_or(u32::MAX),
         name: name.to_owned(),
         color: [0x80; 3],
         pick: String::new(),

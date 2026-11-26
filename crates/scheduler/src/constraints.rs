@@ -2,7 +2,7 @@ use crate::history::HistoryRead;
 use crate::{Entry, PlayHistory};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use radio_model::{Constraint, Item, PlaylistId};
+use radio_model::{Constraint, Item, Playlist, PlaylistId};
 use radio_timing::resolve_local;
 use std::time::Duration;
 
@@ -103,4 +103,18 @@ pub(crate) fn item_ok(item: &Item, at: Timestamp, hist: &impl HistoryRead, tz: &
     item.max_per_day.is_none_or(|cap| {
         plays_on_local_day(tz, at, |start| hist.item_since(item.id, start)) < cap as usize
     })
+}
+
+/// Whether `pl`'s repeat gap lets `item` play at `at`: the item last played at least
+/// [`Playlist::repeat_gap`] before `at`. A play exactly the gap ago is allowed.
+pub(crate) fn repeat_ok(
+    pl: &Playlist,
+    item: &Item,
+    at: Timestamp,
+    hist: &impl HistoryRead,
+) -> bool {
+    pl.repeat_gap.is_zero()
+        || hist
+            .last_played(item.id)
+            .is_none_or(|last| at.duration_since(last).unsigned_abs() >= pl.repeat_gap)
 }

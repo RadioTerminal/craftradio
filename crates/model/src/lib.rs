@@ -27,8 +27,8 @@ pub use loudness::{
     check_trim, range as loudness_range,
 };
 pub use playlist::{
-    DEFAULT_DUCK_DB, FolderSource, MAX_DUCK_DB, OnInterrupt, PickOrder, PlayMode, Playlist,
-    PlaylistRole,
+    DEFAULT_DUCK_DB, DEFAULT_REPEAT_GAP, FolderSource, MAX_DUCK_DB, OnInterrupt, PickOrder,
+    PlayMode, Playlist, PlaylistRole,
 };
 pub use rule::{Constraint, FixMode, Placement, Repeat, Rule, Trigger};
 pub use server::{

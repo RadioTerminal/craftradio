@@ -90,7 +90,7 @@ pub fn live(id: u64, planned_secs: u32) -> Item {
     item
 }
 
-/// An enabled, non-main playlist with in-order picking and no rules.
+/// An enabled, non-main playlist with in-order picking, no rules and no repeat gap.
 pub fn playlist(id: u64, name: &str, items: Vec<Item>) -> Playlist {
     Playlist {
         plays: radio_model::PlayMode::InSequence,
@@ -108,6 +108,7 @@ pub fn playlist(id: u64, name: &str, items: Vec<Item>) -> Playlist {
         items,
         rules: Vec::new(),
         constraints: Vec::new(),
+        repeat_gap: std::time::Duration::ZERO,
     }
 }
 

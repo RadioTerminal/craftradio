@@ -117,6 +117,7 @@ mod tests {
         let visual = vec![minutes, RuleView::new(), daily];
         let tab = PlaylistTab {
             plays: radio_model::PlayMode::InSequence,
+            repeat_minutes: 60,
             name: "Ads".to_owned(),
             color: [0, 0, 0],
             pick: String::new(),

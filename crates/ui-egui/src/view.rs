@@ -438,6 +438,9 @@ pub struct PlaylistTab {
     pub ids: Vec<u64>,
     /// How the playlist's items play: in sequence, or over the music with a duck.
     pub plays: radio_model::PlayMode,
+    /// Minutes before the scheduler picks the same song of this playlist again; 0 allows
+    /// it at once.
+    pub repeat_minutes: u32,
 }
 
 /// A folder that backs a playlist.

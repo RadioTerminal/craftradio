@@ -538,6 +538,7 @@ mod tests {
                 items: vec![item],
                 rules: vec![],
                 constraints: vec![],
+                repeat_gap: std::time::Duration::ZERO,
                 source: None,
             }],
         };

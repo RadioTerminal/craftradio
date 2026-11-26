@@ -188,6 +188,8 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
     }
     plays(ui, tab, t);
     ui.add_space(space::S);
+    repeat(ui, tab, t);
+    ui.add_space(space::S);
     let mut changed = false;
     ui.add_enabled_ui(!tab.script_by_hand, |ui| {
         ui.horizontal(|ui| {
@@ -251,6 +253,32 @@ fn visual(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
     if changed {
         rules_script::refresh(tab);
     }
+}
+
+/// How soon the scheduler may pick the same song of this playlist again.
+fn repeat(ui: &mut egui::Ui, tab: &mut PlaylistTab, t: &Tokens) {
+    ui.horizontal(|ui| {
+        let label = ui.label("Repeat a song after");
+        let field = numbers::field(
+            ui,
+            DragValue::new(&mut tab.repeat_minutes)
+                .range(0..=24 * 60)
+                .speed(1.0)
+                .suffix(" min"),
+        );
+        ui.add_sized([size::FIELD_W, size::CONTROL_SM], field)
+            .labelled_by(label.id);
+    });
+    caption(
+        ui,
+        if tab.repeat_minutes == 0 {
+            "A song can play again right away, even twice in a row."
+        } else {
+            "The scheduler skips a song played this recently. The main playlist plays one \
+             again sooner only when none of its songs is free."
+        },
+        t,
+    );
 }
 
 /// How the playlist's items play: in sequence, or over the music, ducked by a depth.

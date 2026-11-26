@@ -5,6 +5,13 @@ fn yes() -> bool {
     true
 }
 
+/// The default of [`Playlist::repeat_gap`]: a song comes back after an hour at the soonest.
+pub const DEFAULT_REPEAT_GAP: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+fn default_repeat_gap() -> std::time::Duration {
+    DEFAULT_REPEAT_GAP
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum PickOrder {
     InOrder,
@@ -38,6 +45,11 @@ pub struct Playlist {
     pub items: Vec<Item>,
     pub rules: Vec<Rule>,
     pub constraints: Vec<Constraint>,
+    /// How long after a song plays the scheduler may pick it again from this playlist.
+    /// Zero lets a song repeat at once. The main playlist plays a song again sooner only
+    /// when no song of it is free, so it never runs dry.
+    #[serde(default = "default_repeat_gap")]
+    pub repeat_gap: std::time::Duration,
 }
 
 /// What a playlist is for.

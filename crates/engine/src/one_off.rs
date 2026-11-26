@@ -148,6 +148,8 @@ fn playlist_of(station: &mut Station) -> &mut Playlist {
             items: Vec::new(),
             rules: Vec::new(),
             constraints: Vec::new(),
+            // Each one-off plays when its own rule says.
+            repeat_gap: std::time::Duration::ZERO,
         });
     }
     let last = station.playlists.len() - 1;

@@ -862,6 +862,7 @@ fn every_registered_command_deserializes_and_has_typed_arguments() {
     values["markers"] = serde_json::json!("ByHand");
     values["plays"] = serde_json::json!({"Over": {"duck_db": -12}});
     values["db"] = serde_json::json!(-1.5);
+    values["minutes"] = serde_json::json!(60);
     values["position"] = serde_json::json!({"secs": 90, "nanos": 0});
     values["start"] = serde_json::json!("2026-11-22T09:00:00");
     values["one_off"] = serde_json::to_value(item(9, "One-off")).unwrap();

@@ -1421,6 +1421,12 @@ impl EngineSource {
                 plays: tab.plays,
             });
         }
+        if now.is_some_and(|t| t.repeat_minutes != tab.repeat_minutes) {
+            cmds.push(Command::PlaylistSetRepeatGap {
+                playlist,
+                minutes: tab.repeat_minutes,
+            });
+        }
         if let Some(src) = &tab.source
             && now.and_then(|t| t.source.as_ref()) != Some(src)
         {
