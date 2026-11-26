@@ -848,6 +848,29 @@ pub(crate) fn form_row(
     });
 }
 
+/// A link in the right column of a form row: click opens it in the browser, its menu copies
+/// it. A long address is cut short, and the whole of it is in the tooltip.
+pub(crate) fn link(ui: &mut egui::Ui, url: &str, t: &Tokens) -> egui::Response {
+    let r = ui
+        .add(
+            egui::Label::new(RichText::new(url).color(t.accent_ink).underline())
+                .sense(egui::Sense::click())
+                .truncate(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("Open {url}"));
+    if r.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+    r.context_menu(|ui| {
+        if ui.button("Copy link").clicked() {
+            ui.ctx().copy_text(url.to_owned());
+            ui.close();
+        }
+    });
+    r
+}
+
 /// A full-width line of a form: a note or a status above the rows.
 pub(crate) fn form_note(ui: &mut egui::Ui, text: RichText) {
     ui.add(egui::Label::new(text).wrap());

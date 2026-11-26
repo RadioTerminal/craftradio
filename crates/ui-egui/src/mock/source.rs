@@ -173,6 +173,7 @@ impl ViewSource for MockSource {
                 webrtc_reported: None,
                 listen_link: None,
                 local_link: None,
+                streams: Vec::new(),
                 forwarded: None,
                 streaming: Some(self.streaming),
             },
