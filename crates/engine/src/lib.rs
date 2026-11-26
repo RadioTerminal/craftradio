@@ -231,6 +231,7 @@ impl State {
             items: vec![],
             rules: vec![],
             constraints: vec![],
+            repeat_gap: radio_model::DEFAULT_REPEAT_GAP,
             source: None,
         };
         Self::with(
@@ -552,6 +553,7 @@ fn undoable(cmd: &Command) -> bool {
         | C::PlaylistEnable { .. }
         | C::PlaylistSetFillPool { .. }
         | C::PlaylistSetOnInterrupt { .. }
+        | C::PlaylistSetRepeatGap { .. }
         | C::PlaylistSetPlays { .. }
         | C::PlaylistAddItems { .. }
         | C::PlaylistRemoveItems { .. }
@@ -894,6 +896,7 @@ impl Engine {
                         items: vec![],
                         rules: vec![],
                         constraints: vec![],
+                        repeat_gap: radio_model::DEFAULT_REPEAT_GAP,
                         source: None,
                     });
                     Ok(())
@@ -961,6 +964,14 @@ impl Engine {
             } => {
                 self.edit_station(|s| {
                     playlist_mut(s, playlist)?.on_interrupt = on_interrupt;
+                    Ok(())
+                })?;
+                Ok(Outcome::default())
+            }
+            C::PlaylistSetRepeatGap { playlist, minutes } => {
+                let gap = std::time::Duration::from_secs(u64::from(minutes) * 60);
+                self.edit_station(|s| {
+                    playlist_mut(s, playlist)?.repeat_gap = gap;
                     Ok(())
                 })?;
                 Ok(Outcome::default())

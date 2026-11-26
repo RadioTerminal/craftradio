@@ -30,6 +30,7 @@ pub(super) fn playlist(
 ) -> PlaylistTab {
     let mut tab = PlaylistTab {
         plays: radio_model::PlayMode::InSequence,
+        repeat_minutes: 60,
         name: name.to_owned(),
         color,
         pick: String::new(),

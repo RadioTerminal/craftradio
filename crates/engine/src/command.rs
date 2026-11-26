@@ -150,6 +150,10 @@ pub enum Command {
         playlist: PlaylistId,
         on_interrupt: radio_model::OnInterrupt,
     },
+    /// How long after a song plays the scheduler may pick it again from this playlist.
+    /// Zero lets songs repeat at once.
+    #[serde(rename = "playlist.set_repeat_gap")]
+    PlaylistSetRepeatGap { playlist: PlaylistId, minutes: u32 },
     /// How the items of a playlist play: in sequence, or over the music with a duck.
     #[serde(rename = "playlist.set_plays")]
     PlaylistSetPlays {
@@ -493,6 +497,7 @@ impl Command {
             Self::PlaylistEnable { .. } => "playlist.enable",
             Self::PlaylistSetFillPool { .. } => "playlist.set_fill_pool",
             Self::PlaylistSetOnInterrupt { .. } => "playlist.set_on_interrupt",
+            Self::PlaylistSetRepeatGap { .. } => "playlist.set_repeat_gap",
             Self::PlaylistAddItems { .. } => "playlist.add_items",
             Self::PlaylistRemoveItems { .. } => "playlist.remove_items",
             Self::PlaylistClear { .. } => "playlist.clear",
@@ -571,6 +576,7 @@ impl Command {
             | Self::PlaylistEnable { .. }
             | Self::PlaylistSetFillPool { .. }
             | Self::PlaylistSetOnInterrupt { .. }
+            | Self::PlaylistSetRepeatGap { .. }
             | Self::PlaylistAddItems { .. }
             | Self::PlaylistRemoveItems { .. }
             | Self::PlaylistClear { .. }
@@ -749,6 +755,12 @@ pub fn registry() -> Vec<CommandSpec> {
             "Resume, Replay or Skip an item that a crash cut off",
             A,
             &[p, ("on_interrupt", "string")],
+        ),
+        spec(
+            "playlist.set_repeat_gap",
+            "Minutes before the scheduler picks the same song of a playlist again (0: any time)",
+            A,
+            &[p, ("minutes", "integer")],
         ),
         with_optional_prop(
             spec(

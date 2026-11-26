@@ -1,6 +1,6 @@
 //! Weaves the named playlists into the main playlist's timeline by their rules.
 
-use crate::constraints::item_ok;
+use crate::constraints::{item_ok, repeat_ok};
 use crate::{FitResult, Picker, PlayHistory, Played, allowed};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
@@ -392,8 +392,28 @@ impl<'a> Walk<'a> {
         self.entries.push(e.clone());
     }
 
-    /// Next item of playlist `pi` that passes item validity, the playlist's constraints and `extra`.
+    /// Next item of playlist `pi` that passes item validity, the playlist's repeat gap, its
+    /// constraints and `extra`. The main playlist plays a song again inside its repeat gap
+    /// only when none of its songs is outside it, so it never runs dry.
     fn pick(&mut self, pi: usize, extra: &[Constraint], at: Timestamp) -> Option<&'a Item> {
+        let station: &'a Station = self.station;
+        let pl = &station.playlists[pi];
+        if let Some(item) = self.pick_with(pi, extra, at, true) {
+            return Some(item);
+        }
+        if pl.is_main && !pl.repeat_gap.is_zero() {
+            return self.pick_with(pi, extra, at, false);
+        }
+        None
+    }
+
+    fn pick_with(
+        &mut self,
+        pi: usize,
+        extra: &[Constraint],
+        at: Timestamp,
+        gap: bool,
+    ) -> Option<&'a Item> {
         let station: &'a Station = self.station;
         let pl = &station.playlists[pi];
         if self.resume && !self.resumed[pi] {
@@ -409,6 +429,7 @@ impl<'a> Walk<'a> {
         let (hist, tz, prev) = (&self.hist, &self.tz, self.entries.last());
         self.pickers[pi].next(pl, hist, |item| {
             item_ok(item, at, hist, tz)
+                && (!gap || repeat_ok(pl, item, at, hist))
                 && pl
                     .constraints
                     .iter()

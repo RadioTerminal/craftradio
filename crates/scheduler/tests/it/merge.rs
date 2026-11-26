@@ -448,3 +448,59 @@ fn a_fixed_break_keeps_its_rest_after_its_target_has_passed() {
     assert_eq!(ads.len(), 3, "{ads:?}");
     assert!(ads[2].start > planned[1].start);
 }
+
+/// Gaps between airings of the same item of `playlist`, in order.
+fn repeat_gaps(entries: &[Entry], playlist: PlaylistId) -> Vec<Duration> {
+    let mut gaps = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        if e.playlist != playlist {
+            continue;
+        }
+        if let Some(prev) = entries[..i]
+            .iter()
+            .rev()
+            .find(|p| p.playlist == playlist && p.item == e.item)
+        {
+            gaps.push(e.start.duration_since(prev.start).unsigned_abs());
+        }
+    }
+    gaps
+}
+
+#[test]
+fn repeat_gap_keeps_a_rule_from_playing_its_song_twice_in_a_row() {
+    let mut st = station_with(jingles(100, 1), vec![rule(Trigger::EveryNTracks(3), 2)]);
+    // Without a gap the single song fills the whole take, back to back.
+    let tl = run(&st, at_14(0), Duration::from_secs(3 * 3600));
+    assert!(
+        tl.entries
+            .windows(2)
+            .any(|w| w[0].playlist == ADS && w[1].playlist == ADS && w[0].item == w[1].item)
+    );
+
+    let gap = Duration::from_secs(3600);
+    st.playlists[1].repeat_gap = gap;
+    let tl = run(&st, at_14(0), Duration::from_secs(3 * 3600));
+    assert!(tl.entries.iter().any(|e| e.playlist == ADS));
+    assert!(repeat_gaps(&tl.entries, ADS).iter().all(|g| *g >= gap));
+    assert!(
+        tl.warnings
+            .iter()
+            .any(|w| matches!(w, Warning::NoEligibleItem { playlist, .. } if *playlist == ADS))
+    );
+}
+
+#[test]
+fn main_playlist_repeats_inside_its_gap_rather_than_going_silent() {
+    let mut st = station_with(Vec::new(), Vec::new());
+    // Nine 3-minute tracks come round long before the gap is over.
+    st.playlists[0].repeat_gap = Duration::from_secs(3600);
+    let tl = run(&st, at_14(0), Duration::from_secs(2 * 3600));
+    assert!(
+        !tl.warnings
+            .iter()
+            .any(|w| matches!(w, Warning::DeadAir { .. }))
+    );
+    let end = tl.entries.last().map(|e| e.start).unwrap();
+    assert!(end.duration_since(at_14(0)).unsigned_abs() > Duration::from_secs(3600));
+}

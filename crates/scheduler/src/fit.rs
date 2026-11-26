@@ -1,4 +1,4 @@
-use crate::constraints::{allowed_with, item_ok};
+use crate::constraints::{allowed_with, item_ok, repeat_ok};
 use crate::history::HistoryOverlay;
 use crate::{DropReason, Entry, Fixed, Origin, PlayHistory, Played, Timeline, Warning, allowed};
 use jiff::tz::TimeZone;
@@ -318,6 +318,13 @@ impl<'a> Fitter<'a> {
             .saturating_sub(e.trim)
     }
 
+    /// The playlist of `e` when its repeat gap binds `e`. The main playlist's gap gives way
+    /// when the main has no free song (see `merge`), so the fitter does not hold it to it.
+    fn gap(&self, e: &Entry) -> Option<&'a Playlist> {
+        self.playlist(e.playlist)
+            .filter(|p| !p.is_main && !p.repeat_gap.is_zero())
+    }
+
     /// The rotation rules `e` must keep: its playlist's constraints, plus those of the rule
     /// that inserted it (merge picked it under both).
     fn constraints(&self, e: &Entry) -> impl Iterator<Item = &'a Constraint> {
@@ -478,6 +485,7 @@ impl<'a> Fitter<'a> {
         let needs_history = seq.iter().zip(check).take(last + 1).any(|(e, check)| {
             *check
                 && (self.item(e).is_some_and(|item| item.max_per_day.is_some())
+                    || self.gap(e).is_some()
                     || self.constraints(e).any(|c| {
                         matches!(
                             c,
@@ -499,6 +507,9 @@ impl<'a> Fitter<'a> {
                 && let Some(item) = self.item(e)
             {
                 let ok = item_ok(item, at, &overlay, &self.tz)
+                    && self
+                        .gap(e)
+                        .is_none_or(|pl| repeat_ok(pl, item, at, &overlay))
                     && self
                         .constraints(e)
                         .all(|c| allowed_with(c, item, e.playlist, at, before, &overlay, &self.tz));
@@ -581,6 +592,7 @@ impl<'a> Fitter<'a> {
             .flat_map(|p| p.items.iter().map(move |i| (i, p)))
             .filter(|(item, p)| {
                 item_ok(item, at, sim, &self.tz)
+                    && repeat_ok(p, item, at, sim)
                     && p.constraints
                         .iter()
                         .all(|c| allowed(c, item, p.id, at, prev, sim, &self.tz))
@@ -983,6 +995,7 @@ pub fn fit_all(tl: &mut Timeline, station: &Station, hist: &PlayHistory) {
         station,
         needs_history: station.playlists.iter().any(|p| {
             p.items.iter().any(|i| i.max_per_day.is_some())
+                || !p.repeat_gap.is_zero()
                 || p.constraints
                     .iter()
                     .chain(p.rules.iter().flat_map(|r| &r.constraints))
