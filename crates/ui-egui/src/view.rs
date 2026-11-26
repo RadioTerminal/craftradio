@@ -1222,6 +1222,14 @@ pub enum Status {
     Failed(String),
 }
 
+/// A link that plays the station, with the words that name it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StationLink {
+    /// What the link is, such as "Main stream" or "MP3 192 kbit/s · live_192k".
+    pub label: String,
+    pub url: String,
+}
+
 /// The state of the local output, of Icecast and of WebRTC listening.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputStatus {
@@ -1241,6 +1249,9 @@ pub struct OutputStatus {
     pub listen_link: Option<String>,
     /// The address of the listener page on the local network, while streaming runs.
     pub local_link: Option<String>,
+    /// The streams listeners can open, main stream first: while paired, the server's
+    /// pushed stream and each of its outputs; else the public Icecast address, when set.
+    pub streams: Vec<StationLink>,
     /// The public address that the router forwards to the station (UPnP or NAT-PMP), while it does.
     pub forwarded: Option<String>,
     /// The streaming switch: `None` when this station has no WebRTC output.

@@ -1281,12 +1281,13 @@ fn live_chip(
     }
 }
 
-/// The Share button beside the on-air chip, while streaming runs. Its menu copies the
-/// link that plays the station from anywhere, and the address on the local network.
+/// The Share button beside the on-air chip. Its menu copies the link that plays the station
+/// from anywhere, the address on the local network and each stream listeners can open.
 fn share_button(ui: &mut egui::Ui, view: &StationView) {
     let anywhere = view.output.listen_link.as_deref();
     let local = view.output.local_link.as_deref();
-    if anywhere.is_none() && local.is_none() {
+    let streams = &view.output.streams;
+    if anywhere.is_none() && local.is_none() && streams.is_empty() {
         return;
     }
     let button = widgets::icon_button_sized(
@@ -1308,6 +1309,15 @@ fn share_button(ui: &mut egui::Ui, view: &StationView) {
             && let Some(link) = local
         {
             ui.ctx().copy_text(link.to_owned());
+        }
+        if !streams.is_empty() {
+            ui.separator();
+        }
+        for s in streams {
+            let words = format!("Copy {}", s.label);
+            if context_menu::menu_item_if(ui, true, &words, None) {
+                ui.ctx().copy_text(s.url.clone());
+            }
         }
     });
 }

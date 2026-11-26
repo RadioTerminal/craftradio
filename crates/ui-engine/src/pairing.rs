@@ -15,8 +15,8 @@ use radio_model::{
     SERVER_OUTPUTS_EDITABLE_KEY, SERVER_OUTPUTS_KEY, SERVER_PART, SERVER_PUSH_KEY,
 };
 use radio_ui_egui::view::{
-    OUTPUTS_READ_ONLY, OutputRow, OutputsState, PairState, PairingView, Secret, StreamFormat,
-    is_loopback,
+    OUTPUTS_READ_ONLY, OutputRow, OutputsState, PairState, PairingView, Secret, StationLink,
+    StreamFormat, is_loopback,
 };
 
 use crate::{EngineSource, SecretStore};
@@ -291,6 +291,46 @@ pub(crate) fn output_rows(state: &State) -> Vec<OutputRow> {
                 kbps: o.kbps,
             })
         })
+        .collect()
+}
+
+/// The streams of the paired server: its pushed stream, then each output, each only when
+/// it is on the paired server itself, so a setting rewritten by hand cannot send listeners
+/// somewhere else. Empty when the station is not paired.
+pub fn server_streams(state: &State) -> Vec<StationLink> {
+    let Some(address) =
+        paired_address(state).and_then(|a| radio_model::check_server_address(&a).ok())
+    else {
+        return Vec::new();
+    };
+    let settings = state.settings(SERVER_PART);
+    let main = settings
+        .and_then(|s| s.get("stream_url"))
+        .and_then(|v| v.as_str())
+        .map(|url| StationLink {
+            label: "Main stream".to_owned(),
+            url: url.trim().to_owned(),
+        });
+    let outputs = settings
+        .and_then(|s| s.get(SERVER_OUTPUTS_KEY))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<PairingOutput>>(v).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|o| {
+            let format = match o.format.as_str() {
+                "opus" => StreamFormat::Opus.label().to_owned(),
+                "mp3" => StreamFormat::Mp3.label().to_owned(),
+                other => other.to_owned(),
+            };
+            StationLink {
+                label: format!("{format} {} kbit/s · {}", o.kbps, o.mount),
+                url: o.url.trim().to_owned(),
+            }
+        });
+    main.into_iter()
+        .chain(outputs)
+        .filter(|l| radio_model::on_server(&address, &l.url))
         .collect()
 }
 

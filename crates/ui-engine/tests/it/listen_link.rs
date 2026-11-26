@@ -129,3 +129,38 @@ fn a_page_setting_rewritten_to_another_host_falls_back_to_the_listener_site() {
         "the listener site: {link}"
     );
 }
+
+#[test]
+fn the_servers_streams_are_listed_main_first_and_only_on_the_server() {
+    use radio_model::PairingOutput;
+    let mut e = Engine::open_in_memory().unwrap();
+    assert!(radio_ui_engine::server_streams(e.state()).is_empty());
+
+    let mut doc = document("");
+    let output = |mount: &str, url: String| PairingOutput {
+        mount: mount.into(),
+        format: "mp3".into(),
+        kbps: 192,
+        url,
+    };
+    doc.outputs = vec![
+        output("live_192k", format!("{ADDRESS}/night-owls/live_192k")),
+        // A link that leads off the paired server is never offered to listeners.
+        output("elsewhere", "https://other.example.invalid/x".into()),
+    ];
+    pair(&mut e, doc);
+    let urls: Vec<String> = radio_ui_engine::server_streams(e.state())
+        .into_iter()
+        .map(|l| l.url)
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            format!("{ADDRESS}/night-owls/stream"),
+            format!("{ADDRESS}/night-owls/live_192k"),
+        ]
+    );
+
+    e.dispatch(Command::ServerUnpair).unwrap();
+    assert!(radio_ui_engine::server_streams(e.state()).is_empty());
+}

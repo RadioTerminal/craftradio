@@ -186,6 +186,24 @@ pub(crate) fn show(
     });
     // The outputs live on the server, so they are offered only to a pairing it took.
     if pairing.paired && pairing.state == PairState::Paired {
+        let page = view.output.listen_link.as_deref();
+        if page.is_some() || !view.output.streams.is_empty() {
+            settings::section(ui, "Links", t, |ui| {
+                settings::form_note(
+                    ui,
+                    caption(
+                        "Where listeners reach the station on the server. Saved outputs show \
+                         here once the server took them.",
+                    ),
+                );
+                if let Some(page) = page {
+                    settings::form_row(ui, "Listener page", t, |ui| settings::link(ui, page, t));
+                }
+                for s in &view.output.streams {
+                    settings::form_row(ui, &s.label, t, |ui| settings::link(ui, &s.url, t));
+                }
+            });
+        }
         settings::section(ui, "Outputs", t, |ui| {
             outputs(ui, pairing, draft, actions, t);
         });

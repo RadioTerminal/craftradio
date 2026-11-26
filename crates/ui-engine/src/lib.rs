@@ -26,7 +26,7 @@ pub use server_cover::{SERVER_MAX_COVER, put_cover};
 
 pub use pairing::{
     PUSH_CHANGED, PairError, PutError, check_address, fetch as fetch_pairing, is_paired,
-    paired_entry, put_outputs, server_entry,
+    paired_entry, put_outputs, server_entry, server_streams,
 };
 
 /// The peak hold of the meters that Preferences › Meters keeps, for the playout to start
@@ -1037,6 +1037,17 @@ impl EngineSource {
             local_link: match &pv.outputs.webrtc {
                 Some(WebRtcStatus::Listening { url, .. }) => Some(url.clone()),
                 _ => None,
+            },
+            streams: if pairing::is_paired(&pv.state) {
+                pairing::server_streams(&pv.state)
+            } else {
+                public_stream(&pv.state)
+                    .map(|url| radio_ui_egui::view::StationLink {
+                        label: "Icecast stream".to_owned(),
+                        url,
+                    })
+                    .into_iter()
+                    .collect()
             },
             streaming,
         }

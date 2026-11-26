@@ -427,9 +427,7 @@ fn webrtc_page(ui: &mut egui::Ui, view: &StationView, actions: &mut Vec<Action>,
             settings::status_line(ui, &status, t);
         }
         if let Some(link) = &view.output.listen_link {
-            settings::form_row(ui, "Listen link", t, |ui| {
-                ui.add(egui::Label::new(RichText::new(link).color(t.accent_ink)).truncate())
-            });
+            settings::form_row(ui, "Listen link", t, |ui| settings::link(ui, link, t));
         }
     });
     settings::section(ui, "Connection", t, |ui| {
